@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     vault_path: Path = Path(os.getenv('VAULT_PATH', '/home/marcellmc/pkm'))
     vault_timezone: str = os.getenv('VAULT_TIMEZONE', 'Asia/Jerusalem')
 
+    # Google Calendar integration
+    google_credentials_path: Path = Path(os.getenv('GOOGLE_CREDENTIALS_PATH', 'google_credentials.json'))
+    google_token_path: Path = Path(os.getenv('GOOGLE_TOKEN_PATH', os.path.expanduser('~/.config/mazkir/google_token.json')))
+    google_calendar_id: str | None = os.getenv('GOOGLE_CALENDAR_ID')  # Cached Mazkir calendar ID
+    enable_calendar_sync: bool = os.getenv('ENABLE_CALENDAR_SYNC', 'false').lower() == 'true'
+    default_habit_time: str = os.getenv('DEFAULT_HABIT_TIME', '07:00')  # Default time for habit events
+    default_event_duration: int = int(os.getenv('DEFAULT_EVENT_DURATION', '30'))  # Duration in minutes
+
     # Features
     enable_webapp: bool = os.getenv('ENABLE_WEBAPP', 'true').lower() == 'true'
     enable_notifications: bool = os.getenv('ENABLE_NOTIFICATIONS', 'true').lower() == 'true'

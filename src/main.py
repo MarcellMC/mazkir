@@ -31,10 +31,23 @@ async def main():
 
     # Import handlers here (after config validation)
     try:
-        from src.bot.handlers import get_handlers
+        from src.bot.handlers import get_handlers, init_calendar_service
     except Exception as e:
         logger.error(f"Error importing handlers: {e}", exc_info=True)
         return
+
+    # Initialize calendar service if enabled
+    if settings.enable_calendar_sync:
+        logger.info("Initializing Google Calendar service...")
+        try:
+            calendar_ready = await init_calendar_service()
+            if calendar_ready:
+                logger.info("Calendar service initialized successfully")
+            else:
+                logger.warning("Calendar service initialization failed - calendar sync disabled")
+        except Exception as e:
+            logger.error(f"Error initializing calendar service: {e}", exc_info=True)
+            logger.warning("Continuing without calendar sync")
 
     # Create Telegram client (bot mode)
     client = TelegramClient(
@@ -64,6 +77,7 @@ async def main():
     print(f"{'='*60}")
     print(f"Vault: {settings.vault_path}")
     print(f"Authorized user ID: {settings.authorized_user_id}")
+    print(f"Calendar sync: {'enabled' if settings.enable_calendar_sync else 'disabled'}")
     print(f"{'='*60}")
     print(f"\n👉 Message @{me.username} on Telegram to interact")
     print("Press Ctrl+C to stop\n")

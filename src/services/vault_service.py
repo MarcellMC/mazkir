@@ -610,3 +610,37 @@ class VaultService:
                 return task
 
         return None
+
+    # =========================================================================
+    # Calendar sync helper methods
+    # =========================================================================
+
+    def get_habits_needing_sync(self) -> List[Dict]:
+        """Get all active habits without a google_event_id
+
+        Returns:
+            List of habit dicts needing calendar sync
+        """
+        habits = self.list_active_habits()
+        return [h for h in habits if not h['metadata'].get('google_event_id')]
+
+    def get_tasks_needing_sync(self) -> List[Dict]:
+        """Get all active tasks with due_date but no google_event_id
+
+        Returns:
+            List of task dicts needing calendar sync
+        """
+        tasks = self.list_active_tasks()
+        return [
+            t for t in tasks
+            if t['metadata'].get('due_date') and not t['metadata'].get('google_event_id')
+        ]
+
+    def update_google_event_id(self, file_path: str, event_id: str):
+        """Store Google Calendar event ID in file frontmatter
+
+        Args:
+            file_path: Path to file (relative to vault)
+            event_id: Google Calendar event ID
+        """
+        self.update_file(file_path, {'google_event_id': event_id})

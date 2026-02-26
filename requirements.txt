@@ -25,3 +25,8 @@ python-frontmatter>=1.0.0   # Parse YAML frontmatter
 python-dateutil>=2.8.2      # Date parsing
 pytz>=2024.1                # Timezone support
 aiofiles>=23.2.1            # Async file operations
+
+# Google Calendar integration
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=1.0.0

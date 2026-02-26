@@ -10,6 +10,7 @@ Mazkir Bot bridges your Telegram messages with your Obsidian vault, allowing you
 - 📋 **Create tasks** on the go: "Create task: buy groceries"
 - 🎯 **Track goals** with visual progress indicators
 - 🪙 **Earn motivation tokens** automatically
+- 📆 **Sync to Google Calendar** - habits and tasks appear on your calendar
 - 💬 **Chat naturally** with AI assistant powered by Claude
 - 📊 **View daily notes**, habit streaks, and task lists
 
@@ -29,11 +30,13 @@ Both systems work on the same Obsidian vault located at `VAULT_PATH` in your fil
 ### Commands
 
 - `/start` - Welcome message and quick guide
-- `/day` - View today's daily note with habits, tasks, and tokens
+- `/day` - View today's daily note with habits, tasks, tokens, and calendar
 - `/tasks` - List all active tasks sorted by priority
 - `/habits` - Show habit tracker with current streaks
 - `/goals` - Display active goals with progress bars
 - `/tokens` - Check motivation token balance
+- `/calendar` - Show today's schedule from all calendars
+- `/sync_calendar` - Sync all habits and tasks to Google Calendar
 - `/help` - Full command reference
 
 ### Natural Language Processing
@@ -169,7 +172,8 @@ mazkir-bot/
 │   │   └── handlers.py           # Command and message handlers
 │   ├── services/
 │   │   ├── vault_service.py      # Obsidian vault operations
-│   │   └── claude_service.py     # Claude API integration
+│   │   ├── claude_service.py     # Claude API integration
+│   │   └── calendar_service.py   # Google Calendar integration
 │   ├── config.py                 # Configuration
 │   └── main.py                   # Entry point
 ├── tg-mazkir-AGENTS.md          # Architecture documentation
@@ -247,8 +251,10 @@ Changes sync instantly with Obsidian if you have the vault open.
 
 ## Roadmap
 
-- [ ] Task completion via natural language
-- [ ] Goal progress updates
+- [x] Task completion via natural language
+- [x] Google Calendar integration
+- [ ] Goal progress updates via NL
+- [ ] Notes management via NL
 - [ ] Daily/weekly notifications
 - [ ] Telegram WebApp for rich UI
 - [ ] Photo uploads to daily notes

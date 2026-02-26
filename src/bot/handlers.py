@@ -1,4 +1,5 @@
 """Message and command handlers for the bot."""
+import logging
 from telethon import events, Button
 from datetime import datetime
 import pytz
@@ -6,6 +7,9 @@ from dateutil import parser as dateutil_parser
 from src.config import settings
 from src.services.vault_service import VaultService
 from src.services.claude_service import ClaudeService
+from src.services.calendar_service import CalendarService
+
+logger = logging.getLogger(__name__)
 
 # Initialize services
 vault = VaultService(settings.vault_path, settings.vault_timezone)
@@ -15,6 +19,40 @@ claude = ClaudeService(
     timezone=settings.vault_timezone
 )
 tz = pytz.timezone(settings.vault_timezone)
+
+# Calendar service (initialized on startup if enabled)
+calendar: CalendarService | None = None
+
+
+async def init_calendar_service():
+    """Initialize the calendar service if enabled."""
+    global calendar
+
+    if not settings.enable_calendar_sync:
+        logger.info("Calendar sync disabled")
+        return False
+
+    calendar = CalendarService(
+        credentials_path=settings.google_credentials_path,
+        token_path=settings.google_token_path,
+        timezone=settings.vault_timezone,
+        default_habit_time=settings.default_habit_time,
+        default_event_duration=settings.default_event_duration,
+        calendar_id=settings.google_calendar_id
+    )
+
+    if await calendar.initialize():
+        calendar_id = await calendar.ensure_mazkir_calendar()
+        if calendar_id:
+            logger.info(f"Calendar service ready, calendar ID: {calendar_id}")
+            return True
+        else:
+            logger.error("Failed to ensure Mazkir calendar")
+            return False
+    else:
+        logger.error("Failed to initialize calendar service")
+        calendar = None
+        return False
 
 
 # Middleware: Only allow authorized user
@@ -92,6 +130,37 @@ async def cmd_day(event):
         # This is simplified - you might want to parse the markdown content
         response += "📋 **Tasks**\n"
         response += "_See /tasks for full list_\n\n"
+
+        # Calendar events (if enabled)
+        if calendar and calendar.is_initialized:
+            try:
+                events_today = await calendar.get_todays_events(all_calendars=True)
+                if events_today:
+                    response += "📆 **Today's Schedule**\n"
+                    for evt in events_today:
+                        # Parse start time
+                        start_str = evt.get('start', '')
+                        if 'T' in start_str:
+                            start_time = dateutil_parser.parse(start_str)
+                            time_fmt = start_time.strftime('%H:%M')
+                        else:
+                            time_fmt = 'All day'
+
+                        status = "✅" if evt.get('completed') else "⏳"
+                        summary = evt.get('summary', 'Event')
+                        # Remove completion markers for display if already in summary
+                        if summary.startswith('✅ '):
+                            summary = summary[2:]
+
+                        # Show calendar name for non-Mazkir calendars
+                        cal_name = evt.get('calendar', '')
+                        if cal_name and cal_name != 'Mazkir':
+                            response += f"{status} {time_fmt} - {summary} _({cal_name})_\n"
+                        else:
+                            response += f"{status} {time_fmt} - {summary}\n"
+                    response += "\n"
+            except Exception as cal_err:
+                logger.warning(f"Failed to get calendar events: {cal_err}")
 
         # Buttons
         buttons = [
@@ -447,7 +516,9 @@ async def cmd_help(event):
         "/tasks - Your active tasks\n"
         "/habits - Habit tracker\n"
         "/goals - Active goals\n"
-        "/tokens - Token balance\n\n"
+        "/tokens - Token balance\n"
+        "/calendar - Today's schedule\n"
+        "/sync_calendar - Sync all items to calendar\n\n"
         "**Natural Language**\n"
         "Just chat naturally! Examples:\n\n"
         "_Complete activities:_\n"
@@ -462,6 +533,120 @@ async def cmd_help(event):
         "• \"What are my tokens?\"\n\n"
         "Need help? Just ask!"
     )
+    raise events.StopPropagation
+
+
+@authorized_only
+async def cmd_calendar(event):
+    """Show today's calendar events"""
+    if not calendar or not calendar.is_initialized:
+        await event.respond(
+            "📆 **Calendar not enabled**\n\n"
+            "Set `ENABLE_CALENDAR_SYNC=true` in your .env file and restart the bot."
+        )
+        raise events.StopPropagation
+
+    try:
+        events_today = await calendar.get_todays_events(all_calendars=True)
+
+        if not events_today:
+            await event.respond("📆 **Today's Schedule**\n\nNo events scheduled for today.")
+            raise events.StopPropagation
+
+        response = "📆 **Today's Schedule**\n\n"
+
+        for evt in events_today:
+            # Parse start time
+            start_str = evt.get('start', '')
+            if 'T' in start_str:
+                start_time = dateutil_parser.parse(start_str)
+                time_fmt = start_time.strftime('%H:%M')
+            else:
+                time_fmt = 'All day'
+
+            status = "✅" if evt.get('completed') else "⏳"
+            summary = evt.get('summary', 'Event')
+            # Remove completion markers for display if already in summary
+            if summary.startswith('✅ '):
+                summary = summary[2:]
+
+            # Show calendar name for non-Mazkir calendars
+            cal_name = evt.get('calendar', '')
+            if cal_name and cal_name != 'Mazkir':
+                response += f"{status} **{time_fmt}** - {summary} _({cal_name})_\n"
+            else:
+                response += f"{status} **{time_fmt}** - {summary}\n"
+
+        completed = sum(1 for e in events_today if e.get('completed'))
+        total = len(events_today)
+        response += f"\n---\nCompleted: {completed}/{total}"
+
+        await event.respond(response)
+
+    except Exception as e:
+        logger.error(f"Error in /calendar: {e}", exc_info=True)
+        await event.respond(f"❌ Error loading calendar: {str(e)}")
+
+    raise events.StopPropagation
+
+
+@authorized_only
+async def cmd_sync_calendar(event):
+    """Sync all habits and tasks to Google Calendar"""
+    if not calendar or not calendar.is_initialized:
+        await event.respond(
+            "📆 **Calendar not enabled**\n\n"
+            "Set `ENABLE_CALENDAR_SYNC=true` in your .env file and restart the bot."
+        )
+        raise events.StopPropagation
+
+    try:
+        await event.respond("🔄 Syncing to Google Calendar...")
+
+        habits_synced = 0
+        tasks_synced = 0
+        errors = 0
+
+        # Sync habits
+        habits = vault.get_habits_needing_sync()
+        for habit in habits:
+            try:
+                event_id = await calendar.sync_habit(habit)
+                if event_id:
+                    vault.update_google_event_id(habit['path'], event_id)
+                    habits_synced += 1
+                else:
+                    errors += 1
+            except Exception as e:
+                logger.error(f"Error syncing habit {habit['path']}: {e}")
+                errors += 1
+
+        # Sync tasks with due dates
+        tasks = vault.get_tasks_needing_sync()
+        for task in tasks:
+            try:
+                event_id = await calendar.sync_task(task)
+                if event_id:
+                    vault.update_google_event_id(task['path'], event_id)
+                    tasks_synced += 1
+                else:
+                    errors += 1
+            except Exception as e:
+                logger.error(f"Error syncing task {task['path']}: {e}")
+                errors += 1
+
+        response = "✅ **Calendar Sync Complete**\n\n"
+        response += f"📅 Habits synced: {habits_synced}\n"
+        response += f"📋 Tasks synced: {tasks_synced}\n"
+        if errors > 0:
+            response += f"⚠️ Errors: {errors}\n"
+
+        await event.respond(response)
+
+    except Exception as e:
+        logger.error(f"Error in /sync_calendar: {e}", exc_info=True)
+        await event.respond(f"❌ Error syncing calendar: {str(e)}")
+
     raise events.StopPropagation
 
 
@@ -526,9 +711,6 @@ async def handle_message(event):
 
 async def handle_habit_completion(data: dict) -> str:
     """Handle habit completion intent"""
-    import logging
-    logger = logging.getLogger(__name__)
-
     habit_name = data.get('habit_name', '').lower()
     confidence = data.get('confidence', 'low')
 
@@ -578,6 +760,15 @@ async def handle_habit_completion(data: dict) -> str:
     # Award tokens
     token_result = vault.update_tokens(tokens_per_completion, f"Completed {habit_full_name}")
 
+    # Mark calendar event as complete (if synced)
+    google_event_id = habit_meta.get('google_event_id')
+    if calendar and calendar.is_initialized and google_event_id:
+        try:
+            await calendar.mark_event_complete(google_event_id, today)
+            logger.info(f"Marked calendar event complete for habit: {habit_full_name}")
+        except Exception as e:
+            logger.warning(f"Failed to mark calendar event complete: {e}")
+
     # Build response
     response = f"💪 Excellent! **{habit_full_name}** completed!\n\n"
     response += f"🔥 Streak: {current_streak} → **{new_streak} days**\n"
@@ -618,6 +809,18 @@ async def handle_task_creation(data: dict) -> str:
         tokens_on_completion=5 if priority <= 2 else 10 if priority <= 3 else 15
     )
 
+    # Sync to calendar if enabled and task has due date
+    calendar_synced = False
+    if calendar and calendar.is_initialized and due_date:
+        try:
+            event_id = await calendar.sync_task(result)
+            if event_id:
+                vault.update_google_event_id(result['path'], event_id)
+                calendar_synced = True
+                logger.info(f"Created calendar event for task: {task_name}")
+        except Exception as e:
+            logger.warning(f"Failed to sync task to calendar: {e}")
+
     priority_label = {5: "🔴 High", 4: "🔴 High", 3: "🟡 Medium", 2: "🟢 Low", 1: "🟢 Low"}.get(priority, "🟡 Medium")
     tokens = result['metadata'].get('tokens_on_completion', 5)
 
@@ -625,6 +828,8 @@ async def handle_task_creation(data: dict) -> str:
     response += f"Priority: {priority_label}\n"
     if due_date:
         response += f"Due: {due_date}\n"
+    if calendar_synced:
+        response += f"📆 Synced to calendar\n"
     response += f"Tokens on completion: {tokens}\n\n"
     response += "Use /tasks to view all active tasks."
 
@@ -649,11 +854,25 @@ async def handle_habit_creation(data: dict) -> str:
         tokens_per_completion=5
     )
 
+    # Sync to calendar if enabled
+    calendar_synced = False
+    if calendar and calendar.is_initialized:
+        try:
+            event_id = await calendar.sync_habit(result)
+            if event_id:
+                vault.update_google_event_id(result['path'], event_id)
+                calendar_synced = True
+                logger.info(f"Created calendar event for habit: {habit_name}")
+        except Exception as e:
+            logger.warning(f"Failed to sync habit to calendar: {e}")
+
     response = f"✅ Habit created: **{habit_name}**\n\n"
     response += f"📅 Frequency: {frequency}\n"
     response += f"📁 Category: {category}\n"
-    response += f"🪙 Tokens per completion: 5\n\n"
-    response += "Use /habits to view your habit tracker."
+    response += f"🪙 Tokens per completion: 5\n"
+    if calendar_synced:
+        response += f"📆 Synced to calendar\n"
+    response += "\nUse /habits to view your habit tracker."
 
     return response
 
@@ -706,8 +925,19 @@ async def handle_task_completion(data: dict) -> str:
         task_names = [t['metadata'].get('name', 'Unknown') for t in tasks[:5]]
         return f"❌ I couldn't find a task matching '{task_name}'.\n\nActive tasks: {', '.join(task_names)}"
 
+    # Get calendar event ID before completing (task will be archived)
+    google_event_id = task['metadata'].get('google_event_id')
+
     # Complete the task
     result = vault.complete_task(task['path'])
+
+    # Mark calendar event as complete (if synced)
+    if calendar and calendar.is_initialized and google_event_id:
+        try:
+            await calendar.mark_event_complete(google_event_id)
+            logger.info(f"Marked calendar event complete for task: {result['task_name']}")
+        except Exception as e:
+            logger.warning(f"Failed to mark calendar event complete: {e}")
 
     response = f"✅ Task completed: **{result['task_name']}**\n\n"
     if result['tokens_earned'] > 0:
@@ -758,6 +988,8 @@ def get_handlers():
         (cmd_habits, events.NewMessage(pattern='/habits')),
         (cmd_goals, events.NewMessage(pattern='/goals')),
         (cmd_tokens, events.NewMessage(pattern='/tokens')),
+        (cmd_calendar, events.NewMessage(pattern='/calendar')),
+        (cmd_sync_calendar, events.NewMessage(pattern='/sync_calendar')),
         (cmd_help, events.NewMessage(pattern='/help')),
         (handle_message, events.NewMessage())  # Must be last (catch-all)
     ]
