@@ -1,11 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(mkdir:*)",
-      "Bash(touch:*)",
-      "Bash(docker:*)"
-    ],
-    "deny": [],
-    "ask": []
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(git status:*)",
+      "Bash(wc:*)",
+      "Bash(xargs:*)",
+      "Bash(git remote:*)",
+      "Bash(git fetch:*)",
+      "Bash(npm install:*)",
+      "Bash(mkdir:*)"
+    ]
   }
 }

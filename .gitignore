@@ -1,3 +1,10 @@
+# Node
+node_modules/
+package-lock.json
+
+# Vault (nested git repo)
+memory/
+
 # Python
 __pycache__/
 *.py[cod]

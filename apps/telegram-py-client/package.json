@@ -1,0 +1,9 @@
+{
+  "name": "telegram-py-client",
+  "private": true,
+  "scripts": {
+    "dev": "python -m src.main",
+    "test": "pytest tests/",
+    "lint": "ruff check src/"
+  }
+}
