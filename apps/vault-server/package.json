@@ -1,0 +1,9 @@
+{
+  "name": "vault-server",
+  "private": true,
+  "scripts": {
+    "dev": "python -m uvicorn src.main:app --reload --port 8000",
+    "test": "pytest tests/ -v",
+    "lint": "ruff check src/"
+  }
+}
