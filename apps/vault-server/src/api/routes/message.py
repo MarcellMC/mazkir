@@ -6,6 +6,7 @@ import pytz
 from src.main import get_vault, get_claude, get_calendar
 from src.auth import verify_api_key
 from src.config import settings
+from src.api.routes import item_name
 
 router = APIRouter(tags=["message"], dependencies=[Depends(verify_api_key)])
 
@@ -27,9 +28,9 @@ async def handle_message(body: MessageRequest):
 
     # Get context for intent parsing
     habits = vault.list_active_habits()
-    habit_names = [h["metadata"].get("name", "Unknown") for h in habits]
+    habit_names = [item_name(h) for h in habits]
     tasks = vault.list_active_tasks()
-    task_names = [t["metadata"].get("name", "") for t in tasks if t["metadata"].get("name")]
+    task_names = [item_name(t) for t in tasks]
 
     # Parse intent
     intent_result = claude.parse_intent(body.text, habit_names, task_names)
@@ -174,7 +175,7 @@ async def _handle_task_completion(data, vault, calendar):
     task = vault.find_task_by_name(task_name)
     if not task:
         tasks = vault.list_active_tasks()
-        names = [t["metadata"].get("name", "Unknown") for t in tasks[:5]]
+        names = [item_name(t) for t in tasks[:5]]
         return {"intent": "TASK_COMPLETION", "error": f"Not found: {task_name}", "available": names}
 
     google_event_id = task["metadata"].get("google_event_id")

@@ -5,6 +5,7 @@ import pytz
 from src.main import get_vault, get_calendar
 from src.auth import verify_api_key
 from src.config import settings
+from src.api.routes import item_name
 
 router = APIRouter(prefix="/daily", tags=["daily"], dependencies=[Depends(verify_api_key)])
 
@@ -32,7 +33,7 @@ async def get_daily():
     habit_status = []
     for h in habits:
         h_meta = h["metadata"]
-        name = h_meta.get("name", "Unknown")
+        name = item_name(h)
         habit_status.append({
             "name": name,
             "completed": name in completed_habits or h_meta.get("last_completed") == today,

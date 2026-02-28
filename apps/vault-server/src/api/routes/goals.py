@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from src.main import get_vault
 from src.auth import verify_api_key
+from src.api.routes import item_name
 
 router = APIRouter(prefix="/goals", tags=["goals"], dependencies=[Depends(verify_api_key)])
 
@@ -20,7 +21,7 @@ async def list_goals():
     goals = vault.list_active_goals()
     return [
         {
-            "name": g["metadata"].get("name", "Unnamed"),
+            "name": item_name(g),
             "status": g["metadata"].get("status", "unknown"),
             "priority": g["metadata"].get("priority", "medium"),
             "progress": g["metadata"].get("progress", 0),

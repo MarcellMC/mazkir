@@ -6,6 +6,7 @@ import pytz
 from src.main import get_vault, get_calendar
 from src.auth import verify_api_key
 from src.config import settings
+from src.api.routes import item_name
 
 router = APIRouter(prefix="/habits", tags=["habits"], dependencies=[Depends(verify_api_key)])
 
@@ -33,7 +34,7 @@ async def list_habits():
 
     return [
         {
-            "name": h["metadata"].get("name", "Unknown"),
+            "name": item_name(h),
             "frequency": h["metadata"].get("frequency", "daily"),
             "streak": h["metadata"].get("streak", 0),
             "longest_streak": h["metadata"].get("longest_streak", 0),

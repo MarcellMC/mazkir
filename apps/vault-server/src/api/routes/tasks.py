@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from src.main import get_vault, get_calendar
 from src.auth import verify_api_key
+from src.api.routes import item_name
 
 router = APIRouter(prefix="/tasks", tags=["tasks"], dependencies=[Depends(verify_api_key)])
 
@@ -25,7 +26,7 @@ async def list_tasks():
     tasks = vault.list_active_tasks()
     return [
         {
-            "name": t["metadata"].get("name", "Unnamed"),
+            "name": item_name(t),
             "priority": t["metadata"].get("priority", 3),
             "due_date": t["metadata"].get("due_date"),
             "category": t["metadata"].get("category", "personal"),
