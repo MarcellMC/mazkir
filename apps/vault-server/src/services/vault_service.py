@@ -220,10 +220,18 @@ class VaultService:
         ledger = self.read_token_ledger()
         metadata = ledger['metadata']
 
+        # Reset tokens_today if it's a new day
+        today = datetime.now(self.tz).strftime('%Y-%m-%d')
+        last_updated = str(metadata.get('updated', ''))
+        if last_updated != today:
+            prior_today = 0
+        else:
+            prior_today = metadata.get('tokens_today', 0)
+
         # Update totals
         old_total = metadata.get('total_tokens', 0)
         new_total = old_total + tokens_earned
-        tokens_today = metadata.get('tokens_today', 0) + tokens_earned
+        tokens_today = prior_today + tokens_earned
 
         # Update metadata
         updates = {
