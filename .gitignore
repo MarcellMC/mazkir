@@ -44,3 +44,6 @@ Thumbs.db
 # Alembic
 alembic/versions/*.pyc
 google_credentials.json
+
+# Worktrees
+.worktrees/
