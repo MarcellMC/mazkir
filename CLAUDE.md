@@ -1,145 +1,135 @@
----
-status: active
-last_updated: 2026-02-05
-project: Mazkir
-version: 0.3.0
----
-
 # Mazkir - Personal AI Assistant
 
 ## Project Overview
 
-Mazkir is a personal AI assistant system that provides natural language CRUD operations for managing tasks, habits, and goals through a Telegram bot interface, with data stored in an Obsidian vault.
+Mazkir is a personal AI assistant system that provides natural language CRUD operations for managing tasks, habits, and goals through a Telegram bot interface, backed by a FastAPI vault server and an Obsidian vault for data storage.
 
-**Current Phase:** Calendar sync integration
-**Primary Interface:** Telegram bot (`tg-mazkir`)
-**Data Layer:** Obsidian PKM vault (`pkm/`)
+**Architecture:** Turborepo monorepo with two Python apps
+**Primary Interface:** Telegram bot (`apps/telegram-py-client`)
+**Backend:** FastAPI REST API (`apps/vault-server`)
+**Data Layer:** Obsidian vault (`memory/`, symlinked from `~/pkm/`)
 
 ## Repository Structure
 
 ```
-~/dev/
-├── mazkir/              # Project coordination (this repo)
-│   ├── CLAUDE.md        # This file - project entry point
-│   └── personal-ai-assistant-roadmap.md
+~/dev/mazkir/                          # Turborepo monorepo
+├── apps/
+│   ├── telegram-py-client/            # Thin Telegram bot (Python)
+│   │   ├── src/
+│   │   │   ├── main.py               # Bot entrypoint
+│   │   │   ├── bot/handlers.py       # Command routing → API calls
+│   │   │   ├── bot/client.py         # Telegram client setup
+│   │   │   └── api_client.py         # HTTP client for vault-server
+│   │   ├── pyproject.toml
+│   │   └── .env
+│   │
+│   └── vault-server/                  # FastAPI backend (Python)
+│       ├── src/
+│       │   ├── main.py               # FastAPI app with lifespan
+│       │   ├── config.py             # Pydantic settings
+│       │   ├── auth.py               # API key middleware
+│       │   ├── api/routes/           # REST endpoints
+│       │   │   ├── tasks.py
+│       │   │   ├── habits.py
+│       │   │   ├── goals.py
+│       │   │   ├── daily.py
+│       │   │   ├── tokens.py
+│       │   │   ├── calendar.py
+│       │   │   └── message.py        # NL intent routing
+│       │   └── services/             # Business logic
+│       │       ├── vault_service.py  # Obsidian vault CRUD
+│       │       ├── claude_service.py # Claude API integration
+│       │       └── calendar_service.py # Google Calendar sync
+│       ├── pyproject.toml
+│       └── .env
 │
-├── tg-mazkir/           # Telegram bot implementation
-│   ├── src/
-│   │   ├── bot/handlers.py       # Command and NL handlers
-│   │   └── services/
-│   │       ├── vault_service.py  # Vault read/write operations
-│   │       └── claude_service.py # Claude API integration
-│   ├── README.md
-│   ├── tg-mazkir-AGENTS.md       # Bot architecture
-│   └── tg-mazkir-IMPLEMENTATION.md
+├── memory/                            # Obsidian vault (nested git repo, gitignored)
+│   ├── AGENTS.md                      # Vault schemas and workflows
+│   ├── 00-system/templates/           # Note templates
+│   ├── 10-daily/                      # Daily notes
+│   ├── 20-habits/                     # Habit files
+│   ├── 30-goals/                      # Goal files
+│   └── 40-tasks/                      # Task files
 │
-~/pkm/                   # Obsidian vault (data layer)
-├── AGENTS.md            # Vault schemas and workflows
-├── 00-system/templates/ # Note templates
-├── 10-daily/            # Daily notes
-├── 20-habits/           # Habit files
-├── 30-goals/            # Goal files
-└── 40-tasks/            # Task files
+├── docs/plans/                        # Design and implementation docs
+├── turbo.json                         # Turborepo config
+├── package.json                       # Root workspace config
+└── CLAUDE.md                          # This file
 ```
+
+**Symlink:** `~/pkm/` → `~/dev/mazkir/memory/`
+
+## GitHub Repos
+
+- `MarcellMC/mazkir` — This monorepo (code + docs)
+- `MarcellMC/mazkir-memory` — Vault data (nested git inside `memory/`)
 
 ## Current Capabilities
 
-### Working
-- `/day` - View today's daily note (auto-creates if missing)
-- `/tasks` - List active tasks by priority
-- `/habits` - Show habit tracker with streaks
-- `/goals` - Display active goals with progress
-- `/tokens` - Check motivation token balance
-- NL habit completion: "I completed gym"
-- NL habit creation: "Create habit: morning run"
-- NL task creation: "Create task: buy milk"
-- NL task completion: "Done with buy groceries"
-- NL goal creation: "Create goal: learn python"
-- Template-based file creation with full schemas
-- Task archival on completion with token awards
-
-### In Development
-- Google Calendar sync (habits, tasks with due dates)
-- Calendar event viewing in /day
-
-### Planned
-- Notes management via `60-knowledge/notes/`
-- Weekly/monthly reviews
-- Telegram WebApp for visualizations
+- `/day` - Today's daily note with habits and calendar events
+- `/tasks` - Active tasks by priority
+- `/habits` - Habit tracker with streaks
+- `/goals` - Goals with progress bars
+- `/tokens` - Motivation token balance
+- `/calendar` - Today's schedule from Google Calendar
+- `/sync_calendar` - Sync habits/tasks to Google Calendar
+- NL: "I completed gym", "Create task: buy milk", "Done with groceries", etc.
 
 ## Data Schemas
 
-All vault files use YAML frontmatter. See `pkm/AGENTS.md` for complete schemas.
+All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schemas.
 
-### Quick Reference
-
-**Task** (`40-tasks/active/*.md`):
-```yaml
-type: task
-name: "Task description"
-status: active          # active, done, archived
-priority: 3             # 1-5 (5=highest)
-due_date: 2026-02-10    # optional
-category: personal      # work, personal, health, learning
-```
-
-**Habit** (`20-habits/*.md`):
-```yaml
-type: habit
-name: "Habit Name"
-frequency: daily        # daily, 3x/week, weekly
-streak: 0
-last_completed: null    # YYYY-MM-DD
-status: active
-tokens_per_completion: 5
-```
-
-**Goal** (`30-goals/YYYY/*.md`):
-```yaml
-type: goal
-name: "Goal Name"
-status: in-progress     # not-started, in-progress, completed
-priority: high          # high, medium, low
-progress: 0             # 0-100
-target_date: 2026-06-30
-```
+**Task** (`memory/40-tasks/active/*.md`): type, name, status, priority (1-5), due_date, category
+**Habit** (`memory/20-habits/*.md`): type, name, frequency, streak, last_completed, tokens_per_completion
+**Goal** (`memory/30-goals/YYYY/*.md`): type, name, status, priority, progress (0-100), target_date
 
 ## Development Guidelines
+
+### Architecture
+- **vault-server** owns ALL business logic (vault CRUD, Claude AI, calendar sync)
+- **telegram-py-client** is a thin UI layer (API calls + Telegram formatting)
+- New features → add route to vault-server, add handler formatting to telegram client
+
+### When adding vault-server routes:
+1. Create route in `apps/vault-server/src/api/routes/`
+2. Add service method to relevant service if needed
+3. Register router in `apps/vault-server/src/main.py`
+
+### When adding telegram commands:
+1. Add handler in `apps/telegram-py-client/src/bot/handlers.py`
+2. Add API method in `apps/telegram-py-client/src/api_client.py`
+3. Format response for Telegram display
 
 ### When modifying vault files:
 1. Always update the `updated` field
 2. Preserve existing frontmatter fields
-3. Use templates from `00-system/templates/` for new files
+3. Use templates from `memory/00-system/templates/`
 4. File names: lowercase, hyphens (e.g., `buy-groceries.md`)
 
-### When adding bot features:
-1. Add handler to `tg-mazkir/src/bot/handlers.py`
-2. Add vault operation to `vault_service.py` if needed
-3. Update intent parsing in `claude_service.py` if NL
-4. Test with real vault
-
-### Priority Order for Development
-1. Google Calendar API integration
-2. Sync habits/tasks to calendar
-3. Show calendar in /day command
-4. NL calendar queries
-
-## Quick Commands for Development
+## Quick Commands
 
 ```bash
-# Start bot
-cd ~/dev/tg-mazkir && source venv/bin/activate && python -m src.main
+# Start vault-server
+cd ~/dev/mazkir/apps/vault-server && source venv/bin/activate && python -m uvicorn src.main:app --reload --port 8000
+
+# Start telegram client (requires vault-server running)
+cd ~/dev/mazkir/apps/telegram-py-client && source venv/bin/activate && python -m src.main
+
+# Start both with Turborepo
+cd ~/dev/mazkir && npx turbo dev
 
 # Check vault structure
 ls -la ~/pkm/{10-daily,20-habits,30-goals,40-tasks}
 
-# View recent changes
-cd ~/pkm && git log --oneline -10
+# Test vault-server endpoints
+curl http://localhost:8000/health
+curl http://localhost:8000/tasks
+curl http://localhost:8000/habits
 ```
 
 ## Related Documentation
 
-- **Bot Architecture:** `~/dev/tg-mazkir/tg-mazkir-AGENTS.md`
-- **Vault Schemas:** `~/pkm/AGENTS.md`
-- **Project Roadmap:** `~/dev/mazkir/personal-ai-assistant-roadmap.md`
-- **Implementation Details:** `~/dev/tg-mazkir/tg-mazkir-IMPLEMENTATION.md`
+- **Vault Schemas:** `memory/AGENTS.md`
+- **Project Roadmap:** `personal-ai-assistant-roadmap.md`
+- **Migration Design:** `docs/plans/2026-02-28-monorepo-migration-design.md`
+- **Bot Architecture:** `apps/telegram-py-client/tg-mazkir-AGENTS.md`
