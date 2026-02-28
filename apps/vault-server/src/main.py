@@ -69,6 +69,24 @@ def get_calendar() -> CalendarService | None:
     return calendar
 
 
+# Register routers
+from src.api.routes.tasks import router as tasks_router
+from src.api.routes.habits import router as habits_router
+from src.api.routes.goals import router as goals_router
+from src.api.routes.daily import router as daily_router
+from src.api.routes.tokens import router as tokens_router
+from src.api.routes.calendar import router as calendar_router
+from src.api.routes.message import router as message_router
+
+app.include_router(tasks_router)
+app.include_router(habits_router)
+app.include_router(goals_router)
+app.include_router(daily_router)
+app.include_router(tokens_router)
+app.include_router(calendar_router)
+app.include_router(message_router)
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "vault": vault is not None}
