@@ -1,8 +1,8 @@
 ---
 title: Mazkir - Personal AI Assistant Roadmap
 created: 2026-01-06
-updated: 2026-02-26
-version: 2.2
+updated: 2026-02-28
+version: 2.3
 status: active
 tags: [project, roadmap, mazkir]
 ---
@@ -19,22 +19,20 @@ tags: [project, roadmap, mazkir]
 ## Current Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│              User (Telegram Client)               │
-└─────────────────────┬────────────────────────────┘
-                      │
-          ┌───────────┴───────────┐
-          │      tg-mazkir        │
-          │    Telegram Bot       │
-          │ (NL CRUD Interface)   │
-          └───┬───────┬───────┬───┘
-              │       │       │
-      ┌───────▼───┐ ┌─▼───────▼──┐ ┌──────────────┐
-      │ Claude API│ │ Obsidian   │ │ Google       │
-      │ (Intent + │ │ Vault      │ │ Calendar     │
-      │ Response) │ │ ~/pkm/     │ │ (Scheduling) │
-      └───────────┘ └────────────┘ └──────────────┘
+User (Telegram)
+     │
+     ▼
+telegram-py-client        Thin UI layer (Telethon)
+     │  HTTP (httpx)
+     ▼
+vault-server               FastAPI backend (port 8000)
+     │
+     ├──► Obsidian vault    ~/pkm/ (markdown + YAML frontmatter)
+     ├──► Claude API        Intent parsing & NL responses
+     └──► Google Calendar   OAuth2, habit/task scheduling
 ```
+
+**Monorepo:** Turborepo at `~/dev/mazkir/` with two Python apps.
 
 ---
 
@@ -43,30 +41,33 @@ tags: [project, roadmap, mazkir]
 ### Completed
 - [x] Vault structure designed and implemented
 - [x] Frontmatter schemas defined (AGENTS.md)
-- [x] Telegram bot basic setup (Telethon)
-- [x] Claude API integration
-- [x] Slash commands: /day, /tasks, /habits, /goals, /tokens
+- [x] Telegram bot setup (Telethon MTProto)
+- [x] Claude API integration for intent parsing
+- [x] Slash commands: /day, /tasks, /habits, /goals, /tokens, /calendar, /help
 - [x] NL habit completion ("I completed gym")
 - [x] NL task creation ("Create task: buy milk")
-- [x] Habit streak tracking
-- [x] Token award system (basic)
-- [x] Template-based file creation (task, habit, goal, daily)
-- [x] NL goal creation ("Create goal: learn python")
-- [x] NL habit creation ("Create habit: morning run")
 - [x] NL task completion ("Done with buy groceries")
+- [x] NL habit creation ("Create habit: morning run")
+- [x] NL goal creation ("Create goal: learn python")
+- [x] Habit streak tracking
+- [x] Token award system
+- [x] Template-based file creation (task, habit, goal, daily)
 - [x] Daily note auto-creation on /day
 - [x] Task archival on completion with token awards
 - [x] **Google Calendar integration** (2026-02-26)
   - [x] OAuth2 authentication with token persistence
-  - [x] Dedicated "Mazkir" calendar (isolated from personal events)
-  - [x] Sync habits as recurring events (daily/weekly/3x per week)
+  - [x] Dedicated "Mazkir" calendar
+  - [x] Sync habits as recurring events
   - [x] Sync tasks with due dates as calendar events
   - [x] Mark calendar events complete on habit/task completion
-  - [x] `/calendar` command - show today's schedule (all calendars)
-  - [x] `/sync_calendar` command - manual full sync
-  - [x] `/day` shows integrated calendar view
+  - [x] `/calendar` and `/sync_calendar` commands
+  - [x] `/day` integrated calendar view
   - [x] Auto-sync on habit/task creation
-  - [x] All-day events for unscheduled habits and date-only tasks
+- [x] **Monorepo migration** (2026-02-28)
+  - [x] Turborepo monorepo structure
+  - [x] vault-server FastAPI backend (all business logic)
+  - [x] telegram-py-client thin UI layer (API calls only)
+  - [x] API key auth between client and server
 
 ### Current Phase: Polish & Notes
 
@@ -99,14 +100,10 @@ tags: [project, roadmap, mazkir]
 ## Vault Structure
 
 ```
-~/pkm/
-├── AGENTS.md               # Vault documentation
+~/pkm/  (symlinked from ~/dev/mazkir/memory/)
+├── AGENTS.md               # Vault schemas
 ├── 00-system/
-│   ├── templates/
-│   │   ├── _daily_.md      # ✅ Updated
-│   │   ├── _task_.md       # ✅ Updated
-│   │   ├── _habit_.md      # ✅ Created
-│   │   └── _goal_.md       # ✅ Created
+│   ├── templates/          # Note templates
 │   └── motivation-tokens.md
 ├── 10-daily/               # YYYY-MM-DD.md
 ├── 20-habits/              # habit-name.md
@@ -125,17 +122,13 @@ tags: [project, roadmap, mazkir]
 
 ## Tech Stack
 
-**Current:**
-- Telegram Bot: Telethon (MTProto)
-- AI: Claude API (Anthropic SDK)
-- Data: Obsidian (markdown + YAML frontmatter)
-- Calendar: Google Calendar API (OAuth2)
-- Parsing: python-frontmatter
-- Language: Python 3.14+
-
-**Planned:**
-- PostgreSQL (analytics, future)
-- Docker Compose (database)
+- **Bot**: Telethon (Telegram MTProto API)
+- **Backend**: FastAPI + uvicorn
+- **AI**: Claude API (Anthropic SDK)
+- **Data**: Obsidian vault (markdown + YAML frontmatter)
+- **Calendar**: Google Calendar API (OAuth2)
+- **Build**: Turborepo monorepo
+- **Language**: Python 3.14+
 
 ---
 
@@ -150,32 +143,11 @@ tags: [project, roadmap, mazkir]
 ### Decision 3: Claude for Intent Parsing
 **Rationale:** Flexible NL understanding, can handle ambiguity, easy to extend
 
-### Decision 4: Direct Filesystem Access
-**Rationale:** Simplest implementation, no sync issues, instant updates
+### Decision 4: Monorepo with Separate Backend
+**Rationale:** Clean separation of concerns, vault-server owns all business logic, telegram client is a thin UI layer. Enables future clients (web, CLI) without duplicating logic.
 
 ### Decision 5: Google Calendar for Time Management
 **Rationale:** Already in use, good mobile app, integrates with other tools
-
----
-
-## Success Metrics
-
-- **Daily Use:** Bot used for task/habit logging daily
-- **Data Quality:** All activities have proper frontmatter
-- **Response Time:** Bot responds within 2 seconds
-- **Coverage:** 80% of CRUD operations via NL
-
----
-
-## Risks & Mitigations
-
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Template/code schema drift | High | Templates are source of truth, validate on write |
-| Vault corruption | High | Git version control, daily commits |
-| Over-engineering | Medium | MVP first, iterate based on actual use |
-| Claude API costs | Low | Cache common responses, use Haiku for parsing |
-| Calendar API rate limits | Low | Batch operations, local caching |
 
 ---
 
@@ -183,9 +155,10 @@ tags: [project, roadmap, mazkir]
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 2.2 | 2026-02-26 | **Calendar sync complete!** Google Calendar integration with OAuth2, recurring events, auto-sync |
-| 2.1 | 2026-02-05 | NL CRUD complete, next focus: Calendar sync |
-| 2.0 | 2026-02-05 | Major update: reflect current state, templates fixed |
+| 2.3 | 2026-02-28 | Monorepo migration complete, vault-server + thin telegram client |
+| 2.2 | 2026-02-26 | Google Calendar integration with OAuth2, recurring events, auto-sync |
+| 2.1 | 2026-02-05 | NL CRUD complete |
+| 2.0 | 2026-02-05 | Major update: templates, streak tracking, token system |
 | 1.0 | 2026-01-06 | Initial roadmap |
 
 ---
@@ -193,6 +166,6 @@ tags: [project, roadmap, mazkir]
 ## Quick Links
 
 - **Project Entry:** `~/dev/mazkir/CLAUDE.md`
-- **Bot Code:** `~/dev/tg-mazkir/src/`
+- **Vault Server:** `~/dev/mazkir/apps/vault-server/`
+- **Telegram Client:** `~/dev/mazkir/apps/telegram-py-client/`
 - **Vault Schemas:** `~/pkm/AGENTS.md`
-- **Bot Docs:** `~/dev/tg-mazkir/README.md`
