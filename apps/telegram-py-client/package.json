@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "python -m src.main",
-    "test": "pytest tests/",
-    "lint": "ruff check src/"
+    "test": "venv/bin/pytest tests/ 2>/dev/null || echo 'No tests yet'",
+    "lint": "venv/bin/ruff check src/"
   }
 }

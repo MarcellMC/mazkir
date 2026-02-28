@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "python -m uvicorn src.main:app --reload --port 8000",
-    "test": "pytest tests/ -v",
-    "lint": "ruff check src/"
+    "test": "venv/bin/pytest tests/ -v",
+    "lint": "venv/bin/ruff check src/"
   }
 }
