@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     default_habit_time: str = os.getenv("DEFAULT_HABIT_TIME", "07:00")
     default_event_duration: int = int(os.getenv("DEFAULT_EVENT_DURATION", "30"))
 
+    # Timeline data
+    timeline_data_path: Path = Path(os.getenv("TIMELINE_DATA_PATH", str(Path.home() / "dev" / "mazkir" / "data" / "timeline")))
+
+    # Replicate API (for image generation)
+    replicate_api_token: str | None = os.getenv("REPLICATE_API_TOKEN")
+
+    # CORS
+    cors_origins: str = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+
     # Application
     log_level: str = "INFO"
     environment: str = "development"

@@ -47,3 +47,6 @@ google_credentials.json
 
 # Worktrees
 .worktrees/
+
+# Timeline data (Google Takeout exports)
+data/
