@@ -66,7 +66,7 @@ async def cmd_day(event):
                 response += f"⏳ {h['name']}\n"
         response += "\n"
 
-        response += "📋 **Tasks**\n_See /tasks for full list_\n\n"
+        response += "📋 **Tasks**\n__See /tasks for full list__\n\n"
 
         events_list = data.get("calendar_events", [])
         if events_list:
@@ -84,7 +84,7 @@ async def cmd_day(event):
                     summary = summary[2:]
                 cal_name = evt.get("calendar", "")
                 if cal_name and cal_name != "Mazkir":
-                    response += f"{status} {time_fmt} - {summary} _({cal_name})_\n"
+                    response += f"{status} {time_fmt} - {summary} __({cal_name})__\n"
                 else:
                     response += f"{status} {time_fmt} - {summary}\n"
 
@@ -248,7 +248,7 @@ async def cmd_calendar(event):
                 summary = summary[2:]
             cal_name = evt.get("calendar", "")
             if cal_name and cal_name != "Mazkir":
-                response += f"{status} **{time_fmt}** - {summary} _({cal_name})_\n"
+                response += f"{status} **{time_fmt}** - {summary} __({cal_name})__\n"
             else:
                 response += f"{status} **{time_fmt}** - {summary}\n"
 
@@ -301,14 +301,14 @@ async def cmd_help(event):
         "/sync_calendar - Sync all items to calendar\n\n"
         "**Natural Language**\n"
         "Just chat naturally! Examples:\n\n"
-        "_Complete activities:_\n"
+        "__Complete activities:__\n"
         '• "I completed gym"\n'
         '• "Done with buy groceries"\n\n'
-        "_Create items:_\n"
+        "__Create items:__\n"
         '• "Create task: buy milk"\n'
         '• "Create habit: morning run"\n'
         '• "Create goal: learn python"\n\n'
-        "_Ask questions:_\n"
+        "__Ask questions:__\n"
         '• "Show my streaks"\n'
         '• "What are my tokens?"\n\n'
         "Need help? Just ask!"

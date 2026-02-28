@@ -22,6 +22,7 @@ class MazkirClient:
 
     async def start(self):
         """Start the client and authenticate."""
+        self.client.parse_mode = "markdown"
         await self.client.start(phone=settings.telegram_phone)
         me = await self.client.get_me()
         logger.info(f"Logged in as {me.first_name} ({me.phone})")
