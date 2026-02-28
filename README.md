@@ -54,6 +54,21 @@ cd apps/vault-server && source venv/bin/activate && python -m uvicorn src.main:a
 
 # telegram client (requires vault-server running)
 cd apps/telegram-py-client && source venv/bin/activate && python -m src.main
+
+# Run tests
+npx turbo test
+
+# Run linter
+npx turbo lint
+
+# Test vault-server endpoints
+curl http://localhost:8000/health
+curl http://localhost:8000/tasks
+curl http://localhost:8000/habits
+curl http://localhost:8000/goals
+curl http://localhost:8000/daily
+curl http://localhost:8000/tokens
+curl http://localhost:8000/calendar
 ```
 
 ## Tech Stack

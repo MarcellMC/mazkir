@@ -2,7 +2,6 @@
 import logging
 
 from telethon import TelegramClient
-from telethon.sessions import StringSession
 
 from src.config import settings
 

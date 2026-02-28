@@ -1,9 +1,8 @@
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 import frontmatter
 import pytz
 import re
-import shutil
 from typing import Dict, List, Optional
 
 
@@ -243,7 +242,6 @@ class VaultService:
         self.update_file("00-system/motivation-tokens.md", updates)
 
         # Add transaction to today's daily note
-        now = datetime.now(self.tz)
         try:
             daily = self.read_daily_note()
             daily_metadata = daily['metadata']

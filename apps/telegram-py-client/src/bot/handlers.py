@@ -1,6 +1,6 @@
 """Message and command handlers for the bot (thin client)."""
 import logging
-from telethon import events, Button
+from telethon import events
 from dateutil import parser as dateutil_parser
 from src.config import settings
 from src.api_client import VaultAPIClient

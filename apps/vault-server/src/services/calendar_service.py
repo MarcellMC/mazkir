@@ -1,5 +1,4 @@
 """Google Calendar integration service for Mazkir."""
-import os
 import logging
 import socket
 from datetime import datetime, timedelta
