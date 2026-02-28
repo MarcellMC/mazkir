@@ -19,11 +19,13 @@ vault: VaultService | None = None
 claude: ClaudeService | None = None
 calendar: CalendarService | None = None
 timeline: "TimelineService | None" = None
+generation: "GenerationService | None" = None
+imagery: "ImageryService | None" = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global vault, claude, calendar, timeline
+    global vault, claude, calendar, timeline, generation, imagery
 
     vault = VaultService(settings.vault_path, settings.vault_timezone)
     logger.info(f"Vault service initialized: {settings.vault_path}")
@@ -60,6 +62,14 @@ async def lifespan(app: FastAPI):
         )
         logger.info(f"Timeline service initialized: {settings.timeline_data_path}")
 
+    from src.services.generation_service import GenerationService
+    from src.services.imagery_service import ImageryService
+    if settings.replicate_api_token:
+        generation = GenerationService(api_token=settings.replicate_api_token)
+        logger.info("Generation service initialized")
+    imagery = ImageryService()
+    logger.info("Imagery service initialized")
+
     yield
 
 
@@ -91,6 +101,14 @@ def get_timeline():
     return timeline
 
 
+def get_generation():
+    return generation
+
+
+def get_imagery():
+    return imagery
+
+
 # Register routers
 from src.api.routes.tasks import router as tasks_router
 from src.api.routes.habits import router as habits_router
@@ -101,6 +119,8 @@ from src.api.routes.calendar import router as calendar_router
 from src.api.routes.message import router as message_router
 from src.api.routes.timeline import router as timeline_router
 from src.api.routes.merged_events import router as merged_events_router
+from src.api.routes.generate import router as generate_router
+from src.api.routes.imagery import router as imagery_router
 
 app.include_router(tasks_router)
 app.include_router(habits_router)
@@ -111,6 +131,8 @@ app.include_router(calendar_router)
 app.include_router(message_router)
 app.include_router(timeline_router)
 app.include_router(merged_events_router)
+app.include_router(generate_router)
+app.include_router(imagery_router)
 
 
 @app.get("/health")
