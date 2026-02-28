@@ -18,11 +18,12 @@ logger = logging.getLogger(__name__)
 vault: VaultService | None = None
 claude: ClaudeService | None = None
 calendar: CalendarService | None = None
+timeline: "TimelineService | None" = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global vault, claude, calendar
+    global vault, claude, calendar, timeline
 
     vault = VaultService(settings.vault_path, settings.vault_timezone)
     logger.info(f"Vault service initialized: {settings.vault_path}")
@@ -51,6 +52,14 @@ async def lifespan(app: FastAPI):
             logger.warning("Calendar service failed to initialize")
             calendar = None
 
+    from src.services.timeline_service import TimelineService
+    if settings.timeline_data_path.exists():
+        timeline = TimelineService(
+            data_path=settings.timeline_data_path,
+            timezone=settings.vault_timezone,
+        )
+        logger.info(f"Timeline service initialized: {settings.timeline_data_path}")
+
     yield
 
 
@@ -78,6 +87,10 @@ def get_calendar() -> CalendarService | None:
     return calendar
 
 
+def get_timeline():
+    return timeline
+
+
 # Register routers
 from src.api.routes.tasks import router as tasks_router
 from src.api.routes.habits import router as habits_router
@@ -86,6 +99,8 @@ from src.api.routes.daily import router as daily_router
 from src.api.routes.tokens import router as tokens_router
 from src.api.routes.calendar import router as calendar_router
 from src.api.routes.message import router as message_router
+from src.api.routes.timeline import router as timeline_router
+from src.api.routes.merged_events import router as merged_events_router
 
 app.include_router(tasks_router)
 app.include_router(habits_router)
@@ -94,6 +109,8 @@ app.include_router(daily_router)
 app.include_router(tokens_router)
 app.include_router(calendar_router)
 app.include_router(message_router)
+app.include_router(timeline_router)
+app.include_router(merged_events_router)
 
 
 @app.get("/health")
