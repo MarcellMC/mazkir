@@ -4,10 +4,10 @@
 
 Mazkir is a personal AI assistant system that provides natural language CRUD operations for managing tasks, habits, and goals through a Telegram bot interface, backed by a FastAPI vault server and an Obsidian vault for data storage.
 
-**Architecture:** Turborepo monorepo with two Python apps
-**Primary Interface:** Telegram bot (`apps/telegram-py-client`)
+**Architecture:** Turborepo monorepo with two Python apps + one React webapp
+**Primary Interface:** Telegram bot (`apps/telegram-py-client`) + Telegram Mini App (`apps/telegram-web-app`)
 **Backend:** FastAPI REST API (`apps/vault-server`)
-**Data Layer:** Obsidian vault (`memory/`, symlinked from `~/pkm/`)
+**Data Layer:** Obsidian vault (`memory/`, symlinked from `~/pkm/`) + Google Takeout timeline (`data/timeline/`)
 
 ## Repository Structure
 
@@ -23,25 +23,49 @@ Mazkir is a personal AI assistant system that provides natural language CRUD ope
 │   │   ├── pyproject.toml
 │   │   └── .env
 │   │
-│   └── vault-server/                  # FastAPI backend (Python)
+│   ├── vault-server/                  # FastAPI backend (Python)
+│   │   ├── src/
+│   │   │   ├── main.py               # FastAPI app with lifespan
+│   │   │   ├── config.py             # Pydantic settings
+│   │   │   ├── auth.py               # API key middleware
+│   │   │   ├── api/routes/           # REST endpoints
+│   │   │   │   ├── tasks.py
+│   │   │   │   ├── habits.py
+│   │   │   │   ├── goals.py
+│   │   │   │   ├── daily.py
+│   │   │   │   ├── tokens.py
+│   │   │   │   ├── calendar.py
+│   │   │   │   ├── message.py        # NL intent routing
+│   │   │   │   ├── timeline.py       # Google Takeout timeline data
+│   │   │   │   ├── merged_events.py  # Calendar+timeline+habits merge
+│   │   │   │   ├── generate.py       # AI image generation (Replicate)
+│   │   │   │   └── imagery.py        # Wikimedia Commons search
+│   │   │   └── services/             # Business logic
+│   │   │       ├── vault_service.py  # Obsidian vault CRUD
+│   │   │       ├── claude_service.py # Claude API integration
+│   │   │       ├── calendar_service.py # Google Calendar sync
+│   │   │       ├── timeline_service.py # Google Takeout parser
+│   │   │       ├── merger_service.py   # Event merging + fuzzy matching
+│   │   │       ├── generation_service.py # Replicate image generation
+│   │   │       └── imagery_service.py  # Wikimedia Commons geosearch
+│   │   ├── pyproject.toml
+│   │   └── .env
+│   │
+│   └── telegram-web-app/              # Telegram Mini App (React+Vite+Tailwind)
 │       ├── src/
-│       │   ├── main.py               # FastAPI app with lifespan
-│       │   ├── config.py             # Pydantic settings
-│       │   ├── auth.py               # API key middleware
-│       │   ├── api/routes/           # REST endpoints
-│       │   │   ├── tasks.py
-│       │   │   ├── habits.py
-│       │   │   ├── goals.py
-│       │   │   ├── daily.py
-│       │   │   ├── tokens.py
-│       │   │   ├── calendar.py
-│       │   │   └── message.py        # NL intent routing
-│       │   └── services/             # Business logic
-│       │       ├── vault_service.py  # Obsidian vault CRUD
-│       │       ├── claude_service.py # Claude API integration
-│       │       └── calendar_service.py # Google Calendar sync
-│       ├── pyproject.toml
-│       └── .env
+│       │   ├── main.tsx               # React entry point
+│       │   ├── App.tsx                # Telegram SDK init + Router
+│       │   ├── app/
+│       │   │   ├── telegram.ts        # Telegram WebApp SDK helpers
+│       │   │   └── Router.tsx         # Route definitions
+│       │   ├── models/event.ts        # TypeScript interfaces
+│       │   ├── services/api.ts        # vault-server API client
+│       │   └── features/
+│       │       ├── dayplanner/        # Enriched daily timeline view
+│       │       └── playground/        # Asset generation playground
+│       ├── package.json
+│       ├── vite.config.ts
+│       └── vitest.config.ts
 │
 ├── memory/                            # Obsidian vault (nested git repo, gitignored)
 │   ├── AGENTS.md                      # Vault schemas and workflows
@@ -51,6 +75,8 @@ Mazkir is a personal AI assistant system that provides natural language CRUD ope
 │   ├── 30-goals/                      # Goal files
 │   └── 40-tasks/                      # Task files
 │
+├── data/                              # External data (gitignored)
+│   └── timeline/                      # Google Takeout Semantic Location History
 ├── docs/plans/                        # Design and implementation docs
 ├── turbo.json                         # Turborepo config
 ├── package.json                       # Root workspace config
@@ -66,6 +92,7 @@ Mazkir is a personal AI assistant system that provides natural language CRUD ope
 
 ## Current Capabilities
 
+### Telegram Bot Commands
 - `/day` - Today's daily note with habits and calendar events
 - `/tasks` - Active tasks by priority
 - `/habits` - Habit tracker with streaks
@@ -74,6 +101,16 @@ Mazkir is a personal AI assistant system that provides natural language CRUD ope
 - `/calendar` - Today's schedule from Google Calendar
 - `/sync_calendar` - Sync habits/tasks to Google Calendar
 - NL: "I completed gym", "Create task: buy milk", "Done with groceries", etc.
+
+### Telegram Mini App (Web)
+- **Dayplanner** - Enriched timeline merging calendar events, Google Takeout location history, habits, and daily notes
+- **Playground** - AI asset generation (micro icons, route sketches, keyframe scenes, full day maps) using Replicate + Wikimedia Commons imagery
+
+### vault-server API Endpoints
+- `GET /timeline/{date}` - Google Takeout location history for a date
+- `GET /merged-events/{date}` - Calendar + timeline + habits merged into enriched events
+- `POST /generate` - AI image generation via Replicate (SDXL)
+- `GET /imagery/search?lat=&lng=` - Wikimedia Commons geosearch for location imagery
 
 ## Data Schemas
 
@@ -86,9 +123,10 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 ## Development Guidelines
 
 ### Architecture
-- **vault-server** owns ALL business logic (vault CRUD, Claude AI, calendar sync)
+- **vault-server** owns ALL business logic (vault CRUD, Claude AI, calendar sync, timeline, generation)
 - **telegram-py-client** is a thin UI layer (API calls + Telegram formatting)
-- New features → add route to vault-server, add handler formatting to telegram client
+- **telegram-web-app** is a React SPA consuming vault-server REST endpoints
+- New features → add route to vault-server, then add UI in telegram client or web app
 
 ### When adding vault-server routes:
 1. Create route in `apps/vault-server/src/api/routes/`
@@ -115,16 +153,21 @@ cd ~/dev/mazkir/apps/vault-server && source venv/bin/activate && python -m uvico
 # Start telegram client (requires vault-server running)
 cd ~/dev/mazkir/apps/telegram-py-client && source venv/bin/activate && python -m src.main
 
-# Start both with Turborepo
+# Start telegram web app (requires vault-server running)
+cd ~/dev/mazkir/apps/telegram-web-app && npm run dev  # http://localhost:5173
+
+# Start all with Turborepo
 cd ~/dev/mazkir && npx turbo dev
 
-# Check vault structure
-ls -la ~/pkm/{10-daily,20-habits,30-goals,40-tasks}
+# Run tests
+cd ~/dev/mazkir && npx turbo test          # All apps
+cd ~/dev/mazkir/apps/vault-server && source venv/bin/activate && python -m pytest tests/  # Server only
+cd ~/dev/mazkir/apps/telegram-web-app && npx vitest run  # Webapp only
 
 # Test vault-server endpoints
 curl http://localhost:8000/health
 curl http://localhost:8000/tasks
-curl http://localhost:8000/habits
+curl http://localhost:8000/merged-events/2026-03-02
 ```
 
 ## Related Documentation
@@ -133,3 +176,5 @@ curl http://localhost:8000/habits
 - **Project Roadmap:** `personal-ai-assistant-roadmap.md`
 - **Migration Design:** `docs/plans/2026-02-28-monorepo-migration-design.md`
 - **Bot Architecture:** `apps/telegram-py-client/tg-mazkir-AGENTS.md`
+- **WebApp Design:** `docs/plans/2026-02-28-telegram-webapp-design.md`
+- **WebApp Implementation Plan:** `docs/plans/2026-02-28-telegram-webapp-plan.md`
