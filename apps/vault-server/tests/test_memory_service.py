@@ -1,6 +1,7 @@
 """Tests for MemoryService."""
 
 import datetime
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -300,3 +301,29 @@ class TestContextAssembly:
         memory_service.update_preference("Test pref", "Some observation")
         ctx = memory_service.assemble_context(123456)
         assert "Test pref" in ctx.knowledge or "test pref" in ctx.knowledge.lower()
+
+
+class TestConversationDecay:
+    def test_summarize_and_decay_does_nothing_under_window(self, memory_service):
+        memory_service.window_size = 10
+        memory_service.save_turn(123456, "hello", "hi", [])
+        before = memory_service.load_conversation(123456)
+        memory_service.summarize_and_decay(123456)
+        after = memory_service.load_conversation(123456)
+        assert before["message_count"] == after["message_count"]
+
+    def test_summarize_and_decay_compresses_when_over_window(self, memory_service):
+        memory_service.window_size = 4
+
+        mock_claude = MagicMock()
+        mock_claude.complete.return_value = "User greeted and discussed tasks."
+        memory_service._claude = mock_claude
+
+        for i in range(4):
+            memory_service.save_turn(123456, f"msg {i}", f"reply {i}", [])
+
+        memory_service.summarize_and_decay(123456)
+
+        result = memory_service.load_conversation(123456)
+        assert result["summary"] != ""
+        assert result["message_count"] == 8

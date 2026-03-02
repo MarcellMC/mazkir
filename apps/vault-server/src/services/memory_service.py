@@ -148,6 +148,67 @@ class MemoryService:
                 messages.append({"role": role, "content": text})
         return messages
 
+    # -- Conversation Decay (Task 10) ------------------------------------------
+
+    def summarize_and_decay(self, chat_id: int) -> None:
+        """If conversation exceeds window, summarize oldest messages."""
+        path = self._get_conversation_path(chat_id)
+        if not path.exists():
+            return
+
+        post = frontmatter.load(str(path))
+        metadata = dict(post.metadata)
+        content = post.content
+
+        messages = self._parse_messages(content)
+        if len(messages) <= self.window_size:
+            return
+
+        # Split: oldest half gets summarized, newest half stays
+        cutoff = len(messages) // 2
+        old_messages = messages[:cutoff]
+        keep_messages = messages[cutoff:]
+
+        # Summarize old messages
+        existing_summary = metadata.get("summary", "")
+        new_summary = self._summarize_messages(existing_summary, old_messages)
+
+        # Rebuild content with only kept messages
+        now = datetime.datetime.now(self.tz)
+        lines = []
+        for msg in keep_messages:
+            time_str = now.strftime("%H:%M")
+            lines.append(f"\n### {time_str} [{msg['role']}]\n{msg['content']}\n")
+
+        metadata["summary"] = new_summary
+        post = frontmatter.Post("\n".join(lines), **metadata)
+        path.write_text(frontmatter.dumps(post), encoding="utf-8")
+
+    def _summarize_messages(
+        self, existing_summary: str, messages: list[dict],
+    ) -> str:
+        """Summarize messages into a compact summary string."""
+        if not self._claude:
+            # Fallback: concatenate message contents
+            parts = []
+            if existing_summary:
+                parts.append(existing_summary)
+            for msg in messages:
+                parts.append(f"[{msg['role']}] {msg['content']}")
+            return "; ".join(parts)[:500]
+
+        msg_text = "\n".join(
+            f"[{m['role']}]: {m['content']}" for m in messages
+        )
+        prompt = (
+            "Summarize this conversation concisely in 2-3 sentences. "
+            "Preserve key facts: what items were discussed, created, completed, or modified.\n\n"
+            f"Previous summary: {existing_summary or 'None'}\n\n"
+            f"Messages to summarize:\n{msg_text}"
+        )
+
+        return self._claude.complete(prompt)
+
     # -- Knowledge CRUD (Task 3) -----------------------------------------------
 
     def save_knowledge(
