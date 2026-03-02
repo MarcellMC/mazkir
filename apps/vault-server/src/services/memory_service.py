@@ -45,7 +45,7 @@ class MemoryService:
 
     def _get_conversation_path(self, chat_id: int) -> Path:
         """Get path to today's conversation file for a chat."""
-        today = datetime.date.today().isoformat()
+        today = datetime.datetime.now(self.tz).strftime("%Y-%m-%d")
         return self.vault_path / "00-system" / "conversations" / today / f"{chat_id}.md"
 
     def load_conversation(self, chat_id: int) -> dict[str, Any]:
