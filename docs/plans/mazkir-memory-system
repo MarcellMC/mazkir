@@ -1,0 +1,15 @@
+Plan a Memory System for Mazkir project
+  - Short term memory
+    - telegram chat context
+    - task related context/skills
+  - Middle term memory
+    - daily, tasks, habits, goals: read, edit, archive
+    - system files and templates: read, edit
+  - Long term memory
+    - Knowledge management through Vault service
+      - Create memories
+      - Retrieve memories
+      
+We also need an agentic loop or something like that, with human-in-the loop for the full-featured communication between telegram client and the vault. We also need and agentic loop or something similar, with human-in-the loop for the full-featured communication between telegram client and vault.
+First of all I need to be able to manage tasks, habits and ideas (notes) via telegram. Right now every single NL request is atomic and stateless. That has to change.
+

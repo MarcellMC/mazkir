@@ -9,7 +9,18 @@
       "Bash(git remote:*)",
       "Bash(git fetch:*)",
       "Bash(npm install:*)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(source:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(/home/marcellmc/dev/mazkir/apps/telegram-py-client/venv/bin/pip install:*)",
+      "Bash(/home/marcellmc/dev/mazkir/apps/telegram-py-client/venv/bin/python:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git worktree:*)",
+      "Bash(ls:*)",
+      "Bash(python:*)",
+      "Bash(test:*)",
+      "WebFetch(domain:grammy.dev)"
     ]
   }
 }
