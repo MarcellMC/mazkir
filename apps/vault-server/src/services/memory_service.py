@@ -149,7 +149,146 @@ class MemoryService:
         return messages
 
     # -- Knowledge CRUD (Task 3) -----------------------------------------------
-    # Stub -- implemented in Task 3
+
+    def save_knowledge(
+        self,
+        name: str,
+        content: str,
+        tags: list[str],
+        links: list[str],
+        source: str,
+        source_ref: str = "",
+    ) -> dict[str, Any]:
+        """Create a knowledge note in the vault.
+
+        Args:
+            name: Title for the knowledge note.
+            content: Body content of the note.
+            tags: List of tags for categorisation.
+            links: List of Obsidian wiki-links (e.g. ``[[gym]]``).
+            source: Origin of the knowledge — ``"conversation"`` or ``"inferred"``.
+            source_ref: Optional reference back to source (e.g. conversation path).
+
+        Returns:
+            Dict with ``path`` and ``metadata``.
+        """
+        now = datetime.datetime.now(self.tz)
+        today = now.strftime("%Y-%m-%d")
+
+        # Choose sub-directory based on source
+        subdir = "insights" if source == "inferred" else "notes"
+        filename = self.vault._sanitize_filename(name)
+        rel_path = f"60-knowledge/{subdir}/{filename}.md"
+
+        metadata: dict[str, Any] = {
+            "type": "knowledge",
+            "name": name,
+            "tags": tags,
+            "links": links,
+            "source": source,
+            "source_ref": source_ref,
+            "created": today,
+            "updated": today,
+        }
+
+        self.vault.write_file(rel_path, metadata, content)
+
+        # Keep graph index up to date (no-op until Task 4)
+        self._update_graph_for_file(rel_path, metadata, content)
+
+        return {"path": rel_path, "metadata": metadata}
+
+    def search_knowledge(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Phase-1 keyword search over knowledge notes and insights.
+
+        Splits *query* into lowercase terms and scores each file by how many
+        terms appear in the file's name, tags, or filename.
+
+        Args:
+            query: Space-separated search terms.
+            limit: Maximum number of results to return.
+
+        Returns:
+            Sorted list of dicts ``{path, name, tags, score}`` (highest first).
+        """
+        terms = query.lower().split()
+        if not terms:
+            return []
+
+        scored: list[dict[str, Any]] = []
+
+        for subdir in ("60-knowledge/notes", "60-knowledge/insights"):
+            files = self.vault.list_files(subdir)
+            for file_path in files:
+                rel_path = str(file_path)
+                try:
+                    data = self.vault.read_file(rel_path)
+                except FileNotFoundError:
+                    continue
+
+                meta = data["metadata"]
+                name_lower = meta.get("name", "").lower()
+                tags_lower = " ".join(t.lower() for t in meta.get("tags", []))
+                filename_lower = file_path.stem.lower() if hasattr(file_path, "stem") else rel_path.lower()
+
+                searchable = f"{name_lower} {tags_lower} {filename_lower}"
+
+                score = sum(1 for t in terms if t in searchable)
+                if score > 0:
+                    scored.append({
+                        "path": rel_path,
+                        "name": meta.get("name", ""),
+                        "tags": meta.get("tags", []),
+                        "score": score,
+                    })
+
+        scored.sort(key=lambda r: r["score"], reverse=True)
+        return scored[:limit]
+
+    def update_preference(self, name: str, observation: str) -> None:
+        """Create or update a user-preference file.
+
+        On first call for a given *name*, creates the file with
+        ``observations=1`` and ``confidence=0.5``.  On subsequent calls,
+        increments *observations* and appends the new observation text
+        to the note body.
+
+        Args:
+            name: Human-readable preference name (e.g. ``"Task defaults"``).
+            observation: A single observation sentence to record.
+        """
+        now = datetime.datetime.now(self.tz)
+        today = now.strftime("%Y-%m-%d")
+        filename = self.vault._sanitize_filename(name)
+        rel_path = f"00-system/preferences/{filename}.md"
+
+        abs_path = self.vault_path / rel_path
+
+        if abs_path.exists():
+            # Update existing preference
+            data = self.vault.read_file(rel_path)
+            metadata = data["metadata"]
+            metadata["observations"] = metadata.get("observations", 1) + 1
+            metadata["updated"] = today
+
+            content = data["content"]
+            if content and not content.endswith("\n"):
+                content += "\n"
+            content += f"- {observation}\n"
+
+            self.vault.write_file(rel_path, metadata, content)
+        else:
+            # Create new preference
+            metadata: dict[str, Any] = {
+                "type": "preference",
+                "name": name,
+                "observations": 1,
+                "confidence": 0.5,
+                "created": today,
+                "updated": today,
+            }
+            content = f"# {name}\n\n- {observation}\n"
+            self.vault.write_file(rel_path, metadata, content)
 
     # -- Graph Index (Task 4) --------------------------------------------------
 

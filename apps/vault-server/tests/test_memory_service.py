@@ -98,3 +98,104 @@ class TestConversationContext:
         assert result["messages"][0]["content"] == "hello"
         assert result["messages"][1]["role"] == "assistant"
         assert result["messages"][1]["content"] == "hi there"
+
+
+class TestKnowledgeCRUD:
+    def test_save_knowledge_creates_note(self, memory_service, vault_path):
+        result = memory_service.save_knowledge(
+            name="Dentist location",
+            content="Dentist is on Av. Roma 1234, Dr. Garcia.",
+            tags=["health", "locations"],
+            links=[],
+            source="conversation",
+        )
+        assert result["path"].startswith("60-knowledge/notes/")
+        assert (vault_path / result["path"]).exists()
+
+    def test_save_knowledge_stores_metadata(self, memory_service):
+        result = memory_service.save_knowledge(
+            name="Test note",
+            content="Some content.",
+            tags=["test"],
+            links=["[[gym]]"],
+            source="conversation",
+        )
+        note = memory_service.vault.read_file(result["path"])
+        assert note["metadata"]["name"] == "Test note"
+        assert note["metadata"]["type"] == "knowledge"
+        assert note["metadata"]["tags"] == ["test"]
+        assert "[[gym]]" in note["metadata"]["links"]
+        assert note["metadata"]["source"] == "conversation"
+
+    def test_save_knowledge_insight(self, memory_service, vault_path):
+        result = memory_service.save_knowledge(
+            name="Health routine gap",
+            content="User creates meal tasks after gym.",
+            tags=["health"],
+            links=["[[gym]]"],
+            source="inferred",
+        )
+        assert result["path"].startswith("60-knowledge/insights/")
+
+    def test_search_knowledge_finds_by_tag(self, memory_service):
+        memory_service.save_knowledge(
+            name="Gym schedule",
+            content="Morning sessions work best.",
+            tags=["health", "gym"],
+            links=[],
+            source="conversation",
+        )
+        memory_service.save_knowledge(
+            name="Python tips",
+            content="Use dataclasses.",
+            tags=["programming"],
+            links=[],
+            source="conversation",
+        )
+
+        results = memory_service.search_knowledge("health gym")
+        assert len(results) >= 1
+        assert any("gym-schedule" in r["path"] for r in results)
+
+    def test_search_knowledge_finds_by_name(self, memory_service):
+        memory_service.save_knowledge(
+            name="Dentist location",
+            content="Av. Roma 1234",
+            tags=["health"],
+            links=[],
+            source="conversation",
+        )
+
+        results = memory_service.search_knowledge("dentist")
+        assert len(results) >= 1
+
+    def test_search_knowledge_returns_empty_for_no_match(self, memory_service):
+        results = memory_service.search_knowledge("quantum physics")
+        assert results == []
+
+
+class TestPreferences:
+    def test_update_preference_creates_new(self, memory_service, vault_path):
+        memory_service.update_preference(
+            name="Task defaults",
+            observation="User set priority to 1 for grocery task",
+        )
+        pref_path = vault_path / "00-system" / "preferences" / "task-defaults.md"
+        assert pref_path.exists()
+
+    def test_update_preference_increments_observations(self, memory_service):
+        memory_service.update_preference("Task defaults", "First observation")
+        memory_service.update_preference("Task defaults", "Second observation")
+
+        pref_path = "00-system/preferences/task-defaults.md"
+        data = memory_service.vault.read_file(pref_path)
+        assert data["metadata"]["observations"] == 2
+
+    def test_update_preference_appends_content(self, memory_service):
+        memory_service.update_preference("Task defaults", "User prefers priority 1")
+        memory_service.update_preference("Task defaults", "User prefers due dates")
+
+        pref_path = "00-system/preferences/task-defaults.md"
+        data = memory_service.vault.read_file(pref_path)
+        assert "User prefers priority 1" in data["content"]
+        assert "User prefers due dates" in data["content"]
