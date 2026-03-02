@@ -1,7 +1,7 @@
 {
   "name": "mazkir",
   "private": true,
-  "workspaces": ["apps/*"],
+  "workspaces": ["apps/*", "packages/*"],
   "scripts": {
     "dev": "turbo dev",
     "test": "turbo test",
