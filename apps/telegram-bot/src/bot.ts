@@ -11,6 +11,8 @@ import {
   syncCommand,
   helpCommand,
 } from "./commands/index.js";
+import { callbackHandlers } from "./callbacks/index.js";
+import { messageHandler } from "./conversations/message.js";
 
 export const bot = new Bot(config.botToken);
 
@@ -30,3 +32,9 @@ bot.use(tokensCommand);
 bot.use(calendarCommand);
 bot.use(syncCommand);
 bot.use(helpCommand);
+
+// Callbacks (inline keyboard buttons)
+bot.use(callbackHandlers);
+
+// NL message handler (catch-all, must be last)
+bot.use(messageHandler);
