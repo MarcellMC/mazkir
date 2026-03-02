@@ -4,8 +4,8 @@
 
 Mazkir is a personal AI assistant system with a Claude tool-use agent loop backed by a three-tier memory system (conversations, vault state, knowledge graph). It manages tasks, habits, goals, and knowledge through natural language via Telegram, with all data stored in an Obsidian vault.
 
-**Architecture:** Turborepo monorepo with two Python apps + one React webapp
-**Primary Interface:** Telegram bot (`apps/telegram-py-client`) + Telegram Mini App (`apps/telegram-web-app`)
+**Architecture:** Turborepo monorepo with one Python backend + one TypeScript bot + one React webapp
+**Primary Interface:** Telegram bot (`apps/telegram-bot`) + Telegram Mini App (`apps/telegram-web-app`)
 **Backend:** FastAPI REST API (`apps/vault-server`) with agent loop + memory system
 **Data Layer:** Obsidian vault (`memory/`, symlinked from `~/pkm/`) + Google Takeout timeline (`data/timeline/`)
 
@@ -14,14 +14,22 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 ```
 ~/dev/mazkir/                          # Turborepo monorepo
 ├── apps/
-│   ├── telegram-py-client/            # Thin Telegram bot (Python)
+│   ├── telegram-bot/                  # Telegram bot (TypeScript + grammY)
 │   │   ├── src/
-│   │   │   ├── main.py               # Bot entrypoint
-│   │   │   ├── bot/handlers.py       # Command routing → API calls
-│   │   │   ├── bot/client.py         # Telegram client setup
-│   │   │   └── api_client.py         # HTTP client for vault-server
-│   │   ├── pyproject.toml
-│   │   └── .env
+│   │   │   ├── index.ts              # Entrypoint + BotFather commands
+│   │   │   ├── bot.ts                # grammY Bot + auth middleware
+│   │   │   ├── config.ts             # Environment config
+│   │   │   ├── api/client.ts         # vault-server API client
+│   │   │   ├── commands/             # Command handlers (Composers)
+│   │   │   ├── callbacks/            # Inline keyboard callback handlers
+│   │   │   ├── conversations/        # NL message handler
+│   │   │   └── formatters/           # Response formatters (HTML)
+│   │   ├── tests/
+│   │   ├── package.json
+│   │   └── tsconfig.json
+│   │
+│   ├── telegram-py-client/            # [DEPRECATED] Old Python bot (kept for reference)
+│   │   └── ...
 │   │
 │   ├── vault-server/                  # FastAPI backend (Python)
 │   │   ├── src/
@@ -83,6 +91,12 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │       ├── notes/                     # User-captured ideas + facts
 │       └── insights/                  # AI-generated connections
 │
+├── packages/
+│   └── shared-types/                  # @mazkir/shared-types — shared TypeScript interfaces
+│       ├── src/                       # Type modules (events, daily, tasks, habits, goals, etc.)
+│       ├── package.json
+│       └── tsconfig.json
+│
 ├── data/                              # External data (gitignored)
 │   └── timeline/                      # Google Takeout Semantic Location History
 ├── docs/plans/                        # Design and implementation docs
@@ -139,9 +153,10 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 - **vault-server** owns ALL business logic (vault CRUD, Claude AI, calendar sync, timeline, generation)
 - **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 15 registered tools, max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation
 - **Memory system** (`MemoryService`): short-term (conversation sliding window, 20 messages + decay), mid-term (vault state snapshot in system prompt), long-term (knowledge graph + keyword search)
-- **telegram-py-client** is a thin UI layer (API calls + Telegram formatting + confirmation routing)
+- **telegram-bot** is a thin TypeScript UI layer (grammY + API calls + inline keyboards + NL routing)
 - **telegram-web-app** is a React SPA consuming vault-server REST endpoints
-- New features → add route to vault-server, then add UI in telegram client or web app
+- **@mazkir/shared-types** provides TypeScript interfaces shared between telegram-bot and telegram-web-app
+- New features → add route to vault-server, then add UI in telegram bot or web app
 
 ### When adding vault-server routes:
 1. Create route in `apps/vault-server/src/api/routes/`
@@ -149,9 +164,11 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 3. Register router in `apps/vault-server/src/main.py`
 
 ### When adding telegram commands:
-1. Add handler in `apps/telegram-py-client/src/bot/handlers.py`
-2. Add API method in `apps/telegram-py-client/src/api_client.py`
-3. Format response for Telegram display
+1. Create Composer in `apps/telegram-bot/src/commands/<name>.ts`
+2. Add API method in `apps/telegram-bot/src/api/client.ts` if needed
+3. Add formatter in `apps/telegram-bot/src/formatters/telegram.ts` if needed
+4. Register Composer in `apps/telegram-bot/src/commands/index.ts` and `src/bot.ts`
+5. Add shared types to `packages/shared-types/` if needed
 
 ### When modifying vault files:
 1. Always update the `updated` field
@@ -165,8 +182,8 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 # Start vault-server
 cd ~/dev/mazkir/apps/vault-server && source venv/bin/activate && python -m uvicorn src.main:app --reload --port 8000
 
-# Start telegram client (requires vault-server running)
-cd ~/dev/mazkir/apps/telegram-py-client && source venv/bin/activate && python -m src.main
+# Start telegram bot (requires vault-server running)
+cd ~/dev/mazkir/apps/telegram-bot && npx tsx src/index.ts
 
 # Start telegram web app (requires vault-server running)
 cd ~/dev/mazkir/apps/telegram-web-app && npm run dev  # http://localhost:5173
@@ -177,7 +194,8 @@ cd ~/dev/mazkir && npx turbo dev
 # Run tests
 cd ~/dev/mazkir && npx turbo test          # All apps
 cd ~/dev/mazkir/apps/vault-server && source venv/bin/activate && python -m pytest tests/  # Server only
-cd ~/dev/mazkir/apps/telegram-web-app && npx vitest run  # Webapp only
+cd ~/dev/mazkir/apps/telegram-bot && npx vitest run          # Bot only
+cd ~/dev/mazkir/apps/telegram-web-app && npx vitest run      # Webapp only
 
 # Test vault-server endpoints
 curl http://localhost:8000/health
@@ -192,6 +210,8 @@ curl http://localhost:8000/merged-events/2026-03-02
 - **Memory System Design:** `docs/plans/2026-03-02-memory-system-design.md`
 - **Memory System Plan:** `docs/plans/2026-03-02-memory-system-plan.md`
 - **Migration Design:** `docs/plans/2026-02-28-monorepo-migration-design.md`
-- **Bot Architecture:** `apps/telegram-py-client/tg-mazkir-AGENTS.md`
+- **Bot Rewrite Design:** `docs/plans/2026-03-02-telegram-bot-rewrite-design.md`
+- **Bot Rewrite Plan:** `docs/plans/2026-03-02-telegram-bot-rewrite-plan.md`
+- **Legacy Bot Architecture:** `apps/telegram-py-client/tg-mazkir-AGENTS.md`
 - **WebApp Design:** `docs/plans/2026-02-28-telegram-webapp-design.md`
 - **WebApp Implementation Plan:** `docs/plans/2026-02-28-telegram-webapp-plan.md`
