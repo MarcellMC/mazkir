@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
 
+    # Memory system
+    conversation_window_size: int = 20
+
     # Application
     log_level: str = "INFO"
     environment: str = "development"

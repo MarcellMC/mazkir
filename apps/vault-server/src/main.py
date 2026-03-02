@@ -7,6 +7,8 @@ from src.config import settings
 from src.services.vault_service import VaultService
 from src.services.claude_service import ClaudeService
 from src.services.calendar_service import CalendarService
+from src.services.memory_service import MemoryService
+from src.services.agent_service import AgentService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,6 +20,8 @@ logger = logging.getLogger(__name__)
 vault: VaultService | None = None
 claude: ClaudeService | None = None
 calendar: CalendarService | None = None
+memory: MemoryService | None = None
+agent: AgentService | None = None
 timeline: "TimelineService | None" = None
 generation: "GenerationService | None" = None
 imagery: "ImageryService | None" = None
@@ -25,18 +29,24 @@ imagery: "ImageryService | None" = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global vault, claude, calendar, timeline, generation, imagery
+    global vault, claude, calendar, memory, agent, timeline, generation, imagery
 
     vault = VaultService(settings.vault_path, settings.vault_timezone)
     logger.info(f"Vault service initialized: {settings.vault_path}")
 
     if settings.anthropic_api_key:
-        claude = ClaudeService(
-            api_key=settings.anthropic_api_key,
-            vault_path=str(settings.vault_path),
-            timezone=settings.vault_timezone,
-        )
+        claude = ClaudeService(api_key=settings.anthropic_api_key)
         logger.info("Claude service initialized")
+
+    # Initialize MemoryService
+    memory = MemoryService(
+        vault=vault,
+        vault_path=settings.vault_path,
+        timezone=settings.vault_timezone,
+    )
+    memory.window_size = settings.conversation_window_size
+    memory.initialize()
+    logger.info("Memory service initialized")
 
     if settings.enable_calendar_sync:
         calendar = CalendarService(
@@ -53,6 +63,17 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("Calendar service failed to initialize")
             calendar = None
+
+    # Initialize AgentService (requires claude)
+    if claude:
+        agent = AgentService(
+            claude=claude,
+            vault=vault,
+            memory=memory,
+            calendar=calendar,
+        )
+        memory._claude = claude
+        logger.info("Agent service initialized")
 
     from src.services.timeline_service import TimelineService
     if settings.timeline_data_path.exists():
@@ -95,6 +116,14 @@ def get_claude() -> ClaudeService | None:
 
 def get_calendar() -> CalendarService | None:
     return calendar
+
+
+def get_memory() -> MemoryService | None:
+    return memory
+
+
+def get_agent() -> AgentService | None:
+    return agent
 
 
 def get_timeline():
