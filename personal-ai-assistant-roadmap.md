@@ -1,8 +1,8 @@
 ---
 title: Mazkir - Personal AI Assistant Roadmap
 created: 2026-01-06
-updated: 2026-02-28
-version: 2.3
+updated: 2026-03-03
+version: 2.4
 status: active
 tags: [project, roadmap, mazkir]
 ---
@@ -21,18 +21,23 @@ tags: [project, roadmap, mazkir]
 ```
 User (Telegram)
      │
-     ▼
-telegram-py-client        Thin UI layer (Telethon)
-     │  HTTP (httpx)
-     ▼
-vault-server               FastAPI backend (port 8000)
+     ├──► telegram-bot        TypeScript + grammY (Bot API)
+     │        │  HTTP
+     │        ▼
+     │    vault-server         FastAPI backend (port 8000)
+     │        │
+     │        ├──► Obsidian vault    ~/pkm/ (markdown + YAML frontmatter)
+     │        ├──► Claude API        Agent loop + tool-use + memory system
+     │        ├──► Google Calendar   OAuth2, habit/task scheduling
+     │        └──► Google Takeout    Location history timeline
      │
-     ├──► Obsidian vault    ~/pkm/ (markdown + YAML frontmatter)
-     ├──► Claude API        Intent parsing & NL responses
-     └──► Google Calendar   OAuth2, habit/task scheduling
+     └──► telegram-web-app    React + Vite + Tailwind (Mini App)
+              │  HTTP
+              ▼
+          vault-server
 ```
 
-**Monorepo:** Turborepo at `~/dev/mazkir/` with two Python apps.
+**Monorepo:** Turborepo at `~/dev/mazkir/` with 1 Python backend + 1 TypeScript bot + 1 React webapp + shared types package.
 
 ---
 
@@ -68,6 +73,18 @@ vault-server               FastAPI backend (port 8000)
   - [x] vault-server FastAPI backend (all business logic)
   - [x] telegram-py-client thin UI layer (API calls only)
   - [x] API key auth between client and server
+- [x] **Agent loop + Memory system** (2026-03-02)
+  - [x] Claude tool-use agent loop (15 tools, confidence gate)
+  - [x] Three-tier memory: conversations, vault state, knowledge graph
+- [x] **Telegram Mini App** (2026-03-02)
+  - [x] React + Vite + Tailwind Telegram WebApp
+  - [x] Dayplanner with enriched timeline (calendar + timeline + habits)
+  - [x] AI asset generation playground (Replicate + Wikimedia Commons)
+- [x] **Telegram bot rewrite** (2026-03-03)
+  - [x] TypeScript + grammY (replaced Python/Telethon)
+  - [x] Inline keyboards for habit/task completion
+  - [x] Mini App menu button
+  - [x] @mazkir/shared-types package (shared between bot + webapp)
 
 ### Current Phase: Polish & Notes
 
@@ -83,11 +100,10 @@ vault-server               FastAPI backend (port 8000)
 
 ---
 
-### Future: Phase 2 - Analytics & WebApp
+### Future: Phase 2 - Analytics & Enhancements
 - [ ] Weekly review generation
 - [ ] Streak visualizations
-- [ ] Telegram WebApp dashboard
-- [ ] Progress charts
+- [ ] Progress charts in Mini App
 
 ### Future: Phase 3 - Advanced Features
 - [ ] Carry forward incomplete tasks to next day
@@ -122,13 +138,14 @@ vault-server               FastAPI backend (port 8000)
 
 ## Tech Stack
 
-- **Bot**: Telethon (Telegram MTProto API)
-- **Backend**: FastAPI + uvicorn
-- **AI**: Claude API (Anthropic SDK)
+- **Bot**: grammY (Telegram Bot API) — TypeScript
+- **Backend**: FastAPI + uvicorn — Python 3.14+
+- **AI**: Claude API (Anthropic SDK) — agent loop with tool-use
 - **Data**: Obsidian vault (markdown + YAML frontmatter)
 - **Calendar**: Google Calendar API (OAuth2)
+- **Web**: React + Vite + Tailwind (Telegram Mini App)
+- **Shared Types**: `@mazkir/shared-types` (TypeScript interfaces)
 - **Build**: Turborepo monorepo
-- **Language**: Python 3.14+
 
 ---
 
@@ -155,6 +172,7 @@ vault-server               FastAPI backend (port 8000)
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.4 | 2026-03-03 | Telegram bot rewrite (TypeScript/grammY), shared types package, Mini App |
 | 2.3 | 2026-02-28 | Monorepo migration complete, vault-server + thin telegram client |
 | 2.2 | 2026-02-26 | Google Calendar integration with OAuth2, recurring events, auto-sync |
 | 2.1 | 2026-02-05 | NL CRUD complete |
@@ -167,5 +185,6 @@ vault-server               FastAPI backend (port 8000)
 
 - **Project Entry:** `~/dev/mazkir/CLAUDE.md`
 - **Vault Server:** `~/dev/mazkir/apps/vault-server/`
-- **Telegram Client:** `~/dev/mazkir/apps/telegram-py-client/`
+- **Telegram Bot:** `~/dev/mazkir/apps/telegram-bot/`
+- **Telegram Mini App:** `~/dev/mazkir/apps/telegram-web-app/`
 - **Vault Schemas:** `~/pkm/AGENTS.md`
