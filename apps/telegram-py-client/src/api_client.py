@@ -89,7 +89,21 @@ class VaultAPIClient:
         return r.json()
 
     # Message (NL)
-    async def send_message(self, text: str) -> dict:
-        r = await self._client.post("/message", json={"text": text})
+    async def send_message(self, text: str, chat_id: int = 0) -> dict:
+        """Send a natural language message to the agent loop."""
+        r = await self._client.post(
+            "/message", json={"text": text, "chat_id": chat_id},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def send_confirmation(
+        self, chat_id: int, action_id: str, response: str,
+    ) -> dict:
+        """Send a confirmation response for a pending action."""
+        r = await self._client.post(
+            "/message/confirm",
+            json={"chat_id": chat_id, "action_id": action_id, "response": response},
+        )
         r.raise_for_status()
         return r.json()

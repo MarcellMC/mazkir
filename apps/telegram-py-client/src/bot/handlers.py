@@ -13,6 +13,9 @@ api = VaultAPIClient(
     api_key=settings.vault_server_api_key,
 )
 
+# Pending confirmations: chat_id → pending_action_id
+_pending_confirmations: dict[int, str] = {}
+
 
 # Middleware: Only allow authorized user
 def authorized_only(func):
@@ -318,93 +321,33 @@ async def cmd_help(event):
 
 @authorized_only
 async def handle_message(event):
+    """Handle natural language messages through the agent loop."""
     if event.message.text.startswith("/"):
         return
 
     try:
         async with event.client.action(event.chat_id, "typing"):
-            result = await api.send_message(event.message.text)
-            intent = result.get("intent", "GENERAL_CHAT")
+            chat_id = event.chat_id
 
-            response = _format_nl_response(intent, result)
-            await event.respond(response)
+            if chat_id in _pending_confirmations:
+                action_id = _pending_confirmations.pop(chat_id)
+                result = await api.send_confirmation(
+                    chat_id=chat_id,
+                    action_id=action_id,
+                    response=event.message.text,
+                )
+            else:
+                result = await api.send_message(event.message.text, chat_id)
+
+            if result.get("awaiting_confirmation"):
+                _pending_confirmations[chat_id] = result["pending_action_id"]
+
+            await event.respond(result.get("response", "No response received."))
     except Exception as e:
         logger.error(f"Error in NL handler: {e}", exc_info=True)
-        await event.respond(f"❌ Sorry, I encountered an error: {str(e)}")
+        await event.respond(f"Sorry, I encountered an error: {str(e)}")
 
     raise events.StopPropagation
-
-
-def _format_nl_response(intent: str, data: dict) -> str:
-    """Format vault-server NL response for Telegram display."""
-    if data.get("error"):
-        available = data.get("available", [])
-        msg = f"❌ {data['error']}"
-        if available:
-            msg += f"\n\nAvailable: {', '.join(str(a) for a in available)}"
-        return msg
-
-    if intent == "HABIT_COMPLETION":
-        if data.get("already_completed"):
-            return f"✅ You already completed **{data['name']}** today! Streak: {data['streak']} days"
-        response = f"💪 Excellent! **{data['name']}** completed!\n\n"
-        response += f"🔥 Streak: {data['old_streak']} → **{data['new_streak']} days**\n"
-        response += f"🪙 Tokens: +{data['tokens_earned']}\n"
-        response += f"💰 New balance: **{data['new_token_total']} tokens**"
-        streak = data["new_streak"]
-        if streak == 7:
-            response += "\n\n🎉 One week streak! Keep it up!"
-        elif streak == 30:
-            response += "\n\n🏆 30 days! You're building a solid habit!"
-        elif streak == 100:
-            response += "\n\n⭐ 100 days! Legendary!"
-        elif streak % 10 == 0:
-            response += f"\n\n✨ {streak} days! You're on fire!"
-        return response
-
-    elif intent == "HABIT_CREATION":
-        response = f"✅ Habit created: **{data['name']}**\n"
-        response += f"📅 Frequency: {data.get('frequency', 'daily')}\n\n"
-        response += "Use /habits to view your tracker."
-        return response
-
-    elif intent == "TASK_CREATION":
-        priority_label = {5: "🔴 High", 4: "🔴 High", 3: "🟡 Medium", 2: "🟢 Low", 1: "🟢 Low"}.get(data.get("priority", 3), "🟡 Medium")
-        response = f"✅ Task created: **{data['name']}**\nPriority: {priority_label}\n"
-        if data.get("due_date"):
-            response += f"📅 Due: {data['due_date']}\n"
-        response += "\nUse /tasks to view all active tasks."
-        return response
-
-    elif intent == "TASK_COMPLETION":
-        response = f"✅ Task completed: **{data['task_name']}**\n"
-        if data.get("tokens_earned", 0) > 0:
-            response += f"🪙 Tokens earned: +{data['tokens_earned']}\n"
-        response += "\nGreat job! Use /tasks to see remaining tasks."
-        return response
-
-    elif intent == "GOAL_CREATION":
-        priority = data.get("priority", "medium")
-        priority_emoji = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(str(priority).lower(), "🟡")
-        response = f"🎯 Goal created: **{data['name']}**\n"
-        response += f"{priority_emoji} Priority: {data.get('priority', 'medium')}\n"
-        response += "\nUse /goals to view your active goals."
-        return response
-
-    elif intent == "QUERY":
-        if data.get("query_type") == "streaks":
-            lines = ["🔥 **Your Habit Streaks**\n"]
-            for h in data.get("data", []):
-                lines.append(f"• **{h['name']}**: {h['streak']} days (best: {h['longest']})")
-            return "\n".join(lines)
-        elif data.get("query_type") == "tokens":
-            d = data.get("data", {})
-            return f"🪙 **Token Balance**\n\n💰 Current: **{d.get('total', 0)} tokens**\n📈 Today: +{d.get('today', 0)}\n⭐ All time: {d.get('all_time', 0)}"
-        else:
-            return data.get("response", "I don't have an answer for that.")
-
-    else:
-        return data.get("response", "I'm not sure how to help with that.")
 
 
 def get_handlers():
