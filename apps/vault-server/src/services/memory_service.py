@@ -290,14 +290,251 @@ class MemoryService:
             content = f"# {name}\n\n- {observation}\n"
             self.vault.write_file(rel_path, metadata, content)
 
+    # -- Context Assembly (Task 5) ------------------------------------------------
+
+    def assemble_context(self, chat_id: int) -> ConversationContext:
+        """Build the full context for an agent loop call.
+
+        Combines: conversation history (short-term), vault state snapshot
+        (mid-term), and relevant knowledge + preferences (long-term).
+        """
+        conversation = self.load_conversation(chat_id)
+        vault_snapshot = self._build_vault_snapshot(conversation)
+        knowledge = self._gather_relevant_knowledge(conversation)
+
+        return ConversationContext(
+            messages=conversation["messages"],
+            summary=conversation["summary"],
+            vault_snapshot=vault_snapshot,
+            knowledge=knowledge,
+        )
+
+    def _build_vault_snapshot(self, conversation: dict) -> str:
+        """Build a compact vault state summary for the system prompt."""
+        parts = []
+
+        try:
+            tasks = self.vault.list_active_tasks()
+            if tasks:
+                referenced = set(conversation.get("items_referenced", []))
+                task_lines = []
+                for t in tasks:
+                    name = t["metadata"].get("name", Path(t["path"]).stem)
+                    priority = t["metadata"].get("priority", 3)
+                    due = t["metadata"].get("due_date", "no due date")
+                    ref_marker = " [referenced]" if t["path"] in referenced else ""
+                    task_lines.append(f"  - {name} (P{priority}, due: {due}){ref_marker}")
+                parts.append(f"Active tasks ({len(tasks)}):\n" + "\n".join(task_lines))
+        except Exception:
+            pass
+
+        try:
+            habits = self.vault.list_active_habits()
+            if habits:
+                habit_items = []
+                for h in habits:
+                    name = h["metadata"].get("name", Path(h["path"]).stem)
+                    streak = h["metadata"].get("streak", 0)
+                    habit_items.append(f"{name} (streak {streak})")
+                parts.append("Habits: " + ", ".join(habit_items))
+        except Exception:
+            pass
+
+        try:
+            goals = self.vault.list_active_goals()
+            if goals:
+                goal_items = []
+                for g in goals:
+                    name = g["metadata"].get("name", Path(g["path"]).stem)
+                    progress = g["metadata"].get("progress", 0)
+                    goal_items.append(f"{name} ({progress}%)")
+                parts.append("Goals: " + ", ".join(goal_items))
+        except Exception:
+            pass
+
+        try:
+            ledger = self.vault.read_token_ledger()
+            total = ledger["metadata"].get("total_tokens", 0)
+            today = ledger["metadata"].get("tokens_today", 0)
+            parts.append(f"Tokens: {today} earned today, {total} total")
+        except Exception:
+            pass
+
+        return "\n\n".join(parts) if parts else "No vault data available."
+
+    def _gather_relevant_knowledge(self, conversation: dict) -> str:
+        """Gather preferences and knowledge relevant to the conversation."""
+        parts = []
+
+        pref_dir = self.vault_path / "00-system" / "preferences"
+        if pref_dir.exists():
+            for pref_file in pref_dir.glob("*.md"):
+                try:
+                    rel_path = str(pref_file.relative_to(self.vault_path))
+                    data = self.vault.read_file(rel_path)
+                    name = data["metadata"].get("name", pref_file.stem)
+                    content = data["content"].strip()
+                    if content:
+                        parts.append(f"[Preference: {name}]\n{content}")
+                except Exception:
+                    continue
+
+        items = conversation.get("items_referenced", [])
+        if items:
+            search_terms = set()
+            for ref in items:
+                stem = Path(ref).stem.replace("-", " ")
+                search_terms.add(stem)
+
+            for term in search_terms:
+                for result in self.search_knowledge(term, limit=2):
+                    try:
+                        data = self.vault.read_file(result["path"])
+                        name = data["metadata"].get("name", "")
+                        content = data["content"].strip()
+                        if content:
+                            parts.append(f"[Knowledge: {name}]\n{content}")
+                    except Exception:
+                        continue
+
+        return "\n\n".join(parts) if parts else ""
+
     # -- Graph Index (Task 4) --------------------------------------------------
 
     def _rebuild_graph(self) -> None:
-        """Scan vault and build in-memory adjacency map. Stub for now."""
+        """Scan all vault markdown files and build in-memory adjacency map."""
         self.graph = {}
 
-    def _update_graph_for_file(
-        self, rel_path: str, metadata: dict, content: str
-    ) -> None:
-        """Update graph index for a single file. Stub until Task 4."""
-        pass
+        for md_file in self.vault_path.rglob("*.md"):
+            rel = md_file.relative_to(self.vault_path)
+            if str(rel).startswith("."):
+                continue
+
+            try:
+                post = frontmatter.load(str(md_file))
+            except Exception:
+                continue
+
+            metadata = dict(post.metadata)
+            content = post.content
+            node_id = md_file.stem
+
+            wiki_links = set(re.findall(r'\[\[([^\]|]+)(?:\|[^\]]+)?\]\]', content))
+
+            fm_links = set()
+            for link in metadata.get("links", []):
+                match = re.match(r'\[\[([^\]|]+)(?:\|[^\]]+)?\]\]', str(link))
+                if match:
+                    fm_links.add(match.group(1))
+
+            for ref in metadata.get("items_referenced", []):
+                fm_links.add(Path(ref).stem)
+
+            all_links = wiki_links | fm_links
+
+            self.graph[node_id] = {
+                "path": str(rel),
+                "type": metadata.get("type", "unknown"),
+                "tags": metadata.get("tags", []),
+                "links_to": all_links,
+                "linked_from": set(),
+            }
+
+        # Second pass: populate backlinks
+        for node_id, node in self.graph.items():
+            for target in node["links_to"]:
+                if target in self.graph:
+                    self.graph[target]["linked_from"].add(node_id)
+
+    def _update_graph_for_file(self, rel_path: str, metadata: dict, content: str) -> None:
+        """Update graph index for a single file without full rebuild."""
+        node_id = Path(rel_path).stem
+
+        wiki_links = set(re.findall(r'\[\[([^\]|]+)(?:\|[^\]]+)?\]\]', content))
+        fm_links = set()
+        for link in metadata.get("links", []):
+            match = re.match(r'\[\[([^\]|]+)(?:\|[^\]]+)?\]\]', str(link))
+            if match:
+                fm_links.add(match.group(1))
+
+        all_links = wiki_links | fm_links
+
+        if node_id in self.graph:
+            for old_target in self.graph[node_id]["links_to"]:
+                if old_target in self.graph:
+                    self.graph[old_target]["linked_from"].discard(node_id)
+
+        self.graph[node_id] = {
+            "path": rel_path,
+            "type": metadata.get("type", "unknown"),
+            "tags": metadata.get("tags", []),
+            "links_to": all_links,
+            "linked_from": self.graph.get(node_id, {}).get("linked_from", set()),
+        }
+
+        for target in all_links:
+            if target in self.graph:
+                self.graph[target]["linked_from"].add(node_id)
+
+    def get_related(self, topic: str, depth: int = 2) -> list[dict]:
+        """Get nodes within N hops of topic via BFS."""
+        if topic not in self.graph:
+            topic = self._fuzzy_find_node(topic)
+            if not topic:
+                return []
+
+        visited: set[str] = set()
+        queue: list[tuple[str, int]] = [(topic, 0)]
+        results: list[dict] = []
+
+        while queue:
+            node_id, d = queue.pop(0)
+            if node_id in visited or d > depth:
+                continue
+            visited.add(node_id)
+
+            if node_id not in self.graph:
+                continue
+
+            node = self.graph[node_id]
+            results.append({
+                "id": node_id,
+                "path": node["path"],
+                "type": node["type"],
+                "tags": node["tags"],
+                "depth": d,
+            })
+
+            for neighbor in node["links_to"] | node["linked_from"]:
+                if neighbor not in visited:
+                    queue.append((neighbor, d + 1))
+
+        return results
+
+    def get_most_connected(self, tag: str | None = None, limit: int = 5) -> list[dict]:
+        """Get nodes with the most connections, optionally filtered by tag."""
+        candidates = []
+        for node_id, node in self.graph.items():
+            if tag and tag not in node.get("tags", []):
+                continue
+            degree = len(node["links_to"]) + len(node["linked_from"])
+            candidates.append({
+                "id": node_id,
+                "path": node["path"],
+                "type": node["type"],
+                "tags": node["tags"],
+                "degree": degree,
+            })
+
+        candidates.sort(key=lambda c: c["degree"], reverse=True)
+        return candidates[:limit]
+
+    def _fuzzy_find_node(self, topic: str) -> str | None:
+        """Find a graph node by fuzzy matching on ID."""
+        topic_lower = topic.lower().replace(" ", "-")
+        if topic_lower in self.graph:
+            return topic_lower
+        for node_id in self.graph:
+            if topic_lower in node_id or node_id in topic_lower:
+                return node_id
+        return None

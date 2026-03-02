@@ -1,10 +1,10 @@
-"""Tests for MemoryService conversation management."""
+"""Tests for MemoryService."""
 
 import datetime
 
 import pytest
 
-from src.services.memory_service import MemoryService
+from src.services.memory_service import ConversationContext, MemoryService
 
 
 @pytest.fixture
@@ -199,3 +199,104 @@ class TestPreferences:
         data = memory_service.vault.read_file(pref_path)
         assert "User prefers priority 1" in data["content"]
         assert "User prefers due dates" in data["content"]
+
+
+class TestGraphIndex:
+    def test_rebuild_graph_indexes_existing_files(self, memory_service, vault_path):
+        """The conftest vault_path fixture creates sample habits/tasks/goals."""
+        memory_service._rebuild_graph()
+        assert len(memory_service.graph) > 0
+
+    def test_graph_node_has_tags(self, memory_service, vault_path):
+        memory_service._rebuild_graph()
+        if "buy-groceries" in memory_service.graph:
+            node = memory_service.graph["buy-groceries"]
+            assert "tags" in node
+
+    def test_graph_extracts_wikilinks(self, memory_service, vault_path):
+        memory_service.save_knowledge(
+            name="Morning routine",
+            content="Start with [[gym]] then [[meditation]].",
+            tags=["health"],
+            links=["[[gym]]", "[[meditation]]"],
+            source="conversation",
+        )
+        memory_service._rebuild_graph()
+        assert "morning-routine" in memory_service.graph
+        node = memory_service.graph["morning-routine"]
+        assert "gym" in node["links_to"]
+
+    def test_get_related_returns_neighbors(self, memory_service, vault_path):
+        memory_service.save_knowledge("Node A", "Links to [[node-b]].", ["test"], ["[[node-b]]"], "conversation")
+        memory_service.save_knowledge("Node B", "Links to [[node-c]].", ["test"], ["[[node-c]]"], "conversation")
+        memory_service.save_knowledge("Node C", "End node.", ["test"], [], "conversation")
+        memory_service._rebuild_graph()
+
+        related = memory_service.get_related("node-a", depth=2)
+        node_ids = [r["id"] for r in related]
+        assert "node-a" in node_ids
+        assert "node-b" in node_ids
+        assert "node-c" in node_ids
+
+    def test_get_related_respects_depth(self, memory_service, vault_path):
+        memory_service.save_knowledge("A", "[[b]]", ["test"], ["[[b]]"], "conversation")
+        memory_service.save_knowledge("B", "[[c]]", ["test"], ["[[c]]"], "conversation")
+        memory_service.save_knowledge("C", "end", ["test"], [], "conversation")
+        memory_service._rebuild_graph()
+
+        related = memory_service.get_related("a", depth=1)
+        node_ids = [r["id"] for r in related]
+        assert "a" in node_ids
+        assert "b" in node_ids
+        assert "c" not in node_ids
+
+    def test_get_related_returns_empty_for_unknown(self, memory_service):
+        memory_service._rebuild_graph()
+        related = memory_service.get_related("nonexistent-node", depth=1)
+        assert related == []
+
+    def test_get_most_connected(self, memory_service, vault_path):
+        memory_service.save_knowledge("Hub", "Central topic.", ["test"], [], "conversation")
+        memory_service.save_knowledge("Spoke 1", "About [[hub]].", ["test"], ["[[hub]]"], "conversation")
+        memory_service.save_knowledge("Spoke 2", "Also [[hub]].", ["test"], ["[[hub]]"], "conversation")
+        memory_service.save_knowledge("Spoke 3", "And [[hub]].", ["test"], ["[[hub]]"], "conversation")
+        memory_service._rebuild_graph()
+
+        top = memory_service.get_most_connected(limit=1)
+        assert top[0]["id"] == "hub"
+
+    def test_get_most_connected_filters_by_tag(self, memory_service, vault_path):
+        memory_service.save_knowledge("Health hub", "Main.", ["health"], [], "conversation")
+        memory_service.save_knowledge("H1", "[[health-hub]]", ["health"], ["[[health-hub]]"], "conversation")
+        memory_service.save_knowledge("H2", "[[health-hub]]", ["health"], ["[[health-hub]]"], "conversation")
+        memory_service.save_knowledge("Code hub", "Main.", ["code"], [], "conversation")
+        memory_service.save_knowledge("C1", "[[code-hub]]", ["code"], ["[[code-hub]]"], "conversation")
+        memory_service._rebuild_graph()
+
+        top_health = memory_service.get_most_connected(tag="health", limit=1)
+        assert top_health[0]["id"] == "health-hub"
+
+
+class TestContextAssembly:
+    def test_assemble_context_returns_dataclass(self, memory_service):
+        ctx = memory_service.assemble_context(chat_id=123456)
+        assert isinstance(ctx, ConversationContext)
+        assert isinstance(ctx.messages, list)
+        assert isinstance(ctx.summary, str)
+        assert isinstance(ctx.vault_snapshot, str)
+        assert isinstance(ctx.knowledge, str)
+
+    def test_assemble_context_includes_conversation(self, memory_service):
+        memory_service.save_turn(123456, "hello", "hi there", [])
+        ctx = memory_service.assemble_context(123456)
+        assert len(ctx.messages) == 2
+        assert ctx.messages[0]["content"] == "hello"
+
+    def test_assemble_context_includes_vault_snapshot(self, memory_service):
+        ctx = memory_service.assemble_context(123456)
+        assert "task" in ctx.vault_snapshot.lower() or "habit" in ctx.vault_snapshot.lower()
+
+    def test_assemble_context_includes_preferences(self, memory_service):
+        memory_service.update_preference("Test pref", "Some observation")
+        ctx = memory_service.assemble_context(123456)
+        assert "Test pref" in ctx.knowledge or "test pref" in ctx.knowledge.lower()
