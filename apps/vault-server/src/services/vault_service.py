@@ -603,17 +603,27 @@ class VaultService:
         name_lower = name.lower()
 
         for task in tasks:
-            task_name = task['metadata'].get('name', '')
-            # Also check content for heading
-            if not task_name:
-                content = task.get('content', '')
-                for line in content.split('\n'):
-                    if line.startswith('#'):
-                        task_name = line.lstrip('#').strip()
-                        break
+            # Collect all possible names for this task
+            candidates = []
 
-            if task_name and (name_lower in task_name.lower() or task_name.lower() in name_lower):
-                return task
+            meta_name = task['metadata'].get('name', '')
+            if meta_name:
+                candidates.append(meta_name)
+
+            # Check content heading
+            content = task.get('content', '')
+            for line in content.split('\n'):
+                if line.startswith('#'):
+                    candidates.append(line.lstrip('#').strip())
+                    break
+
+            # Check filename-derived name
+            file_name = Path(task['path']).stem.replace('-', ' ').replace('_', ' ')
+            candidates.append(file_name)
+
+            for candidate in candidates:
+                if candidate and (name_lower in candidate.lower() or candidate.lower() in name_lower):
+                    return task
 
         return None
 
