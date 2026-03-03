@@ -14,14 +14,16 @@ async function main() {
     { command: "help", description: "Command reference" },
   ]);
 
-  // Set menu button to open Mini App
-  await bot.api.setChatMenuButton({
-    menu_button: {
-      type: "web_app",
-      text: "Open App",
-      web_app: { url: config.webappUrl },
-    },
-  });
+  // Set menu button to open Mini App (requires HTTPS)
+  if (config.webappUrl.startsWith("https://")) {
+    await bot.api.setChatMenuButton({
+      menu_button: {
+        type: "web_app",
+        text: "Open App",
+        web_app: { url: config.webappUrl },
+      },
+    });
+  }
 
   console.log("Starting Mazkir bot...");
   const me = await bot.api.getMe();

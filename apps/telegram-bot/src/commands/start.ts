@@ -4,7 +4,10 @@ import { config } from "../config.js";
 export const startCommand = new Composer();
 
 startCommand.command("start", async (ctx) => {
-  const kb = new InlineKeyboard().webApp("🚀 Open App", config.webappUrl);
+  const kb = new InlineKeyboard();
+  if (config.webappUrl.startsWith("https://")) {
+    kb.webApp("🚀 Open App", config.webappUrl);
+  }
 
   await ctx.reply(
     [
