@@ -58,6 +58,39 @@ describe("ApiClient", () => {
     );
   });
 
+  it("sendMessage sends enriched payload with attachments", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ intent: "GENERAL_CHAT", response: "Got the photo!" }),
+        { status: 200 },
+      ),
+    );
+
+    await api.sendMessage({
+      text: "Dog walk",
+      chat_id: 123,
+      attachments: [
+        { type: "location", latitude: 32.08, longitude: 34.78 },
+      ],
+      reply_to: { text: "previous msg", from: "assistant" as const },
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:8000/message",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          text: "Dog walk",
+          chat_id: 123,
+          attachments: [
+            { type: "location", latitude: 32.08, longitude: 34.78 },
+          ],
+          reply_to: { text: "previous msg", from: "assistant" },
+        }),
+      }),
+    );
+  });
+
   it("throws on non-2xx response", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("Not found", { status: 404 })

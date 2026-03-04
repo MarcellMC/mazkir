@@ -6,6 +6,9 @@ import type {
   TokensResponse,
   CalendarEvent,
   MessageResponse,
+  Attachment,
+  ReplyContext,
+  ForwardContext,
 } from "@mazkir/shared-types";
 
 export function createApiClient(baseUrl: string, apiKey: string) {
@@ -62,10 +65,16 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<Record<string, unknown>>("/calendar/sync", { method: "POST" }),
 
     // Message (NL)
-    sendMessage: (text: string, chatId: number) =>
+    sendMessage: (payload: {
+      text: string;
+      chat_id: number;
+      attachments?: Attachment[];
+      reply_to?: ReplyContext;
+      forwarded_from?: ForwardContext;
+    }) =>
       request<MessageResponse>("/message", {
         method: "POST",
-        body: JSON.stringify({ text, chat_id: chatId }),
+        body: JSON.stringify(payload),
       }),
     sendConfirmation: (chatId: number, actionId: string, response: string) =>
       request<MessageResponse>("/message/confirm", {
