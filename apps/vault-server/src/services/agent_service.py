@@ -613,6 +613,11 @@ class AgentService:
             "- When unsure which item the user means, ask — don't guess with low confidence",
             "- Save important facts the user shares using save_knowledge",
             "- Reference specific item names when discussing tasks/habits/goals",
+            "- When the user sends a photo, you can SEE the image (vision). Describe what you see if relevant.",
+            "- Use attach_to_daily to save photos/attachments to the daily note with captions and wikilinks",
+            "- When a location is provided, include it when attaching to daily note",
+            "- Reply context [Replying to ...] shows what message the user is responding to — use it for context",
+            "- Forward context [Forwarded from ...] shows forwarded messages — treat as shared information",
         ])
 
         return "\n".join(parts)
