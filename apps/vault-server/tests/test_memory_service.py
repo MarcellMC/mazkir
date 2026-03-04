@@ -85,6 +85,22 @@ class TestConversationManagement:
         assert "40-tasks/active/buy-milk.md" in result["items_referenced"]
 
 
+    def test_save_turn_with_attachment_metadata(self, memory_service, vault_path):
+        """Attachment metadata in user message is preserved in conversation log."""
+        memory_service.save_turn(
+            chat_id=123,
+            user_msg='(photo: photo_2026-03-04_14-30.jpg, location: 32.08, 34.78) Save this to daily note',
+            assistant_msg="Photo attached to daily note!",
+            items_referenced=["10-daily/2026-03-04.md"],
+        )
+
+        conversation = memory_service.load_conversation(123)
+        assert len(conversation["messages"]) == 2
+        user_msg = conversation["messages"][0]
+        assert "photo" in user_msg["content"]
+        assert "32.08" in user_msg["content"]
+
+
 class TestConversationContext:
     def test_get_conversation_file_path(self, memory_service):
         today = datetime.date.today().isoformat()
