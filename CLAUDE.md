@@ -98,6 +98,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │       └── tsconfig.json
 │
 ├── data/                              # External data (gitignored)
+│   ├── media/                         # Saved photo attachments ({YYYY-MM-DD}/*.jpg)
 │   └── timeline/                      # Google Takeout Semantic Location History
 ├── docs/plans/                        # Design and implementation docs
 ├── turbo.json                         # Turborepo config
@@ -123,13 +124,16 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 - `/calendar` - Today's schedule from Google Calendar
 - `/sync_calendar` - Sync habits/tasks to Google Calendar
 - NL messages routed through agent loop with conversational context, multi-step actions, and knowledge recall
+- Photo messages — downloaded, base64-encoded, sent to Claude vision, saved to `data/media/`
+- Location/venue messages — coordinates passed through agent loop
+- Reply-to context and forwarded messages — included as context for the agent
 
 ### Telegram Mini App (Web)
 - **Dayplanner** - Enriched timeline merging calendar events, Google Takeout location history, habits, and daily notes
 - **Playground** - AI asset generation (micro icons, route sketches, keyframe scenes, full day maps) using Replicate + Wikimedia Commons imagery
 
 ### vault-server API Endpoints
-- `POST /message` - Agent loop: `{text, chat_id}` → multi-turn tool-use with confidence gate
+- `POST /message` - Agent loop: `{text, chat_id, attachments?, reply_to?, forwarded_from?}` → multi-turn tool-use with confidence gate + Claude vision
 - `POST /message/confirm` - Confirmation for low-confidence actions: `{chat_id, action_id, response}`
 - `GET /timeline/{date}` - Google Takeout location history for a date
 - `GET /merged-events/{date}` - Calendar + timeline + habits merged into enriched events
@@ -151,7 +155,7 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 
 ### Architecture
 - **vault-server** owns ALL business logic (vault CRUD, Claude AI, calendar sync, timeline, generation)
-- **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 15 registered tools, max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation
+- **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 16 registered tools (incl. `attach_to_daily`), max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation, Claude vision for photo messages
 - **Memory system** (`MemoryService`): short-term (conversation sliding window, 20 messages + decay), mid-term (vault state snapshot in system prompt), long-term (knowledge graph + keyword search)
 - **telegram-bot** is a thin TypeScript UI layer (grammY + API calls + inline keyboards + NL routing)
 - **telegram-web-app** is a React SPA consuming vault-server REST endpoints
@@ -215,3 +219,5 @@ curl http://localhost:8000/merged-events/2026-03-02
 - **Legacy Bot Architecture:** `apps/telegram-py-client/tg-mazkir-AGENTS.md`
 - **WebApp Design:** `docs/plans/2026-02-28-telegram-webapp-design.md`
 - **WebApp Implementation Plan:** `docs/plans/2026-02-28-telegram-webapp-plan.md`
+- **Rich Messages Design:** `docs/plans/2026-03-04-rich-messages-design.md`
+- **Rich Messages Plan:** `docs/plans/2026-03-04-rich-messages-plan.md`
