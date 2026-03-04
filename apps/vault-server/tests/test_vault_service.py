@@ -137,3 +137,41 @@ def test_process_template_substitutes_placeholders(vault_service):
     assert result["metadata"]["created"] == "2026-02-28"
     assert "# My Task" in result["content"]
     assert "2026-02-28" in result["content"]
+
+
+# --- append_to_daily_section ---
+
+
+class TestAppendToDailySection:
+    def test_appends_to_notes_section(self, vault_service, vault_path):
+        # Create a daily note first
+        vault_service.create_daily_note()
+        result = vault_service.append_to_daily_section(
+            section="Notes",
+            content="![Dog walk](../../data/media/2026-03-04/photo.jpg)\n*14:30 — Dog walk*",
+        )
+        assert "path" in result
+
+        # Read back and verify content was added
+        daily = vault_service.read_daily_note()
+        assert "Dog walk" in daily["content"]
+        assert "photo.jpg" in daily["content"]
+
+    def test_creates_daily_if_missing(self, vault_service, vault_path):
+        result = vault_service.append_to_daily_section(
+            section="Notes",
+            content="Test content",
+        )
+        assert "path" in result
+        daily = vault_service.read_daily_note()
+        assert "Test content" in daily["content"]
+
+    def test_appends_to_nonexistent_section(self, vault_service, vault_path):
+        vault_service.create_daily_note()
+        result = vault_service.append_to_daily_section(
+            section="Photos",
+            content="A photo here",
+        )
+        daily = vault_service.read_daily_note()
+        assert "## Photos" in daily["content"]
+        assert "A photo here" in daily["content"]

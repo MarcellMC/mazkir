@@ -117,6 +117,49 @@ class VaultService:
         path = self.get_daily_note_path(date)
         return self.read_file(path)
 
+    def append_to_daily_section(
+        self,
+        section: str = "Notes",
+        content: str = "",
+        date: Optional[datetime] = None,
+    ) -> Dict:
+        """Append content to a section of today's daily note.
+
+        Creates the daily note if it doesn't exist.
+        Finds the section heading (## Section) and appends content after it.
+        """
+        try:
+            daily = self.read_daily_note(date)
+        except FileNotFoundError:
+            daily = self.create_daily_note(date)
+
+        daily_content = daily["content"]
+        section_header = f"## {section}"
+
+        if section_header in daily_content:
+            # Find the section and append after existing content
+            idx = daily_content.index(section_header)
+            after_header = idx + len(section_header)
+
+            # Find the next ## heading
+            next_section = daily_content.find("\n## ", after_header)
+            if next_section == -1:
+                # No next section — append at end
+                new_content = daily_content.rstrip() + "\n\n" + content + "\n"
+            else:
+                # Insert before next section
+                before = daily_content[:next_section].rstrip()
+                after = daily_content[next_section:]
+                new_content = before + "\n\n" + content + "\n" + after
+        else:
+            # Section not found — append at end with heading
+            new_content = daily_content.rstrip() + f"\n\n{section_header}\n\n{content}\n"
+
+        path = self.get_daily_note_path(date)
+        self.write_file(path, daily["metadata"], new_content)
+
+        return {"path": path, "section": section}
+
     def read_habit(self, habit_name: str) -> Dict:
         """Read habit file
 

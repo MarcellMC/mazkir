@@ -233,6 +233,52 @@ class AgentService:
                 "handler": self._tool_save_knowledge,
                 "risk": "write",
             },
+            "attach_to_daily": {
+                "schema": {
+                    "name": "attach_to_daily",
+                    "description": (
+                        "Attach a saved photo or file to today's daily note. "
+                        "Use after a photo has been saved to disk. "
+                        "Can include wikilinks (e.g. [[City Watch]]) and location coordinates."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "vault_path": {
+                                "type": "string",
+                                "description": "Path to saved attachment (from '[Photo saved to: ...]' context)",
+                            },
+                            "caption": {
+                                "type": "string",
+                                "description": "Caption/description for the attachment",
+                            },
+                            "wikilinks": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Wikilink targets to include, e.g. ['City Watch']",
+                            },
+                            "location": {
+                                "type": "object",
+                                "properties": {
+                                    "lat": {"type": "number"},
+                                    "lng": {"type": "number"},
+                                    "name": {"type": "string"},
+                                },
+                                "description": "Location coordinates to show with the attachment",
+                            },
+                            "section": {
+                                "type": "string",
+                                "description": "Daily note section to add under (default: 'Notes')",
+                            },
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["vault_path", "caption"],
+                    },
+                },
+                "handler": self._tool_attach_to_daily,
+                "risk": "write",
+            },
             "complete_task": {
                 "schema": {
                     "name": "complete_task",
@@ -734,6 +780,42 @@ class AgentService:
             source="conversation",
         )
         return {"saved": result["path"], "_items": [result["path"]]}
+
+    def _tool_attach_to_daily(self, params: dict) -> dict:
+        import datetime as dt
+        vault_path = params["vault_path"]
+        caption = params["caption"]
+        wikilinks = params.get("wikilinks", [])
+        location = params.get("location")
+        section = params.get("section", "Notes")
+
+        now = dt.datetime.now()
+        time_str = now.strftime("%H:%M")
+
+        # Build markdown content block
+        lines = []
+        lines.append(f"![{caption}](../../{vault_path})")
+        meta_parts = [f"*{time_str} — {caption}*"]
+        if wikilinks:
+            meta_parts.append(" | ".join(f"[[{link}]]" for link in wikilinks))
+        lines.append(" | ".join(meta_parts))
+        if location:
+            loc_parts = [f"{location['lat']}, {location['lng']}"]
+            if location.get("name"):
+                loc_parts.append(location["name"])
+            lines.append(f"\U0001f4cd {' — '.join(loc_parts)}")
+
+        content = "\n".join(lines)
+
+        result = self.vault.append_to_daily_section(section=section, content=content)
+        daily_path = result.get("path", self.vault.get_daily_note_path())
+
+        return {
+            "path": daily_path,
+            "section": section,
+            "attachment": vault_path,
+            "_items": [daily_path],
+        }
 
     def _tool_complete_task(self, params: dict) -> dict:
         task = self.vault.find_task_by_name(params["task_name"])

@@ -309,3 +309,47 @@ class TestHandleMessageWithAttachments:
 
         result = agent.handle_message("hello", chat_id=123)
         assert result.response == "Hello!"
+
+
+class TestAttachToDaily:
+    def test_attach_to_daily_tool_registered(self, agent):
+        assert "attach_to_daily" in agent.tools
+        assert agent.tools["attach_to_daily"]["risk"] == "write"
+
+    def test_attach_to_daily_appends_to_note(self, agent, mock_services):
+        vault = mock_services[1]
+
+        vault.append_to_daily_section.return_value = {
+            "path": "10-daily/2026-03-04.md",
+            "section": "Notes",
+        }
+
+        result = agent._tool_attach_to_daily({
+            "vault_path": "data/media/2026-03-04/photo_2026-03-04_14-30-00.jpg",
+            "caption": "Dog walk stop",
+            "wikilinks": ["City Watch"],
+            "section": "Notes",
+        })
+
+        assert "path" in result
+        vault.append_to_daily_section.assert_called_once()
+
+    def test_attach_to_daily_with_location(self, agent, mock_services):
+        vault = mock_services[1]
+
+        vault.append_to_daily_section.return_value = {
+            "path": "10-daily/2026-03-04.md",
+            "section": "Notes",
+        }
+
+        result = agent._tool_attach_to_daily({
+            "vault_path": "data/media/2026-03-04/photo.jpg",
+            "caption": "Street photo",
+            "location": {"lat": 32.08, "lng": 34.78, "name": "Tel Aviv"},
+            "section": "Notes",
+        })
+
+        assert "path" in result
+        call_args = vault.append_to_daily_section.call_args
+        content = call_args.kwargs.get("content") or call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs["content"]
+        assert "32.08" in content
