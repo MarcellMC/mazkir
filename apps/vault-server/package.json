@@ -2,7 +2,7 @@
   "name": "vault-server",
   "private": true,
   "scripts": {
-    "dev": "python -m uvicorn src.main:app --reload --port 8000",
+    "dev": "venv/bin/python -m uvicorn src.main:app --reload --port 8000",
     "test": "venv/bin/pytest tests/ -v",
     "lint": "venv/bin/ruff check src/"
   }
