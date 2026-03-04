@@ -8,12 +8,16 @@ from src.services.agent_service import AgentService, AgentResponse, CONFIDENCE_T
 
 
 @pytest.fixture
-def mock_services():
+def mock_services(tmp_path):
     """Create mock service dependencies."""
     claude = MagicMock()
     vault = MagicMock()
     memory = MagicMock()
     calendar = MagicMock()
+
+    # Set vault_path so data_path resolves
+    vault.vault_path = tmp_path / "vault"
+    vault.vault_path.mkdir()
 
     from src.services.memory_service import ConversationContext
     memory.assemble_context.return_value = ConversationContext(
@@ -193,3 +197,115 @@ class TestHandleMessage:
 
         assert claude.create.call_count == 2
         assert result.response is not None
+
+
+class TestHandleMessageWithAttachments:
+    def test_photo_saved_to_disk(self, agent, mock_services, tmp_path):
+        """Photo attachment is saved to data/media/{date}/ directory."""
+        claude = mock_services[0]
+
+        mock_response = MagicMock()
+        mock_response.stop_reason = "end_turn"
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Photo saved!"
+        mock_response.content = [text_block]
+        claude.create.return_value = mock_response
+
+        import base64
+        photo_bytes = base64.b64encode(b"fake-image-data").decode()
+
+        result = agent.handle_message(
+            text="Save this",
+            chat_id=123,
+            attachments=[{
+                "type": "photo",
+                "data": photo_bytes,
+                "mime_type": "image/jpeg",
+                "filename": "photo_2026-03-04_14-30-00.jpg",
+            }],
+        )
+
+        assert result.response == "Photo saved!"
+        # Verify Claude was called with image content block
+        call_args = claude.create.call_args
+        messages = call_args.kwargs.get("messages", call_args[1].get("messages") if len(call_args) > 1 else None)
+        last_user_msg = [m for m in messages if m["role"] == "user"][-1]
+        # Content should be a list (multi-block) when photo is present
+        assert isinstance(last_user_msg["content"], list)
+
+    def test_location_included_in_text(self, agent, mock_services):
+        """Location coordinates appear in the text sent to Claude."""
+        claude = mock_services[0]
+
+        mock_response = MagicMock()
+        mock_response.stop_reason = "end_turn"
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Location noted!"
+        mock_response.content = [text_block]
+        claude.create.return_value = mock_response
+
+        result = agent.handle_message(
+            text="I'm here",
+            chat_id=123,
+            attachments=[{
+                "type": "location",
+                "latitude": 32.08,
+                "longitude": 34.78,
+            }],
+        )
+
+        assert result.response == "Location noted!"
+        call_args = claude.create.call_args
+        messages = call_args.kwargs.get("messages", call_args[1].get("messages") if len(call_args) > 1 else None)
+        last_user_msg = [m for m in messages if m["role"] == "user"][-1]
+        content = last_user_msg["content"]
+        # Should contain location coordinates in text
+        if isinstance(content, list):
+            text_parts = [b["text"] for b in content if b.get("type") == "text"]
+            assert any("32.08" in t and "34.78" in t for t in text_parts)
+        else:
+            assert "32.08" in content and "34.78" in content
+
+    def test_reply_context_included(self, agent, mock_services):
+        """Reply context appears in the text sent to Claude."""
+        claude = mock_services[0]
+
+        mock_response = MagicMock()
+        mock_response.stop_reason = "end_turn"
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Got it!"
+        mock_response.content = [text_block]
+        claude.create.return_value = mock_response
+
+        result = agent.handle_message(
+            text="yes do it",
+            chat_id=123,
+            reply_to={"text": "Should I create the task?", "from": "assistant"},
+        )
+
+        call_args = claude.create.call_args
+        messages = call_args.kwargs.get("messages", call_args[1].get("messages") if len(call_args) > 1 else None)
+        last_user_msg = [m for m in messages if m["role"] == "user"][-1]
+        content = last_user_msg["content"]
+        text_content = content if isinstance(content, str) else " ".join(
+            b.get("text", "") for b in content if isinstance(b, dict)
+        )
+        assert "Should I create the task?" in text_content
+
+    def test_plain_text_still_works(self, agent, mock_services):
+        """Existing text-only flow is unchanged."""
+        claude = mock_services[0]
+
+        mock_response = MagicMock()
+        mock_response.stop_reason = "end_turn"
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Hello!"
+        mock_response.content = [text_block]
+        claude.create.return_value = mock_response
+
+        result = agent.handle_message("hello", chat_id=123)
+        assert result.response == "Hello!"

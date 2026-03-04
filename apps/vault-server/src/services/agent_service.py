@@ -1,8 +1,10 @@
 """Agent loop with tool-use, confidence gate, and confirmation flow."""
 
+import base64
 import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -42,11 +44,13 @@ class AgentService:
         vault: VaultService,
         memory: MemoryService,
         calendar: Any = None,
+        data_path: Path | None = None,
     ):
         self.claude = claude
         self.vault = vault
         self.memory = memory
         self.calendar = calendar
+        self.data_path = data_path or (vault.vault_path.parent / "data")
         self.max_iterations = 10
         self.pending_confirmations: dict[str, PendingAction] = {}
         self.tools = self._register_tools()
@@ -282,7 +286,14 @@ class AgentService:
 
     # ── Agent Loop ───────────────────────────────────────────────
 
-    def handle_message(self, text: str, chat_id: int) -> AgentResponse:
+    def handle_message(
+        self,
+        text: str,
+        chat_id: int,
+        attachments: list[dict] | None = None,
+        reply_to: dict | None = None,
+        forwarded_from: dict | None = None,
+    ) -> AgentResponse:
         """Main entry point: process a user message through the agent loop."""
         context = self.memory.assemble_context(chat_id)
 
@@ -292,11 +303,30 @@ class AgentService:
             messages.append({"role": "assistant", "content": "Understood, I have the prior context."})
         for msg in context.messages:
             messages.append({"role": msg["role"], "content": msg["content"]})
-        messages.append({"role": "user", "content": text})
+
+        # Build enriched user content (with image blocks if photo attached)
+        user_content = self._build_user_content(
+            text, attachments, reply_to, forwarded_from,
+        )
+        messages.append({"role": "user", "content": user_content})
+
+        # For conversation log, build a text-only version (no base64)
+        log_text = text
+        if attachments:
+            att_notes = []
+            for att in attachments:
+                if att["type"] == "photo":
+                    att_notes.append(f"photo: {att.get('filename', 'photo')}")
+                elif att["type"] == "location":
+                    att_notes.append(f"location: {att.get('latitude')}, {att.get('longitude')}")
+            if att_notes:
+                log_text = f"({', '.join(att_notes)}) {text}".strip()
+        if reply_to:
+            log_text = f"(replying to {reply_to.get('from', 'user')}: \"{reply_to['text'][:50]}\") {log_text}".strip()
 
         system = self._build_system_prompt(context)
 
-        return self._run_loop(chat_id, text, messages, system)
+        return self._run_loop(chat_id, log_text, messages, system)
 
     def handle_confirmation(
         self, chat_id: int, action_id: str, user_response: str,
@@ -420,6 +450,88 @@ class AgentService:
         self.memory.summarize_and_decay(chat_id)
 
         return AgentResponse(response=assistant_text)
+
+    # ── Attachments ────────────────────────────────────────────────
+
+    def _save_photo(self, attachment: dict) -> str | None:
+        """Save a base64-encoded photo to data/media/{date}/ and return the path."""
+        import datetime as dt
+        today = dt.date.today().isoformat()
+        media_dir = self.data_path / "media" / today
+        media_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = attachment.get("filename", f"photo_{today}.jpg")
+        file_path = media_dir / filename
+
+        try:
+            photo_bytes = base64.b64decode(attachment["data"])
+            file_path.write_bytes(photo_bytes)
+            return str(file_path.relative_to(self.data_path.parent))
+        except Exception as e:
+            logger.error(f"Failed to save photo: {e}")
+            return None
+
+    def _build_user_content(
+        self,
+        text: str,
+        attachments: list[dict] | None = None,
+        reply_to: dict | None = None,
+        forwarded_from: dict | None = None,
+    ) -> str | list[dict]:
+        """Build user message content, potentially with image blocks for vision."""
+        text_parts: list[str] = []
+        image_blocks: list[dict] = []
+
+        if attachments:
+            for att in attachments:
+                if att["type"] == "photo" and att.get("data"):
+                    # Save photo to disk
+                    saved_photo_path = self._save_photo(att)
+
+                    # Add image block for Claude vision
+                    image_blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": att.get("mime_type", "image/jpeg"),
+                            "data": att["data"],
+                        },
+                    })
+
+                    if saved_photo_path:
+                        text_parts.append(f"[Photo saved to: {saved_photo_path}]")
+                    else:
+                        text_parts.append("[Photo attachment failed to save]")
+
+                elif att["type"] == "location":
+                    lat = att.get("latitude", 0)
+                    lng = att.get("longitude", 0)
+                    loc_str = f"[Location: {lat}, {lng}]"
+                    if att.get("title"):
+                        loc_str = f"[Location: {lat}, {lng} — {att['title']}]"
+                    text_parts.append(loc_str)
+
+        if reply_to:
+            from_role = reply_to.get("from", "user")
+            text_parts.append(f'[Replying to {from_role}: "{reply_to["text"]}"]')
+
+        if forwarded_from:
+            text_parts.append(
+                f'[Forwarded from {forwarded_from["from_name"]}: "{forwarded_from["text"]}"]'
+            )
+
+        if text:
+            text_parts.append(text)
+
+        combined_text = "\n".join(text_parts)
+
+        # If there are image blocks, return multi-content list
+        if image_blocks:
+            content: list[dict] = list(image_blocks)
+            content.append({"type": "text", "text": combined_text})
+            return content
+
+        return combined_text
 
     # ── Helpers ───────────────────────────────────────────────────
 
