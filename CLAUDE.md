@@ -7,7 +7,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 **Architecture:** Turborepo monorepo with one Python backend + one TypeScript bot + one React webapp
 **Primary Interface:** Telegram bot (`apps/telegram-bot`) + Telegram Mini App (`apps/telegram-web-app`)
 **Backend:** FastAPI REST API (`apps/vault-server`) with agent loop + memory system
-**Data Layer:** Obsidian vault (`memory/`, symlinked from `~/pkm/`) + Google Takeout timeline (`data/timeline/`)
+**Data Layer:** Obsidian vault (`memory/`, symlinked from `~/pkm/`) + Google Takeout timeline (`data/timeline/`) + persisted events (`data/events/`)
 
 ## Repository Structure
 
@@ -46,6 +46,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   │   │   │   ├── message.py        # Agent loop (tool-use) endpoints
 │   │   │   │   ├── timeline.py       # Google Takeout timeline data
 │   │   │   │   ├── merged_events.py  # Calendar+timeline+habits merge
+│   │   │   │   ├── events.py          # Persisted events CRUD + refresh
 │   │   │   │   ├── generate.py       # AI image generation (Replicate)
 │   │   │   │   └── imagery.py        # Wikimedia Commons search
 │   │   │   └── services/             # Business logic
@@ -56,6 +57,8 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   │   │       ├── calendar_service.py # Google Calendar sync
 │   │   │       ├── timeline_service.py # Google Takeout parser
 │   │   │       ├── merger_service.py   # Event merging + fuzzy matching
+│   │   │       ├── events_service.py  # Persisted event storage + merge
+│   │   │       ├── exif_service.py   # EXIF metadata extraction (Pillow)
 │   │   │       ├── generation_service.py # Replicate image generation
 │   │   │       └── imagery_service.py  # Wikimedia Commons geosearch
 │   │   ├── pyproject.toml
@@ -98,7 +101,8 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │       └── tsconfig.json
 │
 ├── data/                              # External data (gitignored)
-│   ├── media/                         # Saved photo attachments ({YYYY-MM-DD}/*.jpg)
+│   ├── media/                         # Saved photo attachments ({YYYY-MM-DD}/*.jpg + metadata.json)
+│   ├── events/                        # Persisted merged events ({YYYY-MM-DD}.json)
 │   └── timeline/                      # Google Takeout Semantic Location History
 ├── docs/plans/                        # Design and implementation docs
 ├── turbo.json                         # Turborepo config
@@ -116,7 +120,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 ## Current Capabilities
 
 ### Telegram Bot Commands
-- `/day` - Today's daily note with habits and calendar events
+- `/day` - Today's daily note with habits, calendar events, and notes (photo captions)
 - `/tasks` - Active tasks by priority
 - `/habits` - Habit tracker with streaks
 - `/goals` - Goals with progress bars
@@ -124,7 +128,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 - `/calendar` - Today's schedule from Google Calendar
 - `/sync_calendar` - Sync habits/tasks to Google Calendar
 - NL messages routed through agent loop with conversational context, multi-step actions, and knowledge recall
-- Photo messages — downloaded, base64-encoded, sent to Claude vision, saved to `data/media/`
+- Photo messages — downloaded, EXIF extracted (GPS/timestamp/camera), saved to `data/media/` with sidecar `metadata.json`, sent to Claude vision with EXIF context
 - Location/venue messages — coordinates passed through agent loop
 - Reply-to context and forwarded messages — included as context for the agent
 
@@ -138,6 +142,9 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 - `GET /timeline/{date}` - Google Takeout location history for a date
 - `GET /merged-events/{date}` - Calendar + timeline + habits merged into enriched events
 - `POST /generate` - AI image generation via Replicate (SDXL)
+- `GET /events/{date}` - Persisted merged events for a date
+- `POST /events/{date}/refresh` - Re-merge events from sources, preserving manual data (photos, assets)
+- `PATCH /events/{date}/{event_id}` - Update a single persisted event
 - `GET /imagery/search?lat=&lng=` - Wikimedia Commons geosearch for location imagery
 
 ## Data Schemas
@@ -155,7 +162,9 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 
 ### Architecture
 - **vault-server** owns ALL business logic (vault CRUD, Claude AI, calendar sync, timeline, generation)
-- **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 16 registered tools (incl. `attach_to_daily`), max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation, Claude vision for photo messages
+- **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 19 registered tools (incl. `attach_to_daily`, `list_events`, `attach_photo_to_event`, `create_event`), max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation, Claude vision for photo messages with EXIF context
+- **Events persistence** (`EventsService`): merged events stored in `data/events/{date}.json`, supports create/attach/refresh with source-ID matching to preserve photos across re-merges
+- **EXIF extraction** (`exif_service`): extracts GPS coordinates, timestamp, camera info from photo EXIF data using Pillow
 - **Memory system** (`MemoryService`): short-term (conversation sliding window, 20 messages + decay), mid-term (vault state snapshot in system prompt), long-term (knowledge graph + keyword search)
 - **telegram-bot** is a thin TypeScript UI layer (grammY + API calls + inline keyboards + NL routing)
 - **telegram-web-app** is a React SPA consuming vault-server REST endpoints
@@ -205,6 +214,7 @@ cd ~/dev/mazkir/apps/telegram-web-app && npx vitest run      # Webapp only
 curl http://localhost:8000/health
 curl http://localhost:8000/tasks
 curl http://localhost:8000/merged-events/2026-03-02
+curl http://localhost:8000/events/2026-03-05
 ```
 
 ## Related Documentation
@@ -221,3 +231,5 @@ curl http://localhost:8000/merged-events/2026-03-02
 - **WebApp Implementation Plan:** `docs/plans/2026-02-28-telegram-webapp-plan.md`
 - **Rich Messages Design:** `docs/plans/2026-03-04-rich-messages-design.md`
 - **Rich Messages Plan:** `docs/plans/2026-03-04-rich-messages-plan.md`
+- **Photo Events Pipeline Design:** `docs/plans/2026-03-05-photo-events-pipeline-design.md`
+- **Photo Events Pipeline Plan:** `docs/plans/2026-03-05-photo-events-pipeline-plan.md`
