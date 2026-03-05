@@ -1,3 +1,9 @@
+export interface PhotoRef {
+  path: string
+  caption?: string
+  wikilinks: string[]
+}
+
 export interface MergedEvent {
   id: string
 
@@ -37,6 +43,9 @@ export interface MergedEvent {
   }
   tokens_earned: number
 
+  // Photos
+  photos: PhotoRef[]
+
   // Generated assets
   assets?: {
     micro_icon?: string
@@ -45,8 +54,12 @@ export interface MergedEvent {
     context_image?: string
   }
 
-  // Data quality
-  source: 'calendar' | 'timeline' | 'merged'
+  // Source tracking
+  source: 'calendar' | 'timeline' | 'merged' | 'manual' | 'photo'
+  source_ids?: {
+    calendar_id?: string
+    timeline_place_id?: string
+  }
   confidence: 'high' | 'medium' | 'low'
 }
 
