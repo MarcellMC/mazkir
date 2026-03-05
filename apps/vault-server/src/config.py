@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # Timeline data
     timeline_data_path: Path = Path(os.getenv("TIMELINE_DATA_PATH", str(Path.home() / "dev" / "mazkir" / "data" / "timeline")))
 
+    # Persisted events
+    events_data_path: Path = Path(os.getenv("EVENTS_DATA_PATH", str(Path.home() / "dev" / "mazkir" / "data" / "events")))
+
     # Replicate API (for image generation)
     replicate_api_token: str | None = os.getenv("REPLICATE_API_TOKEN")
 
