@@ -16,7 +16,6 @@ def mock_services(tmp_path):
     calendar = MagicMock()
     events = MagicMock()
 
-    # Set vault_path so data_path resolves
     vault.vault_path = tmp_path / "vault"
     vault.vault_path.mkdir()
 
@@ -34,10 +33,11 @@ def mock_services(tmp_path):
 
 
 @pytest.fixture
-def agent(mock_services):
+def agent(mock_services, tmp_path):
     claude, vault, memory, calendar, events = mock_services
     return AgentService(
         claude=claude, vault=vault, memory=memory, calendar=calendar, events=events,
+        media_path=tmp_path / "media",
     )
 
 
@@ -383,8 +383,7 @@ class TestHandleMessageWithAttachments:
 
         # Find the metadata.json in the media directory
         import json
-        media_path = agent.data_path / "media"
-        meta_files = list(media_path.rglob("metadata.json"))
+        meta_files = list(agent.media_path.rglob("metadata.json"))
         assert len(meta_files) == 1
         entries = json.loads(meta_files[0].read_text())
         assert len(entries) == 1

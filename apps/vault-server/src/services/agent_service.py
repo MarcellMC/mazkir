@@ -44,14 +44,14 @@ class AgentService:
         vault: VaultService,
         memory: MemoryService,
         calendar: Any = None,
-        data_path: Path | None = None,
+        media_path: Path | None = None,
         events: Any = None,
     ):
         self.claude = claude
         self.vault = vault
         self.memory = memory
         self.calendar = calendar
-        self.data_path = data_path or (vault.vault_path.parent / "data")
+        self.media_path = media_path or Path.home() / "dev" / "mazkir" / "data" / "media"
         self.events = events
         self.max_iterations = 10
         self.pending_confirmations: dict[str, PendingAction] = {}
@@ -578,7 +578,7 @@ class AgentService:
         """
         import datetime as dt
         today = dt.date.today().isoformat()
-        media_dir = self.data_path / "media" / today
+        media_dir = self.media_path / today
         media_dir.mkdir(parents=True, exist_ok=True)
 
         filename = attachment.get("filename", f"photo_{today}.jpg")
@@ -587,7 +587,7 @@ class AgentService:
         try:
             photo_bytes = base64.b64decode(attachment["data"])
             file_path.write_bytes(photo_bytes)
-            rel_path = str(file_path.relative_to(self.data_path.parent))
+            rel_path = str(file_path.relative_to(self.media_path.parent.parent))
         except Exception as e:
             logger.error(f"Failed to save photo: {e}")
             return None

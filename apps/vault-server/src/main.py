@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI):
             vault=vault,
             memory=memory,
             calendar=calendar,
-            data_path=settings.vault_path.parent / "data",
+            media_path=settings.media_path,
             events=events,
         )
         memory._claude = claude

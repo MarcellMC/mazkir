@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     default_habit_time: str = os.getenv("DEFAULT_HABIT_TIME", "07:00")
     default_event_duration: int = int(os.getenv("DEFAULT_EVENT_DURATION", "30"))
 
+    # Media / data paths
+    media_path: Path = Path(os.getenv("MEDIA_PATH", str(Path.home() / "dev" / "mazkir" / "data" / "media")))
+
     # Timeline data
     timeline_data_path: Path = Path(os.getenv("TIMELINE_DATA_PATH", str(Path.home() / "dev" / "mazkir" / "data" / "timeline")))
 
