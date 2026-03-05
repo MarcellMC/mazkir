@@ -78,6 +78,7 @@ async def lifespan(app: FastAPI):
             memory=memory,
             calendar=calendar,
             data_path=settings.vault_path.parent / "data",
+            events=events,
         )
         memory._claude = claude
         logger.info("Agent service initialized")

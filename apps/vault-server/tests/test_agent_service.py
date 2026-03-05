@@ -14,6 +14,7 @@ def mock_services(tmp_path):
     vault = MagicMock()
     memory = MagicMock()
     calendar = MagicMock()
+    events = MagicMock()
 
     # Set vault_path so data_path resolves
     vault.vault_path = tmp_path / "vault"
@@ -29,14 +30,14 @@ def mock_services(tmp_path):
     memory.save_turn = MagicMock()
     memory.summarize_and_decay = MagicMock()
 
-    return claude, vault, memory, calendar
+    return claude, vault, memory, calendar, events
 
 
 @pytest.fixture
 def agent(mock_services):
-    claude, vault, memory, calendar = mock_services
+    claude, vault, memory, calendar, events = mock_services
     return AgentService(
-        claude=claude, vault=vault, memory=memory, calendar=calendar,
+        claude=claude, vault=vault, memory=memory, calendar=calendar, events=events,
     )
 
 
@@ -432,3 +433,48 @@ class TestAttachToDaily:
         call_args = vault.append_to_daily_section.call_args
         content = call_args.kwargs.get("content") or call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs["content"]
         assert "32.08" in content
+
+
+class TestEventTools:
+    def test_list_events_tool_registered(self, agent):
+        assert "list_events" in agent.tools
+        assert agent.tools["list_events"]["risk"] == "safe"
+
+    def test_attach_photo_to_event_tool_registered(self, agent):
+        assert "attach_photo_to_event" in agent.tools
+        assert agent.tools["attach_photo_to_event"]["risk"] == "write"
+
+    def test_create_event_tool_registered(self, agent):
+        assert "create_event" in agent.tools
+        assert agent.tools["create_event"]["risk"] == "write"
+
+    def test_list_events_calls_service(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.get_events.return_value = [
+            {"id": "evt_abc", "name": "Lunch", "start_time": "12:00", "photos": []},
+        ]
+        result = agent._tool_list_events({})
+        assert len(result["events"]) == 1
+        events_mock.get_events.assert_called_once()
+
+    def test_create_event_calls_service(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "data/events/2026-03-04.json"}
+
+        result = agent._tool_create_event({
+            "name": "Coffee break",
+            "start_time": "15:00",
+        })
+        assert result["event_id"] == "evt_new"
+        events_mock.create_event.assert_called_once()
+
+    def test_attach_photo_calls_service(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.attach_photo.return_value = {"attached": True, "event_id": "evt_abc"}
+
+        result = agent._tool_attach_photo_to_event({
+            "event_id": "evt_abc",
+            "photo_path": "data/media/2026-03-04/photo.jpg",
+            "caption": "Sunset",
+        })
+        assert result["attached"] is True

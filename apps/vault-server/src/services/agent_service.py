@@ -45,12 +45,14 @@ class AgentService:
         memory: MemoryService,
         calendar: Any = None,
         data_path: Path | None = None,
+        events: Any = None,
     ):
         self.claude = claude
         self.vault = vault
         self.memory = memory
         self.calendar = calendar
         self.data_path = data_path or (vault.vault_path.parent / "data")
+        self.events = events
         self.max_iterations = 10
         self.pending_confirmations: dict[str, PendingAction] = {}
         self.tools = self._register_tools()
@@ -312,6 +314,75 @@ class AgentService:
                 },
                 "handler": self._tool_complete_habit,
                 "risk": "destructive",
+            },
+            "list_events": {
+                "schema": {
+                    "name": "list_events",
+                    "description": "List today's events (calendar, timeline, manual). Returns event IDs, names, times, locations, and photo counts.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "date": {"type": "string", "description": "Date YYYY-MM-DD (default: today)"},
+                        },
+                        "required": [],
+                    },
+                },
+                "handler": self._tool_list_events,
+                "risk": "safe",
+            },
+            "attach_photo_to_event": {
+                "schema": {
+                    "name": "attach_photo_to_event",
+                    "description": (
+                        "Attach a saved photo to an existing event. "
+                        "Use list_events first to find the right event ID."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "event_id": {"type": "string", "description": "Event ID from list_events"},
+                            "photo_path": {"type": "string", "description": "Path from '[Photo saved to: ...]'"},
+                            "caption": {"type": "string", "description": "Photo caption"},
+                            "wikilinks": {"type": "array", "items": {"type": "string"}, "description": "Wikilinks"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["event_id", "photo_path"],
+                    },
+                },
+                "handler": self._tool_attach_photo_to_event,
+                "risk": "write",
+            },
+            "create_event": {
+                "schema": {
+                    "name": "create_event",
+                    "description": (
+                        "Create a new event for today. Use for photo stops, ad-hoc activities, "
+                        "or any event not already in the calendar/timeline."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Event name"},
+                            "start_time": {"type": "string", "description": "Start time ISO or HH:MM"},
+                            "end_time": {"type": "string", "description": "End time (optional, defaults to start_time)"},
+                            "location": {
+                                "type": "object",
+                                "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}, "name": {"type": "string"}},
+                                "description": "Location (optional)",
+                            },
+                            "category": {"type": "string", "description": "Activity category (optional)"},
+                            "photo_path": {"type": "string", "description": "Path to photo (optional)"},
+                            "caption": {"type": "string", "description": "Photo caption (optional)"},
+                            "wikilinks": {"type": "array", "items": {"type": "string"}, "description": "Wikilinks (optional)"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["name", "start_time"],
+                    },
+                },
+                "handler": self._tool_create_event,
+                "risk": "write",
             },
         }
 
@@ -658,7 +729,9 @@ class AgentService:
             "- Save important facts the user shares using save_knowledge",
             "- Reference specific item names when discussing tasks/habits/goals",
             "- When the user sends a photo, you can SEE the image (vision). Describe what you see if relevant.",
-            "- Use attach_to_daily to save photos/attachments to the daily note with captions and wikilinks",
+            "- Use list_events to check today's events before deciding how to handle a photo",
+            "- Use attach_photo_to_event to link a photo to an existing event, or create_event for a new one",
+            "- Use attach_to_daily only for simple logging (screenshots, memes, non-event photos)",
             "- When a location is provided, include it when attaching to daily note",
             "- Reply context [Replying to ...] shows what message the user is responding to — use it for context",
             "- Forward context [Forwarded from ...] shows forwarded messages — treat as shared information",
@@ -865,6 +938,63 @@ class AgentService:
             "attachment": vault_path,
             "_items": [daily_path],
         }
+
+    def _tool_list_events(self, params: dict) -> dict:
+        import datetime as dt
+        date = params.get("date", dt.date.today().isoformat())
+        if not self.events:
+            return {"events": [], "error": "Events service not available"}
+        events = self.events.get_events(date)
+        summary = []
+        for e in events:
+            summary.append({
+                "id": e["id"],
+                "name": e["name"],
+                "type": e.get("type", "unknown"),
+                "start_time": e.get("start_time"),
+                "end_time": e.get("end_time"),
+                "location": e.get("location"),
+                "photo_count": len(e.get("photos", [])),
+                "source": e.get("source"),
+            })
+        return {"events": summary, "date": date}
+
+    def _tool_attach_photo_to_event(self, params: dict) -> dict:
+        import datetime as dt
+        if not self.events:
+            return {"error": "Events service not available"}
+        date = params.get("date", dt.date.today().isoformat())
+        result = self.events.attach_photo(
+            date=date,
+            event_id=params["event_id"],
+            photo_path=params["photo_path"],
+            caption=params.get("caption"),
+            wikilinks=params.get("wikilinks"),
+        )
+        if "error" in result:
+            return result
+        result["_items"] = [str(self.events._file_path(date))]
+        return result
+
+    def _tool_create_event(self, params: dict) -> dict:
+        import datetime as dt
+        if not self.events:
+            return {"error": "Events service not available"}
+        date = params.get("date", dt.date.today().isoformat())
+        result = self.events.create_event(
+            date=date,
+            name=params["name"],
+            start_time=params["start_time"],
+            end_time=params.get("end_time"),
+            location=params.get("location"),
+            category=params.get("category"),
+            photo_path=params.get("photo_path"),
+            caption=params.get("caption"),
+            wikilinks=params.get("wikilinks"),
+        )
+        result["event_id"] = result.pop("id")
+        result["_items"] = [result["path"]]
+        return result
 
     def _tool_complete_task(self, params: dict) -> dict:
         task = self.vault.find_task_by_name(params["task_name"])
