@@ -19,6 +19,7 @@ dependencies = [
     "pydantic-settings>=2.1.0",
     "python-dotenv>=1.0.0",
     "replicate>=0.25.0",
+    "Pillow>=10.0.0",
 ]
 
 [tool.ruff.lint.per-file-ignores]
