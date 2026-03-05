@@ -49,6 +49,9 @@ async def get_daily():
         except Exception:
             pass
 
+    # Get notes section
+    notes = vault.get_daily_notes_section()
+
     return {
         "date": metadata.get("date"),
         "day_of_week": metadata.get("day_of_week"),
@@ -56,4 +59,5 @@ async def get_daily():
         "tokens_total": metadata.get("tokens_total", 0),
         "habits": habit_status,
         "calendar_events": calendar_events,
+        "notes": notes,
     }

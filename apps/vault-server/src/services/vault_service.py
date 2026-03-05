@@ -160,6 +160,40 @@ class VaultService:
 
         return {"path": path, "section": section}
 
+    def get_daily_notes_section(self, date=None) -> list[str]:
+        """Parse ## Notes section from daily note into a list of entries."""
+        try:
+            daily = self.read_daily_note(date)
+        except FileNotFoundError:
+            return []
+
+        content = daily.get("content", "")
+        section_header = "## Notes"
+        if section_header not in content:
+            return []
+
+        idx = content.index(section_header) + len(section_header)
+        next_section = content.find("\n## ", idx)
+        if next_section == -1:
+            notes_text = content[idx:]
+        else:
+            notes_text = content[idx:next_section]
+
+        # Split into non-empty entries (paragraphs separated by blank lines)
+        entries = []
+        current = []
+        for line in notes_text.strip().split("\n"):
+            stripped = line.strip()
+            if stripped == "" and current:
+                entries.append("\n".join(current))
+                current = []
+            elif stripped:
+                current.append(stripped)
+        if current:
+            entries.append("\n".join(current))
+
+        return entries
+
     def read_habit(self, habit_name: str) -> Dict:
         """Read habit file
 

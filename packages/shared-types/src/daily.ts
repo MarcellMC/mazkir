@@ -20,4 +20,5 @@ export interface DailyResponse {
   tokens_total: number;
   habits: HabitStatus[];
   calendar_events: CalendarEvent[];
+  notes: string[];
 }

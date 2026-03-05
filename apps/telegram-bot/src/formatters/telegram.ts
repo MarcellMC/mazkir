@@ -55,6 +55,18 @@ export function formatDay(data: DailyResponse): string {
     }
   }
 
+  if (data.notes && data.notes.length > 0) {
+    lines.push("");
+    lines.push("📝 <b>Notes</b>");
+    for (const note of data.notes) {
+      // Strip markdown image syntax, show caption text only
+      const cleaned = note
+        .replace(/!\[([^\]]*)\]\([^)]*\)/g, "📷 $1") // ![caption](path) → 📷 caption
+        .replace(/\[\[([^\]]*)\]\]/g, "$1"); // [[wikilink]] → wikilink
+      lines.push(`  ${cleaned}`);
+    }
+  }
+
   return lines.join("\n");
 }
 
