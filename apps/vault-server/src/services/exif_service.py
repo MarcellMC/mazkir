@@ -77,13 +77,13 @@ def _dms_to_decimal(dms: tuple, ref: str) -> float:
 
     # Handle both (value, divisor) tuples and plain floats
     if isinstance(d, tuple):
-        d = d[0] / d[1]
+        d = float(d[0]) / float(d[1])
     if isinstance(m, tuple):
-        m = m[0] / m[1]
+        m = float(m[0]) / float(m[1])
     if isinstance(s, tuple):
-        s = s[0] / s[1]
+        s = float(s[0]) / float(s[1])
 
-    decimal = d + m / 60 + s / 3600
+    decimal = float(d) + float(m) / 60.0 + float(s) / 3600.0
     if ref in ("S", "W"):
         decimal = -decimal
     return round(decimal, 6)

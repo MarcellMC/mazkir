@@ -499,8 +499,12 @@ class AgentService:
 
     # ── Attachments ────────────────────────────────────────────────
 
-    def _save_photo(self, attachment: dict) -> str | None:
-        """Save a base64-encoded photo to data/media/{date}/ and return the path."""
+    def _save_photo(self, attachment: dict) -> dict | None:
+        """Save photo to disk, extract EXIF, write sidecar metadata.json.
+
+        Returns dict with keys: path, exif_location, exif_timestamp, exif_camera.
+        Returns None on failure.
+        """
         import datetime as dt
         today = dt.date.today().isoformat()
         media_dir = self.data_path / "media" / today
@@ -512,10 +516,40 @@ class AgentService:
         try:
             photo_bytes = base64.b64decode(attachment["data"])
             file_path.write_bytes(photo_bytes)
-            return str(file_path.relative_to(self.data_path.parent))
+            rel_path = str(file_path.relative_to(self.data_path.parent))
         except Exception as e:
             logger.error(f"Failed to save photo: {e}")
             return None
+
+        # Extract EXIF metadata
+        from src.services.exif_service import extract_exif_metadata
+        exif = extract_exif_metadata(photo_bytes)
+
+        # Write/append to sidecar metadata.json
+        meta_path = media_dir / "metadata.json"
+        entries = []
+        if meta_path.exists():
+            try:
+                entries = json.loads(meta_path.read_text())
+            except Exception:
+                entries = []
+
+        entries.append({
+            "filename": filename,
+            "path": rel_path,
+            "saved_at": dt.datetime.now().isoformat(),
+            "exif_timestamp": exif.get("timestamp"),
+            "exif_location": exif.get("location"),
+            "exif_camera": exif.get("camera"),
+        })
+        meta_path.write_text(json.dumps(entries, indent=2))
+
+        return {
+            "path": rel_path,
+            "exif_location": exif.get("location"),
+            "exif_timestamp": exif.get("timestamp"),
+            "exif_camera": exif.get("camera"),
+        }
 
     def _build_user_content(
         self,
@@ -531,8 +565,8 @@ class AgentService:
         if attachments:
             for att in attachments:
                 if att["type"] == "photo" and att.get("data"):
-                    # Save photo to disk
-                    saved_photo_path = self._save_photo(att)
+                    # Save photo to disk + extract EXIF
+                    photo_info = self._save_photo(att)
 
                     # Add image block for Claude vision
                     image_blocks.append({
@@ -544,8 +578,18 @@ class AgentService:
                         },
                     })
 
-                    if saved_photo_path:
-                        text_parts.append(f"[Photo saved to: {saved_photo_path}]")
+                    if photo_info:
+                        parts = [f"Photo saved to: {photo_info['path']}"]
+                        loc = photo_info.get("exif_location")
+                        ts = photo_info.get("exif_timestamp")
+                        cam = photo_info.get("exif_camera")
+                        if loc:
+                            parts.append(f"EXIF GPS: {loc['lat']}, {loc['lng']}")
+                        if ts:
+                            parts.append(f"taken {ts}")
+                        if cam:
+                            parts.append(f"Camera: {cam}")
+                        text_parts.append(f"[{' | '.join(parts)}]")
                     else:
                         text_parts.append("[Photo attachment failed to save]")
 

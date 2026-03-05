@@ -311,6 +311,85 @@ class TestHandleMessageWithAttachments:
         assert result.response == "Hello!"
 
 
+    def test_photo_exif_extracted_and_surfaced(self, agent, mock_services, tmp_path):
+        """EXIF metadata is extracted and included in Claude context."""
+        claude = mock_services[0]
+
+        mock_response = MagicMock()
+        mock_response.stop_reason = "end_turn"
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Nice photo!"
+        mock_response.content = [text_block]
+        claude.create.return_value = mock_response
+
+        # Create a JPEG with EXIF GPS data
+        from tests.test_exif_service import _make_jpeg_with_gps
+        import base64
+        photo_data = base64.b64encode(_make_jpeg_with_gps(32.0853, 34.7818)).decode()
+
+        result = agent.handle_message(
+            text="Check this out",
+            chat_id=123,
+            attachments=[{
+                "type": "photo",
+                "data": photo_data,
+                "mime_type": "image/jpeg",
+                "filename": "photo_test.jpg",
+            }],
+        )
+
+        # Verify EXIF info surfaced in the text sent to Claude
+        call_args = claude.create.call_args
+        messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
+        last_user = [m for m in messages if m["role"] == "user"][-1]
+        content = last_user["content"]
+        text_parts = [b["text"] for b in content if b.get("type") == "text"]
+        combined = " ".join(text_parts)
+        assert "32.08" in combined  # GPS lat
+        assert "34.78" in combined  # GPS lng
+
+    def test_photo_metadata_json_written(self, agent, mock_services, tmp_path):
+        """Sidecar metadata.json is written when photo is saved."""
+        claude = mock_services[0]
+
+        mock_response = MagicMock()
+        mock_response.stop_reason = "end_turn"
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Got it!"
+        mock_response.content = [text_block]
+        claude.create.return_value = mock_response
+
+        import base64
+        from PIL import Image
+        import io
+        img = Image.new("RGB", (10, 10), "red")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        photo_data = base64.b64encode(buf.getvalue()).decode()
+
+        agent.handle_message(
+            text="photo",
+            chat_id=123,
+            attachments=[{
+                "type": "photo",
+                "data": photo_data,
+                "mime_type": "image/jpeg",
+                "filename": "test_meta.jpg",
+            }],
+        )
+
+        # Find the metadata.json in the media directory
+        import json
+        media_path = agent.data_path / "media"
+        meta_files = list(media_path.rglob("metadata.json"))
+        assert len(meta_files) == 1
+        entries = json.loads(meta_files[0].read_text())
+        assert len(entries) == 1
+        assert entries[0]["filename"] == "test_meta.jpg"
+
+
 class TestAttachToDaily:
     def test_attach_to_daily_tool_registered(self, agent):
         assert "attach_to_daily" in agent.tools
