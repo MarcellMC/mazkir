@@ -159,7 +159,6 @@ from src.api.routes.tokens import router as tokens_router
 from src.api.routes.calendar import router as calendar_router
 from src.api.routes.message import router as message_router
 from src.api.routes.timeline import router as timeline_router
-from src.api.routes.merged_events import router as merged_events_router
 from src.api.routes.generate import router as generate_router
 from src.api.routes.imagery import router as imagery_router
 from src.api.routes.events import router as events_router
@@ -172,7 +171,6 @@ app.include_router(tokens_router)
 app.include_router(calendar_router)
 app.include_router(message_router)
 app.include_router(timeline_router)
-app.include_router(merged_events_router)
 app.include_router(generate_router)
 app.include_router(imagery_router)
 app.include_router(events_router)
