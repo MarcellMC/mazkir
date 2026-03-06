@@ -1,10 +1,11 @@
 import { useEffect } from 'react'
 import { useDayplannerStore } from './store'
+import DateNav from '../../components/DateNav'
 import DayHeader from './components/DayHeader'
 import Timeline from './components/Timeline'
 
 export default function DayplannerPage() {
-  const { date, events, totalTokens, loading, error, fetchDay } =
+  const { date, events, totalTokens, loading, error, setDate, fetchDay } =
     useDayplannerStore()
 
   useEffect(() => {
@@ -13,7 +14,8 @@ export default function DayplannerPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <DayHeader date={date} totalTokens={totalTokens} />
+      <DateNav date={date} onChange={setDate} />
+      <DayHeader totalTokens={totalTokens} />
 
       {loading && (
         <div className="p-8 text-center text-gray-400">Loading...</div>
