@@ -2,13 +2,13 @@ import { useEffect } from 'react'
 import { usePlaygroundStore } from './store'
 import EventList from './components/EventList'
 import GenerationPanel from './components/GenerationPanel'
+import DateNav from '../../components/DateNav'
 
 export default function PlaygroundPage() {
   const store = usePlaygroundStore()
 
   useEffect(() => {
-    const today = new Date().toISOString().split('T')[0]
-    store.loadEvents(today)
+    store.loadEvents(store.date)
   }, [])
 
   return (
@@ -17,8 +17,9 @@ export default function PlaygroundPage() {
         <h1 className="text-lg font-semibold">Asset Generation Playground</h1>
       </div>
 
+      <DateNav date={store.date} onChange={store.setDate} />
+
       <div className="flex-1 flex overflow-hidden">
-        {/* Left: Event list */}
         <div className="w-1/3 min-w-[140px] max-w-[200px]">
           <EventList
             events={store.events}
@@ -26,8 +27,6 @@ export default function PlaygroundPage() {
             onSelect={store.selectEvent}
           />
         </div>
-
-        {/* Right: Generation panel */}
         <div className="flex-1">
           <GenerationPanel
             selectedEvent={store.selectedEvent}

@@ -4,7 +4,8 @@ import type { GenerateRequest, GenerateResponse } from '../../services/api'
 import { api } from '../../services/api'
 
 interface PlaygroundState {
-  // Event selection
+  // Date + Event selection
+  date: string
   events: MergedEvent[]
   selectedEvent: MergedEvent | null
   loadingEvents: boolean
@@ -20,6 +21,7 @@ interface PlaygroundState {
   style: GenerateRequest['style']
 
   // Actions
+  setDate: (date: string) => void
   loadEvents: (date: string) => Promise<void>
   selectEvent: (event: MergedEvent | null) => void
   setGenType: (type: GenerateRequest['type']) => void
@@ -29,6 +31,7 @@ interface PlaygroundState {
 }
 
 export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
+  date: new Date().toISOString().split('T')[0]!,
   events: [],
   selectedEvent: null,
   loadingEvents: false,
@@ -40,6 +43,11 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   genType: 'micro_icon',
   approach: 'ai_raster',
   style: { line_style: 'clean_vector', texture: 'clean' },
+
+  setDate: (date) => {
+    set({ date })
+    get().loadEvents(date)
+  },
 
   loadEvents: async (date) => {
     set({ loadingEvents: true })
