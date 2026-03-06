@@ -390,6 +390,30 @@ class TestHandleMessageWithAttachments:
         assert entries[0]["filename"] == "test_meta.jpg"
 
 
+class TestDailySectionTools:
+    def test_read_daily_section_tool_registered(self, agent):
+        assert "read_daily_section" in agent.tools
+        assert agent.tools["read_daily_section"]["risk"] == "safe"
+
+    def test_edit_daily_section_tool_registered(self, agent):
+        assert "edit_daily_section" in agent.tools
+        assert agent.tools["edit_daily_section"]["risk"] == "write"
+
+    def test_read_daily_section_calls_vault(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.read_daily_section.return_value = "Some notes here"
+        result = agent._tool_read_daily_section({"section": "Notes"})
+        assert result["content"] == "Some notes here"
+        vault.read_daily_section.assert_called_once()
+
+    def test_edit_daily_section_calls_vault(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.replace_daily_section.return_value = {"path": "10-daily/2026-03-06.md", "section": "Notes"}
+        result = agent._tool_edit_daily_section({"section": "Notes", "content": "Updated notes"})
+        assert "path" in result
+        vault.replace_daily_section.assert_called_once()
+
+
 class TestAttachToDaily:
     def test_attach_to_daily_tool_registered(self, agent):
         assert "attach_to_daily" in agent.tools

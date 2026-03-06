@@ -98,6 +98,41 @@ class AgentService:
                 "handler": self._tool_get_daily,
                 "risk": "safe",
             },
+            "read_daily_section": {
+                "schema": {
+                    "name": "read_daily_section",
+                    "description": "Read the content of a daily note section (e.g., Notes, Tasks, Daily Habits).",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "section": {"type": "string", "description": "Section name (e.g., 'Notes', 'Tasks', 'Daily Habits')"},
+                            "date": {"type": "string", "description": "Date YYYY-MM-DD (default: today)"},
+                        },
+                        "required": ["section"],
+                    },
+                },
+                "handler": self._tool_read_daily_section,
+                "risk": "safe",
+            },
+            "edit_daily_section": {
+                "schema": {
+                    "name": "edit_daily_section",
+                    "description": "Replace the content of a daily note section. Use read_daily_section first to see current content.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "section": {"type": "string", "description": "Section name (e.g., 'Notes', 'Tasks')"},
+                            "content": {"type": "string", "description": "New section content (replaces existing)"},
+                            "date": {"type": "string", "description": "Date YYYY-MM-DD (default: today)"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["section", "content"],
+                    },
+                },
+                "handler": self._tool_edit_daily_section,
+                "risk": "write",
+            },
             "get_tokens": {
                 "schema": {
                     "name": "get_tokens",
@@ -938,6 +973,27 @@ class AgentService:
             "attachment": vault_path,
             "_items": [daily_path],
         }
+
+    def _parse_date(self, date_str: str | None):
+        """Parse YYYY-MM-DD string to datetime or None for today."""
+        if not date_str:
+            return None
+        import datetime as dt
+        return dt.datetime.fromisoformat(date_str)
+
+    def _tool_read_daily_section(self, params: dict) -> dict:
+        date = self._parse_date(params.get("date"))
+        content = self.vault.read_daily_section(params["section"], date)
+        return {"section": params["section"], "content": content}
+
+    def _tool_edit_daily_section(self, params: dict) -> dict:
+        date = self._parse_date(params.get("date"))
+        result = self.vault.replace_daily_section(
+            section=params["section"],
+            new_content=params["content"],
+            date=date,
+        )
+        return {"path": result["path"], "section": result["section"], "_items": [result["path"]]}
 
     def _tool_list_events(self, params: dict) -> dict:
         import datetime as dt
