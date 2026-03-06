@@ -216,3 +216,49 @@ class TestDailySections:
         assert "## Daily Habits" in daily["content"]
         assert "## Tasks" in daily["content"]
         assert "New notes content" in daily["content"]
+
+
+# --- delete_file, archive_task, find_habit/goal_by_name ---
+
+
+class TestDeleteAndArchive:
+    def test_delete_file(self, vault_service, vault_path):
+        assert (vault_path / "40-tasks/active/buy-groceries.md").exists()
+        vault_service.delete_file("40-tasks/active/buy-groceries.md")
+        assert not (vault_path / "40-tasks/active/buy-groceries.md").exists()
+
+    def test_delete_file_not_found(self, vault_service):
+        with pytest.raises(FileNotFoundError):
+            vault_service.delete_file("40-tasks/active/nonexistent.md")
+
+    def test_archive_task_no_tokens(self, vault_service, vault_path):
+        old_ledger = vault_service.read_token_ledger()
+        old_total = old_ledger["metadata"]["total_tokens"]
+
+        result = vault_service.archive_task("40-tasks/active/buy-groceries.md")
+
+        assert result["archive_path"] == "40-tasks/archive/buy-groceries.md"
+        assert not (vault_path / "40-tasks/active/buy-groceries.md").exists()
+        assert (vault_path / "40-tasks/archive/buy-groceries.md").exists()
+
+        new_ledger = vault_service.read_token_ledger()
+        assert new_ledger["metadata"]["total_tokens"] == old_total
+
+        archived = vault_service.read_file("40-tasks/archive/buy-groceries.md")
+        assert archived["metadata"]["status"] == "archived"
+
+    def test_find_habit_by_name(self, vault_service):
+        habit = vault_service.find_habit_by_name("workout")
+        assert habit is not None
+        assert habit["metadata"]["name"] == "Workout"
+
+    def test_find_habit_by_name_not_found(self, vault_service):
+        assert vault_service.find_habit_by_name("nonexistent") is None
+
+    def test_find_goal_by_name(self, vault_service):
+        goal = vault_service.find_goal_by_name("get fit")
+        assert goal is not None
+        assert goal["metadata"]["name"] == "Get fit"
+
+    def test_find_goal_by_name_not_found(self, vault_service):
+        assert vault_service.find_goal_by_name("nonexistent") is None

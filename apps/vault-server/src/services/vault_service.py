@@ -760,6 +760,53 @@ class VaultService:
 
         return None
 
+    def delete_file(self, relative_path: str):
+        """Delete a vault file."""
+        file_path = self.vault_path / relative_path
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {relative_path}")
+        file_path.unlink()
+
+    def archive_task(self, task_path: str) -> Dict:
+        """Move a task to archive without awarding tokens."""
+        task = self.read_file(task_path)
+        metadata = task["metadata"]
+        task_name = metadata.get("name", "Task")
+
+        today = datetime.now(self.tz).strftime('%Y-%m-%d')
+        metadata["status"] = "archived"
+        metadata["updated"] = today
+
+        filename = Path(task_path).name
+        archive_path = f"40-tasks/archive/{filename}"
+        self.write_file(archive_path, metadata, task["content"])
+
+        active_file = self.vault_path / task_path
+        if active_file.exists():
+            active_file.unlink()
+
+        return {"task_name": task_name, "archive_path": archive_path}
+
+    def find_habit_by_name(self, name: str) -> Optional[Dict]:
+        """Find a habit by name (fuzzy match)."""
+        habits = self.list_active_habits()
+        name_lower = name.lower()
+        for habit in habits:
+            habit_name = habit["metadata"].get("name", "").lower()
+            if name_lower in habit_name or habit_name in name_lower:
+                return habit
+        return None
+
+    def find_goal_by_name(self, name: str) -> Optional[Dict]:
+        """Find a goal by name (fuzzy match)."""
+        goals = self.list_active_goals()
+        name_lower = name.lower()
+        for goal in goals:
+            goal_name = goal["metadata"].get("name", "").lower()
+            if name_lower in goal_name or goal_name in name_lower:
+                return goal
+        return None
+
     # =========================================================================
     # Calendar sync helper methods
     # =========================================================================
