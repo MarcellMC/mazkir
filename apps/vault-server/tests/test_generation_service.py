@@ -79,6 +79,53 @@ class TestGenerationService:
         assert result["approach"] == "ai_raster"
         mock_client.post.assert_called_once()
 
+    def test_build_prompt_returns_override_when_set(self, gen_service):
+        request = GenerationRequest(
+            type="micro_icon",
+            event_name="Gym",
+            style=StyleConfig(),
+            prompt_override="custom prompt text",
+        )
+        prompt = gen_service.build_prompt(request)
+        assert prompt == "custom prompt text"
+
+    def test_build_prompt_ignores_empty_override(self, gen_service):
+        request = GenerationRequest(
+            type="micro_icon",
+            event_name="Gym workout",
+            style=StyleConfig(line_style="clean_vector"),
+            prompt_override="",
+        )
+        prompt = gen_service.build_prompt(request)
+        assert "icon" in prompt.lower()
+
+    @pytest.mark.asyncio
+    async def test_generate_uses_custom_dimensions(self, gen_service):
+        request = GenerationRequest(
+            type="micro_icon",
+            event_name="Gym",
+            style=StyleConfig(),
+            width=512,
+            height=768,
+        )
+
+        mock_client = _mock_httpx_client(["https://replicate.delivery/output.png"])
+
+        with patch("src.services.generation_service.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            await gen_service.generate(request)
+
+        call_json = mock_client.post.call_args[1]["json"]
+        assert call_json["input"]["width"] == 512
+        assert call_json["input"]["height"] == 768
+
+    def test_clamp_dimension(self, gen_service):
+        assert gen_service._clamp_dimension(100) == 128    # rounds up to nearest 64
+        assert gen_service._clamp_dimension(1200) == 1024  # caps at 1024
+        assert gen_service._clamp_dimension(768) == 768    # already valid
+        assert gen_service._clamp_dimension(50) == 64      # minimum 64
+
     @pytest.mark.asyncio
     async def test_generate_returns_error_on_failure(self, gen_service):
         request = GenerationRequest(

@@ -18,6 +18,9 @@ class GenerateRequest(BaseModel):
     style: dict[str, Any] | None = None
     approach: str = "ai_raster"
     reference_images: list[str] | None = None
+    prompt_override: str | None = None
+    width: int | None = None
+    height: int | None = None
     params: dict[str, Any] | None = None
 
 
@@ -38,6 +41,9 @@ async def generate_image(request: GenerateRequest):
         style=style,
         approach=request.approach,
         reference_images=request.reference_images,
+        prompt_override=request.prompt_override,
+        width=request.width,
+        height=request.height,
         params=request.params,
     )
 

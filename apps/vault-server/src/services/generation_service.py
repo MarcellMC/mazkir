@@ -37,6 +37,9 @@ class GenerationRequest(BaseModel):
     style: StyleConfig = StyleConfig()
     approach: str = "ai_raster"
     reference_images: list[str] | None = None
+    prompt_override: str | None = None
+    width: int | None = None
+    height: int | None = None
     params: dict[str, Any] | None = None
 
 
@@ -61,12 +64,15 @@ class GenerationService:
 
             async with httpx.AsyncClient(base_url=REPLICATE_API_BASE, headers=headers, timeout=120) as client:
                 # Create prediction
+                width = self._clamp_dimension(request.width) if request.width else self._get_width(request.type)
+                height = self._clamp_dimension(request.height) if request.height else self._get_height(request.type)
+
                 resp = await client.post("/predictions", json={
                     "version": version_id,
                     "input": {
                         "prompt": prompt,
-                        "width": self._get_width(request.type),
-                        "height": self._get_height(request.type),
+                        "width": width,
+                        "height": height,
                         "num_outputs": 1,
                     },
                 })
@@ -109,6 +115,9 @@ class GenerationService:
 
     def build_prompt(self, request: GenerationRequest) -> str:
         """Build a generation prompt based on request type and style."""
+        if request.prompt_override:
+            return request.prompt_override
+
         parts = []
 
         if request.type == "micro_icon":
@@ -168,3 +177,9 @@ class GenerationService:
         if gen_type == "route_sketch":
             return 512
         return 768
+
+    @staticmethod
+    def _clamp_dimension(value: int) -> int:
+        """Clamp to multiple of 64, min 64, max 1024."""
+        clamped = max(64, min(1024, value))
+        return round(clamped / 64) * 64
