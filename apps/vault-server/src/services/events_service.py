@@ -114,6 +114,13 @@ class EventsService:
 
         return {"error": f"Event {event_id} not found"}
 
+    def auto_refresh(self, date: str, fresh_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Merge fresh events with persisted data and save.
+
+        Alias for refresh_events — used by the unified GET /events endpoint.
+        """
+        return self.refresh_events(date, fresh_events)
+
     def refresh_events(self, date: str, fresh_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Re-merge from sources while preserving manually-added data.
 

@@ -117,6 +117,48 @@ class TestAttachPhoto:
         assert len(events[0]["photos"]) == 2
 
 
+class TestAutoRefresh:
+    def test_auto_refresh_returns_merged_events(self, events_service):
+        fresh = [
+            {"name": "Standup", "type": "calendar", "start_time": "10:00",
+             "end_time": "10:30", "source": "calendar",
+             "source_ids": {"calendar_id": "cal_1"}},
+        ]
+        result = events_service.auto_refresh("2026-03-06", fresh)
+        assert len(result) == 1
+        assert result[0]["name"] == "Standup"
+        assert "id" in result[0]
+
+        # Should be persisted
+        persisted = events_service.get_events("2026-03-06")
+        assert len(persisted) == 1
+
+    def test_auto_refresh_preserves_photos(self, events_service):
+        events_service.create_event(
+            date="2026-03-06", name="Cafe", start_time="15:00",
+            photo_path="photo.jpg", caption="Latte",
+        )
+        fresh = [
+            {"name": "Standup", "type": "calendar", "start_time": "10:00",
+             "end_time": "10:30", "source": "calendar",
+             "source_ids": {"calendar_id": "cal_1"}},
+        ]
+        result = events_service.auto_refresh("2026-03-06", fresh)
+        names = [e["name"] for e in result]
+        assert "Standup" in names
+        assert "Cafe" in names
+        cafe = next(e for e in result if e["name"] == "Cafe")
+        assert len(cafe["photos"]) == 1
+
+    def test_auto_refresh_empty_fresh_keeps_manual(self, events_service):
+        events_service.create_event(
+            date="2026-03-06", name="Manual event", start_time="14:00",
+        )
+        result = events_service.auto_refresh("2026-03-06", [])
+        assert len(result) == 1
+        assert result[0]["name"] == "Manual event"
+
+
 class TestRefreshMerge:
     def test_refresh_preserves_photos(self, events_service):
         """Re-merging from sources keeps manually-attached photos."""
