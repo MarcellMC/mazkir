@@ -350,6 +350,74 @@ class AgentService:
                 "handler": self._tool_complete_habit,
                 "risk": "destructive",
             },
+            "delete_task": {
+                "schema": {
+                    "name": "delete_task",
+                    "description": "Permanently delete a task. Use archive_task if you want to keep it.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "task_name": {"type": "string", "description": "Task name or partial match"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["task_name"],
+                    },
+                },
+                "handler": self._tool_delete_task,
+                "risk": "destructive",
+            },
+            "archive_task": {
+                "schema": {
+                    "name": "archive_task",
+                    "description": "Archive a task without completing it. No tokens awarded. Use for abandoned or deferred tasks.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "task_name": {"type": "string", "description": "Task name or partial match"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["task_name"],
+                    },
+                },
+                "handler": self._tool_archive_task,
+                "risk": "destructive",
+            },
+            "delete_habit": {
+                "schema": {
+                    "name": "delete_habit",
+                    "description": "Permanently delete a habit.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "habit_name": {"type": "string", "description": "Habit name or partial match"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["habit_name"],
+                    },
+                },
+                "handler": self._tool_delete_habit,
+                "risk": "destructive",
+            },
+            "archive_goal": {
+                "schema": {
+                    "name": "archive_goal",
+                    "description": "Archive a goal (set status to archived).",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "goal_name": {"type": "string", "description": "Goal name or partial match"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["goal_name"],
+                    },
+                },
+                "handler": self._tool_archive_goal,
+                "risk": "destructive",
+            },
             "list_events": {
                 "schema": {
                     "name": "list_events",
@@ -973,6 +1041,38 @@ class AgentService:
             "attachment": vault_path,
             "_items": [daily_path],
         }
+
+    def _tool_delete_task(self, params: dict) -> dict:
+        task = self.vault.find_task_by_name(params["task_name"])
+        if not task:
+            return {"error": f"No task found matching '{params['task_name']}'"}
+        self.vault.delete_file(task["path"])
+        return {"deleted": task["metadata"].get("name", ""), "_items": [task["path"]]}
+
+    def _tool_archive_task(self, params: dict) -> dict:
+        task = self.vault.find_task_by_name(params["task_name"])
+        if not task:
+            return {"error": f"No task found matching '{params['task_name']}'"}
+        result = self.vault.archive_task(task["path"])
+        return {
+            "task": result["task_name"],
+            "archived_to": result["archive_path"],
+            "_items": [result["archive_path"]],
+        }
+
+    def _tool_delete_habit(self, params: dict) -> dict:
+        habit = self.vault.find_habit_by_name(params["habit_name"])
+        if not habit:
+            return {"error": f"No habit found matching '{params['habit_name']}'"}
+        self.vault.delete_file(habit["path"])
+        return {"deleted": habit["metadata"].get("name", ""), "_items": [habit["path"]]}
+
+    def _tool_archive_goal(self, params: dict) -> dict:
+        goal = self.vault.find_goal_by_name(params["goal_name"])
+        if not goal:
+            return {"error": f"No goal found matching '{params['goal_name']}'"}
+        self.vault.update_file(goal["path"], {"status": "archived"})
+        return {"archived": goal["metadata"].get("name", ""), "_items": [goal["path"]]}
 
     def _parse_date(self, date_str: str | None):
         """Parse YYYY-MM-DD string to datetime or None for today."""

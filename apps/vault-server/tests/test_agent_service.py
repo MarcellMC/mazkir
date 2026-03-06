@@ -390,6 +390,76 @@ class TestHandleMessageWithAttachments:
         assert entries[0]["filename"] == "test_meta.jpg"
 
 
+class TestDeleteArchiveTools:
+    def test_delete_task_tool_registered(self, agent):
+        assert "delete_task" in agent.tools
+        assert agent.tools["delete_task"]["risk"] == "destructive"
+
+    def test_archive_task_tool_registered(self, agent):
+        assert "archive_task" in agent.tools
+        assert agent.tools["archive_task"]["risk"] == "destructive"
+
+    def test_delete_habit_tool_registered(self, agent):
+        assert "delete_habit" in agent.tools
+        assert agent.tools["delete_habit"]["risk"] == "destructive"
+
+    def test_archive_goal_tool_registered(self, agent):
+        assert "archive_goal" in agent.tools
+        assert agent.tools["archive_goal"]["risk"] == "destructive"
+
+    def test_delete_task_calls_vault(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.find_task_by_name.return_value = {
+            "path": "40-tasks/active/buy-milk.md",
+            "metadata": {"name": "Buy milk"},
+        }
+        result = agent._tool_delete_task({"task_name": "buy milk"})
+        assert result["deleted"] == "Buy milk"
+        vault.delete_file.assert_called_once_with("40-tasks/active/buy-milk.md")
+
+    def test_delete_task_not_found(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.find_task_by_name.return_value = None
+        result = agent._tool_delete_task({"task_name": "nonexistent"})
+        assert "error" in result
+
+    def test_archive_task_calls_vault(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.find_task_by_name.return_value = {
+            "path": "40-tasks/active/buy-milk.md",
+            "metadata": {"name": "Buy milk"},
+        }
+        vault.archive_task.return_value = {
+            "task_name": "Buy milk",
+            "archive_path": "40-tasks/archive/buy-milk.md",
+        }
+        result = agent._tool_archive_task({"task_name": "buy milk"})
+        assert result["archived_to"] == "40-tasks/archive/buy-milk.md"
+        vault.archive_task.assert_called_once_with("40-tasks/active/buy-milk.md")
+
+    def test_delete_habit_calls_vault(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.find_habit_by_name.return_value = {
+            "path": "20-habits/workout.md",
+            "metadata": {"name": "Workout"},
+        }
+        result = agent._tool_delete_habit({"habit_name": "workout"})
+        assert result["deleted"] == "Workout"
+        vault.delete_file.assert_called_once_with("20-habits/workout.md")
+
+    def test_archive_goal_calls_vault(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.find_goal_by_name.return_value = {
+            "path": "30-goals/2026/get-fit.md",
+            "metadata": {"name": "Get fit"},
+        }
+        result = agent._tool_archive_goal({"goal_name": "get fit"})
+        assert result["archived"] == "Get fit"
+        vault.update_file.assert_called_once_with(
+            "30-goals/2026/get-fit.md", {"status": "archived"}
+        )
+
+
 class TestDailySectionTools:
     def test_read_daily_section_tool_registered(self, agent):
         assert "read_daily_section" in agent.tools
