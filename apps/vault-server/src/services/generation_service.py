@@ -1,12 +1,16 @@
-"""Image generation service using Replicate API."""
+"""Image generation service using Replicate API (direct httpx, no replicate client)."""
 
+import asyncio
 import logging
 import time
 from typing import Any
 
+import httpx
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+REPLICATE_API_BASE = "https://api.replicate.com/v1"
 
 # Default Replicate models per generation type
 DEFAULT_MODELS = {
@@ -39,27 +43,48 @@ class GenerationRequest(BaseModel):
 class GenerationService:
     def __init__(self, api_token: str):
         self.api_token = api_token
-        # Set the token for the replicate library
-        import os
-        os.environ["REPLICATE_API_TOKEN"] = api_token
 
     async def generate(self, request: GenerationRequest) -> dict[str, Any]:
-        """Generate an image using Replicate."""
+        """Generate an image using Replicate HTTP API directly."""
         start = time.time()
         prompt = self.build_prompt(request)
         model = DEFAULT_MODELS.get(request.type, DEFAULT_MODELS["micro_icon"])
 
         try:
-            import replicate
-            output = await replicate.async_run(
-                model,
-                input={
-                    "prompt": prompt,
-                    "width": self._get_width(request.type),
-                    "height": self._get_height(request.type),
-                    "num_outputs": 1,
-                },
-            )
+            # Parse model ref: "owner/name:version"
+            model_base, version_id = model.split(":", 1)
+
+            headers = {
+                "Authorization": f"Bearer {self.api_token}",
+                "Content-Type": "application/json",
+            }
+
+            async with httpx.AsyncClient(base_url=REPLICATE_API_BASE, headers=headers, timeout=120) as client:
+                # Create prediction
+                resp = await client.post("/predictions", json={
+                    "version": version_id,
+                    "input": {
+                        "prompt": prompt,
+                        "width": self._get_width(request.type),
+                        "height": self._get_height(request.type),
+                        "num_outputs": 1,
+                    },
+                })
+                resp.raise_for_status()
+                prediction = resp.json()
+
+                # Poll until completed or failed
+                while prediction["status"] not in ("succeeded", "failed", "canceled"):
+                    await asyncio.sleep(1)
+                    poll = await client.get(f"/predictions/{prediction['id']}")
+                    poll.raise_for_status()
+                    prediction = poll.json()
+
+                if prediction["status"] != "succeeded":
+                    error = prediction.get("error", "Generation failed")
+                    raise RuntimeError(error)
+
+                output = prediction["output"]
 
             image_url = output[0] if isinstance(output, list) else str(output)
             elapsed = int((time.time() - start) * 1000)
@@ -68,7 +93,7 @@ class GenerationService:
                 "image_url": image_url,
                 "format": "png",
                 "approach": request.approach,
-                "model": model.split(":")[0],
+                "model": model_base,
                 "prompt": prompt,
                 "generation_time_ms": elapsed,
                 "params": request.params or {},

@@ -1137,11 +1137,20 @@ class AgentService:
         if not self.events:
             return {"error": "Events service not available"}
         date = params.get("date", dt.date.today().isoformat())
+
+        def _normalize_time(t: str | None) -> str | None:
+            if not t:
+                return t
+            # Time-only like "18:34" → "2026-03-06T18:34:00"
+            if "T" not in t and len(t) <= 5:
+                return f"{date}T{t}:00"
+            return t
+
         result = self.events.create_event(
             date=date,
             name=params["name"],
-            start_time=params["start_time"],
-            end_time=params.get("end_time"),
+            start_time=_normalize_time(params["start_time"]),
+            end_time=_normalize_time(params.get("end_time")),
             location=params.get("location"),
             category=params.get("category"),
             photo_path=params.get("photo_path"),

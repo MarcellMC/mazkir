@@ -1,7 +1,7 @@
 """Google Calendar integration service for Mazkir."""
 import logging
 import socket
-from datetime import datetime, timedelta
+from datetime import date as date_type, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -518,11 +518,12 @@ class CalendarService:
             logger.error(f"Failed to delete event: {e}")
             return False
 
-    async def get_todays_events(self, all_calendars: bool = True) -> List[Dict]:
-        """Get all events for today.
+    async def get_todays_events(self, all_calendars: bool = True, target_date: date_type | None = None) -> List[Dict]:
+        """Get all events for a given date (defaults to today).
 
         Args:
             all_calendars: If True, fetch from all calendars. If False, only Mazkir.
+            target_date: The date to fetch events for. Defaults to today.
 
         Returns:
             List of event dicts with id, summary, start, end, completed, calendar fields
@@ -532,8 +533,11 @@ class CalendarService:
             return []
 
         try:
-            now = datetime.now(self.tz)
-            start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            if target_date:
+                start_of_day = datetime(target_date.year, target_date.month, target_date.day, tzinfo=self.tz)
+            else:
+                now = datetime.now(self.tz)
+                start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
             end_of_day = start_of_day + timedelta(days=1)
 
             # Get list of calendars to query

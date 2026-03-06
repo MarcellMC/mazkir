@@ -1,13 +1,7 @@
-import sys
-from types import ModuleType
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 
+import httpx
 import pytest
-
-# Create a mock replicate module so the lazy import inside generate() works
-_mock_replicate = ModuleType("replicate")
-_mock_replicate.async_run = AsyncMock()  # type: ignore[attr-defined]
-sys.modules["replicate"] = _mock_replicate
 
 from src.services.generation_service import GenerationService, GenerationRequest, StyleConfig
 
@@ -15,6 +9,23 @@ from src.services.generation_service import GenerationService, GenerationRequest
 @pytest.fixture
 def gen_service():
     return GenerationService(api_token="test-token")
+
+
+def _mock_httpx_client(prediction_output):
+    """Create a mock httpx.AsyncClient that simulates Replicate API responses."""
+    mock_client = AsyncMock()
+
+    # POST /predictions → created prediction
+    create_resp = MagicMock()
+    create_resp.json.return_value = {
+        "id": "pred123",
+        "status": "succeeded",
+        "output": prediction_output,
+    }
+    create_resp.raise_for_status = MagicMock()
+    mock_client.post.return_value = create_resp
+
+    return mock_client
 
 
 class TestGenerationService:
@@ -50,20 +61,23 @@ class TestGenerationService:
         assert "tel aviv" in prompt.lower() or "café" in prompt.lower()
 
     @pytest.mark.asyncio
-    async def test_generate_calls_replicate(self, gen_service):
+    async def test_generate_calls_replicate_api(self, gen_service):
         request = GenerationRequest(
             type="micro_icon",
             event_name="Gym",
             style=StyleConfig(),
         )
 
-        mock_output = ["https://replicate.delivery/output.png"]
-        with patch.object(_mock_replicate, "async_run", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = mock_output
+        mock_client = _mock_httpx_client(["https://replicate.delivery/output.png"])
+
+        with patch("src.services.generation_service.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
             result = await gen_service.generate(request)
 
         assert result["image_url"] == "https://replicate.delivery/output.png"
         assert result["approach"] == "ai_raster"
+        mock_client.post.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_generate_returns_error_on_failure(self, gen_service):
@@ -73,8 +87,11 @@ class TestGenerationService:
             style=StyleConfig(),
         )
 
-        with patch.object(_mock_replicate, "async_run", new_callable=AsyncMock) as mock_run:
-            mock_run.side_effect = Exception("API error")
+        with patch("src.services.generation_service.httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = Exception("API error")
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
             result = await gen_service.generate(request)
 
         assert "error" in result
