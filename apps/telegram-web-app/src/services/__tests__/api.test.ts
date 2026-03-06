@@ -9,7 +9,7 @@ beforeEach(() => {
 })
 
 describe('api client', () => {
-  it('fetches merged events for a date', async () => {
+  it('fetches events for a date', async () => {
     const mockResponse = {
       date: '2026-02-27',
       events: [],
@@ -20,10 +20,10 @@ describe('api client', () => {
       json: () => Promise.resolve(mockResponse),
     })
 
-    const result = await api.getMergedEvents('2026-02-27')
+    const result = await api.getEvents('2026-02-27')
     expect(result).toEqual(mockResponse)
     expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining('/merged-events/2026-02-27'),
+      expect.stringContaining('/events/2026-02-27'),
       expect.any(Object),
     )
   })

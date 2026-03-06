@@ -44,7 +44,7 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   loadEvents: async (date) => {
     set({ loadingEvents: true })
     try {
-      const data = await api.getMergedEvents(date)
+      const data = await api.getEvents(date)
       set({ events: data.events, loadingEvents: false })
     } catch {
       set({ loadingEvents: false })
