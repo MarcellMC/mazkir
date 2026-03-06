@@ -45,8 +45,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   │   │   │   ├── calendar.py
 │   │   │   │   ├── message.py        # Agent loop (tool-use) endpoints
 │   │   │   │   ├── timeline.py       # Google Takeout timeline data
-│   │   │   │   ├── merged_events.py  # Calendar+timeline+habits merge
-│   │   │   │   ├── events.py          # Persisted events CRUD + refresh
+│   │   │   │   ├── events.py         # Unified events: auto-merge + persist + CRUD
 │   │   │   │   ├── generate.py       # AI image generation (Replicate)
 │   │   │   │   └── imagery.py        # Wikimedia Commons search
 │   │   │   └── services/             # Business logic
@@ -73,6 +72,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │       │   │   └── Router.tsx         # Route definitions
 │       │   ├── models/event.ts        # TypeScript interfaces
 │       │   ├── services/api.ts        # vault-server API client
+│       │   ├── components/            # Shared components (DateNav)
 │       │   └── features/
 │       │       ├── dayplanner/        # Enriched daily timeline view
 │       │       └── playground/        # Asset generation playground
@@ -133,17 +133,16 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 - Reply-to context and forwarded messages — included as context for the agent
 
 ### Telegram Mini App (Web)
-- **Dayplanner** - Enriched timeline merging calendar events, Google Takeout location history, habits, and daily notes
-- **Playground** - AI asset generation (micro icons, route sketches, keyframe scenes, full day maps) using Replicate + Wikimedia Commons imagery
+- **Dayplanner** - Enriched timeline with date navigation, merging calendar events, Google Takeout location history, habits, and daily notes
+- **Playground** - AI asset generation with date navigation (micro icons, route sketches, keyframe scenes, full day maps) using Replicate + Wikimedia Commons imagery
 
 ### vault-server API Endpoints
 - `POST /message` - Agent loop: `{text, chat_id, attachments?, reply_to?, forwarded_from?}` → multi-turn tool-use with confidence gate + Claude vision
 - `POST /message/confirm` - Confirmation for low-confidence actions: `{chat_id, action_id, response}`
 - `GET /timeline/{date}` - Google Takeout location history for a date
-- `GET /merged-events/{date}` - Calendar + timeline + habits merged into enriched events
 - `POST /generate` - AI image generation via Replicate (SDXL)
-- `GET /events/{date}` - Persisted merged events for a date
-- `POST /events/{date}/refresh` - Re-merge events from sources, preserving manual data (photos, assets)
+- `GET /events/{date}` - Auto-merges calendar+timeline+habits+daily notes, reconciles with persisted data (preserving photos/assets/manual events), returns enriched events
+- `POST /events/{date}/refresh` - Force-refresh events from sources (same as GET, explicit intent)
 - `PATCH /events/{date}/{event_id}` - Update a single persisted event
 - `GET /imagery/search?lat=&lng=` - Wikimedia Commons geosearch for location imagery
 
@@ -225,7 +224,6 @@ cd ~/dev/mazkir/apps/telegram-web-app && npx vitest run      # Webapp only
 # Test vault-server endpoints
 curl http://localhost:8000/health
 curl http://localhost:8000/tasks
-curl http://localhost:8000/merged-events/2026-03-02
 curl http://localhost:8000/events/2026-03-05
 ```
 

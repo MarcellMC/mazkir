@@ -1,7 +1,11 @@
-"""Events persistence API — read, refresh, patch persisted merged events."""
+"""Unified events API — auto-merges from sources on read, persists enriched data."""
+
+from datetime import date as date_type
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+from src.services.merger_service import MergerService
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -13,62 +17,89 @@ class PatchEventBody(BaseModel):
     location: dict | None = None
 
 
-@router.get("/{date}")
-async def get_events(date: str):
-    """Get persisted events for a date."""
-    from src.main import get_events as get_events_svc
-    events_svc = get_events_svc()
-    if not events_svc:
-        raise HTTPException(503, "Events service not initialized")
-    events = events_svc.get_events(date)
-    return {"date": date, "events": events}
+async def _merge_from_sources(date: date_type) -> list[dict]:
+    """Run MergerService against all sources and return fresh event dicts."""
+    from src.main import get_vault, get_calendar, get_timeline
 
-
-@router.post("/{date}/refresh")
-async def refresh_events(date: str):
-    """Re-merge events from sources, preserving manual data."""
-    from src.main import get_events as get_events_svc, get_calendar, get_timeline, get_vault
-    events_svc = get_events_svc()
-    if not events_svc:
-        raise HTTPException(503, "Events service not initialized")
-
-    from src.services.merger_service import MergerService
-    merger = MergerService()
     vault = get_vault()
     calendar = get_calendar()
     timeline = get_timeline()
 
-    # Gather source data
     calendar_events = []
     if calendar and calendar.is_initialized:
         try:
-            from datetime import date as date_type
-            target = date_type.fromisoformat(date)
-            calendar_events = await calendar.get_todays_events(all_calendars=True, target_date=target)
+            calendar_events = await calendar.get_todays_events(
+                all_calendars=True, target_date=date,
+            )
         except Exception:
             pass
 
-    timeline_data = None
+    timeline_data = {"visits": [], "activities": []}
     if timeline:
         try:
-            from datetime import date as date_type
-            timeline_data = timeline.get_day(date_type.fromisoformat(date))
+            timeline_data = timeline.get_day(date)
         except Exception:
             pass
 
-    habits = vault.list_active_habits()
-    daily = vault.read_daily_note()
+    habits = []
+    try:
+        raw_habits = vault.list_active_habits()
+        date_str = date.isoformat()
+        for h in raw_habits:
+            meta = h["metadata"]
+            habits.append({
+                "name": meta.get("name", ""),
+                "completed_today": meta.get("last_completed") == date_str,
+                "streak": meta.get("streak", 0),
+                "tokens_per_completion": meta.get("tokens_per_completion", 5),
+            })
+    except Exception:
+        pass
 
-    fresh_events = merger.merge(
+    daily = {}
+    try:
+        daily = vault.read_daily_note(date)
+        daily = daily.get("metadata", {})
+    except Exception:
+        pass
+
+    merger = MergerService(timezone="Asia/Jerusalem")
+    events = merger.merge(
         calendar_events=calendar_events,
         timeline_data=timeline_data,
         habits=habits,
         daily=daily,
     )
-    fresh_dicts = [e.model_dump() for e in fresh_events]
+    return [e.model_dump() for e in events]
 
-    result = events_svc.refresh_events(date, fresh_dicts)
-    return {"date": date, "events": result, "refreshed": True}
+
+@router.get("/{date}")
+async def get_events(date: date_type):
+    """Get events for a date — auto-merges from sources and persists."""
+    from src.main import get_events as get_events_svc
+    events_svc = get_events_svc()
+    if not events_svc:
+        raise HTTPException(503, "Events service not initialized")
+
+    fresh = await _merge_from_sources(date)
+    result = events_svc.auto_refresh(date.isoformat(), fresh)
+
+    return {
+        "date": date.isoformat(),
+        "events": result,
+        "summary": {
+            "total_events": len(result),
+            "total_tokens": sum(e.get("tokens_earned", 0) for e in result),
+        },
+    }
+
+
+@router.post("/{date}/refresh")
+async def refresh_events(date: date_type):
+    """Force-refresh events from sources (same as GET, explicit intent)."""
+    result = await get_events(date)
+    result["refreshed"] = True
+    return result
 
 
 @router.patch("/{date}/{event_id}")

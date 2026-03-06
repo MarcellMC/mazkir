@@ -28,7 +28,7 @@ export const useDayplannerStore = create<DayplannerState>((set) => ({
   fetchDay: async (date) => {
     set({ loading: true, error: null })
     try {
-      const data: MergedEventsResponse = await api.getMergedEvents(date)
+      const data: MergedEventsResponse = await api.getEvents(date)
       set({
         events: data.events,
         totalTokens: data.summary.total_tokens,

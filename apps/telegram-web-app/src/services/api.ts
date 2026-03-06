@@ -27,8 +27,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  getMergedEvents(date: string): Promise<MergedEventsResponse> {
-    return request(`/merged-events/${date}`)
+  getEvents(date: string): Promise<MergedEventsResponse> {
+    return request(`/events/${date}`)
   },
 
   getDaily(): Promise<DailyResponse> {
