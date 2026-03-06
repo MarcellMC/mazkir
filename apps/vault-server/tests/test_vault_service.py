@@ -175,3 +175,44 @@ class TestAppendToDailySection:
         daily = vault_service.read_daily_note()
         assert "## Photos" in daily["content"]
         assert "A photo here" in daily["content"]
+
+
+# --- read_daily_section / replace_daily_section ---
+
+
+class TestDailySections:
+    def test_read_daily_section_returns_content(self, vault_service, vault_path):
+        vault_service.create_daily_note()
+        vault_service.append_to_daily_section("Notes", "Hello world")
+        result = vault_service.read_daily_section("Notes")
+        assert "Hello world" in result
+
+    def test_read_daily_section_empty(self, vault_service, vault_path):
+        vault_service.create_daily_note()
+        result = vault_service.read_daily_section("Notes")
+        assert result.strip() == ""
+
+    def test_read_daily_section_missing(self, vault_service, vault_path):
+        vault_service.create_daily_note()
+        result = vault_service.read_daily_section("Nonexistent")
+        assert result == ""
+
+    def test_read_daily_section_no_daily_note(self, vault_service):
+        result = vault_service.read_daily_section("Notes")
+        assert result == ""
+
+    def test_replace_daily_section(self, vault_service, vault_path):
+        vault_service.create_daily_note()
+        vault_service.append_to_daily_section("Notes", "Old content")
+        vault_service.replace_daily_section("Notes", "New content")
+        result = vault_service.read_daily_section("Notes")
+        assert "New content" in result
+        assert "Old content" not in result
+
+    def test_replace_daily_section_preserves_other_sections(self, vault_service, vault_path):
+        vault_service.create_daily_note()
+        vault_service.replace_daily_section("Notes", "New notes content")
+        daily = vault_service.read_daily_note()
+        assert "## Daily Habits" in daily["content"]
+        assert "## Tasks" in daily["content"]
+        assert "New notes content" in daily["content"]

@@ -160,6 +160,62 @@ class VaultService:
 
         return {"path": path, "section": section}
 
+    def read_daily_section(self, section: str, date: Optional[datetime] = None) -> str:
+        """Read content of a daily note section as raw text.
+
+        Returns text between `## {section}` and the next `## ` heading.
+        Returns empty string if section or daily note doesn't exist.
+        """
+        try:
+            daily = self.read_daily_note(date)
+        except FileNotFoundError:
+            return ""
+
+        content = daily.get("content", "")
+        header = f"## {section}"
+        if header not in content:
+            return ""
+
+        idx = content.index(header) + len(header)
+        next_section = content.find("\n## ", idx)
+        if next_section == -1:
+            return content[idx:]
+        return content[idx:next_section]
+
+    def replace_daily_section(
+        self,
+        section: str,
+        new_content: str,
+        date: Optional[datetime] = None,
+    ) -> Dict:
+        """Replace the content of a daily note section.
+
+        Finds `## {section}` and replaces everything between it and
+        the next `## ` heading (or end of file) with new_content.
+        Creates the daily note if it doesn't exist.
+        """
+        try:
+            daily = self.read_daily_note(date)
+        except FileNotFoundError:
+            daily = self.create_daily_note(date)
+
+        content = daily["content"]
+        header = f"## {section}"
+
+        if header in content:
+            idx = content.index(header) + len(header)
+            next_section = content.find("\n## ", idx)
+            if next_section == -1:
+                updated = content[:idx] + "\n\n" + new_content + "\n"
+            else:
+                updated = content[:idx] + "\n\n" + new_content + "\n" + content[next_section:]
+        else:
+            updated = content.rstrip() + f"\n\n{header}\n\n{new_content}\n"
+
+        path = self.get_daily_note_path(date)
+        self.write_file(path, daily["metadata"], updated)
+        return {"path": path, "section": section}
+
     def get_daily_notes_section(self, date=None) -> list[str]:
         """Parse ## Notes section from daily note into a list of entries."""
         try:
