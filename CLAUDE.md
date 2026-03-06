@@ -171,10 +171,22 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 - **@mazkir/shared-types** provides TypeScript interfaces shared between telegram-bot and telegram-web-app
 - New features → add route to vault-server, then add UI in telegram bot or web app
 
+### Agent tool risk levels
+- **safe** (read-only): `list_tasks`, `list_habits`, `list_goals`, `get_daily`, `get_tokens`, `search_knowledge`, `get_related`, `read_daily_section`, `list_events`
+- **write** (auto-execute at ≥0.85 confidence): `create_task`, `create_habit`, `create_goal`, `update_item`, `save_knowledge`, `attach_to_daily`, `edit_daily_section`, `attach_photo_to_event`, `create_event`
+- **destructive** (auto-execute at ≥0.85 confidence): `complete_task`, `complete_habit`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`
+
 ### When adding vault-server routes:
 1. Create route in `apps/vault-server/src/api/routes/`
 2. Add service method to relevant service if needed
 3. Register router in `apps/vault-server/src/main.py`
+
+### When adding agent tools:
+1. Add tool schema + handler + risk to `_register_tools()` dict in `agent_service.py`
+2. Implement `_tool_<name>` handler method (return dict, include `_items` for referenced paths)
+3. For write/destructive tools: include `_confidence` and `_reasoning` in input_schema
+4. Add tests in `test_agent_service.py` (registration check + handler mock test)
+5. Update tool count in this file
 
 ### When adding telegram commands:
 1. Create Composer in `apps/telegram-bot/src/commands/<name>.ts`
