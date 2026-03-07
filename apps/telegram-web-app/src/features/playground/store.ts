@@ -20,6 +20,14 @@ interface PlaygroundState {
   approach: string
   style: GenerateRequest['style']
 
+  // Prompt
+  promptOverride: string | null
+
+  // Dimensions
+  aspectRatio: string
+  width: number
+  height: number
+
   // Actions
   setDate: (date: string) => void
   loadEvents: (date: string) => Promise<void>
@@ -27,6 +35,9 @@ interface PlaygroundState {
   setGenType: (type: GenerateRequest['type']) => void
   setApproach: (approach: string) => void
   setStyle: (style: GenerateRequest['style']) => void
+  setPromptOverride: (prompt: string | null) => void
+  setAspectRatio: (ratio: string) => void
+  setCustomDimensions: (width: number, height: number) => void
   generate: () => Promise<void>
 }
 
@@ -43,6 +54,12 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   genType: 'micro_icon',
   approach: 'ai_raster',
   style: { line_style: 'clean_vector', texture: 'clean' },
+
+  promptOverride: null,
+
+  aspectRatio: '1:1',
+  width: 768,
+  height: 768,
 
   setDate: (date) => {
     set({ date })
@@ -64,6 +81,26 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   setApproach: (approach) => set({ approach }),
   setStyle: (style) => set({ style }),
 
+  setPromptOverride: (prompt) => set({ promptOverride: prompt }),
+
+  setAspectRatio: (ratio) => {
+    const presets: Record<string, [number, number]> = {
+      '1:1': [768, 768],
+      '4:3': [768, 576],
+      '3:4': [576, 768],
+      '16:9': [768, 448],
+      '9:16': [448, 768],
+    }
+    const dims = presets[ratio]
+    if (dims) {
+      set({ aspectRatio: ratio, width: dims[0], height: dims[1] })
+    } else {
+      set({ aspectRatio: ratio })
+    }
+  },
+
+  setCustomDimensions: (width, height) => set({ aspectRatio: 'custom', width, height }),
+
   generate: async () => {
     const { selectedEvent, genType, approach, style } = get()
     if (!selectedEvent) return
@@ -77,6 +114,9 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
         location_name: selectedEvent.location?.name,
         style,
         approach,
+        prompt_override: get().promptOverride || undefined,
+        width: get().width,
+        height: get().height,
       })
       set((state) => ({
         result,
