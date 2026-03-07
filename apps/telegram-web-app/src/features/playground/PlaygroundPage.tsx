@@ -35,10 +35,17 @@ export default function PlaygroundPage() {
             style={store.style}
             generating={store.generating}
             result={store.result}
+            promptOverride={store.promptOverride}
+            width={store.width}
+            height={store.height}
+            aspectRatio={store.aspectRatio}
             onGenTypeChange={store.setGenType}
             onApproachChange={store.setApproach}
             onStyleChange={store.setStyle}
             onGenerate={store.generate}
+            onPromptOverrideChange={store.setPromptOverride}
+            onAspectRatioChange={store.setAspectRatio}
+            onCustomDimensionsChange={store.setCustomDimensions}
           />
         </div>
       </div>
