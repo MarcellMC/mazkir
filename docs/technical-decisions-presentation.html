@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mazkir — Key Technical Decisions</title>
+  <style>
+    /* ── Reset & Base ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d27;
+      --border:    #2a2d3e;
+      --accent:    #7c6af7;
+      --accent2:   #56c8a0;
+      --accent3:   #f7a26a;
+      --accent4:   #e06b8a;
+      --text:      #e8eaf0;
+      --muted:     #8891aa;
+      --code-bg:   #13151f;
+      --radius:    12px;
+      --slide-w:   900px;
+    }
+
+    html { font-size: 16px; scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      line-height: 1.6;
+      padding: 2rem 1rem;
+    }
+
+    /* ── Slide Layout ─────────────────────────────────────────────── */
+    .deck {
+      max-width: var(--slide-w);
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 2.5rem;
+    }
+
+    .slide {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2.5rem 3rem;
+      page-break-inside: avoid;
+    }
+
+    /* ── Slide Accents ────────────────────────────────────────────── */
+    .slide::before {
+      content: '';
+      display: block;
+      height: 3px;
+      border-radius: 3px 3px 0 0;
+      margin: -2.5rem -3rem 2rem;
+      background: var(--accent);
+    }
+    .slide.green::before  { background: var(--accent2); }
+    .slide.orange::before { background: var(--accent3); }
+    .slide.pink::before   { background: var(--accent4); }
+    .slide.multi::before  {
+      background: linear-gradient(90deg,
+        var(--accent) 0%, var(--accent2) 33%, var(--accent3) 66%, var(--accent4) 100%);
+    }
+
+    /* ── Title Slide ──────────────────────────────────────────────── */
+    .title-slide {
+      text-align: center;
+      padding: 4rem 3rem;
+    }
+    .title-slide .eyebrow {
+      font-size: .85rem;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 1rem;
+    }
+    .title-slide h1 {
+      font-size: 2.6rem;
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 1rem;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .title-slide .subtitle {
+      font-size: 1.15rem;
+      color: var(--muted);
+    }
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: .6rem;
+      margin-top: 2rem;
+    }
+    .pill {
+      background: var(--border);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 99px;
+      padding: .3rem .9rem;
+      font-size: .8rem;
+      color: var(--muted);
+    }
+
+    /* ── Typography ───────────────────────────────────────────────── */
+    h2 {
+      font-size: 1.45rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+    }
+    h2 .num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.8rem;
+      height: 1.8rem;
+      border-radius: 50%;
+      font-size: .8rem;
+      font-weight: 700;
+      background: var(--accent);
+      color: #fff;
+      flex-shrink: 0;
+    }
+    h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--accent2);
+      margin: 1.25rem 0 .5rem;
+    }
+    p { color: var(--muted); margin-bottom: .75rem; }
+    p:last-child { margin-bottom: 0; }
+    strong { color: var(--text); font-weight: 600; }
+
+    /* ── Lists ────────────────────────────────────────────────────── */
+    ul, ol {
+      padding-left: 1.4rem;
+      color: var(--muted);
+    }
+    li { margin-bottom: .4rem; }
+    li strong { color: var(--text); }
+    li:last-child { margin-bottom: 0; }
+
+    /* ── Code ─────────────────────────────────────────────────────── */
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.1rem 1.3rem;
+      overflow-x: auto;
+      font-size: .78rem;
+      line-height: 1.7;
+      color: #c9d1e0;
+      margin: 1rem 0;
+    }
+    code {
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+    }
+    .kw  { color: #c792ea; }
+    .fn  { color: #82aaff; }
+    .str { color: #c3e88d; }
+    .cm  { color: #546e7a; font-style: italic; }
+    .num { color: #f78c6c; }
+    .op  { color: #89ddff; }
+    .var { color: #ffcb6b; }
+
+    /* ── Grid Helpers ─────────────────────────────────────────────── */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+      margin-top: .5rem;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      margin-top: .5rem;
+    }
+    .card {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.2rem;
+    }
+    .card h4 {
+      font-size: .85rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: .5rem;
+    }
+    .card p, .card li { font-size: .82rem; color: var(--muted); }
+    .card ul { padding-left: 1.1rem; }
+
+    /* ── Table ────────────────────────────────────────────────────── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .82rem;
+      margin-top: 1rem;
+    }
+    th {
+      text-align: left;
+      font-weight: 600;
+      color: var(--text);
+      border-bottom: 1px solid var(--border);
+      padding: .5rem .75rem;
+    }
+    td {
+      padding: .5rem .75rem;
+      color: var(--muted);
+      border-bottom: 1px solid rgba(255,255,255,.04);
+      vertical-align: top;
+    }
+    tr:last-child td { border-bottom: none; }
+    td strong { color: var(--text); }
+
+    /* ── Badge ────────────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: .15rem .6rem;
+      border-radius: 99px;
+      font-size: .72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .badge-safe       { background: rgba(86,200,160,.18); color: var(--accent2); }
+    .badge-write      { background: rgba(247,162,106,.18); color: var(--accent3); }
+    .badge-destructive{ background: rgba(224,107,138,.18); color: var(--accent4); }
+    .badge-auto       { background: rgba(124,106,247,.18); color: var(--accent); }
+
+    /* ── Flow diagram ─────────────────────────────────────────────── */
+    .flow {
+      display: flex;
+      flex-direction: column;
+      gap: .35rem;
+      margin: .75rem 0;
+    }
+    .flow-step {
+      background: var(--code-bg);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      padding: .5rem 1rem;
+      font-size: .83rem;
+      color: var(--text);
+    }
+    .flow-arrow {
+      text-align: center;
+      color: var(--border);
+      font-size: 1rem;
+      line-height: 1;
+    }
+    .flow-step.green  { border-color: var(--accent2); }
+    .flow-step.orange { border-color: var(--accent3); }
+    .flow-step.pink   { border-color: var(--accent4); }
+
+    /* ── Highlight box ────────────────────────────────────────────── */
+    .highlight-box {
+      border-left: 3px solid var(--accent);
+      background: rgba(124,106,247,.07);
+      border-radius: 0 8px 8px 0;
+      padding: .8rem 1.1rem;
+      margin: 1rem 0;
+      font-size: .87rem;
+      color: var(--muted);
+    }
+    .highlight-box.green  { border-color: var(--accent2); background: rgba(86,200,160,.07); }
+    .highlight-box.orange { border-color: var(--accent3); background: rgba(247,162,106,.07); }
+
+    /* ── Section label ────────────────────────────────────────────── */
+    .section-label {
+      font-size: .72rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: .5rem;
+    }
+
+    /* ── Page break for print ─────────────────────────────────────── */
+    @media print {
+      body { background: white; color: #111; padding: 0; }
+      .slide { break-inside: avoid; margin-bottom: 2rem; border: 1px solid #ccc; }
+    }
+  </style>
+</head>
+<body>
+<div class="deck">
+
+  <!-- ── TITLE ─────────────────────────────────────────────────────── -->
+  <div class="slide multi title-slide">
+    <div class="eyebrow">Technical Decisions</div>
+    <h1>Building Mazkir</h1>
+    <div class="subtitle">
+      Architecture decisions behind a personal AI assistant<br>
+      with a Claude agent loop, three-tier memory, and Obsidian vault storage
+    </div>
+    <div class="pill-row">
+      <span class="pill">Python · FastAPI</span>
+      <span class="pill">TypeScript · grammY</span>
+      <span class="pill">React 18 · Vite</span>
+      <span class="pill">Turborepo monorepo</span>
+      <span class="pill">Claude tool-use</span>
+      <span class="pill">Obsidian vault</span>
+    </div>
+  </div>
+
+  <!-- ── 1. OVERVIEW ───────────────────────────────────────────────── -->
+  <div class="slide">
+    <h2><span class="num">1</span>System Overview</h2>
+    <p>
+      Mazkir is a <strong>single-user personal AI assistant</strong> that manages tasks, habits,
+      goals, and long-term knowledge through natural language. The user interacts via
+      Telegram; all data lives in a local Obsidian vault (markdown files).
+    </p>
+
+    <div class="grid-3" style="margin-top:1.25rem">
+      <div class="card">
+        <h4>vault-server</h4>
+        <ul>
+          <li>Python + FastAPI</li>
+          <li>All business logic</li>
+          <li>Claude agent loop</li>
+          <li>Vault CRUD</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4>telegram-bot</h4>
+        <ul>
+          <li>TypeScript + grammY</li>
+          <li>Thin UI layer</li>
+          <li>Inline keyboards</li>
+          <li>Photo + location msgs</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4>telegram-web-app</h4>
+        <ul>
+          <li>React 18 + Vite</li>
+          <li>Telegram Mini App</li>
+          <li>Day planner view</li>
+          <li>Asset generation</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="highlight-box" style="margin-top:1.25rem">
+      <strong>Core principle:</strong> vault-server owns 100% of business logic.
+      The bot and webapp are pure presentation layers — they call REST endpoints and format responses.
+      This means the API is the source of truth, and UIs are interchangeable.
+    </div>
+  </div>
+
+  <!-- ── 2. MONOREPO ───────────────────────────────────────────────── -->
+  <div class="slide green">
+    <h2><span class="num" style="background:var(--accent2)">2</span>Monorepo with Turborepo</h2>
+    <p>
+      <strong>Decision:</strong> one Turborepo workspace for the bot, webapp, and shared types —
+      with the Python backend living alongside as a sibling app.
+    </p>
+
+    <div class="grid-2">
+      <div>
+        <h3>Why a monorepo?</h3>
+        <ul>
+          <li>Bot and webapp share <strong>TypeScript interfaces</strong> via <code>@mazkir/shared-types</code></li>
+          <li>Single <code>npx turbo dev</code> starts all services</li>
+          <li>Unified test + lint pipeline</li>
+          <li>Simple — single user, no need for complex micro-service orchestration</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Language per app</h3>
+        <ul>
+          <li><strong>Python</strong> for backend — rich ML ecosystem, Anthropic SDK, Pillow EXIF</li>
+          <li><strong>TypeScript</strong> for bot — rewritten from Python to unify with webapp and share types</li>
+          <li><strong>React</strong> for webapp — Telegram Mini App SDK, modern UI needs</li>
+        </ul>
+      </div>
+    </div>
+
+    <pre><code>apps/
+├── vault-server/          <span class="cm"># Python + FastAPI (all business logic)</span>
+├── telegram-bot/          <span class="cm"># TypeScript + grammY (thin UI)</span>
+└── telegram-web-app/      <span class="cm"># React 18 + Vite (Telegram Mini App)</span>
+packages/
+└── shared-types/          <span class="cm"># @mazkir/shared-types — shared interfaces</span></code></pre>
+  </div>
+
+  <!-- ── 3. AGENT LOOP ─────────────────────────────────────────────── -->
+  <div class="slide">
+    <h2><span class="num">3</span>Agent Loop: Tool-Use over Intent Parsing</h2>
+    <p>
+      <strong>Key decision:</strong> replace the classical <em>intent → route → execute</em> pattern
+      with a <strong>Claude tool-use agent loop</strong>. The model decides which tools to call,
+      in what order, and when it has enough information to respond.
+    </p>
+
+    <h3>Why tool-use instead of intent parsing?</h3>
+    <ul>
+      <li>Natural multi-step actions: "add a task, then mark yesterday's habit done, then tell me my score" — one message, one loop</li>
+      <li>Context-aware disambiguation: Claude reads conversation history before acting</li>
+      <li>Graceful fallback: if a tool fails, Claude gets the error and can retry or ask</li>
+      <li>Easily extensible: adding a tool = adding a dict entry + handler method</li>
+    </ul>
+
+    <div class="flow" style="margin-top:1.2rem">
+      <div class="flow-step">User message → assemble context (memory tiers)</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step">POST to Claude API: system prompt + history + 25 tool schemas</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step orange">Loop (max 10 iterations): Claude calls tools → execute → feed result back</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step green">stop_reason == "end_turn" → return final text to user</div>
+    </div>
+
+    <pre><code><span class="cm"># Hard limits that prevent runaway loops</span>
+MAX_ITERATIONS = <span class="num">10</span>
+TOKEN_BUDGET_WARNING = <span class="num">80_000</span>  <span class="cm"># inject "wrap up" message</span>
+REQUEST_TIMEOUT = <span class="num">30</span>           <span class="cm"># seconds per Claude call</span></code></pre>
+  </div>
+
+  <!-- ── 4. CONFIDENCE GATING ──────────────────────────────────────── -->
+  <div class="slide orange">
+    <h2><span class="num" style="background:var(--accent3)">4</span>Confidence-Based Safety Gate</h2>
+    <p>
+      Not all tool calls are equal. A <strong>two-layer safety system</strong> decides
+      whether to auto-execute or pause for human confirmation.
+    </p>
+
+    <div class="grid-2" style="margin-top:.75rem">
+      <div>
+        <h3>Layer 1 — Static risk classification</h3>
+        <ul>
+          <li><span class="badge badge-safe">Safe</span> Read-only tools — always auto-execute</li>
+          <li><span class="badge badge-write">Write</span> Creates / updates — threshold gated</li>
+          <li><span class="badge badge-destructive">Destructive</span> Deletes / archives — threshold gated</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Layer 2 — Dynamic Claude confidence</h3>
+        <p>Write and destructive tool schemas include two extra fields:</p>
+        <ul>
+          <li><code>_confidence</code> — float 0–1 Claude assigns</li>
+          <li><code>_reasoning</code> — why Claude is or isn't sure</li>
+        </ul>
+      </div>
+    </div>
+
+    <table style="margin-top:1.2rem">
+      <thead>
+        <tr>
+          <th>Tool Risk</th><th>Confidence</th><th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="badge badge-safe">Safe</span></td>
+          <td>—</td>
+          <td><span class="badge badge-auto">Auto-execute</span></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-write">Write</span> / <span class="badge badge-destructive">Destructive</span></td>
+          <td>≥ 0.85</td>
+          <td><span class="badge badge-auto">Auto-execute</span></td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-write">Write</span> / <span class="badge badge-destructive">Destructive</span></td>
+          <td>&lt; 0.85</td>
+          <td>Pause → send confirmation keyboard to user</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="highlight-box orange" style="margin-top:1rem">
+      The confirmation flow stores a pending action in memory, sends the user an inline
+      <strong>Yes / No</strong> keyboard, and resumes the agent loop with the user's answer as context.
+      This means the model can proceed, abort, or ask a clarifying question — all within the
+      same conversation thread.
+    </div>
+  </div>
+
+  <!-- ── 5. MEMORY SYSTEM ──────────────────────────────────────────── -->
+  <div class="slide">
+    <h2><span class="num">5</span>Three-Tier Memory System</h2>
+    <p>
+      Conversational AI needs different kinds of memory at different time-scales.
+      A flat conversation log doesn't scale. Three tiers cover different needs
+      while keeping token usage bounded.
+    </p>
+
+    <div class="grid-3" style="margin-top:.75rem">
+      <div class="card">
+        <h4>Tier 1 — Short-Term</h4>
+        <p>Sliding window of last ~20 messages per chat per day.</p>
+        <p>When window overflows, oldest half is <strong>summarized by Claude</strong> (cheap haiku call) and stored in frontmatter.</p>
+        <p style="margin-top:.5rem;font-size:.75rem;color:var(--accent)">
+          Storage: <code>conversations/{date}/{chat_id}.md</code>
+        </p>
+      </div>
+      <div class="card">
+        <h4>Tier 2 — Mid-Term</h4>
+        <p>Vault state snapshot injected into system prompt:</p>
+        <ul>
+          <li>Active tasks (priority + due)</li>
+          <li>Habits + streaks</li>
+          <li>Goals + progress %</li>
+          <li>Today's daily note</li>
+          <li>Token balance</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4>Tier 3 — Long-Term</h4>
+        <p>Knowledge graph (in-memory adjacency map) built from wikilinks + tags at startup.</p>
+        <p>Keyword search finds relevant notes; graph traversal surfaces related ones.</p>
+        <p style="margin-top:.5rem;font-size:.75rem;color:var(--accent)">
+          Future: embedding vectors when vault &gt; 200 notes
+        </p>
+      </div>
+    </div>
+
+    <pre style="margin-top:1.2rem"><code><span class="cm"># Context assembly — called before every agent invocation</span>
+<span class="kw">def</span> <span class="fn">assemble_context</span>(<span class="var">chat_id</span>):
+    messages  = load_conversation(chat_id)   <span class="cm"># tier 1</span>
+    snapshot  = build_vault_snapshot()       <span class="cm"># tier 2</span>
+    knowledge = gather_relevant_knowledge()  <span class="cm"># tier 3</span>
+    <span class="kw">return</span> ConversationContext(messages, snapshot, knowledge)</code></pre>
+  </div>
+
+  <!-- ── 6. VAULT STORAGE ──────────────────────────────────────────── -->
+  <div class="slide green">
+    <h2><span class="num" style="background:var(--accent2)">6</span>Obsidian Vault as Data Layer</h2>
+    <p>
+      <strong>Decision:</strong> store all structured data (tasks, habits, goals, conversations,
+      knowledge) as <strong>markdown files with YAML frontmatter</strong> inside an Obsidian vault,
+      versioned in a separate nested git repo.
+    </p>
+
+    <div class="grid-2" style="margin-top:.75rem">
+      <div>
+        <h3>Why Obsidian vault?</h3>
+        <ul>
+          <li><strong>Human-readable</strong> — plaintext, browsable without any app</li>
+          <li><strong>Version-controlled</strong> — nested git repo tracks changes</li>
+          <li><strong>Wikilinks</strong> — native graph connections between notes</li>
+          <li><strong>Local-first</strong> — no cloud dependency for core data</li>
+          <li><strong>Browsable in Obsidian</strong> — the user can explore their own data</li>
+        </ul>
+      </div>
+      <div>
+        <h3>File layout</h3>
+        <pre style="margin:0;font-size:.73rem"><code>memory/
+├── 00-system/
+│   ├── conversations/
+│   └── preferences/
+├── 10-daily/
+├── 20-habits/
+├── 30-goals/
+├── 40-tasks/
+│   ├── active/
+│   └── archive/
+└── 60-knowledge/
+    ├── notes/
+    └── insights/</code></pre>
+      </div>
+    </div>
+
+    <pre style="margin-top:.75rem"><code><span class="cm">--- YAML frontmatter for a task file ---</span>
+<span class="var">type</span>: task
+<span class="var">name</span>: Write architecture doc
+<span class="var">status</span>: active
+<span class="var">priority</span>: <span class="num">2</span>
+<span class="var">due_date</span>: <span class="str">2026-03-10</span>
+<span class="var">category</span>: engineering</code></pre>
+  </div>
+
+  <!-- ── 7. EVENTS SYSTEM ──────────────────────────────────────────── -->
+  <div class="slide">
+    <h2><span class="num">7</span>Events: Three-Way Merge + Persistent IDs</h2>
+    <p>
+      A unified <em>events</em> timeline merges data from three sources, with stable IDs so that
+      manually-attached photos and assets survive re-merges.
+    </p>
+
+    <div class="grid-3" style="margin-top:.75rem">
+      <div class="card">
+        <h4>Google Calendar</h4>
+        <p>Appointments, meetings, scheduled events</p>
+      </div>
+      <div class="card">
+        <h4>Google Takeout Timeline</h4>
+        <p>Location history — places visited, activities (semantic labels)</p>
+      </div>
+      <div class="card">
+        <h4>Vault state</h4>
+        <p>Daily notes, habit completions, manual events, photo events</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top:1.2rem">Reconciliation algorithm (every GET /events/{date})</h3>
+    <div class="flow">
+      <div class="flow-step">1. Fresh merge from all three sources</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step">2. Load persisted <code>data/events/{date}.json</code></div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step orange">3. Match by <code>source_ids</code> → update name/time from fresh, preserve <code>id</code> + <code>photos</code> + <code>assets</code></div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step green">4. Unmatched source=manual/photo → preserve exactly; unmatched fresh → add with new ID</div>
+    </div>
+
+    <div class="highlight-box" style="margin-top:.75rem">
+      Every event gets an <strong><code>evt_{uuid4_short}</code></strong> (8 chars) on first persist.
+      This ID is stable across re-merges, so photo attachments and generated assets
+      remain linked to the correct event even after a full calendar re-sync.
+    </div>
+  </div>
+
+  <!-- ── 8. PHOTO PIPELINE ─────────────────────────────────────────── -->
+  <div class="slide pink">
+    <h2><span class="num" style="background:var(--accent4)">8</span>Photo Events Pipeline</h2>
+    <p>
+      Photos are first-class citizens. The pipeline extracts rich context from EXIF metadata,
+      passes it to Claude vision, and lets the agent decide where the photo belongs.
+    </p>
+
+    <div class="flow" style="margin-top:.75rem">
+      <div class="flow-step">User sends photo via Telegram</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step">Bot downloads → base64-encodes → POST /message with <code>attachments[]</code></div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step orange">vault-server saves JPEG to <code>data/media/{date}/</code> + extracts EXIF via Pillow (GPS, timestamp, camera)</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step pink">Claude sees: vision block + "[Photo saved: path | EXIF: lat, lng, camera, time]"</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-step green">Agent calls: <code>attach_photo_to_event</code> OR <code>create_event</code> OR <code>attach_to_daily</code></div>
+    </div>
+
+    <div class="highlight-box orange" style="margin-top:1rem">
+      <strong>Design choice:</strong> there are no hard-coded rules for photo disposition.
+      Claude sees the photo content, GPS coordinates, and conversation history, then picks
+      the most appropriate action. A photo of a café at lunch gets attached to a location
+      event; a random screenshot goes to the daily note.
+    </div>
+  </div>
+
+  <!-- ── 9. 25 TOOLS ───────────────────────────────────────────────── -->
+  <div class="slide">
+    <h2><span class="num">9</span>Tool Registry — 25 Registered Tools</h2>
+    <p>
+      Tools are the agent's vocabulary. Each is registered with a JSON schema,
+      a handler method, and a risk level. Claude learns to call the right combination.
+    </p>
+
+    <div class="grid-3" style="margin-top:.75rem">
+      <div class="card">
+        <h4><span class="badge badge-safe">Safe</span> Read-only (9)</h4>
+        <ul>
+          <li>list_tasks</li>
+          <li>list_habits</li>
+          <li>list_goals</li>
+          <li>get_daily</li>
+          <li>get_tokens</li>
+          <li>search_knowledge</li>
+          <li>get_related</li>
+          <li>read_daily_section</li>
+          <li>list_events</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4><span class="badge badge-write">Write</span> Create/Update (9)</h4>
+        <ul>
+          <li>create_task</li>
+          <li>create_habit</li>
+          <li>create_goal</li>
+          <li>update_item</li>
+          <li>save_knowledge</li>
+          <li>attach_to_daily</li>
+          <li>edit_daily_section</li>
+          <li>attach_photo_to_event</li>
+          <li>create_event</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4><span class="badge badge-destructive">Destructive</span> Delete/Archive (7)</h4>
+        <ul>
+          <li>complete_task</li>
+          <li>complete_habit</li>
+          <li>delete_task</li>
+          <li>archive_task</li>
+          <li>delete_habit</li>
+          <li>archive_goal</li>
+          <li><em>(+ more)</em></li>
+        </ul>
+      </div>
+    </div>
+
+    <pre style="margin-top:1rem"><code><span class="cm"># Adding a new tool: one dict entry + one handler method</span>
+<span class="str">"my_tool"</span>: {
+    <span class="str">"schema"</span>: { <span class="str">"name"</span>: <span class="str">"my_tool"</span>, <span class="str">"input_schema"</span>: { ... } },
+    <span class="str">"handler"</span>: <span class="var">self</span>._tool_my_tool,
+    <span class="str">"risk"</span>:    <span class="str">"write"</span>,
+}</code></pre>
+  </div>
+
+  <!-- ── 10. REST API ──────────────────────────────────────────────── -->
+  <div class="slide green">
+    <h2><span class="num" style="background:var(--accent2)">10</span>REST API Design</h2>
+    <p>
+      vault-server exposes a clean HTTP API. The bot and webapp are consumers — they never
+      touch the vault directly. This decoupling means the presentation layer can evolve
+      (or be replaced) without touching business logic.
+    </p>
+
+    <table>
+      <thead>
+        <tr><th>Endpoint</th><th>Purpose</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>POST /message</code></td><td>Natural language → agent loop → response. Accepts text, attachments, reply context</td></tr>
+        <tr><td><code>POST /message/confirm</code></td><td>Resume a paused agent loop after user confirms a low-confidence action</td></tr>
+        <tr><td><code>GET /events/{date}</code></td><td>Auto-merged calendar + timeline + vault events, reconciled with persisted JSON</td></tr>
+        <tr><td><code>PATCH /events/{date}/{id}</code></td><td>Update a single persisted event (manual edits from webapp)</td></tr>
+        <tr><td><code>GET /tasks</code> / <code>/habits</code> / <code>/goals</code></td><td>Domain-specific read endpoints for structured UI</td></tr>
+        <tr><td><code>GET /timeline/{date}</code></td><td>Raw Google Takeout location history</td></tr>
+        <tr><td><code>POST /generate</code></td><td>Replicate API proxy for AI image generation</td></tr>
+        <tr><td><code>GET /imagery/search</code></td><td>Wikimedia Commons geosearch by lat/lng</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ── 11. RICH MESSAGES ─────────────────────────────────────────── -->
+  <div class="slide">
+    <h2><span class="num">11</span>Rich Message Handling</h2>
+    <p>
+      The agent is not limited to plain text. It handles four message types,
+      building a richer context object than a simple string.
+    </p>
+
+    <div class="grid-2" style="margin-top:.75rem">
+      <div>
+        <h3>Supported input types</h3>
+        <ul>
+          <li><strong>Plain text</strong> — routed directly to agent</li>
+          <li><strong>Photos</strong> — downloaded, base64, multi-content block with vision + EXIF</li>
+          <li><strong>Locations</strong> — GPS coords passed to agent as structured context</li>
+          <li><strong>Reply / Forward</strong> — quoted text + sender included in message</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Payload to vault-server</h3>
+        <pre style="margin:0;font-size:.75rem"><code><span class="op">{</span>
+  <span class="str">"text"</span>: <span class="str">"..."</span>,
+  <span class="str">"chat_id"</span>: <span class="num">123</span>,
+  <span class="str">"attachments"</span>: [<span class="op">{</span>
+    <span class="str">"type"</span>: <span class="str">"photo"</span>,
+    <span class="str">"data"</span>: <span class="str">"&lt;base64&gt;"</span>
+  <span class="op">}</span>],
+  <span class="str">"reply_to"</span>: <span class="op">{</span>
+    <span class="str">"text"</span>: <span class="str">"..."</span>,
+    <span class="str">"sender"</span>: <span class="str">"User"</span>
+  <span class="op">}</span>
+<span class="op">}</span></code></pre>
+      </div>
+    </div>
+
+    <div class="highlight-box" style="margin-top:1rem">
+      Multi-content Claude messages combine an <strong>image block</strong> and a <strong>text block</strong>
+      in the same turn. This lets the model reason about both photo content and structured EXIF context
+      (GPS coordinates, timestamp, camera model) simultaneously.
+    </div>
+  </div>
+
+  <!-- ── 12. DECISIONS SUMMARY ─────────────────────────────────────── -->
+  <div class="slide multi">
+    <h2><span class="num" style="background:linear-gradient(135deg,var(--accent),var(--accent2))">12</span>Decision Summary</h2>
+
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choice</th><th>Key Reason</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Agent architecture</strong></td>
+          <td>Claude tool-use loop</td>
+          <td>Natural multi-step actions; no rigid intent taxonomy</td>
+        </tr>
+        <tr>
+          <td><strong>Safety</strong></td>
+          <td>Static risk + dynamic confidence gate</td>
+          <td>Auto-execute high-confidence, confirm low-confidence</td>
+        </tr>
+        <tr>
+          <td><strong>Memory</strong></td>
+          <td>Three tiers (window + snapshot + graph)</td>
+          <td>Token-efficient; context scoped to what's relevant</td>
+        </tr>
+        <tr>
+          <td><strong>Data storage</strong></td>
+          <td>Obsidian vault (markdown + YAML)</td>
+          <td>Human-readable, version-controlled, local-first</td>
+        </tr>
+        <tr>
+          <td><strong>Event persistence</strong></td>
+          <td>JSON per day with stable IDs + reconciliation</td>
+          <td>Photos survive re-merges; calendar stays fresh</td>
+        </tr>
+        <tr>
+          <td><strong>Photo handling</strong></td>
+          <td>EXIF + vision + agent decides</td>
+          <td>Rich context enables smarter, contextual decisions</td>
+        </tr>
+        <tr>
+          <td><strong>Bot rewrite</strong></td>
+          <td>Python → TypeScript</td>
+          <td>Unified ecosystem with webapp; shared type package</td>
+        </tr>
+        <tr>
+          <td><strong>Monorepo</strong></td>
+          <td>Turborepo</td>
+          <td>One workspace, shared types, unified dev commands</td>
+        </tr>
+        <tr>
+          <td><strong>UI separation</strong></td>
+          <td>vault-server owns all logic</td>
+          <td>UIs are interchangeable; API is the source of truth</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+</body>
+</html>
