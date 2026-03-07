@@ -40,12 +40,35 @@ class GenerationRequest(BaseModel):
     prompt_override: str | None = None
     width: int | None = None
     height: int | None = None
+    reference_image: str | None = None
+    prompt_strength: float | None = None
     params: dict[str, Any] | None = None
 
 
 class GenerationService:
     def __init__(self, api_token: str):
         self.api_token = api_token
+
+    async def upload_file(self, file_path: str) -> str:
+        """Upload a local file to Replicate's file hosting, return the serving URL."""
+        from pathlib import Path
+
+        file_data = Path(file_path).read_bytes()
+        file_name = Path(file_path).name
+
+        headers = {
+            "Authorization": f"Bearer {self.api_token}",
+        }
+
+        async with httpx.AsyncClient(base_url=REPLICATE_API_BASE, headers=headers, timeout=60) as client:
+            resp = await client.post(
+                "/files",
+                files={"content": (file_name, file_data, "application/octet-stream")},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        return data["urls"]["get"]
 
     async def generate(self, request: GenerationRequest) -> dict[str, Any]:
         """Generate an image using Replicate HTTP API directly."""
@@ -67,14 +90,21 @@ class GenerationService:
                 width = self._clamp_dimension(request.width) if request.width else self._get_width(request.type)
                 height = self._clamp_dimension(request.height) if request.height else self._get_height(request.type)
 
+                prediction_input: dict[str, Any] = {
+                    "prompt": prompt,
+                    "width": width,
+                    "height": height,
+                    "num_outputs": 1,
+                }
+
+                if request.reference_image:
+                    image_url = await self.upload_file(request.reference_image)
+                    prediction_input["image"] = image_url
+                    prediction_input["prompt_strength"] = request.prompt_strength or 0.7
+
                 resp = await client.post("/predictions", json={
                     "version": version_id,
-                    "input": {
-                        "prompt": prompt,
-                        "width": width,
-                        "height": height,
-                        "num_outputs": 1,
-                    },
+                    "input": prediction_input,
                 })
                 resp.raise_for_status()
                 prediction = resp.json()
