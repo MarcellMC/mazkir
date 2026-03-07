@@ -1,8 +1,9 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { usePlaygroundStore } from './store'
 import EventList from './components/EventList'
 import GenerationPanel from './components/GenerationPanel'
 import DateNav from '../../components/DateNav'
+import { api } from '../../services/api'
 
 export default function PlaygroundPage() {
   const store = usePlaygroundStore()
@@ -10,6 +11,19 @@ export default function PlaygroundPage() {
   useEffect(() => {
     store.loadEvents(store.date)
   }, [])
+
+  const eventPhotos = useMemo(() => {
+    const photos = store.selectedEvent?.photos || []
+    return photos.map((p: { path: string }) => {
+      const parts = p.path.split('/')
+      const date = parts[parts.length - 2] || ''
+      const filename = parts[parts.length - 1] || ''
+      return {
+        path: p.path,
+        previewUrl: api.getMediaUrl(date, filename),
+      }
+    })
+  }, [store.selectedEvent])
 
   return (
     <div className="h-screen flex flex-col bg-gray-50">
@@ -48,6 +62,15 @@ export default function PlaygroundPage() {
               onPromptOverrideChange={store.setPromptOverride}
               onAspectRatioChange={store.setAspectRatio}
               onCustomDimensionsChange={store.setCustomDimensions}
+              referenceImage={store.referenceImage}
+              referenceImagePreview={store.referenceImagePreview}
+              promptStrength={store.promptStrength}
+              uploadingReference={store.uploadingReference}
+              eventPhotos={eventPhotos}
+              onSetReferenceImage={store.setReferenceImage}
+              onClearReferenceImage={store.clearReferenceImage}
+              onPromptStrengthChange={store.setPromptStrength}
+              onUploadReferenceImage={store.uploadReferenceImage}
             />
           </div>
         </div>

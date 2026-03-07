@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import type { MergedEvent } from '../../../models/event'
 import type { GenerateRequest, GenerateResponse } from '../../../services/api'
 import { buildPrompt } from '../buildPrompt'
@@ -21,6 +21,15 @@ interface GenerationPanelProps {
   onPromptOverrideChange: (prompt: string | null) => void
   onAspectRatioChange: (ratio: string) => void
   onCustomDimensionsChange: (width: number, height: number) => void
+  referenceImage: string | null
+  referenceImagePreview: string | null
+  promptStrength: number
+  uploadingReference: boolean
+  eventPhotos: Array<{ path: string; previewUrl: string }>
+  onSetReferenceImage: (path: string, previewUrl: string) => void
+  onClearReferenceImage: () => void
+  onPromptStrengthChange: (value: number) => void
+  onUploadReferenceImage: (file: File) => void
 }
 
 const GEN_TYPES = [
@@ -67,6 +76,15 @@ export default function GenerationPanel({
   onPromptOverrideChange,
   onAspectRatioChange,
   onCustomDimensionsChange,
+  referenceImage,
+  referenceImagePreview,
+  promptStrength,
+  uploadingReference,
+  eventPhotos,
+  onSetReferenceImage,
+  onClearReferenceImage,
+  onPromptStrengthChange,
+  onUploadReferenceImage,
 }: GenerationPanelProps) {
   if (!selectedEvent) {
     return (
@@ -89,6 +107,7 @@ export default function GenerationPanel({
   )
 
   const displayPrompt = promptOverride ?? autoPrompt
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   return (
     <div className="p-4">
@@ -224,6 +243,89 @@ export default function GenerationPanel({
           </div>
         )}
         <p className="text-xs text-gray-400 mt-1">{width}×{height}px</p>
+      </div>
+
+      {/* Reference image */}
+      <div className="mb-3">
+        <div className="flex items-center justify-between mb-1">
+          <label className="block text-xs font-medium text-gray-500">Reference Image</label>
+          {referenceImage && (
+            <button
+              onClick={onClearReferenceImage}
+              className="text-xs text-blue-500 hover:text-blue-700"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        {referenceImagePreview ? (
+          <div className="flex items-center gap-2 p-2 border border-gray-200 rounded bg-gray-50">
+            <img src={referenceImagePreview} alt="Reference" className="w-16 h-16 object-cover rounded" />
+            <span className="text-xs text-gray-500 truncate flex-1">Reference selected</span>
+          </div>
+        ) : (
+          <div className="flex gap-1">
+            {eventPhotos.length > 0 && (
+              <div className="flex gap-1 flex-wrap">
+                {eventPhotos.map((photo) => (
+                  <button
+                    key={photo.path}
+                    onClick={() => onSetReferenceImage(photo.path, photo.previewUrl)}
+                    className="w-12 h-12 rounded border border-gray-200 overflow-hidden hover:border-blue-400"
+                  >
+                    <img src={photo.previewUrl} alt="" className="w-full h-full object-cover" />
+                  </button>
+                ))}
+              </div>
+            )}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadingReference}
+              className="px-3 py-2 text-xs border border-dashed border-gray-300 rounded hover:border-blue-400 hover:text-blue-500 disabled:opacity-50"
+            >
+              {uploadingReference ? (
+                <svg className="animate-spin h-4 w-4 mx-auto" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : 'Upload'}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                if (file) onUploadReferenceImage(file)
+                e.target.value = ''
+              }}
+            />
+          </div>
+        )}
+
+        {referenceImage && (
+          <div className="mt-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs text-gray-400">Prompt Strength</label>
+              <span className="text-xs text-gray-500">{promptStrength.toFixed(2)}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={promptStrength}
+              onChange={(e) => onPromptStrengthChange(Number(e.target.value))}
+              className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
+            />
+            <div className="flex justify-between text-[10px] text-gray-300">
+              <span>Keep original</span>
+              <span>Full restyle</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Generate button */}
