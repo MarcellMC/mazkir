@@ -52,4 +52,23 @@ export const api = {
     if (radius) params.set('radius', String(radius))
     return request(`/imagery/search?${params}`)
   },
+
+  uploadReferenceImage(file: File): Promise<{ path: string }> {
+    const formData = new FormData()
+    formData.append('file', file)
+    const headers: Record<string, string> = {}
+    if (API_KEY) headers['X-API-Key'] = API_KEY
+    return fetch(`${API_BASE}/generate/upload`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    }).then(res => {
+      if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
+      return res.json()
+    })
+  },
+
+  getMediaUrl(date: string, filename: string): string {
+    return `${API_BASE}/media/${date}/${filename}`
+  },
 }

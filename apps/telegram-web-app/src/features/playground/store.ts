@@ -28,6 +28,12 @@ interface PlaygroundState {
   width: number
   height: number
 
+  // Reference image
+  referenceImage: string | null
+  referenceImagePreview: string | null
+  promptStrength: number
+  uploadingReference: boolean
+
   // Actions
   setDate: (date: string) => void
   loadEvents: (date: string) => Promise<void>
@@ -38,6 +44,10 @@ interface PlaygroundState {
   setPromptOverride: (prompt: string | null) => void
   setAspectRatio: (ratio: string) => void
   setCustomDimensions: (width: number, height: number) => void
+  setReferenceImage: (path: string, previewUrl: string) => void
+  clearReferenceImage: () => void
+  setPromptStrength: (value: number) => void
+  uploadReferenceImage: (file: File) => Promise<void>
   generate: () => Promise<void>
 }
 
@@ -60,6 +70,11 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   aspectRatio: '1:1',
   width: 768,
   height: 768,
+
+  referenceImage: null,
+  referenceImagePreview: null,
+  promptStrength: 0.7,
+  uploadingReference: false,
 
   setDate: (date) => {
     set({ date })
@@ -101,6 +116,26 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
 
   setCustomDimensions: (width, height) => set({ aspectRatio: 'custom', width, height }),
 
+  setReferenceImage: (path, previewUrl) => set({ referenceImage: path, referenceImagePreview: previewUrl }),
+
+  clearReferenceImage: () => set({ referenceImage: null, referenceImagePreview: null }),
+
+  setPromptStrength: (value) => set({ promptStrength: value }),
+
+  uploadReferenceImage: async (file) => {
+    set({ uploadingReference: true })
+    try {
+      const { path } = await api.uploadReferenceImage(file)
+      set({
+        referenceImage: path,
+        referenceImagePreview: URL.createObjectURL(file),
+        uploadingReference: false,
+      })
+    } catch {
+      set({ uploadingReference: false })
+    }
+  },
+
   generate: async () => {
     const { selectedEvent, genType, approach, style } = get()
     if (!selectedEvent) return
@@ -117,6 +152,8 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
         prompt_override: get().promptOverride || undefined,
         width: get().width,
         height: get().height,
+        reference_image: get().referenceImage || undefined,
+        prompt_strength: get().referenceImage ? get().promptStrength : undefined,
       })
       set((state) => ({
         result,
