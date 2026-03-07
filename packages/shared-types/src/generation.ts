@@ -12,6 +12,8 @@ export interface GenerateRequest {
   };
   approach?: string;
   prompt_override?: string;
+  reference_image?: string;
+  prompt_strength?: number;
   width?: number;
   height?: number;
   params?: Record<string, unknown>;
