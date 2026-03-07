@@ -162,6 +162,7 @@ from src.api.routes.timeline import router as timeline_router
 from src.api.routes.generate import router as generate_router
 from src.api.routes.imagery import router as imagery_router
 from src.api.routes.events import router as events_router
+from src.api.routes.media import router as media_router
 
 app.include_router(tasks_router)
 app.include_router(habits_router)
@@ -174,6 +175,7 @@ app.include_router(timeline_router)
 app.include_router(generate_router)
 app.include_router(imagery_router)
 app.include_router(events_router)
+app.include_router(media_router)
 
 
 @app.get("/health")

@@ -1,6 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Any
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from src.auth import verify_api_key
 from src.main import get_generation
@@ -21,6 +25,8 @@ class GenerateRequest(BaseModel):
     prompt_override: str | None = None
     width: int | None = None
     height: int | None = None
+    reference_image: str | None = None
+    prompt_strength: float | None = None
     params: dict[str, Any] | None = None
 
 
@@ -44,8 +50,22 @@ async def generate_image(request: GenerateRequest):
         prompt_override=request.prompt_override,
         width=request.width,
         height=request.height,
+        reference_image=request.reference_image,
+        prompt_strength=request.prompt_strength,
         params=request.params,
     )
 
     result = await gen.generate(gen_request)
     return result
+
+
+@router.post("/upload")
+async def upload_reference_image(file: UploadFile = File(...)):
+    """Upload a reference image, save to temp location, return path."""
+    if not file.filename:
+        raise HTTPException(400, "No filename provided")
+
+    suffix = Path(file.filename).suffix or ".jpg"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, prefix="ref_") as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        return {"path": tmp.name}
