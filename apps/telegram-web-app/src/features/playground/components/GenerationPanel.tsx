@@ -1,5 +1,7 @@
+import { useMemo } from 'react'
 import type { MergedEvent } from '../../../models/event'
 import type { GenerateRequest, GenerateResponse } from '../../../services/api'
+import { buildPrompt } from '../buildPrompt'
 
 interface GenerationPanelProps {
   selectedEvent: MergedEvent | null
@@ -12,6 +14,13 @@ interface GenerationPanelProps {
   onApproachChange: (approach: string) => void
   onStyleChange: (style: GenerateRequest['style']) => void
   onGenerate: () => void
+  promptOverride: string | null
+  width: number
+  height: number
+  aspectRatio: string
+  onPromptOverrideChange: (prompt: string | null) => void
+  onAspectRatioChange: (ratio: string) => void
+  onCustomDimensionsChange: (width: number, height: number) => void
 }
 
 const GEN_TYPES = [
@@ -31,6 +40,15 @@ const APPROACHES = [
 const LINE_STYLES = ['clean_vector', 'loose_ink', 'crosshatch', 'watercolor_edge']
 const PRESETS = ['default', 'tel-aviv', 'jerusalem']
 
+const ASPECT_RATIOS = [
+  { value: '1:1', label: '1:1' },
+  { value: '4:3', label: '4:3' },
+  { value: '3:4', label: '3:4' },
+  { value: '16:9', label: '16:9' },
+  { value: '9:16', label: '9:16' },
+  { value: 'custom', label: 'Custom' },
+]
+
 export default function GenerationPanel({
   selectedEvent,
   genType,
@@ -42,6 +60,13 @@ export default function GenerationPanel({
   onApproachChange,
   onStyleChange,
   onGenerate,
+  promptOverride,
+  width,
+  height,
+  aspectRatio,
+  onPromptOverrideChange,
+  onAspectRatioChange,
+  onCustomDimensionsChange,
 }: GenerationPanelProps) {
   if (!selectedEvent) {
     return (
@@ -50,6 +75,20 @@ export default function GenerationPanel({
       </div>
     )
   }
+
+  const autoPrompt = useMemo(
+    () =>
+      buildPrompt({
+        type: genType,
+        event_name: selectedEvent?.name,
+        activity_category: selectedEvent?.activity_category || undefined,
+        location_name: selectedEvent?.location?.name,
+        style,
+      }),
+    [genType, selectedEvent, style],
+  )
+
+  const displayPrompt = promptOverride ?? autoPrompt
 
   return (
     <div className="p-4 overflow-y-auto">
@@ -117,6 +156,76 @@ export default function GenerationPanel({
         </div>
       </div>
 
+      {/* Prompt preview */}
+      <div className="mb-3">
+        <div className="flex items-center justify-between mb-1">
+          <label className="block text-xs font-medium text-gray-500">Prompt</label>
+          {promptOverride !== null && (
+            <button
+              onClick={() => onPromptOverrideChange(null)}
+              className="text-xs text-blue-500 hover:text-blue-700"
+            >
+              Reset to auto
+            </button>
+          )}
+        </div>
+        <textarea
+          value={displayPrompt}
+          onChange={(e) => onPromptOverrideChange(e.target.value)}
+          rows={3}
+          className="w-full text-sm border border-gray-200 rounded px-2 py-1 resize-y"
+        />
+      </div>
+
+      {/* Aspect ratio */}
+      <div className="mb-3">
+        <label className="block text-xs font-medium text-gray-500 mb-1">Size</label>
+        <div className="flex flex-wrap gap-1">
+          {ASPECT_RATIOS.map((r) => (
+            <button
+              key={r.value}
+              onClick={() => onAspectRatioChange(r.value)}
+              className={`px-2 py-1 text-xs rounded ${
+                aspectRatio === r.value
+                  ? 'bg-blue-500 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+        {aspectRatio === 'custom' && (
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-xs text-gray-400">Width</label>
+              <input
+                type="number"
+                value={width}
+                onChange={(e) => onCustomDimensionsChange(Number(e.target.value), height)}
+                className="w-full text-sm border border-gray-200 rounded px-2 py-1"
+                min={64}
+                max={1024}
+                step={64}
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400">Height</label>
+              <input
+                type="number"
+                value={height}
+                onChange={(e) => onCustomDimensionsChange(width, Number(e.target.value))}
+                className="w-full text-sm border border-gray-200 rounded px-2 py-1"
+                min={64}
+                max={1024}
+                step={64}
+              />
+            </div>
+          </div>
+        )}
+        <p className="text-xs text-gray-400 mt-1">{width}×{height}px</p>
+      </div>
+
       {/* Generate button */}
       <button
         onClick={onGenerate}
@@ -128,17 +237,17 @@ export default function GenerationPanel({
 
       {/* Result */}
       {result && (
-        <div className="mt-4">
+        <div className="mt-4 max-w-sm mx-auto">
           {result.error ? (
             <div className="bg-red-50 text-red-700 text-sm rounded p-3">
               {result.error}
             </div>
           ) : result.image_url ? (
-            <div>
+            <div className="border border-gray-200 rounded-lg bg-white p-2">
               <img
                 src={result.image_url}
                 alt="Generated"
-                className="w-full rounded-lg shadow-md"
+                className="w-full h-auto rounded"
               />
               <div className="mt-2 text-xs text-gray-400">
                 <p>Model: {result.model}</p>
