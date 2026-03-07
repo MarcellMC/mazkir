@@ -15,15 +15,13 @@ export default function PlaygroundPage() {
   const eventPhotos = useMemo(() => {
     const photos = store.selectedEvent?.photos || []
     return photos.map((p: { path: string }) => {
-      const parts = p.path.split('/')
-      const date = parts[parts.length - 2] || ''
-      const filename = parts[parts.length - 1] || ''
+      const filename = p.path.split('/').pop() || ''
       return {
         path: p.path,
-        previewUrl: api.getMediaUrl(date, filename),
+        previewUrl: api.getMediaUrl(store.date, filename),
       }
     })
-  }, [store.selectedEvent])
+  }, [store.selectedEvent, store.date])
 
   return (
     <div className="h-screen flex flex-col bg-gray-50">

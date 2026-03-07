@@ -36,7 +36,18 @@ async def generate_image(request: GenerateRequest):
     if not gen:
         raise HTTPException(status_code=503, detail="Generation service not available (no REPLICATE_API_TOKEN)")
 
+    from src.config import settings
     from src.services.generation_service import GenerationRequest, StyleConfig
+
+    # Resolve reference_image path — event photos store paths like
+    # "attachments/photo.jpg" but actual files are in data/media/{date}/
+    reference_image = request.reference_image
+    if reference_image and not Path(reference_image).is_file():
+        filename = Path(reference_image).name
+        # Search media_path for the file
+        matches = list(settings.media_path.rglob(filename))
+        if matches:
+            reference_image = str(matches[0])
 
     style = StyleConfig(**(request.style or {}))
     gen_request = GenerationRequest(
@@ -50,7 +61,7 @@ async def generate_image(request: GenerateRequest):
         prompt_override=request.prompt_override,
         width=request.width,
         height=request.height,
-        reference_image=request.reference_image,
+        reference_image=reference_image,
         prompt_strength=request.prompt_strength,
         params=request.params,
     )
