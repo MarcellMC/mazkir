@@ -14,6 +14,7 @@ class AttachmentModel(BaseModel):
     data: str | None = None
     mime_type: str | None = None
     filename: str | None = None
+    telegram_date: str | None = None  # Fallback timestamp when EXIF is stripped
     # Location fields
     latitude: float | None = None
     longitude: float | None = None

@@ -145,10 +145,13 @@ messageHandler.on(
       // Build enriched payload
       const payload = buildMessagePayload(msg, chatId);
 
-      // Download photo if present
+      // Download photo if present (retry once on failure)
       if (msg.photo && msg.photo.length > 0) {
         const largest = msg.photo[msg.photo.length - 1]!;
-        const photoData = await downloadPhoto(largest.file_id, config.botToken);
+        let photoData = await downloadPhoto(largest.file_id, config.botToken);
+        if (!photoData) {
+          photoData = await downloadPhoto(largest.file_id, config.botToken);
+        }
         if (photoData) {
           const now = new Date();
           const filename = `photo_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}-${String(now.getSeconds()).padStart(2, "0")}.jpg`;
@@ -158,6 +161,7 @@ messageHandler.on(
             data: photoData.data,
             mime_type: photoData.mime_type,
             filename,
+            telegram_date: new Date(msg.date * 1000).toISOString(),
           });
         } else {
           // Photo download failed — append note to text

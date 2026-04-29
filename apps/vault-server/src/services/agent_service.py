@@ -460,13 +460,15 @@ class AgentService:
                 "schema": {
                     "name": "create_event",
                     "description": (
-                        "Create a new event for today. Use for photo stops, ad-hoc activities, "
-                        "or any event not already in the calendar/timeline."
+                        "Create a new event. Use for photo stops, ad-hoc activities, "
+                        "or any event not already in the calendar/timeline. "
+                        "Events are synced to Google Calendar when available."
                     ),
                     "input_schema": {
                         "type": "object",
                         "properties": {
                             "name": {"type": "string", "description": "Event name"},
+                            "date": {"type": "string", "description": "Event date YYYY-MM-DD (defaults to today)"},
                             "start_time": {"type": "string", "description": "Start time ISO or HH:MM"},
                             "end_time": {"type": "string", "description": "End time (optional, defaults to start_time)"},
                             "location": {
@@ -485,6 +487,36 @@ class AgentService:
                     },
                 },
                 "handler": self._tool_create_event,
+                "risk": "write",
+            },
+            "update_event": {
+                "schema": {
+                    "name": "update_event",
+                    "description": (
+                        "Update an existing event's fields (name, start_time, end_time, location, category). "
+                        "Use list_events first to find the event ID."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "event_id": {"type": "string", "description": "Event ID from list_events"},
+                            "date": {"type": "string", "description": "Event date YYYY-MM-DD (defaults to today)"},
+                            "name": {"type": "string", "description": "New event name"},
+                            "start_time": {"type": "string", "description": "New start time ISO or HH:MM"},
+                            "end_time": {"type": "string", "description": "New end time ISO or HH:MM"},
+                            "location": {
+                                "type": "object",
+                                "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}, "name": {"type": "string"}},
+                                "description": "New location",
+                            },
+                            "category": {"type": "string", "description": "New activity category"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["event_id"],
+                    },
+                },
+                "handler": self._tool_update_event,
                 "risk": "write",
             },
         }
@@ -699,6 +731,11 @@ class AgentService:
         from src.services.exif_service import extract_exif_metadata
         exif = extract_exif_metadata(photo_bytes)
 
+        # Use Telegram message timestamp as fallback when EXIF is stripped
+        timestamp = exif.get("timestamp")
+        if not timestamp and attachment.get("telegram_date"):
+            timestamp = attachment["telegram_date"]
+
         # Write/append to sidecar metadata.json
         meta_path = media_dir / "metadata.json"
         entries = []
@@ -712,7 +749,7 @@ class AgentService:
             "filename": filename,
             "path": rel_path,
             "saved_at": dt.datetime.now().isoformat(),
-            "exif_timestamp": exif.get("timestamp"),
+            "exif_timestamp": timestamp,
             "exif_location": exif.get("location"),
             "exif_camera": exif.get("camera"),
         })
@@ -721,7 +758,7 @@ class AgentService:
         return {
             "path": rel_path,
             "exif_location": exif.get("location"),
-            "exif_timestamp": exif.get("timestamp"),
+            "exif_timestamp": timestamp,
             "exif_camera": exif.get("camera"),
         }
 
@@ -1146,19 +1183,101 @@ class AgentService:
                 return f"{date}T{t}:00"
             return t
 
+        start_time = _normalize_time(params["start_time"])
+        end_time = _normalize_time(params.get("end_time"))
+
+        # Extract HH:MM for GCal (strip date prefix if present)
+        def _extract_hhmm(iso_time: str | None) -> str | None:
+            if not iso_time:
+                return None
+            if "T" in iso_time:
+                return iso_time.split("T")[1][:5]
+            return iso_time[:5]
+
+        # Sync to Google Calendar if available
+        source_ids: dict | None = None
+        calendar_synced = False
+        if self.calendar and not params.get("photo_path"):
+            try:
+                import asyncio
+                coro = self.calendar.create_event(
+                    name=params["name"],
+                    date=date,
+                    start_time=_extract_hhmm(start_time),
+                    end_time=_extract_hhmm(end_time),
+                )
+                try:
+                    loop = asyncio.get_running_loop()
+                    # Already in an async context — create a task
+                    import concurrent.futures
+                    future = concurrent.futures.Future()
+                    async def _run():
+                        try:
+                            future.set_result(await coro)
+                        except Exception as exc:
+                            future.set_exception(exc)
+                    loop.create_task(_run())
+                    gcal_id = future.result(timeout=30)
+                except RuntimeError:
+                    # No running loop — use asyncio.run
+                    gcal_id = asyncio.run(coro)
+                if gcal_id:
+                    source_ids = {"calendar_id": gcal_id}
+                    calendar_synced = True
+            except Exception as e:
+                logger.warning(f"Failed to sync event to Google Calendar: {e}")
+
         result = self.events.create_event(
             date=date,
             name=params["name"],
-            start_time=_normalize_time(params["start_time"]),
-            end_time=_normalize_time(params.get("end_time")),
+            start_time=start_time,
+            end_time=end_time,
             location=params.get("location"),
             category=params.get("category"),
             photo_path=params.get("photo_path"),
             caption=params.get("caption"),
             wikilinks=params.get("wikilinks"),
+            source_ids=source_ids,
         )
         result["event_id"] = result.pop("id")
         result["_items"] = [result["path"]]
+        if calendar_synced:
+            result["calendar_synced"] = True
+        return result
+
+    def _tool_update_event(self, params: dict) -> dict:
+        import datetime as dt
+        if not self.events:
+            return {"error": "Events service not available"}
+        date = params.get("date", dt.date.today().isoformat())
+
+        def _normalize_time(t: str | None) -> str | None:
+            if not t:
+                return t
+            if "T" not in t and len(t) <= 5:
+                return f"{date}T{t}:00"
+            return t
+
+        updates = {}
+        if "name" in params:
+            updates["name"] = params["name"]
+        if "start_time" in params:
+            updates["start_time"] = _normalize_time(params["start_time"])
+        if "end_time" in params:
+            updates["end_time"] = _normalize_time(params["end_time"])
+        if "location" in params:
+            updates["location"] = params["location"]
+        if "category" in params:
+            updates["activity_category"] = params["category"]
+
+        result = self.events.update_event(
+            date=date,
+            event_id=params["event_id"],
+            updates=updates,
+        )
+        if "error" in result:
+            return result
+        result["_items"] = [str(self.events._file_path(date))]
         return result
 
     def _tool_complete_task(self, params: dict) -> dict:

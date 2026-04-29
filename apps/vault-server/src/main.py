@@ -50,6 +50,7 @@ async def lifespan(app: FastAPI):
     logger.info("Memory service initialized")
 
     if settings.enable_calendar_sync:
+        calendar_include = [c.strip() for c in settings.google_calendar_include.split(",") if c.strip()] or None
         calendar = CalendarService(
             credentials_path=settings.google_credentials_path,
             token_path=settings.google_token_path,
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
             default_habit_time=settings.default_habit_time,
             default_event_duration=settings.default_event_duration,
             calendar_id=settings.google_calendar_id,
+            calendar_include=calendar_include,
         )
         if await calendar.initialize():
             await calendar.ensure_mazkir_calendar()

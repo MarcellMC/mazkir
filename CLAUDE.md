@@ -161,7 +161,7 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 
 ### Architecture
 - **vault-server** owns ALL business logic (vault CRUD, Claude AI, calendar sync, timeline, generation)
-- **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 25 registered tools (incl. `attach_to_daily`, `list_events`, `attach_photo_to_event`, `create_event`, `read_daily_section`, `edit_daily_section`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`), max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation, Claude vision for photo messages with EXIF context
+- **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 26 registered tools (incl. `attach_to_daily`, `list_events`, `attach_photo_to_event`, `create_event`, `update_event`, `read_daily_section`, `edit_daily_section`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`), max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation, Claude vision for photo messages with EXIF context
 - **Events persistence** (`EventsService`): merged events stored in `data/events/{date}.json`, supports create/attach/refresh with source-ID matching to preserve photos across re-merges
 - **EXIF extraction** (`exif_service`): extracts GPS coordinates, timestamp, camera info from photo EXIF data using Pillow
 - **Memory system** (`MemoryService`): short-term (conversation sliding window, 20 messages + decay), mid-term (vault state snapshot in system prompt), long-term (knowledge graph + keyword search)
@@ -172,7 +172,7 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 
 ### Agent tool risk levels
 - **safe** (read-only): `list_tasks`, `list_habits`, `list_goals`, `get_daily`, `get_tokens`, `search_knowledge`, `get_related`, `read_daily_section`, `list_events`
-- **write** (auto-execute at ≥0.85 confidence): `create_task`, `create_habit`, `create_goal`, `update_item`, `save_knowledge`, `attach_to_daily`, `edit_daily_section`, `attach_photo_to_event`, `create_event`
+- **write** (auto-execute at ≥0.85 confidence): `create_task`, `create_habit`, `create_goal`, `update_item`, `save_knowledge`, `attach_to_daily`, `edit_daily_section`, `attach_photo_to_event`, `create_event`, `update_event`
 - **destructive** (auto-execute at ≥0.85 confidence): `complete_task`, `complete_habit`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`
 
 ### When adding vault-server routes:

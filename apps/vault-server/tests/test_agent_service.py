@@ -554,12 +554,112 @@ class TestEventTools:
         events_mock = mock_services[4]
         events_mock.create_event.return_value = {"id": "evt_new", "path": "data/events/2026-03-04.json"}
 
+        # Disable calendar to test basic path
+        agent.calendar = None
         result = agent._tool_create_event({
             "name": "Coffee break",
             "start_time": "15:00",
         })
         assert result["event_id"] == "evt_new"
         events_mock.create_event.assert_called_once()
+
+    def test_create_event_syncs_to_gcal(self, agent, mock_services):
+        from unittest.mock import AsyncMock
+        events_mock = mock_services[4]
+        calendar_mock = mock_services[3]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "data/events/2026-03-04.json"}
+
+        calendar_mock.create_event = AsyncMock(return_value="gcal_event_123")
+
+        result = agent._tool_create_event({
+            "name": "Lunch",
+            "start_time": "12:30",
+            "end_time": "13:30",
+        })
+        assert result["event_id"] == "evt_new"
+        assert result.get("calendar_synced") is True
+        # source_ids should have been passed to events service
+        call_kwargs = events_mock.create_event.call_args
+        assert call_kwargs.kwargs.get("source_ids") == {"calendar_id": "gcal_event_123"}
+
+    def test_create_event_gcal_failure_still_persists(self, agent, mock_services):
+        events_mock = mock_services[4]
+        calendar_mock = mock_services[3]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "data/events/2026-03-04.json"}
+        calendar_mock.create_event = MagicMock(side_effect=Exception("GCal error"))
+
+        result = agent._tool_create_event({
+            "name": "Dinner",
+            "start_time": "19:00",
+        })
+        assert result["event_id"] == "evt_new"
+        assert "calendar_synced" not in result
+        events_mock.create_event.assert_called_once()
+
+    def test_create_event_no_calendar_skips_silently(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "data/events/2026-03-04.json"}
+        agent.calendar = None
+
+        result = agent._tool_create_event({
+            "name": "Walk",
+            "start_time": "10:00",
+        })
+        assert result["event_id"] == "evt_new"
+        assert "calendar_synced" not in result
+
+    def test_create_event_with_explicit_date(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "data/events/2026-03-20.json"}
+        agent.calendar = None
+
+        result = agent._tool_create_event({
+            "name": "Future event",
+            "date": "2026-03-20",
+            "start_time": "14:00",
+        })
+        # Verify date was passed through and time was normalized
+        call_kwargs = events_mock.create_event.call_args
+        assert call_kwargs.kwargs["date"] == "2026-03-20"
+        assert call_kwargs.kwargs["start_time"] == "2026-03-20T14:00:00"
+
+    def test_update_event_tool_registered(self, agent):
+        assert "update_event" in agent.tools
+        assert agent.tools["update_event"]["risk"] == "write"
+
+    def test_update_event_calls_service(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.update_event.return_value = {"updated": True, "event_id": "evt_abc"}
+        events_mock._file_path.return_value = "data/events/2026-03-04.json"
+
+        result = agent._tool_update_event({
+            "event_id": "evt_abc",
+            "end_time": "13:00",
+        })
+        assert result["updated"] is True
+        events_mock.update_event.assert_called_once()
+
+    def test_update_event_normalizes_times(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.update_event.return_value = {"updated": True, "event_id": "evt_abc"}
+        events_mock._file_path.return_value = "data/events/2026-03-19.json"
+
+        agent._tool_update_event({
+            "event_id": "evt_abc",
+            "date": "2026-03-19",
+            "start_time": "12:00",
+            "end_time": "13:00",
+        })
+        call_kwargs = events_mock.update_event.call_args
+        updates = call_kwargs.kwargs.get("updates") or call_kwargs[0][2]
+        assert updates["start_time"] == "2026-03-19T12:00:00"
+        assert updates["end_time"] == "2026-03-19T13:00:00"
+
+    def test_update_event_not_found(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.update_event.return_value = {"error": "Event nonexistent not found"}
+        result = agent._tool_update_event({"event_id": "nonexistent", "name": "X"})
+        assert "error" in result
 
     def test_attach_photo_calls_service(self, agent, mock_services):
         events_mock = mock_services[4]

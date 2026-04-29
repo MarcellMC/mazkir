@@ -45,7 +45,8 @@ class CalendarService:
         timezone: str = "Asia/Jerusalem",
         default_habit_time: str = "07:00",
         default_event_duration: int = 30,
-        calendar_id: Optional[str] = None
+        calendar_id: Optional[str] = None,
+        calendar_include: Optional[List[str]] = None,
     ):
         """Initialize CalendarService.
 
@@ -56,6 +57,7 @@ class CalendarService:
             default_habit_time: Default time for habit events (HH:MM)
             default_event_duration: Event duration in minutes
             calendar_id: Cached Mazkir calendar ID (optional)
+            calendar_include: Allowlist of calendar names to fetch events from (None = all)
         """
         self.credentials_path = Path(credentials_path)
         self.token_path = Path(token_path)
@@ -64,6 +66,7 @@ class CalendarService:
         self.default_habit_time = default_habit_time
         self.default_event_duration = default_event_duration
         self._calendar_id = calendar_id
+        self._calendar_include = calendar_include
         self._service = None
         self._initialized = False
 
@@ -434,6 +437,75 @@ class CalendarService:
             logger.error(f"Failed to create task event: {e}")
             return None
 
+    def _build_event(self, name: str, date: str, start_time: str, end_time: Optional[str] = None) -> Dict:
+        """Build a calendar event dict for a general event.
+
+        Args:
+            name: Event name
+            date: Date string YYYY-MM-DD
+            start_time: Start time HH:MM
+            end_time: End time HH:MM (optional, defaults to start + default_event_duration)
+
+        Returns:
+            Google Calendar event dict
+        """
+        start_dt = datetime.strptime(f"{date}T{start_time}:00", "%Y-%m-%dT%H:%M:%S")
+        start_dt = self.tz.localize(start_dt)
+
+        if end_time:
+            end_dt = datetime.strptime(f"{date}T{end_time}:00", "%Y-%m-%dT%H:%M:%S")
+            end_dt = self.tz.localize(end_dt)
+        else:
+            end_dt = start_dt + timedelta(minutes=self.default_event_duration)
+
+        return {
+            'summary': f'📅 {name}',
+            'description': f'Event: {name}\nManaged by Mazkir',
+            'start': {
+                'dateTime': start_dt.isoformat(),
+                'timeZone': self.timezone,
+            },
+            'end': {
+                'dateTime': end_dt.isoformat(),
+                'timeZone': self.timezone,
+            },
+            'reminders': {
+                'useDefault': False,
+                'overrides': [
+                    {'method': 'popup', 'minutes': 10},
+                ],
+            },
+        }
+
+    async def create_event(self, name: str, date: str, start_time: str, end_time: Optional[str] = None) -> Optional[str]:
+        """Create a calendar event for a general event.
+
+        Args:
+            name: Event name
+            date: Date string YYYY-MM-DD
+            start_time: Start time HH:MM
+            end_time: End time HH:MM (optional)
+
+        Returns:
+            Event ID or None if failed
+        """
+        if not self._initialized or not self._calendar_id:
+            logger.error("Calendar service not properly initialized")
+            return None
+
+        try:
+            event = self._build_event(name, date, start_time, end_time)
+            created_event = self._service.events().insert(
+                calendarId=self._calendar_id,
+                body=event
+            ).execute()
+            event_id = created_event.get('id')
+            logger.info(f"Created event: {event_id}")
+            return event_id
+        except HttpError as e:
+            logger.error(f"Failed to create event: {e}")
+            return None
+
     async def mark_event_complete(self, event_id: str, instance_date: Optional[str] = None) -> bool:
         """Mark a calendar event as complete.
 
@@ -545,9 +617,12 @@ class CalendarService:
             if all_calendars:
                 calendar_list = self._service.calendarList().list().execute()
                 for cal in calendar_list.get('items', []):
+                    name = cal.get('summary', 'Unknown')
+                    if self._calendar_include and name not in self._calendar_include:
+                        continue
                     calendar_ids.append({
                         'id': cal['id'],
-                        'name': cal.get('summary', 'Unknown')
+                        'name': name,
                     })
             elif self._calendar_id:
                 calendar_ids.append({'id': self._calendar_id, 'name': 'Mazkir'})

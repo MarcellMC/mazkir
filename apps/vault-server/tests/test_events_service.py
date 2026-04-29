@@ -80,6 +80,96 @@ class TestCreateEvent:
         assert events[0]["location"]["name"] == "Tel Aviv"
 
 
+class TestCreateEventDefaults:
+    def test_type_defaults_to_calendar_without_photo(self, events_service):
+        events_service.create_event(date="2026-03-04", name="Lunch", start_time="2026-03-04T12:00:00")
+        events = events_service.get_events("2026-03-04")
+        assert events[0]["type"] == "calendar"
+
+    def test_type_defaults_to_unplanned_stop_with_photo(self, events_service):
+        events_service.create_event(
+            date="2026-03-04", name="Snap", start_time="2026-03-04T14:00:00",
+            photo_path="photo.jpg",
+        )
+        events = events_service.get_events("2026-03-04")
+        assert events[0]["type"] == "unplanned_stop"
+
+    def test_type_explicit_override(self, events_service):
+        events_service.create_event(
+            date="2026-03-04", name="Walk", start_time="2026-03-04T10:00:00",
+            event_type="activity",
+        )
+        events = events_service.get_events("2026-03-04")
+        assert events[0]["type"] == "activity"
+
+    def test_duration_calculated_from_times(self, events_service):
+        events_service.create_event(
+            date="2026-03-04", name="Meeting",
+            start_time="2026-03-04T10:00:00", end_time="2026-03-04T11:30:00",
+        )
+        events = events_service.get_events("2026-03-04")
+        assert events[0]["duration_minutes"] == 90
+
+    def test_duration_zero_when_no_end_time(self, events_service):
+        events_service.create_event(
+            date="2026-03-04", name="Quick stop", start_time="2026-03-04T15:00:00",
+        )
+        events = events_service.get_events("2026-03-04")
+        assert events[0]["duration_minutes"] == 0
+
+    def test_source_ids_passed_through(self, events_service):
+        events_service.create_event(
+            date="2026-03-04", name="Synced",
+            start_time="2026-03-04T10:00:00",
+            source_ids={"calendar_id": "gcal_abc123"},
+        )
+        events = events_service.get_events("2026-03-04")
+        assert events[0]["source_ids"] == {"calendar_id": "gcal_abc123"}
+
+
+class TestUpdateEvent:
+    def test_update_event_name(self, events_service):
+        events_service.create_event(date="2026-03-04", name="Walk", start_time="2026-03-04T10:00:00")
+        event_id = events_service.get_events("2026-03-04")[0]["id"]
+
+        result = events_service.update_event("2026-03-04", event_id, {"name": "Dog walk"})
+        assert result["updated"] is True
+        events = events_service.get_events("2026-03-04")
+        assert events[0]["name"] == "Dog walk"
+
+    def test_update_event_end_time_recalculates_duration(self, events_service):
+        events_service.create_event(
+            date="2026-03-04", name="Walk",
+            start_time="2026-03-04T10:00:00", end_time="2026-03-04T10:30:00",
+        )
+        event_id = events_service.get_events("2026-03-04")[0]["id"]
+
+        result = events_service.update_event("2026-03-04", event_id, {
+            "end_time": "2026-03-04T11:30:00",
+        })
+        assert result["updated"] is True
+        events = events_service.get_events("2026-03-04")
+        assert events[0]["end_time"] == "2026-03-04T11:30:00"
+        assert events[0]["duration_minutes"] == 90
+
+    def test_update_event_not_found(self, events_service):
+        result = events_service.update_event("2026-03-04", "nonexistent", {"name": "X"})
+        assert "error" in result
+
+    def test_update_preserves_other_fields(self, events_service):
+        events_service.create_event(
+            date="2026-03-04", name="Walk",
+            start_time="2026-03-04T10:00:00",
+            photo_path="photo.jpg", caption="Nice walk",
+        )
+        event_id = events_service.get_events("2026-03-04")[0]["id"]
+
+        events_service.update_event("2026-03-04", event_id, {"name": "Dog walk"})
+        events = events_service.get_events("2026-03-04")
+        assert events[0]["name"] == "Dog walk"
+        assert len(events[0]["photos"]) == 1  # Photo preserved
+
+
 class TestAttachPhoto:
     def test_attach_photo_to_event(self, events_service):
         events_service.create_event(date="2026-03-04", name="Walk", start_time="14:00")

@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     enable_calendar_sync: bool = (
         os.getenv("ENABLE_CALENDAR_SYNC", "false").lower() == "true"
     )
+    google_calendar_include: str = os.getenv("GOOGLE_CALENDAR_INCLUDE", "")
     default_habit_time: str = os.getenv("DEFAULT_HABIT_TIME", "07:00")
     default_event_duration: int = int(os.getenv("DEFAULT_EVENT_DURATION", "30"))
 

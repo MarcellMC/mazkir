@@ -63,21 +63,43 @@ class EventsService:
         photo_path: str | None = None,
         caption: str | None = None,
         wikilinks: list[str] | None = None,
+        event_type: str | None = None,
+        source_ids: dict | None = None,
     ) -> dict:
         """Create a new event and persist it."""
+        from datetime import datetime as _dt
+
         events = self.get_events(date)
+
+        # Calculate duration from start/end times
+        duration = 0
+        if end_time and end_time != start_time:
+            try:
+                st = _dt.fromisoformat(start_time)
+                et = _dt.fromisoformat(end_time)
+                duration = max(0, int((et - st).total_seconds() / 60))
+            except (ValueError, TypeError):
+                duration = 0
+
+        # Determine event type: explicit > photo-based > calendar
+        if event_type:
+            resolved_type = event_type
+        elif photo_path:
+            resolved_type = "unplanned_stop"
+        else:
+            resolved_type = "calendar"
 
         event: dict[str, Any] = {
             "id": f"evt_{uuid4().hex[:8]}",
             "name": name,
-            "type": "unplanned_stop",
+            "type": resolved_type,
             "start_time": start_time,
             "end_time": end_time or start_time,
-            "duration_minutes": 0,
+            "duration_minutes": duration,
             "location": location,
             "activity_category": category,
             "source": "photo" if photo_path else "manual",
-            "source_ids": {},
+            "source_ids": source_ids or {},
             "confidence": "medium",
             "photos": [],
             "assets": None,
@@ -92,6 +114,35 @@ class EventsService:
         events.append(event)
         self.save_events(date, events)
         return {"id": event["id"], "path": str(self._file_path(date))}
+
+    def update_event(
+        self,
+        date: str,
+        event_id: str,
+        updates: dict,
+    ) -> dict:
+        """Update fields on an existing event."""
+        events = self.get_events(date)
+        for event in events:
+            if event["id"] == event_id:
+                # Recalculate duration if times changed
+                start = updates.get("start_time", event.get("start_time"))
+                end = updates.get("end_time", event.get("end_time"))
+                if "start_time" in updates or "end_time" in updates:
+                    if start and end and start != end:
+                        from datetime import datetime as _dt
+                        try:
+                            st = _dt.fromisoformat(start)
+                            et = _dt.fromisoformat(end)
+                            updates["duration_minutes"] = max(0, int((et - st).total_seconds() / 60))
+                        except (ValueError, TypeError):
+                            pass
+
+                event.update(updates)
+                self.save_events(date, events)
+                return {"updated": True, "event_id": event_id}
+
+        return {"error": f"Event {event_id} not found"}
 
     def attach_photo(
         self,

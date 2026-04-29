@@ -15,6 +15,8 @@ export interface Attachment {
   mime_type?: string;
   /** e.g. "photo_2026-03-04_14-30.jpg" (photo only) */
   filename?: string;
+  /** Telegram message timestamp ISO string — fallback when EXIF is stripped (photo only) */
+  telegram_date?: string;
   /** Location fields */
   latitude?: number;
   longitude?: number;
