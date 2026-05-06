@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # Persisted events
     events_data_path: Path = Path(os.getenv("EVENTS_DATA_PATH", str(Path.home() / "dev" / "mazkir" / "data" / "events")))
 
+    # Structured logs
+    logs_dir: Path = Path(os.getenv("LOGS_DIR", str(Path.home() / "dev" / "mazkir" / "data" / "logs")))
+
     # Replicate API (for image generation)
     replicate_api_token: str | None = os.getenv("REPLICATE_API_TOKEN")
 

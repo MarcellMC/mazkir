@@ -103,7 +103,9 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 ├── data/                              # External data (gitignored)
 │   ├── media/                         # Saved photo attachments ({YYYY-MM-DD}/*.jpg + metadata.json)
 │   ├── events/                        # Persisted merged events ({YYYY-MM-DD}.json)
-│   └── timeline/                      # Google Takeout Semantic Location History
+│   ├── timeline/                      # Google Takeout Semantic Location History
+│   └── logs/                          # Structured JSON logs (vault-server.jsonl, agent-turns.jsonl, telegram-bot.jsonl)
+├── infra/observability/               # Local Loki + Alloy + Grafana docker-compose stack
 ├── docs/plans/                        # Design and implementation docs
 ├── turbo.json                         # Turborepo config
 ├── package.json                       # Root workspace config
@@ -230,6 +232,7 @@ curl http://localhost:8000/events/2026-03-05
 ## Related Documentation
 
 - **Vault Schemas:** `memory/AGENTS.md`
+- **Observability:** `docs/observability.md` — structured logs + Loki/Grafana stack
 - **Project Roadmap:** `personal-ai-assistant-roadmap.md`
 - **Memory System Design:** `docs/plans/2026-03-02-memory-system-design.md`
 - **Memory System Plan:** `docs/plans/2026-03-02-memory-system-plan.md`

@@ -3,11 +3,13 @@
 import base64
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from src.logging_setup import emit_agent_turn
 from src.services.claude_service import ClaudeService
 from src.services.memory_service import MemoryService
 from src.services.vault_service import VaultService
@@ -15,6 +17,34 @@ from src.services.vault_service import VaultService
 logger = logging.getLogger(__name__)
 
 CONFIDENCE_THRESHOLD = 0.85
+
+
+def _sanitize_params(params: dict) -> dict:
+    """Strip internal fields and truncate long strings for safe logging."""
+    out: dict[str, Any] = {}
+    for k, v in params.items():
+        if k.startswith("_"):
+            continue
+        if isinstance(v, str) and len(v) > 200:
+            out[k] = v[:200] + "…"
+        else:
+            out[k] = v
+    return out
+
+
+def _summarize_result(result: dict) -> dict:
+    """Compact form of a tool result for the audit record."""
+    summary: dict[str, Any] = {}
+    for k, v in result.items():
+        if k == "_items":
+            continue
+        if isinstance(v, str) and len(v) > 200:
+            summary[k] = v[:200] + "…"
+        elif isinstance(v, list):
+            summary[k] = f"<list len={len(v)}>"
+        else:
+            summary[k] = v
+    return summary
 
 
 @dataclass
@@ -527,14 +557,14 @@ class AgentService:
 
     # ── Confidence Gate ──────────────────────────────────────────
 
-    def _check_confidence(self, name: str, params: dict) -> bool:
-        """Check if a tool call passes the confidence gate."""
+    def _check_confidence(self, name: str, params: dict) -> tuple[bool, float, str | None]:
+        """Strip internal fields and return (passes_gate, confidence, reasoning)."""
         risk = self.tools[name]["risk"]
-        if risk == "safe":
-            return True
         confidence = params.pop("_confidence", 0.0)
-        params.pop("_reasoning", None)
-        return confidence >= CONFIDENCE_THRESHOLD
+        reasoning = params.pop("_reasoning", None)
+        if risk == "safe":
+            return True, confidence, reasoning
+        return confidence >= CONFIDENCE_THRESHOLD, confidence, reasoning
 
     # ── Agent Loop ───────────────────────────────────────────────
 
@@ -590,12 +620,23 @@ class AgentService:
 
         if user_response.lower() in ("yes", "y", "ok", "sure", "do it"):
             tool_results = list(pending.executed_results)
+            pre_tools_audit: list[dict] = []
             for call in pending.pending_calls:
-                result = self._execute_tool(call["name"], call["input"])
+                params = dict(call["input"])
+                _, confidence, reasoning = self._check_confidence(call["name"], params)
+                result = self._execute_tool(call["name"], params)
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": call["id"],
                     "content": json.dumps(result),
+                })
+                pre_tools_audit.append({
+                    "name": call["name"],
+                    "params": _sanitize_params(params),
+                    "confidence": confidence,
+                    "reasoning": reasoning,
+                    "result_summary": _summarize_result(result) if isinstance(result, dict) else None,
+                    "confirmed": True,
                 })
 
             messages = pending.messages
@@ -605,7 +646,11 @@ class AgentService:
             system = self._build_system_prompt(
                 self.memory.assemble_context(chat_id)
             )
-            return self._run_loop(chat_id, user_response, messages, system)
+            return self._run_loop(
+                chat_id, user_response, messages, system,
+                pre_tools=pre_tools_audit,
+                action_id=action_id,
+            )
         else:
             messages = pending.messages
             messages.append({
@@ -615,7 +660,10 @@ class AgentService:
             system = self._build_system_prompt(
                 self.memory.assemble_context(chat_id)
             )
-            return self._run_loop(chat_id, user_response, messages, system)
+            return self._run_loop(
+                chat_id, user_response, messages, system,
+                action_id=action_id,
+            )
 
     def _run_loop(
         self,
@@ -623,37 +671,77 @@ class AgentService:
         original_text: str,
         messages: list[dict],
         system: str,
+        pre_tools: list[dict] | None = None,
+        action_id: str | None = None,
     ) -> AgentResponse:
         """Core agent loop: Claude <-> tools until end_turn or max iterations."""
         items_referenced: list[str] = []
+        tools_audit: list[dict] = list(pre_tools) if pre_tools else []
         assistant_text = ""
         response = None
+        iters = 0
+        stop_reason: str | None = None
 
-        for _ in range(self.max_iterations):
+        for iter_num in range(self.max_iterations):
+            iters = iter_num + 1
             response = self.claude.create(
                 system=system,
                 messages=messages,
                 tools=self._tool_schemas(),
             )
+            stop_reason = response.stop_reason
 
-            if response.stop_reason == "end_turn":
+            if stop_reason == "end_turn":
+                logger.info(
+                    "agent_iter",
+                    extra={
+                        "event_type": "agent_iter",
+                        "chat_id": chat_id,
+                        "iter": iters,
+                        "stop_reason": stop_reason,
+                        "tool_calls": 0,
+                    },
+                )
                 assistant_text = self._extract_text(response)
                 break
 
-            if response.stop_reason == "tool_use":
+            if stop_reason == "tool_use":
                 tool_calls = self._extract_tool_calls(response)
 
                 needs_confirmation = []
                 auto_execute = []
+                gate_info: dict[str, tuple[float, str | None]] = {}
                 for call in tool_calls:
-                    if self._check_confidence(call["name"], call["input"]):
+                    passes, confidence, reasoning = self._check_confidence(call["name"], call["input"])
+                    gate_info[call["id"]] = (confidence, reasoning)
+                    if passes:
                         auto_execute.append(call)
                     else:
                         needs_confirmation.append(call)
 
+                logger.info(
+                    "agent_iter",
+                    extra={
+                        "event_type": "agent_iter",
+                        "chat_id": chat_id,
+                        "iter": iters,
+                        "stop_reason": stop_reason,
+                        "tool_calls": len(tool_calls),
+                        "auto_execute": [
+                            {"name": c["name"], "confidence": gate_info[c["id"]][0]}
+                            for c in auto_execute
+                        ],
+                        "needs_confirmation": [
+                            {"name": c["name"], "confidence": gate_info[c["id"]][0]}
+                            for c in needs_confirmation
+                        ],
+                    },
+                )
+
                 if needs_confirmation:
                     executed = []
                     for call in auto_execute:
+                        confidence, reasoning = gate_info[call["id"]]
                         result = self._execute_tool(call["name"], call["input"])
                         items_referenced.extend(result.get("_items", []))
                         executed.append({
@@ -661,9 +749,17 @@ class AgentService:
                             "tool_use_id": call["id"],
                             "content": json.dumps(result),
                         })
+                        tools_audit.append({
+                            "name": call["name"],
+                            "params": _sanitize_params(call["input"]),
+                            "confidence": confidence,
+                            "reasoning": reasoning,
+                            "result_summary": _summarize_result(result) if isinstance(result, dict) else None,
+                            "confirmed": False,
+                        })
 
-                    action_id = str(uuid4())
-                    self.pending_confirmations[action_id] = PendingAction(
+                    pending_action_id = str(uuid4())
+                    self.pending_confirmations[pending_action_id] = PendingAction(
                         chat_id=chat_id,
                         messages=messages,
                         assistant_response=response,
@@ -671,22 +767,55 @@ class AgentService:
                         pending_calls=needs_confirmation,
                     )
 
+                    for call in needs_confirmation:
+                        confidence, reasoning = gate_info[call["id"]]
+                        tools_audit.append({
+                            "name": call["name"],
+                            "params": _sanitize_params(call["input"]),
+                            "confidence": confidence,
+                            "reasoning": reasoning,
+                            "result_summary": None,
+                            "confirmed": False,
+                            "pending": True,
+                        })
+
                     description = self._describe_pending_calls(needs_confirmation)
                     self.memory.save_turn(chat_id, original_text, description, items_referenced)
+                    self._emit_turn_audit(
+                        chat_id=chat_id,
+                        user_text=original_text,
+                        tools_audit=tools_audit,
+                        assistant_text=description,
+                        items_referenced=items_referenced,
+                        awaiting_confirmation=True,
+                        pending_action_id=pending_action_id,
+                        prior_action_id=action_id,
+                        iters=iters,
+                        stop_reason=stop_reason,
+                    )
                     return AgentResponse(
                         response=description,
                         awaiting_confirmation=True,
-                        pending_action_id=action_id,
+                        pending_action_id=pending_action_id,
                     )
 
                 tool_results = []
                 for call in auto_execute:
+                    confidence, reasoning = gate_info[call["id"]]
                     result = self._execute_tool(call["name"], call["input"])
                     items_referenced.extend(result.get("_items", []))
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": call["id"],
                         "content": json.dumps(result),
+                    })
+                    tools_audit.append({
+                        "name": call["name"],
+                        "params": _sanitize_params(call["input"]),
+                        "confidence": confidence,
+                        "reasoning": reasoning,
+                        "result_summary": _summarize_result(result) if isinstance(result, dict) else None,
+                        "confirmed": False,
                     })
 
                 messages.append({"role": "assistant", "content": response.content})
@@ -701,7 +830,46 @@ class AgentService:
         self.memory.save_turn(chat_id, original_text, assistant_text, items_referenced)
         self.memory.summarize_and_decay(chat_id)
 
+        self._emit_turn_audit(
+            chat_id=chat_id,
+            user_text=original_text,
+            tools_audit=tools_audit,
+            assistant_text=assistant_text,
+            items_referenced=items_referenced,
+            awaiting_confirmation=False,
+            pending_action_id=None,
+            prior_action_id=action_id,
+            iters=iters,
+            stop_reason=stop_reason,
+        )
         return AgentResponse(response=assistant_text)
+
+    def _emit_turn_audit(
+        self,
+        *,
+        chat_id: int,
+        user_text: str,
+        tools_audit: list[dict],
+        assistant_text: str,
+        items_referenced: list[str],
+        awaiting_confirmation: bool,
+        pending_action_id: str | None,
+        prior_action_id: str | None,
+        iters: int,
+        stop_reason: str | None,
+    ) -> None:
+        emit_agent_turn({
+            "chat_id": chat_id,
+            "user_text": user_text,
+            "tools": tools_audit,
+            "assistant_text": assistant_text,
+            "items_referenced": items_referenced,
+            "awaiting_confirmation": awaiting_confirmation,
+            "pending_action_id": pending_action_id,
+            "prior_action_id": prior_action_id,
+            "iters": iters,
+            "stop_reason": stop_reason,
+        })
 
     # ── Attachments ────────────────────────────────────────────────
 
@@ -899,15 +1067,65 @@ class AgentService:
         return calls
 
     def _execute_tool(self, name: str, params: dict) -> dict:
-        """Execute a registered tool and return its result."""
+        """Execute a registered tool and return its result.
+
+        Always emits one structured log line per call with timing + status.
+        """
+        sanitized = _sanitize_params(params)
+        risk = self.tools[name]["risk"] if name in self.tools else "unknown"
+        start = time.monotonic()
+
         if name not in self.tools:
+            duration_ms = int((time.monotonic() - start) * 1000)
+            logger.warning(
+                "tool_call",
+                extra={
+                    "event_type": "tool_call",
+                    "tool": name,
+                    "risk": risk,
+                    "params": sanitized,
+                    "status": "error",
+                    "error": "unknown_tool",
+                    "duration_ms": duration_ms,
+                },
+            )
             return {"error": f"Unknown tool: {name}"}
+
         try:
             handler = self.tools[name]["handler"]
-            return handler(params)
+            result = handler(params)
         except Exception as e:
-            logger.error(f"Tool {name} failed: {e}", exc_info=True)
+            duration_ms = int((time.monotonic() - start) * 1000)
+            logger.error(
+                "tool_call",
+                exc_info=True,
+                extra={
+                    "event_type": "tool_call",
+                    "tool": name,
+                    "risk": risk,
+                    "params": sanitized,
+                    "status": "error",
+                    "error": str(e),
+                    "duration_ms": duration_ms,
+                },
+            )
             return {"error": str(e)}
+
+        duration_ms = int((time.monotonic() - start) * 1000)
+        status = "error" if isinstance(result, dict) and "error" in result else "ok"
+        logger.info(
+            "tool_call",
+            extra={
+                "event_type": "tool_call",
+                "tool": name,
+                "risk": risk,
+                "params": sanitized,
+                "status": status,
+                "duration_ms": duration_ms,
+                "result_summary": _summarize_result(result) if isinstance(result, dict) else {"value": str(result)[:200]},
+            },
+        )
+        return result
 
     def _describe_pending_calls(self, calls: list[dict]) -> str:
         """Build a human-readable description of pending tool calls."""

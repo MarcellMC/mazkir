@@ -66,29 +66,38 @@ class TestToolRegistry:
 
 class TestConfidenceGate:
     def test_safe_tools_always_pass(self, agent):
-        assert agent._check_confidence("list_tasks", {}) is True
+        passes, _, _ = agent._check_confidence("list_tasks", {})
+        assert passes is True
 
     def test_write_tool_passes_with_high_confidence(self, agent):
         params = {"name": "test", "_confidence": 0.95, "_reasoning": "clear intent"}
-        assert agent._check_confidence("create_task", params) is True
+        passes, confidence, reasoning = agent._check_confidence("create_task", params)
+        assert passes is True
+        assert confidence == 0.95
+        assert reasoning == "clear intent"
         assert "_confidence" not in params
         assert "_reasoning" not in params
 
     def test_write_tool_fails_with_low_confidence(self, agent):
         params = {"name": "test", "_confidence": 0.5, "_reasoning": "unsure"}
-        assert agent._check_confidence("create_task", params) is False
+        passes, _, _ = agent._check_confidence("create_task", params)
+        assert passes is False
 
     def test_destructive_tool_fails_with_low_confidence(self, agent):
         params = {"task_name": "buy milk", "_confidence": 0.6, "_reasoning": "maybe"}
-        assert agent._check_confidence("complete_task", params) is False
+        passes, _, _ = agent._check_confidence("complete_task", params)
+        assert passes is False
 
     def test_missing_confidence_defaults_low(self, agent):
         params = {"task_name": "test"}
-        assert agent._check_confidence("complete_task", params) is False
+        passes, confidence, _ = agent._check_confidence("complete_task", params)
+        assert passes is False
+        assert confidence == 0.0
 
     def test_confidence_at_threshold_passes(self, agent):
         params = {"name": "test", "_confidence": CONFIDENCE_THRESHOLD}
-        assert agent._check_confidence("create_task", params) is True
+        passes, _, _ = agent._check_confidence("create_task", params)
+        assert passes is True
 
 
 class TestAgentResponse:

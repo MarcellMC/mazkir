@@ -1,9 +1,13 @@
 """Natural language message endpoint — agent loop."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from src.auth import verify_api_key
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["message"], dependencies=[Depends(verify_api_key)])
 
@@ -55,6 +59,19 @@ def handle_message(body: MessageRequest):
     if not agent:
         raise HTTPException(status_code=503, detail="Agent service not initialized (missing API key?)")
 
+    attachment_types = [a.type for a in body.attachments] if body.attachments else []
+    logger.info(
+        "message_received",
+        extra={
+            "event_type": "message_received",
+            "chat_id": body.chat_id,
+            "text_length": len(body.text),
+            "attachment_types": attachment_types,
+            "has_reply_to": body.reply_to is not None,
+            "has_forwarded_from": body.forwarded_from is not None,
+        },
+    )
+
     # Convert Pydantic models to dicts for agent service
     attachments = None
     if body.attachments:
@@ -75,6 +92,17 @@ def handle_message(body: MessageRequest):
         reply_to=reply_to,
         forwarded_from=forwarded_from,
     )
+
+    logger.info(
+        "message_responded",
+        extra={
+            "event_type": "message_responded",
+            "chat_id": body.chat_id,
+            "response_length": len(result.response),
+            "awaiting_confirmation": result.awaiting_confirmation,
+            "pending_action_id": result.pending_action_id,
+        },
+    )
     return {
         "response": result.response,
         "awaiting_confirmation": result.awaiting_confirmation,
@@ -89,7 +117,28 @@ def handle_confirmation(body: ConfirmationRequest):
     if not agent:
         raise HTTPException(status_code=503, detail="Agent service not initialized")
 
+    logger.info(
+        "confirmation_received",
+        extra={
+            "event_type": "confirmation_received",
+            "chat_id": body.chat_id,
+            "pending_action_id": body.action_id,
+            "response": body.response,
+        },
+    )
+
     result = agent.handle_confirmation(body.chat_id, body.action_id, body.response)
+
+    logger.info(
+        "confirmation_responded",
+        extra={
+            "event_type": "confirmation_responded",
+            "chat_id": body.chat_id,
+            "pending_action_id": result.pending_action_id,
+            "awaiting_confirmation": result.awaiting_confirmation,
+            "response_length": len(result.response),
+        },
+    )
     return {
         "response": result.response,
         "awaiting_confirmation": result.awaiting_confirmation,

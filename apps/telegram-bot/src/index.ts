@@ -1,5 +1,6 @@
 import { bot } from "./bot.js";
 import { config } from "./config.js";
+import { logger } from "./logger.js";
 
 async function main() {
   // Set bot commands (visible in Telegram menu)
@@ -25,16 +26,21 @@ async function main() {
     });
   }
 
-  console.log("Starting Mazkir bot...");
   const me = await bot.api.getMe();
-  console.log(`Bot started as @${me.username}`);
-  console.log(`Vault server: ${config.vaultServerUrl}`);
-  console.log(`Mini App: ${config.webappUrl}`);
+  logger.info(
+    {
+      event_type: "bot_started",
+      username: me.username,
+      vault_server: config.vaultServerUrl,
+      webapp_url: config.webappUrl,
+    },
+    "bot_started",
+  );
 
   bot.start();
 }
 
 main().catch((err) => {
-  console.error("Fatal error:", err);
+  logger.fatal({ event_type: "bot_fatal", err: String(err) }, "bot_fatal");
   process.exit(1);
 });

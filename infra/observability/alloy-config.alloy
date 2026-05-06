@@ -1,0 +1,55 @@
+// Discover any *.jsonl in /var/log/mazkir/ (bind-mounted from data/logs/).
+local.file_match "mazkir" {
+  path_targets = [
+    {
+      __path__ = "/var/log/mazkir/*.jsonl",
+    },
+  ]
+}
+
+// Tail discovered files.
+loki.source.file "mazkir" {
+  targets    = local.file_match.mazkir.targets
+  forward_to = [loki.process.mazkir.receiver]
+}
+
+// Parse each line as JSON, promote a few low-cardinality fields to labels,
+// and derive `service` from the filename. High-cardinality fields (chat_id,
+// tool, event_type) stay in the line as structured metadata, queryable via
+// `| json` in LogQL.
+loki.process "mazkir" {
+  forward_to = [loki.write.default.receiver]
+
+  // Pull `service` out of the filename: vault-server.jsonl → vault-server.
+  stage.regex {
+    source     = "filename"
+    expression = "/(?P<svc>[^/]+)\\.jsonl$"
+  }
+  stage.labels {
+    values = {
+      service = "svc",
+    }
+  }
+
+  // Parse the line as JSON so downstream stages can pick fields out.
+  stage.json {
+    expressions = {
+      level      = "level",
+      event_type = "event_type",
+    }
+  }
+
+  // Low-cardinality labels only.
+  stage.labels {
+    values = {
+      level      = "level",
+      event_type = "event_type",
+    }
+  }
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

@@ -13,12 +13,43 @@ import {
 } from "./commands/index.js";
 import { callbackHandlers } from "./callbacks/index.js";
 import { messageHandler } from "./conversations/message.js";
+import { logger } from "./logger.js";
 
 export const bot = new Bot(config.botToken);
 
-// Authorization middleware
+// Authorization + per-update logging middleware
 bot.use(async (ctx, next) => {
-  if (ctx.from?.id !== config.authorizedUserId) return;
+  if (ctx.from?.id !== config.authorizedUserId) {
+    logger.warn(
+      {
+        event_type: "update_unauthorized",
+        from_id: ctx.from?.id,
+        update_id: ctx.update.update_id,
+      },
+      "update_unauthorized",
+    );
+    return;
+  }
+  const message = ctx.message;
+  logger.info(
+    {
+      event_type: "update_received",
+      update_id: ctx.update.update_id,
+      chat_id: ctx.chat?.id,
+      from_id: ctx.from?.id,
+      kind: message?.text
+        ? "text"
+        : message?.photo
+          ? "photo"
+          : message?.location
+            ? "location"
+            : ctx.callbackQuery
+              ? "callback"
+              : "other",
+      text_length: message?.text?.length ?? 0,
+    },
+    "update_received",
+  );
   await next();
 });
 

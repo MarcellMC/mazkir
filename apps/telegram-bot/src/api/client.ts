@@ -11,20 +11,52 @@ import type {
   ForwardContext,
 } from "@mazkir/shared-types";
 
+import { logger } from "../logger.js";
+
 export function createApiClient(baseUrl: string, apiKey: string) {
   async function request<T>(path: string, options?: RequestInit): Promise<T> {
-    const res = await fetch(`${baseUrl}${path}`, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...(apiKey ? { "X-API-Key": apiKey } : {}),
-        ...options?.headers,
-      },
-    });
-    if (!res.ok) {
-      throw new Error(`API error: ${res.status} ${res.statusText}`);
+    const method = options?.method ?? "GET";
+    const start = Date.now();
+    try {
+      const res = await fetch(`${baseUrl}${path}`, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { "X-API-Key": apiKey } : {}),
+          ...options?.headers,
+        },
+      });
+      const duration_ms = Date.now() - start;
+      logger.info(
+        {
+          event_type: "api_call",
+          method,
+          path,
+          status: res.status,
+          ok: res.ok,
+          duration_ms,
+        },
+        "api_call",
+      );
+      if (!res.ok) {
+        throw new Error(`API error: ${res.status} ${res.statusText}`);
+      }
+      return res.json() as Promise<T>;
+    } catch (err) {
+      const duration_ms = Date.now() - start;
+      logger.error(
+        {
+          event_type: "api_call",
+          method,
+          path,
+          status: "error",
+          duration_ms,
+          err: String(err),
+        },
+        "api_call_error",
+      );
+      throw err;
     }
-    return res.json() as Promise<T>;
   }
 
   return {

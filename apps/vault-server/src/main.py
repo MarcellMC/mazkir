@@ -4,16 +4,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
+from src.logging_setup import configure_audit_log, configure_logging
 from src.services.vault_service import VaultService
 from src.services.claude_service import ClaudeService
 from src.services.calendar_service import CalendarService
 from src.services.memory_service import MemoryService
 from src.services.agent_service import AgentService
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+configure_logging(settings.log_level, settings.logs_dir)
+configure_audit_log(settings.logs_dir)
 logger = logging.getLogger(__name__)
 
 # Service instances (initialized in lifespan)
