@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from opentelemetry import trace
 from pythonjsonlogger.json import JsonFormatter
 
 
@@ -22,6 +23,19 @@ SERVICE_NAME = "vault-server"
 class _ServiceFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
         record.service = SERVICE_NAME
+        return True
+
+
+class _TraceContextFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+        span = trace.get_current_span()
+        ctx = span.get_span_context() if span else None
+        if ctx is not None and ctx.is_valid:
+            record.trace_id = format(ctx.trace_id, "032x")
+            record.span_id = format(ctx.span_id, "016x")
+        else:
+            record.trace_id = None
+            record.span_id = None
         return True
 
 
@@ -43,10 +57,12 @@ def configure_logging(log_level: str, logs_dir: Path) -> None:
         rename_fields={"asctime": "ts", "levelname": "level", "name": "logger"},
     )
     service_filter = _ServiceFilter()
+    trace_filter = _TraceContextFilter()
 
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
     stream_handler.addFilter(service_filter)
+    stream_handler.addFilter(trace_filter)
     root.addHandler(stream_handler)
 
     file_handler = logging.handlers.RotatingFileHandler(
@@ -57,6 +73,7 @@ def configure_logging(log_level: str, logs_dir: Path) -> None:
     )
     file_handler.setFormatter(formatter)
     file_handler.addFilter(service_filter)
+    file_handler.addFilter(trace_filter)
     root.addHandler(file_handler)
 
     # Quiet down a couple of chatty libraries unless explicitly DEBUG.
