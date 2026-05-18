@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.logging_setup import configure_audit_log, configure_logging
+from src.tracing_setup import configure_tracing, instrument_fastapi
 from src.services.vault_service import VaultService
 from src.services.claude_service import ClaudeService
 from src.services.calendar_service import CalendarService
@@ -13,6 +14,10 @@ from src.services.agent_service import AgentService
 
 configure_logging(settings.log_level, settings.logs_dir)
 configure_audit_log(settings.logs_dir)
+configure_tracing(
+    endpoint=settings.otel_exporter_otlp_endpoint,
+    service_name=settings.otel_service_name,
+)
 logger = logging.getLogger(__name__)
 
 # Service instances (initialized in lifespan)
@@ -104,6 +109,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Mazkir Vault Server", version="0.1.0", lifespan=lifespan)
+instrument_fastapi(app)
 
 app.add_middleware(
     CORSMiddleware,
