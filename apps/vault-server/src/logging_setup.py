@@ -28,9 +28,8 @@ class _ServiceFilter(logging.Filter):
 
 class _TraceContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
-        span = trace.get_current_span()
-        ctx = span.get_span_context() if span else None
-        if ctx is not None and ctx.is_valid:
+        ctx = trace.get_current_span().get_span_context()
+        if ctx.is_valid:
             record.trace_id = format(ctx.trace_id, "032x")
             record.span_id = format(ctx.span_id, "016x")
         else:

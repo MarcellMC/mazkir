@@ -38,7 +38,7 @@ def isolate_logging_and_otel():
 def _read_last_log_line(logs_dir: Path) -> dict:
     """Read and parse the last JSON line from the vault-server log file."""
     log_file = logs_dir / "vault-server.jsonl"
-    lines = [l.strip() for l in log_file.read_text().splitlines() if l.strip()]
+    lines = [line.strip() for line in log_file.read_text().splitlines() if line.strip()]
     return json.loads(lines[-1])
 
 
