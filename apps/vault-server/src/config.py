@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     # Structured logs
     logs_dir: Path = Path(os.getenv("LOGS_DIR", str(Path.home() / "dev" / "mazkir" / "data" / "logs")))
 
+    # Tracing (OTLP/HTTP)
+    otel_exporter_otlp_endpoint: str = os.getenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "http://localhost:6006/v1/traces",
+    )
+    otel_service_name: str = os.getenv("OTEL_SERVICE_NAME", "vault-server")
+
     # Replicate API (for image generation)
     replicate_api_token: str | None = os.getenv("REPLICATE_API_TOKEN")
 
