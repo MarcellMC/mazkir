@@ -53,7 +53,21 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  phoenix:
+    image: arizephoenix/phoenix:15.10.0
+    container_name: mazkir-phoenix
+    ports:
+      - "6006:6006"   # UI + OTLP/HTTP ingress
+      - "4317:4317"   # OTLP/gRPC (unused by us but Phoenix exposes it)
+    environment:
+      PHOENIX_WORKING_DIR: /phoenix
+      PHOENIX_PORT: "6006"
+    volumes:
+      - phoenix-data:/phoenix
+    restart: unless-stopped
+
 volumes:
   loki-data:
   alloy-data:
   grafana-data:
+  phoenix-data:
