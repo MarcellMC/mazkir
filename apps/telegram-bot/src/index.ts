@@ -1,3 +1,4 @@
+import "./tracing.js";
 import { bot } from "./bot.js";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
