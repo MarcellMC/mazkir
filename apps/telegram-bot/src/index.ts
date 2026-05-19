@@ -1,3 +1,4 @@
+// Must be first import: OTel auto-instrumentation patches http/fetch at module load time.
 import "./tracing.js";
 import { bot } from "./bot.js";
 import { config } from "./config.js";
