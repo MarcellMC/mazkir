@@ -4,29 +4,27 @@ import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentation
 import { Resource } from "@opentelemetry/resources";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 
-const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+const endpoint =
+  process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "http://localhost:6006/v1/traces";
 const serviceName = process.env.OTEL_SERVICE_NAME ?? "telegram-bot";
 
-let sdk: NodeSDK | undefined;
-
-if (endpoint && endpoint.length > 0) {
-  sdk = new NodeSDK({
-    resource: new Resource({
-      [ATTR_SERVICE_NAME]: serviceName,
+const sdk = new NodeSDK({
+  resource: new Resource({
+    [ATTR_SERVICE_NAME]: serviceName,
+  }),
+  traceExporter: new OTLPTraceExporter({ url: endpoint }),
+  instrumentations: [
+    getNodeAutoInstrumentations({
+      "@opentelemetry/instrumentation-fs": { enabled: false },
     }),
-    traceExporter: new OTLPTraceExporter({ url: endpoint }),
-    instrumentations: [
-      getNodeAutoInstrumentations({
-        "@opentelemetry/instrumentation-fs": { enabled: false },
-      }),
-    ],
-  });
-  try {
-    sdk.start();
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error("tracing_init_failed", err);
-  }
+  ],
+});
+
+try {
+  sdk.start();
+} catch (err) {
+  // eslint-disable-next-line no-console
+  console.error("tracing_init_failed", err);
 }
 
 export { sdk };
