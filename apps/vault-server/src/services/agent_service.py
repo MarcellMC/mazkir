@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from opentelemetry import trace as _otel_trace
-from opentelemetry.trace import Status, StatusCode
+from opentelemetry.trace import NonRecordingSpan, SpanContext, Status, StatusCode, set_span_in_context
 
 from src.logging_setup import emit_agent_turn
 from src.services.claude_service import ClaudeService
@@ -68,6 +68,7 @@ class PendingAction:
     assistant_response: Any
     executed_results: list[dict]
     pending_calls: list[dict]
+    parent_span_context: SpanContext | None = None
 
 
 class AgentService:
@@ -642,8 +643,18 @@ class AgentService:
         self, chat_id: int, action_id: str, user_response: str,
     ) -> AgentResponse:
         """Resume a paused loop after user confirms or denies."""
+        # Re-attach to the original turn's trace when possible so the resumed
+        # work appears under the same trace tree as the message that asked for
+        # confirmation. The inbound /message/confirm HTTP span stays in its
+        # own trace; we just override the parent for the agent span.
+        pending = self.pending_confirmations.get(action_id)
+        parent_ctx = None
+        if pending and pending.parent_span_context is not None:
+            parent_ctx = set_span_in_context(NonRecordingSpan(pending.parent_span_context))
+
         with _tracer.start_as_current_span(
             "agent.handle_confirmation",
+            context=parent_ctx,
             attributes={
                 "openinference.span.kind": "AGENT",
                 "chat_id": chat_id,
@@ -809,12 +820,14 @@ class AgentService:
                             })
 
                         pending_action_id = str(uuid4())
+                        current_ctx = _otel_trace.get_current_span().get_span_context()
                         self.pending_confirmations[pending_action_id] = PendingAction(
                             chat_id=chat_id,
                             messages=messages,
                             assistant_response=response,
                             executed_results=executed,
                             pending_calls=needs_confirmation,
+                            parent_span_context=current_ctx if current_ctx.is_valid else None,
                         )
 
                         for call in needs_confirmation:

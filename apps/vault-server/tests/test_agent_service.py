@@ -714,3 +714,59 @@ class TestTracingSpans:
         names = {s.name for s in exporter.get_finished_spans()}
         assert "agent.handle_message" in names
         assert "agent.loop" in names
+
+    def test_handle_confirmation_continues_original_trace(self, agent, monkeypatch):
+        """The resumed confirmation flow shares the original turn's trace_id."""
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+        from src.services import agent_service as agent_service_module
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        monkeypatch.setattr(
+            agent_service_module, "_tracer", provider.get_tracer("mazkir.agent.test"),
+        )
+
+        # Turn 1: Claude requests a destructive tool with low confidence,
+        # which trips the gate and stores a pending action.
+        tool_block = MagicMock()
+        tool_block.type = "tool_use"
+        tool_block.name = "delete_task"
+        tool_block.id = "tool_low"
+        tool_block.input = {"name": "old", "_confidence": 0.4, "_reasoning": "vague"}
+        first_response = MagicMock()
+        first_response.stop_reason = "tool_use"
+        first_response.content = [tool_block]
+        agent.claude.create.return_value = first_response
+
+        result1 = agent.handle_message("delete old", chat_id=42)
+        assert result1.awaiting_confirmation is True
+        action_id = result1.pending_action_id
+
+        # Capture the original trace_id from handle_message.
+        orig_spans = [s for s in exporter.get_finished_spans() if s.name == "agent.handle_message"]
+        assert len(orig_spans) == 1
+        original_trace_id = orig_spans[0].context.trace_id
+
+        # Turn 2: user confirms. Claude returns end_turn immediately so the
+        # resumed loop completes.
+        end_block = MagicMock()
+        end_block.type = "text"
+        end_block.text = "done"
+        end_response = MagicMock()
+        end_response.stop_reason = "end_turn"
+        end_response.content = [end_block]
+        agent.claude.create.return_value = end_response
+
+        # Stub the tool handler to avoid touching the vault.
+        agent.tools["delete_task"]["handler"] = lambda **_: {"deleted": "old"}
+
+        agent.handle_confirmation(chat_id=42, action_id=action_id, user_response="yes")
+
+        confirm_spans = [s for s in exporter.get_finished_spans() if s.name == "agent.handle_confirmation"]
+        assert len(confirm_spans) == 1
+        assert confirm_spans[0].context.trace_id == original_trace_id
