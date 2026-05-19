@@ -70,7 +70,9 @@ bot.use(async (ctx, next) => {
       try {
         await next();
       } catch (err) {
-        span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
+        const message = err instanceof Error ? err.message : String(err);
+        span.recordException(err instanceof Error ? err : new Error(message));
+        span.setStatus({ code: SpanStatusCode.ERROR, message });
         throw err;
       } finally {
         span.end();
