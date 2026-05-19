@@ -1,4 +1,5 @@
 import { Bot } from "grammy";
+import { trace, SpanStatusCode } from "@opentelemetry/api";
 import { config } from "./config.js";
 import {
   startCommand,
@@ -14,6 +15,8 @@ import {
 import { callbackHandlers } from "./callbacks/index.js";
 import { messageHandler } from "./conversations/message.js";
 import { logger } from "./logger.js";
+
+const tracer = trace.getTracer("mazkir.telegram-bot");
 
 export const bot = new Bot(config.botToken);
 
@@ -31,26 +34,49 @@ bot.use(async (ctx, next) => {
     return;
   }
   const message = ctx.message;
-  logger.info(
+  const kind = message?.text
+    ? "text"
+    : message?.photo
+      ? "photo"
+      : message?.location
+        ? "location"
+        : ctx.callbackQuery
+          ? "callback"
+          : "other";
+
+  await tracer.startActiveSpan(
+    "telegram.update",
     {
-      event_type: "update_received",
-      update_id: ctx.update.update_id,
-      chat_id: ctx.chat?.id,
-      from_id: ctx.from?.id,
-      kind: message?.text
-        ? "text"
-        : message?.photo
-          ? "photo"
-          : message?.location
-            ? "location"
-            : ctx.callbackQuery
-              ? "callback"
-              : "other",
-      text_length: message?.text?.length ?? 0,
+      attributes: {
+        "telegram.update_id": ctx.update.update_id,
+        "telegram.chat_id": ctx.chat?.id,
+        "telegram.from_id": ctx.from?.id,
+        "telegram.kind": kind,
+        "telegram.text_length": message?.text?.length ?? 0,
+      },
     },
-    "update_received",
+    async (span) => {
+      logger.info(
+        {
+          event_type: "update_received",
+          update_id: ctx.update.update_id,
+          chat_id: ctx.chat?.id,
+          from_id: ctx.from?.id,
+          kind,
+          text_length: message?.text?.length ?? 0,
+        },
+        "update_received",
+      );
+      try {
+        await next();
+      } catch (err) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
+        throw err;
+      } finally {
+        span.end();
+      }
+    },
   );
-  await next();
 });
 
 // Commands
