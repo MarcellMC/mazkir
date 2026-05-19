@@ -65,3 +65,41 @@ best place to reconstruct exactly what happened in a single Mazkir reply.
 tail -f data/logs/agent-turns.jsonl | jq .
 jq 'select(.chat_id == 123 and .awaiting_confirmation == true)' data/logs/agent-turns.jsonl
 ```
+
+## Tracing
+
+The stack also includes [Arize Phoenix](https://phoenix.arize.com) for distributed
+tracing. Every Telegram update produces a single trace tree spanning:
+`telegram.update → POST /message → agent.handle_message → agent.loop →
+agent.tool_call` plus an LLM generation span per Claude call (system prompt,
+tools, token usage all captured automatically).
+
+- **Phoenix UI:** <http://localhost:6006>
+- **OTLP endpoint:** `http://localhost:6006/v1/traces`
+- **Project:** `mazkir` (set via `openinference.project.name` resource attribute)
+
+### Langfuse (opt-in)
+
+For prompt-management, eval, and dataset workflows, run the heavier Langfuse
+stack:
+
+```bash
+npx turbo dev:langfuse
+```
+
+This brings up Phoenix and Langfuse side-by-side and points the apps at
+Langfuse's OTLP endpoint. UI at <http://localhost:3001>. First-boot bootstrap
+keys live in `infra/observability/.env.example` — copy to
+`infra/observability/.env` before first run.
+
+Caveat: the current `langfuse/langfuse:3` image expects ClickHouse Keeper for
+its `ON CLUSTER` migrations, which the bundled `clickhouse:24.3-alpine` doesn't
+ship. The overlay is committed as a scaffold; bringing the web UI up to login
+still needs either an embedded-Keeper config or a v2 image pin. Phoenix remains
+fully functional as the default backend in the meantime.
+
+### Log ↔ trace correlation
+
+Every JSON log line carries `trace_id` and `span_id` when emitted inside a
+span. In Grafana Explore, the Loki datasource exposes `trace_id` as a clickable
+derived field that links straight into the matching Phoenix trace.

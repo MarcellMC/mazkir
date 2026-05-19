@@ -95,6 +95,17 @@ curl http://localhost:8000/tokens
 - [`CLAUDE.md`](CLAUDE.md) - Full project reference (start here for development)
 - [`memory/AGENTS.md`](memory/AGENTS.md) - Vault schemas and data formats
 - [`personal-ai-assistant-roadmap.md`](personal-ai-assistant-roadmap.md) - Project roadmap
+- [`docs/observability.md`](docs/observability.md) - Logs, traces, dashboards
+
+## Observability
+
+Distributed traces are visible in Phoenix by default; Langfuse runs side-by-side via `npx turbo dev:langfuse`.
+
+- Phoenix: <http://localhost:6006>
+- Grafana: <http://localhost:3000>
+- Loki: <http://localhost:3100>
+- Alloy: <http://localhost:12345>
+- Audit log: `data/logs/agent-turns.jsonl`
 
 ## License
 
