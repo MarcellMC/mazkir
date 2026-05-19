@@ -25,7 +25,12 @@ def configure_tracing(endpoint: str, service_name: str) -> TracerProvider | None
         logger.info("tracing_disabled", extra={"reason": "empty_endpoint"})
         return None
 
-    resource = Resource.create({"service.name": service_name})
+    resource = Resource.create(
+        {
+            "service.name": service_name,
+            "openinference.project.name": "mazkir",
+        }
+    )
     provider = TracerProvider(resource=resource)
     exporter = OTLPSpanExporter(endpoint=endpoint)
     provider.add_span_processor(BatchSpanProcessor(exporter))

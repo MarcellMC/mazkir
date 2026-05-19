@@ -11,6 +11,7 @@ const serviceName = process.env.OTEL_SERVICE_NAME ?? "telegram-bot";
 const sdk = new NodeSDK({
   resource: new Resource({
     [ATTR_SERVICE_NAME]: serviceName,
+    "openinference.project.name": "mazkir",
   }),
   traceExporter: new OTLPTraceExporter({ url: endpoint }),
   instrumentations: [

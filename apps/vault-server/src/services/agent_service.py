@@ -584,6 +584,7 @@ class AgentService:
         with _tracer.start_as_current_span(
             "agent.handle_message",
             attributes={
+                "openinference.span.kind": "AGENT",
                 "chat_id": chat_id,
                 "text_length": len(text or ""),
                 "attachment_count": len(attachments or []),
@@ -641,6 +642,7 @@ class AgentService:
         with _tracer.start_as_current_span(
             "agent.handle_confirmation",
             attributes={
+                "openinference.span.kind": "AGENT",
                 "chat_id": chat_id,
                 "action_id": action_id,
             },
@@ -722,7 +724,10 @@ class AgentService:
             iters = iter_num + 1
             with _tracer.start_as_current_span(
                 "agent.loop",
-                attributes={"iteration": iter_num},
+                attributes={
+                    "openinference.span.kind": "CHAIN",
+                    "iteration": iter_num,
+                },
             ):
                 response = self.claude.create(
                     system=system,
@@ -1111,6 +1116,7 @@ class AgentService:
         with _tracer.start_as_current_span(
             "agent.tool_call",
             attributes={
+                "openinference.span.kind": "TOOL",
                 "tool.name": name,
                 "tool.risk": risk,
             },
