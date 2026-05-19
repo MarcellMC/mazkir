@@ -9,12 +9,16 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from opentelemetry import trace as _otel_trace
+
 from src.logging_setup import emit_agent_turn
 from src.services.claude_service import ClaudeService
 from src.services.memory_service import MemoryService
 from src.services.vault_service import VaultService
 
 logger = logging.getLogger(__name__)
+
+_tracer = _otel_trace.get_tracer("mazkir.agent")
 
 CONFIDENCE_THRESHOLD = 0.85
 
@@ -577,6 +581,26 @@ class AgentService:
         forwarded_from: dict | None = None,
     ) -> AgentResponse:
         """Main entry point: process a user message through the agent loop."""
+        with _tracer.start_as_current_span(
+            "agent.handle_message",
+            attributes={
+                "chat_id": chat_id,
+                "text_length": len(text or ""),
+                "attachment_count": len(attachments or []),
+            },
+        ):
+            return self._handle_message_inner(
+                text, chat_id, attachments, reply_to, forwarded_from
+            )
+
+    def _handle_message_inner(
+        self,
+        text: str,
+        chat_id: int,
+        attachments: list[dict] | None,
+        reply_to: dict | None,
+        forwarded_from: dict | None,
+    ) -> AgentResponse:
         context = self.memory.assemble_context(chat_id)
 
         messages = []
@@ -684,67 +708,131 @@ class AgentService:
 
         for iter_num in range(self.max_iterations):
             iters = iter_num + 1
-            response = self.claude.create(
-                system=system,
-                messages=messages,
-                tools=self._tool_schemas(),
-            )
-            stop_reason = response.stop_reason
-
-            if stop_reason == "end_turn":
-                logger.info(
-                    "agent_iter",
-                    extra={
-                        "event_type": "agent_iter",
-                        "chat_id": chat_id,
-                        "iter": iters,
-                        "stop_reason": stop_reason,
-                        "tool_calls": 0,
-                    },
+            with _tracer.start_as_current_span(
+                "agent.loop",
+                attributes={"iteration": iter_num},
+            ):
+                response = self.claude.create(
+                    system=system,
+                    messages=messages,
+                    tools=self._tool_schemas(),
                 )
-                assistant_text = self._extract_text(response)
-                break
+                stop_reason = response.stop_reason
 
-            if stop_reason == "tool_use":
-                tool_calls = self._extract_tool_calls(response)
+                if stop_reason == "end_turn":
+                    logger.info(
+                        "agent_iter",
+                        extra={
+                            "event_type": "agent_iter",
+                            "chat_id": chat_id,
+                            "iter": iters,
+                            "stop_reason": stop_reason,
+                            "tool_calls": 0,
+                        },
+                    )
+                    assistant_text = self._extract_text(response)
+                    break
 
-                needs_confirmation = []
-                auto_execute = []
-                gate_info: dict[str, tuple[float, str | None]] = {}
-                for call in tool_calls:
-                    passes, confidence, reasoning = self._check_confidence(call["name"], call["input"])
-                    gate_info[call["id"]] = (confidence, reasoning)
-                    if passes:
-                        auto_execute.append(call)
-                    else:
-                        needs_confirmation.append(call)
+                if stop_reason == "tool_use":
+                    tool_calls = self._extract_tool_calls(response)
 
-                logger.info(
-                    "agent_iter",
-                    extra={
-                        "event_type": "agent_iter",
-                        "chat_id": chat_id,
-                        "iter": iters,
-                        "stop_reason": stop_reason,
-                        "tool_calls": len(tool_calls),
-                        "auto_execute": [
-                            {"name": c["name"], "confidence": gate_info[c["id"]][0]}
-                            for c in auto_execute
-                        ],
-                        "needs_confirmation": [
-                            {"name": c["name"], "confidence": gate_info[c["id"]][0]}
-                            for c in needs_confirmation
-                        ],
-                    },
-                )
+                    needs_confirmation = []
+                    auto_execute = []
+                    gate_info: dict[str, tuple[float, str | None]] = {}
+                    for call in tool_calls:
+                        passes, confidence, reasoning = self._check_confidence(call["name"], call["input"])
+                        gate_info[call["id"]] = (confidence, reasoning)
+                        if passes:
+                            auto_execute.append(call)
+                        else:
+                            needs_confirmation.append(call)
 
-                if needs_confirmation:
-                    executed = []
+                    logger.info(
+                        "agent_iter",
+                        extra={
+                            "event_type": "agent_iter",
+                            "chat_id": chat_id,
+                            "iter": iters,
+                            "stop_reason": stop_reason,
+                            "tool_calls": len(tool_calls),
+                            "auto_execute": [
+                                {"name": c["name"], "confidence": gate_info[c["id"]][0]}
+                                for c in auto_execute
+                            ],
+                            "needs_confirmation": [
+                                {"name": c["name"], "confidence": gate_info[c["id"]][0]}
+                                for c in needs_confirmation
+                            ],
+                        },
+                    )
+
+                    if needs_confirmation:
+                        executed = []
+                        for call in auto_execute:
+                            confidence, reasoning = gate_info[call["id"]]
+                            result = self._execute_tool(call["name"], call["input"])
+                            items_referenced.extend(result.get("_items", []))
+                            executed.append({
+                                "type": "tool_result",
+                                "tool_use_id": call["id"],
+                                "content": json.dumps(result),
+                            })
+                            tools_audit.append({
+                                "name": call["name"],
+                                "params": _sanitize_params(call["input"]),
+                                "confidence": confidence,
+                                "reasoning": reasoning,
+                                "result_summary": _summarize_result(result) if isinstance(result, dict) else None,
+                                "confirmed": False,
+                            })
+
+                        pending_action_id = str(uuid4())
+                        self.pending_confirmations[pending_action_id] = PendingAction(
+                            chat_id=chat_id,
+                            messages=messages,
+                            assistant_response=response,
+                            executed_results=executed,
+                            pending_calls=needs_confirmation,
+                        )
+
+                        for call in needs_confirmation:
+                            confidence, reasoning = gate_info[call["id"]]
+                            tools_audit.append({
+                                "name": call["name"],
+                                "params": _sanitize_params(call["input"]),
+                                "confidence": confidence,
+                                "reasoning": reasoning,
+                                "result_summary": None,
+                                "confirmed": False,
+                                "pending": True,
+                            })
+
+                        description = self._describe_pending_calls(needs_confirmation)
+                        self.memory.save_turn(chat_id, original_text, description, items_referenced)
+                        self._emit_turn_audit(
+                            chat_id=chat_id,
+                            user_text=original_text,
+                            tools_audit=tools_audit,
+                            assistant_text=description,
+                            items_referenced=items_referenced,
+                            awaiting_confirmation=True,
+                            pending_action_id=pending_action_id,
+                            prior_action_id=action_id,
+                            iters=iters,
+                            stop_reason=stop_reason,
+                        )
+                        return AgentResponse(
+                            response=description,
+                            awaiting_confirmation=True,
+                            pending_action_id=pending_action_id,
+                        )
+
+                    tool_results = []
                     for call in auto_execute:
                         confidence, reasoning = gate_info[call["id"]]
                         result = self._execute_tool(call["name"], call["input"])
                         items_referenced.extend(result.get("_items", []))
-                        executed.append({
+                        tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": call["id"],
                             "content": json.dumps(result),
@@ -758,68 +846,8 @@ class AgentService:
                             "confirmed": False,
                         })
 
-                    pending_action_id = str(uuid4())
-                    self.pending_confirmations[pending_action_id] = PendingAction(
-                        chat_id=chat_id,
-                        messages=messages,
-                        assistant_response=response,
-                        executed_results=executed,
-                        pending_calls=needs_confirmation,
-                    )
-
-                    for call in needs_confirmation:
-                        confidence, reasoning = gate_info[call["id"]]
-                        tools_audit.append({
-                            "name": call["name"],
-                            "params": _sanitize_params(call["input"]),
-                            "confidence": confidence,
-                            "reasoning": reasoning,
-                            "result_summary": None,
-                            "confirmed": False,
-                            "pending": True,
-                        })
-
-                    description = self._describe_pending_calls(needs_confirmation)
-                    self.memory.save_turn(chat_id, original_text, description, items_referenced)
-                    self._emit_turn_audit(
-                        chat_id=chat_id,
-                        user_text=original_text,
-                        tools_audit=tools_audit,
-                        assistant_text=description,
-                        items_referenced=items_referenced,
-                        awaiting_confirmation=True,
-                        pending_action_id=pending_action_id,
-                        prior_action_id=action_id,
-                        iters=iters,
-                        stop_reason=stop_reason,
-                    )
-                    return AgentResponse(
-                        response=description,
-                        awaiting_confirmation=True,
-                        pending_action_id=pending_action_id,
-                    )
-
-                tool_results = []
-                for call in auto_execute:
-                    confidence, reasoning = gate_info[call["id"]]
-                    result = self._execute_tool(call["name"], call["input"])
-                    items_referenced.extend(result.get("_items", []))
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": call["id"],
-                        "content": json.dumps(result),
-                    })
-                    tools_audit.append({
-                        "name": call["name"],
-                        "params": _sanitize_params(call["input"]),
-                        "confidence": confidence,
-                        "reasoning": reasoning,
-                        "result_summary": _summarize_result(result) if isinstance(result, dict) else None,
-                        "confirmed": False,
-                    })
-
-                messages.append({"role": "assistant", "content": response.content})
-                messages.append({"role": "user", "content": tool_results})
+                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append({"role": "user", "content": tool_results})
         else:
             # Max iterations reached
             if response:
@@ -1067,6 +1095,17 @@ class AgentService:
         return calls
 
     def _execute_tool(self, name: str, params: dict) -> dict:
+        risk = self.tools.get(name, {}).get("risk", "unknown")
+        with _tracer.start_as_current_span(
+            "agent.tool_call",
+            attributes={
+                "tool.name": name,
+                "tool.risk": risk,
+            },
+        ):
+            return self._execute_tool_inner(name, params)
+
+    def _execute_tool_inner(self, name: str, params: dict) -> dict:
         """Execute a registered tool and return its result.
 
         Always emits one structured log line per call with timing + status.

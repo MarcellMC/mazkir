@@ -680,3 +680,37 @@ class TestEventTools:
             "caption": "Sunset",
         })
         assert result["attached"] is True
+
+
+class TestTracingSpans:
+    """Spans should be emitted around handle_message, _run_loop, and _execute_tool."""
+
+    def test_handle_message_emits_expected_spans(self, agent, monkeypatch):
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        monkeypatch.setattr(trace, "_TRACER_PROVIDER", provider, raising=False)
+        monkeypatch.setattr(
+            trace._TRACER_PROVIDER_SET_ONCE, "_done", False, raising=False
+        )
+        trace.set_tracer_provider(provider)
+
+        # Mock Claude to immediately end_turn so the loop runs once.
+        class _Stop:
+            stop_reason = "end_turn"
+            content = [type("C", (), {"type": "text", "text": "ok"})()]
+
+        monkeypatch.setattr(agent.claude, "create", lambda **_: _Stop())
+
+        agent.handle_message("hello", chat_id=1)
+
+        names = {s.name for s in exporter.get_finished_spans()}
+        assert "agent.handle_message" in names
+        assert "agent.loop" in names
