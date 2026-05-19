@@ -638,6 +638,18 @@ class AgentService:
         self, chat_id: int, action_id: str, user_response: str,
     ) -> AgentResponse:
         """Resume a paused loop after user confirms or denies."""
+        with _tracer.start_as_current_span(
+            "agent.handle_confirmation",
+            attributes={
+                "chat_id": chat_id,
+                "action_id": action_id,
+            },
+        ):
+            return self._handle_confirmation_inner(chat_id, action_id, user_response)
+
+    def _handle_confirmation_inner(
+        self, chat_id: int, action_id: str, user_response: str,
+    ) -> AgentResponse:
         pending = self.pending_confirmations.pop(action_id, None)
         if not pending:
             return AgentResponse(response="No pending action found.")
@@ -1103,15 +1115,14 @@ class AgentService:
                 "tool.risk": risk,
             },
         ):
-            return self._execute_tool_inner(name, params)
+            return self._execute_tool_inner(name, params, risk)
 
-    def _execute_tool_inner(self, name: str, params: dict) -> dict:
+    def _execute_tool_inner(self, name: str, params: dict, risk: str) -> dict:
         """Execute a registered tool and return its result.
 
         Always emits one structured log line per call with timing + status.
         """
         sanitized = _sanitize_params(params)
-        risk = self.tools[name]["risk"] if name in self.tools else "unknown"
         start = time.monotonic()
 
         if name not in self.tools:
