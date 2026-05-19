@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from opentelemetry import trace as _otel_trace
+from opentelemetry.trace import Status, StatusCode
 
 from src.logging_setup import emit_agent_turn
 from src.services.claude_service import ClaudeService
@@ -589,10 +590,12 @@ class AgentService:
                 "text_length": len(text or ""),
                 "attachment_count": len(attachments or []),
             },
-        ):
-            return self._handle_message_inner(
+        ) as span:
+            result = self._handle_message_inner(
                 text, chat_id, attachments, reply_to, forwarded_from
             )
+            span.set_status(Status(StatusCode.OK))
+            return result
 
     def _handle_message_inner(
         self,
@@ -646,8 +649,10 @@ class AgentService:
                 "chat_id": chat_id,
                 "action_id": action_id,
             },
-        ):
-            return self._handle_confirmation_inner(chat_id, action_id, user_response)
+        ) as span:
+            result = self._handle_confirmation_inner(chat_id, action_id, user_response)
+            span.set_status(Status(StatusCode.OK))
+            return result
 
     def _handle_confirmation_inner(
         self, chat_id: int, action_id: str, user_response: str,
@@ -1120,8 +1125,10 @@ class AgentService:
                 "tool.name": name,
                 "tool.risk": risk,
             },
-        ):
-            return self._execute_tool_inner(name, params, risk)
+        ) as span:
+            result = self._execute_tool_inner(name, params, risk)
+            span.set_status(Status(StatusCode.OK))
+            return result
 
     def _execute_tool_inner(self, name: str, params: dict, risk: str) -> dict:
         """Execute a registered tool and return its result.
