@@ -1,0 +1,10 @@
+{
+  "name": "@mazkir/observability",
+  "private": true,
+  "scripts": {
+    "dev": "docker compose up",
+    "dev:langfuse": "docker compose --env-file .env -f docker-compose.yml -f docker-compose.langfuse.yml up",
+    "start": "docker compose up -d",
+    "stop": "docker compose down"
+  }
+}

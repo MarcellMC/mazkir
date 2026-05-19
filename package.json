@@ -1,9 +1,10 @@
 {
   "name": "mazkir",
   "private": true,
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": ["apps/*", "packages/*", "infra/*"],
   "scripts": {
     "dev": "turbo dev",
+    "dev:langfuse": "turbo dev:langfuse",
     "test": "turbo test",
     "lint": "turbo lint"
   },
