@@ -9,3 +9,8 @@ datasources:
     editable: false
     jsonData:
       maxLines: 1000
+      derivedFields:
+        - name: trace_id
+          matcherRegex: '"trace_id":"([a-f0-9]{32})"'
+          url: 'http://localhost:6006/projects/mazkir/traces/$${__value.raw}'
+          datasourceUid: ""
