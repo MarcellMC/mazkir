@@ -69,7 +69,13 @@ bot.use(async (ctx, next) => {
       );
       try {
         await next();
-        span.setStatus({ code: SpanStatusCode.OK });
+        // Only mark OK if a downstream handler didn't already mark the span
+        // ERROR (e.g. by catching an API failure before re-raising).
+        const currentCode = (span as unknown as { status?: { code: SpanStatusCode } })
+          .status?.code;
+        if (currentCode !== SpanStatusCode.ERROR) {
+          span.setStatus({ code: SpanStatusCode.OK });
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         span.recordException(err instanceof Error ? err : new Error(message));

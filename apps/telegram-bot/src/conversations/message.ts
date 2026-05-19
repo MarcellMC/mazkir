@@ -3,6 +3,7 @@ import type { Message } from "grammy/types";
 import type { Attachment, ReplyContext, ForwardContext } from "@mazkir/shared-types";
 import { api } from "../api/client.js";
 import { config } from "../config.js";
+import { markActiveSpanError } from "../tracing-utils.js";
 
 // Pending confirmations: chatId -> actionId
 const pendingConfirmations = new Map<number, string>();
@@ -177,7 +178,8 @@ messageHandler.on(
       }
 
       await ctx.reply(response.response, { parse_mode: "HTML" });
-    } catch {
+    } catch (err) {
+      markActiveSpanError(err);
       await ctx.reply("❌ Something went wrong. Is vault-server running?");
     }
   },

@@ -1,6 +1,7 @@
 import { Composer } from "grammy";
 import { api } from "../api/client.js";
 import { formatTasks, formatHabits, formatCalendar, formatGoals } from "../formatters/telegram.js";
+import { markActiveSpanError } from "../tracing-utils.js";
 
 export const callbackHandlers = new Composer();
 
@@ -13,7 +14,8 @@ callbackHandlers.callbackQuery(/^habit:complete:(.+)$/, async (ctx) => {
     // Refresh the habits list in-place
     const habits = await api.listHabits();
     await ctx.editMessageText(formatHabits(habits), { parse_mode: "HTML" });
-  } catch {
+  } catch (err) {
+    markActiveSpanError(err);
     await ctx.answerCallbackQuery({ text: "❌ Failed to complete habit" });
   }
 });
@@ -26,7 +28,8 @@ callbackHandlers.callbackQuery(/^task:complete:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery({ text: `✅ ${name} completed!` });
     const tasks = await api.listTasks();
     await ctx.editMessageText(formatTasks(tasks), { parse_mode: "HTML" });
-  } catch {
+  } catch (err) {
+    markActiveSpanError(err);
     await ctx.answerCallbackQuery({ text: "❌ Failed to complete task" });
   }
 });
@@ -58,7 +61,8 @@ callbackHandlers.callbackQuery(/^nav:(.+)$/, async (ctx) => {
         break;
       }
     }
-  } catch {
+  } catch (err) {
+    markActiveSpanError(err);
     await ctx.editMessageText("❌ Failed to load data.");
   }
 });
