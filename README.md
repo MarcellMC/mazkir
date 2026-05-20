@@ -34,6 +34,8 @@ User (Telegram)
 ├── packages/
 │   └── shared-types/            # @mazkir/shared-types (TypeScript interfaces)
 ├── memory/                      # Obsidian vault (symlink → ~/pkm/, separate git repo)
+├── data/logs/                   # Structured JSON logs + per-turn agent audit
+├── infra/observability/         # Local Loki + Alloy + Grafana docker-compose stack
 ├── docs/plans/                  # Design and migration docs
 ├── turbo.json                   # Turborepo config
 └── CLAUDE.md                    # Detailed project reference
