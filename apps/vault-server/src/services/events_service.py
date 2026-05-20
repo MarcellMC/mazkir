@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from src.tracing_setup import fs_span
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +52,11 @@ class EventsService:
             event.setdefault("photos", [])
             event.setdefault("assets", None)
             event.setdefault("source_ids", {})
-        self._file_path(date).write_text(json.dumps(events, indent=2))
+        path = self._file_path(date)
+        payload = json.dumps(events, indent=2)
+        with fs_span("write", path, "events") as span:
+            span.set_attribute("fs.bytes", len(payload.encode("utf-8")))
+            path.write_text(payload)
 
     def create_event(
         self,

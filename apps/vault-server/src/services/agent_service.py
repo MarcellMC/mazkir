@@ -15,6 +15,7 @@ from openinference.instrumentation import using_attributes
 from openinference.semconv.trace import SpanAttributes
 
 from src.logging_setup import emit_agent_turn
+from src.tracing_setup import fs_span
 from src.services.claude_service import ClaudeService
 from src.services.memory_service import MemoryService
 from src.services.vault_service import VaultService
@@ -996,7 +997,9 @@ class AgentService:
 
         try:
             photo_bytes = base64.b64decode(attachment["data"])
-            file_path.write_bytes(photo_bytes)
+            with fs_span("write", file_path, "media") as span:
+                span.set_attribute("fs.bytes", len(photo_bytes))
+                file_path.write_bytes(photo_bytes)
             rel_path = str(file_path.relative_to(self.media_path.parent.parent))
         except Exception as e:
             logger.error(f"Failed to save photo: {e}")
@@ -1028,7 +1031,10 @@ class AgentService:
             "exif_location": exif.get("location"),
             "exif_camera": exif.get("camera"),
         })
-        meta_path.write_text(json.dumps(entries, indent=2))
+        meta_payload = json.dumps(entries, indent=2)
+        with fs_span("write", meta_path, "media") as span:
+            span.set_attribute("fs.bytes", len(meta_payload.encode("utf-8")))
+            meta_path.write_text(meta_payload)
 
         return {
             "path": rel_path,

@@ -306,3 +306,32 @@ class TestRefreshMerge:
         assert result[0]["id"] == old_id  # Same ID preserved
         assert result[0]["name"] == "Standup (updated)"  # Name updated from source
         assert len(result[0]["photos"]) == 1  # Photo preserved
+
+
+class TestFilesystemSpans:
+    """save_events should emit an fs.write span."""
+
+    def test_save_events_emits_fs_write_span(self, events_service, monkeypatch):
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        monkeypatch.setattr(trace, "_TRACER_PROVIDER", provider, raising=False)
+        monkeypatch.setattr(
+            trace._TRACER_PROVIDER_SET_ONCE, "_done", False, raising=False
+        )
+        trace.set_tracer_provider(provider)
+
+        events_service.save_events("2026-05-21", [{"name": "Span Test"}])
+
+        spans = [s for s in exporter.get_finished_spans() if s.name.startswith("fs.")]
+        assert len(spans) == 1
+        assert spans[0].name == "fs.write"
+        assert spans[0].attributes["fs.store"] == "events"
+        assert spans[0].attributes["fs.bytes"] > 0

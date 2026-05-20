@@ -5,6 +5,8 @@ import pytz
 import re
 from typing import Dict, List, Optional
 
+from src.tracing_setup import fs_span
+
 
 class VaultService:
     """Service for reading and writing to Obsidian vault"""
@@ -65,8 +67,11 @@ class VaultService:
         post = frontmatter.Post(content, **metadata)
 
         # Write to file
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(frontmatter.dumps(post))
+        rendered = frontmatter.dumps(post)
+        with fs_span("write", relative_path, "vault") as span:
+            span.set_attribute("fs.bytes", len(rendered.encode("utf-8")))
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(rendered)
 
     def update_file(self, relative_path: str, metadata_updates: Dict):
         """Update frontmatter of existing file
@@ -765,7 +770,8 @@ class VaultService:
         file_path = self.vault_path / relative_path
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {relative_path}")
-        file_path.unlink()
+        with fs_span("delete", relative_path, "vault"):
+            file_path.unlink()
 
     def archive_task(self, task_path: str) -> Dict:
         """Move a task to archive without awarding tokens."""

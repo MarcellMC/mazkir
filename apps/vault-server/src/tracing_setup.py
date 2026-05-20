@@ -9,6 +9,7 @@ manual annotation at the call sites.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -69,3 +70,25 @@ def _install_anthropic_instrumentor() -> None:
 def get_tracer():
     """Return the project's tracer. Always safe to call."""
     return trace.get_tracer("mazkir.agent")
+
+
+@contextmanager
+def fs_span(operation: str, path, store: str):
+    """Wrap a filesystem write/delete in an ``fs.*`` span.
+
+    Args:
+        operation: ``"write"`` or ``"delete"``.
+        path: the touched file (anything ``str()``-able).
+        store: which subsystem owns the file — ``"vault"``, ``"events"``,
+            or ``"media"``.
+
+    The caller sets ``fs.bytes`` on the yielded span after computing the
+    payload. Exceptions propagate; ``start_as_current_span`` records them
+    and marks the span ERROR automatically.
+    """
+    tracer = trace.get_tracer("mazkir.fs")
+    with tracer.start_as_current_span(f"fs.{operation}") as span:
+        span.set_attribute("fs.operation", operation)
+        span.set_attribute("fs.path", str(path))
+        span.set_attribute("fs.store", store)
+        yield span

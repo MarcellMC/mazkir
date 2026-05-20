@@ -770,3 +770,38 @@ class TestTracingSpans:
         confirm_spans = [s for s in exporter.get_finished_spans() if s.name == "agent.handle_confirmation"]
         assert len(confirm_spans) == 1
         assert confirm_spans[0].context.trace_id == original_trace_id
+
+
+class TestSavePhotoFilesystemSpans:
+    """_save_photo should emit fs.write spans for the photo and the sidecar."""
+
+    def test_save_photo_emits_two_fs_write_spans(self, agent, monkeypatch):
+        import base64
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        monkeypatch.setattr(trace, "_TRACER_PROVIDER", provider, raising=False)
+        monkeypatch.setattr(
+            trace._TRACER_PROVIDER_SET_ONCE, "_done", False, raising=False
+        )
+        trace.set_tracer_provider(provider)
+
+        agent._save_photo(
+            {
+                "data": base64.b64encode(b"fake-image-data").decode(),
+                "filename": "photo_span_test.jpg",
+            }
+        )
+
+        spans = [s for s in exporter.get_finished_spans() if s.name.startswith("fs.")]
+        assert len(spans) == 2
+        assert all(s.name == "fs.write" for s in spans)
+        assert all(s.attributes["fs.store"] == "media" for s in spans)
+        assert all(s.attributes["fs.bytes"] > 0 for s in spans)

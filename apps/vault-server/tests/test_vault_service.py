@@ -262,3 +262,52 @@ class TestDeleteAndArchive:
 
     def test_find_goal_by_name_not_found(self, vault_service):
         assert vault_service.find_goal_by_name("nonexistent") is None
+
+
+def _fs_span_exporter(monkeypatch):
+    """Install an in-memory span exporter, restored after the test by monkeypatch."""
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(trace, "_TRACER_PROVIDER", provider, raising=False)
+    monkeypatch.setattr(
+        trace._TRACER_PROVIDER_SET_ONCE, "_done", False, raising=False
+    )
+    trace.set_tracer_provider(provider)
+    return exporter
+
+
+class TestFilesystemSpans:
+    """write_file/delete_file should emit fs.* spans."""
+
+    def test_write_file_emits_fs_write_span(self, vault_service, monkeypatch):
+        exporter = _fs_span_exporter(monkeypatch)
+        vault_service.write_file(
+            "60-knowledge/notes/span-test.md", {"type": "note"}, "body"
+        )
+        spans = [s for s in exporter.get_finished_spans() if s.name.startswith("fs.")]
+        assert len(spans) == 1
+        span = spans[0]
+        assert span.name == "fs.write"
+        assert span.attributes["fs.operation"] == "write"
+        assert span.attributes["fs.store"] == "vault"
+        assert span.attributes["fs.path"] == "60-knowledge/notes/span-test.md"
+        assert span.attributes["fs.bytes"] > 0
+
+    def test_delete_file_emits_fs_delete_span(self, vault_service, monkeypatch):
+        vault_service.write_file(
+            "40-tasks/active/span-del.md", {"type": "task"}, "body"
+        )
+        exporter = _fs_span_exporter(monkeypatch)
+        vault_service.delete_file("40-tasks/active/span-del.md")
+        spans = [s for s in exporter.get_finished_spans() if s.name.startswith("fs.")]
+        assert [s.name for s in spans] == ["fs.delete"]
+        assert spans[0].attributes["fs.store"] == "vault"
+        assert spans[0].attributes["fs.path"] == "40-tasks/active/span-del.md"
