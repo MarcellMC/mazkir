@@ -232,7 +232,7 @@ curl http://localhost:8000/events/2026-03-05
 ## Related Documentation
 
 - **Vault Schemas:** `memory/AGENTS.md`
-- **Observability:** `docs/observability.md` — structured logs + Loki/Grafana stack
+- **Observability:** `docs/observability.md` — structured logs + Loki/Grafana stack + Phoenix distributed tracing
 - **Project Roadmap:** `personal-ai-assistant-roadmap.md`
 - **Memory System Design:** `docs/plans/2026-03-02-memory-system-design.md`
 - **Memory System Plan:** `docs/plans/2026-03-02-memory-system-plan.md`
