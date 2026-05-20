@@ -15,4 +15,13 @@ describe("tracing init", () => {
   it("loads without throwing when endpoint is unset", async () => {
     await expect(import("../src/tracing.js")).resolves.toBeDefined();
   });
+
+  it("ignores getUpdates long-poll requests but keeps other calls", async () => {
+    const { shouldIgnoreOutgoingRequest } = await import("../src/tracing.js");
+    expect(shouldIgnoreOutgoingRequest("/bot123:ABC/getUpdates?offset=5")).toBe(
+      true,
+    );
+    expect(shouldIgnoreOutgoingRequest("/bot123:ABC/sendMessage")).toBe(false);
+    expect(shouldIgnoreOutgoingRequest("/message")).toBe(false);
+  });
 });
