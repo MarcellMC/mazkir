@@ -74,6 +74,18 @@ tracing. Every Telegram update produces a single trace tree spanning:
 agent.tool_call` plus an LLM generation span per Claude call (system prompt,
 tools, token usage all captured automatically).
 
+Spans carry OpenInference attributes — `input.value`, `output.value`,
+`session.id`, `user.id` — so Phoenix renders readable I/O and groups a chat
+into a session. Tool calls that touch the filesystem emit a child `fs.write`
+or `fs.delete` span carrying `fs.path`, `fs.store` (`vault` / `events` /
+`media`), and `fs.bytes`, so a trace confirms which files were written and how
+long the I/O took.
+
+grammY long-polls Telegram's `getUpdates` endpoint continuously; those requests
+are filtered out at the SDK (`shouldIgnoreOutgoingRequest` in
+`telegram-bot/src/tracing.ts`) so they never become spans and never flood the
+trace view.
+
 - **Phoenix UI:** <http://localhost:6006>
 - **OTLP endpoint:** `http://localhost:6006/v1/traces`
 - **Project:** `mazkir` (set via `openinference.project.name` resource attribute)
