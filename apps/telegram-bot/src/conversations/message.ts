@@ -3,7 +3,7 @@ import type { Message } from "grammy/types";
 import type { Attachment, ReplyContext, ForwardContext } from "@mazkir/shared-types";
 import { api } from "../api/client.js";
 import { config } from "../config.js";
-import { markActiveSpanError } from "../tracing-utils.js";
+import { markActiveSpanError, setActiveSpanOutput } from "../tracing-utils.js";
 
 // Pending confirmations: chatId -> actionId
 const pendingConfirmations = new Map<number, string>();
@@ -139,6 +139,7 @@ messageHandler.on(
         if (response.awaiting_confirmation && response.pending_action_id) {
           pendingConfirmations.set(chatId, response.pending_action_id);
         }
+        setActiveSpanOutput(response.response);
         await ctx.reply(response.response, { parse_mode: "HTML" });
         return;
       }
@@ -177,6 +178,7 @@ messageHandler.on(
         pendingConfirmations.set(chatId, response.pending_action_id);
       }
 
+      setActiveSpanOutput(response.response);
       await ctx.reply(response.response, { parse_mode: "HTML" });
     } catch (err) {
       markActiveSpanError(err);

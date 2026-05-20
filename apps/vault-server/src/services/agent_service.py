@@ -11,6 +11,8 @@ from uuid import uuid4
 
 from opentelemetry import trace as _otel_trace
 from opentelemetry.trace import NonRecordingSpan, SpanContext, Status, StatusCode, set_span_in_context
+from openinference.instrumentation import using_attributes
+from openinference.semconv.trace import SpanAttributes
 
 from src.logging_setup import emit_agent_turn
 from src.services.claude_service import ClaudeService
@@ -583,20 +585,35 @@ class AgentService:
         forwarded_from: dict | None = None,
     ) -> AgentResponse:
         """Main entry point: process a user message through the agent loop."""
-        with _tracer.start_as_current_span(
-            "agent.handle_message",
-            attributes={
-                "openinference.span.kind": "AGENT",
-                "chat_id": chat_id,
-                "text_length": len(text or ""),
-                "attachment_count": len(attachments or []),
-            },
-        ) as span:
-            result = self._handle_message_inner(
-                text, chat_id, attachments, reply_to, forwarded_from
-            )
-            span.set_status(Status(StatusCode.OK))
-            return result
+        session_id = str(chat_id)
+        user_id = str(chat_id)
+        with using_attributes(session_id=session_id, user_id=user_id):
+            with _tracer.start_as_current_span(
+                "agent.handle_message",
+                attributes={
+                    SpanAttributes.OPENINFERENCE_SPAN_KIND: "AGENT",
+                    SpanAttributes.SESSION_ID: session_id,
+                    SpanAttributes.USER_ID: user_id,
+                    SpanAttributes.INPUT_VALUE: text or "",
+                    SpanAttributes.INPUT_MIME_TYPE: "text/plain",
+                    "chat_id": chat_id,
+                    "attachment_count": len(attachments or []),
+                },
+            ) as span:
+                result = self._handle_message_inner(
+                    text, chat_id, attachments, reply_to, forwarded_from
+                )
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.response)
+                span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, "text/plain")
+                span.set_attribute(
+                    SpanAttributes.METADATA,
+                    json.dumps({
+                        "awaiting_confirmation": result.awaiting_confirmation,
+                        "pending_action_id": result.pending_action_id,
+                    }),
+                )
+                span.set_status(Status(StatusCode.OK))
+                return result
 
     def _handle_message_inner(
         self,
@@ -652,18 +669,27 @@ class AgentService:
         if pending and pending.parent_span_context is not None:
             parent_ctx = set_span_in_context(NonRecordingSpan(pending.parent_span_context))
 
-        with _tracer.start_as_current_span(
-            "agent.handle_confirmation",
-            context=parent_ctx,
-            attributes={
-                "openinference.span.kind": "AGENT",
-                "chat_id": chat_id,
-                "action_id": action_id,
-            },
-        ) as span:
-            result = self._handle_confirmation_inner(chat_id, action_id, user_response)
-            span.set_status(Status(StatusCode.OK))
-            return result
+        session_id = str(chat_id)
+        user_id = str(chat_id)
+        with using_attributes(session_id=session_id, user_id=user_id):
+            with _tracer.start_as_current_span(
+                "agent.handle_confirmation",
+                context=parent_ctx,
+                attributes={
+                    SpanAttributes.OPENINFERENCE_SPAN_KIND: "AGENT",
+                    SpanAttributes.SESSION_ID: session_id,
+                    SpanAttributes.USER_ID: user_id,
+                    SpanAttributes.INPUT_VALUE: user_response,
+                    SpanAttributes.INPUT_MIME_TYPE: "text/plain",
+                    "chat_id": chat_id,
+                    "action_id": action_id,
+                },
+            ) as span:
+                result = self._handle_confirmation_inner(chat_id, action_id, user_response)
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.response)
+                span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, "text/plain")
+                span.set_status(Status(StatusCode.OK))
+                return result
 
     def _handle_confirmation_inner(
         self, chat_id: int, action_id: str, user_response: str,
@@ -741,7 +767,7 @@ class AgentService:
             with _tracer.start_as_current_span(
                 "agent.loop",
                 attributes={
-                    "openinference.span.kind": "CHAIN",
+                    SpanAttributes.OPENINFERENCE_SPAN_KIND: "CHAIN",
                     "iteration": iter_num,
                 },
             ):
@@ -844,6 +870,15 @@ class AgentService:
 
                         description = self._describe_pending_calls(needs_confirmation)
                         self.memory.save_turn(chat_id, original_text, description, items_referenced)
+                        _otel_trace.get_current_span().set_attribute(
+                            SpanAttributes.METADATA,
+                            json.dumps({
+                                "iters": iters,
+                                "stop_reason": stop_reason,
+                                "tools_used": [t["name"] for t in tools_audit],
+                                "awaiting_confirmation": True,
+                            }),
+                        )
                         self._emit_turn_audit(
                             chat_id=chat_id,
                             user_text=original_text,
@@ -892,6 +927,15 @@ class AgentService:
 
         self.memory.save_turn(chat_id, original_text, assistant_text, items_referenced)
         self.memory.summarize_and_decay(chat_id)
+
+        _otel_trace.get_current_span().set_attribute(
+            SpanAttributes.METADATA,
+            json.dumps({
+                "iters": iters,
+                "stop_reason": stop_reason,
+                "tools_used": [t["name"] for t in tools_audit],
+            }),
+        )
 
         self._emit_turn_audit(
             chat_id=chat_id,
@@ -1130,16 +1174,26 @@ class AgentService:
         return calls
 
     def _execute_tool(self, name: str, params: dict) -> dict:
-        risk = self.tools.get(name, {}).get("risk", "unknown")
-        with _tracer.start_as_current_span(
-            "agent.tool_call",
-            attributes={
-                "openinference.span.kind": "TOOL",
-                "tool.name": name,
-                "tool.risk": risk,
-            },
-        ) as span:
+        entry = self.tools.get(name, {})
+        risk = entry.get("risk", "unknown")
+        schema = entry.get("schema", {}) or {}
+        attrs: dict[str, Any] = {
+            SpanAttributes.OPENINFERENCE_SPAN_KIND: "TOOL",
+            SpanAttributes.TOOL_NAME: name,
+            SpanAttributes.INPUT_VALUE: json.dumps(_sanitize_params(params)),
+            SpanAttributes.INPUT_MIME_TYPE: "application/json",
+            "tool.risk": risk,
+        }
+        if schema.get("description"):
+            attrs[SpanAttributes.TOOL_DESCRIPTION] = schema["description"]
+        if schema.get("input_schema"):
+            attrs[SpanAttributes.TOOL_PARAMETERS] = json.dumps(schema["input_schema"])
+        with _tracer.start_as_current_span("agent.tool_call", attributes=attrs) as span:
             result = self._execute_tool_inner(name, params, risk)
+            if isinstance(result, dict):
+                summary = _summarize_result(result)
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, json.dumps(summary))
+                span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, "application/json")
             span.set_status(Status(StatusCode.OK))
             return result
 

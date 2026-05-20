@@ -44,10 +44,20 @@ bot.use(async (ctx, next) => {
           ? "callback"
           : "other";
 
+  const inputText =
+    message?.text ??
+    message?.caption ??
+    (ctx.callbackQuery?.data ? `callback:${ctx.callbackQuery.data}` : "");
+
   await tracer.startActiveSpan(
     "telegram.update",
     {
       attributes: {
+        "openinference.span.kind": "CHAIN",
+        "session.id": ctx.chat?.id !== undefined ? String(ctx.chat.id) : "",
+        "user.id": ctx.from?.id !== undefined ? String(ctx.from.id) : "",
+        "input.value": inputText,
+        "input.mime_type": "text/plain",
         "telegram.update_id": ctx.update.update_id,
         "telegram.chat_id": ctx.chat?.id,
         "telegram.from_id": ctx.from?.id,
