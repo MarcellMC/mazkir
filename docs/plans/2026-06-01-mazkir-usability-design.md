@@ -1,6 +1,6 @@
 # Mazkir Usability Overhaul — Design (Checkpoint)
 
-**Status:** Brainstorm in progress. This is a mid-design checkpoint after Block D parts 1–2 are locked. Blocks A, B, C, E, F are pending. D3, D4 are pending.
+**Status:** Brainstorm in progress. Block D parts 1–3 are locked. Blocks A, B, C, E, F and D4 are pending.
 
 **Goal:** Make Mazkir more usable. Standard vault operations must be reliable, deterministic, and guard-railed; common workflows must be obvious; only necessary context goes into LLM requests; all observability instrumentation gaps are closed.
 
@@ -13,7 +13,7 @@
 | A | Correctness — vault ops are deterministic | pending design |
 | B | Context optimization — only send what's needed | pending design |
 | C | Observability — close gaps | pending design |
-| D | Workflows, schemas, tools, sub-agents | D1+D2 locked here; D3, D4 pending |
+| D | Workflows, schemas, tools, sub-agents | D1+D2+D3 locked here; D4 pending |
 | E | Broken integrations — GCal sync, media path | pending design |
 | F | Latency (mostly falls out of A+B) | pending design |
 
@@ -246,10 +246,95 @@ Coupling: a scheduled item only appears on `/day` if it has `scheduled_at` set. 
 
 ---
 
+## D3 — Sub-agent / skill architecture
+
+Goal: split the 27-tool surface across specialized sub-agents so per-call schema cost is lower, prompts can specialize, and the user can manage the catalog from the vault.
+
+### Framework
+
+**B + C hybrid.** A **"Mazkir skill"** is a markdown file under `memory/00-system/mazkir-skills/`. Each file defines one sub-agent. Frontmatter declares model + tool list + composition rules; body is the skill's system prompt.
+
+```yaml
+---
+name: capture
+description: Fast inbox-style captures (text, photos, new items)
+when_to_use: |
+  - User dumps text or a photo with no clear intent
+  - "Save this", "remember this", "add task", "note that ..."
+tools: [daily_add_task, daily_set_task_state, save_knowledge, attach_to_daily, edit_daily_section, create_task, create_habit, create_goal]
+model: claude-haiku-4-5
+max_iterations: 3
+next_skills: [manager, recall]
+---
+
+# Capture Skill — system prompt
+
+You receive quick captures from the user. Your job:
+- Classify the content (task / note / knowledge / photo).
+- Use the right tool to file it.
+- Be terse; only ask for clarification when intent is ambiguous.
+- If the user asked for follow-up action, hand off via next_skill: manager.
+```
+
+### Router
+
+A small LLM call (Haiku, no tools) that takes:
+- User message + recent conversation tail
+- Each skill's `name` + `description` + `when_to_use`
+
+and returns the chosen skill name. **Fallback when uncertain: `manager`** (broadest toolbox).
+
+### Composition — chained `next_skill`
+
+After a skill's agent loop completes, it may emit `next_skill: <name>` in its final output. Control hands off to that skill with shared conversation history.
+
+- **Loop cap:** 3 total skill hops per user turn.
+- **Cycle protection:** router tracks visited skills, refuses revisits.
+- **Allowed transitions** (declared per-skill via `next_skills` frontmatter):
+  - `capture` → `manager`, `recall`
+  - `manager` → `recall`
+  - `recall` → `capture`, `manager`
+
+Rationale over router-driven sequential: the skill that just ran has the most accurate picture of what's done and what comes next. Pre-planning a chain at routing time loses that information.
+
+### Skill catalog (v1)
+
+Three skills, lean for a single-user assistant.
+
+| Skill | Purpose | Model | Max iter | Tools |
+| --- | --- | --- | --- | --- |
+| `capture` | Fast inbox writes — text, photos, new items | Haiku 4.5 | 3 | `daily_add_task`, `daily_set_task_state`, `save_knowledge`, `attach_to_daily`, `edit_daily_section`, `create_task`, `create_habit`, `create_goal` |
+| `manager` | Deliberate organization, edits, schedule, destructive ops | Sonnet 4.6 | 10 | `list_tasks`, `list_habits`, `list_goals`, `list_events`, `get_daily`, `read_daily_section`, `update_task`, `update_habit`, `update_goal`, `complete_task`, `complete_habit`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`, `create_event`, `update_event`, `attach_photo_to_event`, `attach_to_daily`, `edit_daily_section`, `daily_add_task`, `daily_set_task_state`, `daily_rollover`, `promote_daily_task`, `search_knowledge`, `get_tokens` |
+| `recall` | Read-only search, retrieval, summaries | Haiku 4.5 | 5 | `search_knowledge` (keyword + graph modes), `list_tasks`, `list_habits`, `list_goals`, `list_events`, `get_daily`, `read_daily_section`, `get_tokens` |
+
+Deterministic slash commands (`/tasks`, `/habits`, `/goals`, `/day`, `/tokens`, `/calendar`) **bypass the router entirely** — no skill, no LLM call.
+
+### Transparency
+
+Skill choice is **traced only**, not surfaced in user-facing replies. Phoenix span attributes added:
+
+- `skill.name` — active skill on a span
+- `skill.previous` — set on hand-off targets
+- `skill.next_skill` — set if the loop emitted one
+- `skill.routing_reason` — short string from the router classifier
+
+### Confidence gate
+
+Stays global at **0.85** for write + destructive risk. Per-skill thresholds deferred to D4 along with broader confirmation-UX review.
+
+### Implementation sketch
+
+- New `apps/vault-server/src/services/skill_registry.py`: parses skill markdown files at startup, validates frontmatter, exposes `get(name)` / `list()`.
+- `AgentService.handle_message`:
+  1. Call `router_service.pick(user_msg, history)` → skill name
+  2. Loop: load skill, run agent loop with its tools + system prompt, capture `next_skill` from final block, hop until cap or `null`.
+- Tools dict in `AgentService` stays the central registry. Skills reference tools by name; loader resolves to schemas + handlers.
+
+---
+
 ## Pending / not-yet-discussed
 
-- **D3 — sub-agent / skill architecture for Mazkir.** Goal: split the 27-tool surface across specialized sub-agents (e.g. capture sub-agent, planner sub-agent, event sub-agent, recall sub-agent), each with a tight toolbox so per-call schema cost is lower. Open: routing strategy, shared state, confirmation flows.
-- **D4 — confidence gate review.** Current threshold 0.85 across write+destructive. Open: per-tool thresholds? confirmation UX in Telegram?
+- **D4 — confidence gate review.** Current threshold 0.85 across write+destructive. Open: per-tool thresholds? per-skill thresholds? confirmation UX in Telegram? dry-run / preview for high-risk ops?
 - **A — Block A correctness work** (fix A1, retire `update_item`, schema validation guard-rails, fuzzy path resolution standardized).
 - **B — context optimization.** Audit what enters system prompt; the May 21 example of lecture notes leaking in is the canonical bug. Right-size short/mid/long-term memory layers per request type. Token usage measurement.
 - **C — observability gaps.** Empty `input.value` / `output.value` on `POST /message`, `agent.loop`, `agent.tool_call` spans; investigate ERROR trace `122b1a07…`; add the open-coding / axial-coding workflow for ongoing trace review.
