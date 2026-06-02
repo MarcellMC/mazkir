@@ -368,25 +368,6 @@ class AgentService:
                 "risk": "write",
                 "pre_hooks": ["validate_schema"],
             },
-            "update_item": {
-                "schema": {
-                    "name": "update_item",
-                    "description": "Update metadata of a vault item (task, habit, or goal).",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Relative vault path to the item"},
-                            "updates": {"type": "object", "description": "Metadata fields to update"},
-                            "_confidence": {"type": "number"},
-                            "_reasoning": {"type": "string"},
-                        },
-                        "required": ["path", "updates"],
-                    },
-                },
-                "handler": self._tool_update_item,
-                "risk": "write",
-                "pre_hooks": ["validate_schema"],
-            },
             "save_knowledge": {
                 "schema": {
                     "name": "save_knowledge",
@@ -1524,10 +1505,6 @@ class AgentService:
             "path": result["path"],
             "_items": [result["path"]],
         }
-
-    def _tool_update_item(self, params: dict) -> dict:
-        self.vault.update_file(params["path"], params["updates"])
-        return {"updated": params["path"], "_items": [params["path"]]}
 
     def _tool_update_task(self, params: dict) -> dict:
         from src.services.resolver import resolve_item

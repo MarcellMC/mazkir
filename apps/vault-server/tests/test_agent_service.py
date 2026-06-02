@@ -854,3 +854,17 @@ def test_execute_tool_runs_pre_hooks_and_blocks_on_error(mock_services, tmp_path
     assert handler_called == []
     assert result["ok"] is False
     assert result["error"]["code"] == "SCHEMA_INVALID"
+
+
+def test_update_item_tool_removed():
+    """update_item retired in favor of typed update_task/_habit/_goal."""
+    from src.services.agent_service import AgentService
+    from unittest.mock import MagicMock
+    agent = AgentService(
+        claude=MagicMock(), vault=MagicMock(), memory=MagicMock(),
+        calendar=None, events=None,
+    )
+    assert "update_item" not in agent.tools
+    assert "update_task" in agent.tools
+    assert "update_habit" in agent.tools
+    assert "update_goal" in agent.tools
