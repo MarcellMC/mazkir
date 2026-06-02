@@ -1,6 +1,6 @@
 # Mazkir Usability Overhaul — Design (Checkpoint)
 
-**Status:** Brainstorm in progress. Blocks A, B, C, D, E are locked. Block F pending.
+**Status:** Brainstorm complete. All blocks (A, B, C, D, E, F) are locked. Ready for implementation planning.
 
 **Goal:** Make Mazkir more usable. Standard vault operations must be reliable, deterministic, and guard-railed; common workflows must be obvious; only necessary context goes into LLM requests; all observability instrumentation gaps are closed.
 
@@ -15,7 +15,7 @@
 | C | Observability — close gaps | locked |
 | D | Workflows, schemas, tools, sub-agents | locked (D1–D4) |
 | E | Broken integrations — GCal sync, media path | locked (E1, E2) |
-| F | Latency (mostly falls out of A+B) | pending design |
+| F | Latency (mostly falls out of A+B) | locked |
 
 ---
 
@@ -543,6 +543,84 @@ Rough order-of-magnitude on a typical agent turn:
 | **Total fresh input** | **~6–14 k** | **~3–4 k uncached + ~1.5 k cached at 10% rate** |
 
 Multi-turn conversations get the cache hit, dropping effective billed input further.
+
+---
+
+## F — Latency
+
+Most latency wins from May 21 are already addressed:
+- 112 s Migdal turn → A1–A3 (no retry loops)
+- 30 s `messages.create` → B1+B2+B4 (smaller prompts + cache hits)
+- 27-tool surface per call → D3 (skill-scoped toolboxes)
+
+F catalogues what's left.
+
+### F1 — Parallel tool execution
+
+The bulk-complete trace (`351698572ac…`) emitted 11 tool calls in a single Claude response (visible: no `messages.create` between them in the span list). The handler ran them **serially** — 13.7 s wall time for what could be ~1–2 s in parallel.
+
+**Change:** wrap independent tool calls in `asyncio.gather`. Each tool in the registry declares `safe_for_parallel: bool` (default True for read-only; False where shared state matters). When a batch contains any unsafe tool, the whole batch falls back to serial.
+
+```python
+TOOL_REGISTRY["complete_task"]["safe_for_parallel"] = True
+TOOL_REGISTRY["daily_add_task"]["safe_for_parallel"] = False   # writes one daily section
+TOOL_REGISTRY["update_task"]["safe_for_parallel"] = True       # different paths
+TOOL_REGISTRY["daily_rollover"]["safe_for_parallel"] = False   # mutates today's daily
+TOOL_REGISTRY["complete_habit"]["safe_for_parallel"] = False   # mutates token ledger
+```
+
+Confidence gates + previews apply per-call before execution; the parallel batch waits for all confirmations to resolve before firing.
+
+### F2 — Streaming responses to Telegram
+
+Currently the bot waits for the full `agent.handle_message` to complete, then sends one message. Switch to Anthropic SDK streaming + Telegram `editMessageText`:
+
+1. Bot sends placeholder ("…") on receipt.
+2. As tokens stream from Claude, bot edits the message every ~500 ms or every newline.
+3. Final edit on stream completion.
+
+Touches: `claude_service.create` → `claude_service.stream`; `agent_service._run_loop` to surface stream chunks; bot's reply handler to apply the edit-loop.
+
+Telegram rate limits: `editMessageText` allows ~20/sec per chat. 500 ms cadence is well inside. Throttle to avoid drift.
+
+Cost: meaningful refactor (~150–200 lines across two services + bot). Big perceived-latency win.
+
+### F3 — Haiku for capture and recall (D3-aligned)
+
+Already in D3 spec; called out here for completeness:
+
+| Skill | Model | Typical wall time (after B) |
+| --- | --- | --- |
+| `capture` | Haiku 4.5 | 2–4 s |
+| `recall` | Haiku 4.5 | 3–5 s |
+| `manager` | Sonnet 4.6 | 5–10 s |
+
+Independent of streaming or caching — pure model-choice win.
+
+### F4 — Encourage parallel batching in skill prompts
+
+Append to `capture` and `manager` system prompts:
+
+> "When you have multiple independent tool calls (completing several tasks, adding several daily items, etc.), emit them in a single response block as parallel calls rather than across iterations. Combined with the parallel executor this gives the user near-instant responses for bulk operations."
+
+Claude already does this most of the time; the explicit reminder helps consistency.
+
+### Expected impact (Block F + upstream wins)
+
+| Scenario | Before | After |
+| --- | --- | --- |
+| Single capture ("Save this quote") | 5–8 s | 2–4 s (Haiku + cache) |
+| Bulk complete (11 tasks) | 13.7 s | 1–3 s (parallel exec) |
+| Migdal-text attach | 112 s | 5–8 s (no retries + typed mutator + Haiku) |
+| Daily review with multiple updates | 20–40 s | 5–10 s (smaller prompt + parallel tools + Sonnet) |
+
+Perceived latency further reduced by F2 streaming.
+
+### Out of scope for F
+
+- Anthropic prompt-cache TTL tuning (stick with ephemeral / 5-min)
+- Provider switching
+- Self-hosted inference
 
 ---
 
