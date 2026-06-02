@@ -1890,6 +1890,13 @@ class AgentService:
                 f"No task found matching '{params['task_name']}'",
             )
 
+        if task["metadata"].get("status") == "done":
+            return err(
+                ErrorCode.ALREADY_DONE,
+                f"Task '{task['metadata'].get('name', '')}' is already done",
+                details={"path": task["path"]},
+            )
+
         result = self.vault.complete_task(task["path"])
         name = result["task_name"]
         tokens = result["tokens_earned"]
@@ -1925,6 +1932,14 @@ class AgentService:
 
         if not habit:
             return {"error": f"No habit found matching '{params['habit_name']}'"}
+
+        today = dt.date.today().isoformat()
+        if habit["metadata"].get("last_completed") == today:
+            return err(
+                ErrorCode.ALREADY_DONE,
+                f"Habit '{habit['metadata'].get('name', '')}' already completed today",
+                details={"path": habit["path"], "streak": habit["metadata"].get("streak", 0)},
+            )
 
         meta = habit["metadata"]
         old_streak = meta.get("streak", 0)

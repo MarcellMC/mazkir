@@ -868,3 +868,37 @@ def test_update_item_tool_removed():
     assert "update_task" in agent.tools
     assert "update_habit" in agent.tools
     assert "update_goal" in agent.tools
+
+
+def test_complete_task_idempotent_when_already_done(mock_services):
+    """Re-completing a done task returns ALREADY_DONE, no double-credit."""
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    agent.vault.find_task_by_name.return_value = {
+        "path": "40-tasks/active/x.md",
+        "metadata": {"name": "X", "status": "done"},
+    }
+
+    result = agent._tool_complete_task({"task_name": "X"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "ALREADY_DONE"
+    agent.vault.complete_task.assert_not_called()
+
+
+def test_complete_habit_idempotent_when_done_today(mock_services):
+    from datetime import date
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    today = date.today().isoformat()
+    agent.vault.list_active_habits.return_value = [
+        {
+            "path": "20-habits/workout.md",
+            "metadata": {"name": "Workout", "last_completed": today, "streak": 5},
+        }
+    ]
+
+    result = agent._tool_complete_habit({"habit_name": "Workout"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "ALREADY_DONE"
