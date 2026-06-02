@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     # Structured logs
     logs_dir: Path = Path(os.getenv("LOGS_DIR", str(Path.home() / "dev" / "mazkir" / "data" / "logs")))
 
+    # Skills directory
+    skills_dir: Path = Path(os.getenv(
+        "MAZKIR_SKILLS_DIR",
+        str(Path.home() / "dev" / "mazkir" / "memory" / "00-system" / "mazkir-skills"),
+    ))
+
     # Tracing (OTLP/HTTP)
     otel_exporter_otlp_endpoint: str = os.getenv(
         "OTEL_EXPORTER_OTLP_ENDPOINT",

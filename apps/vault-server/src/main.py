@@ -11,6 +11,7 @@ from src.services.claude_service import ClaudeService
 from src.services.calendar_service import CalendarService
 from src.services.memory_service import MemoryService
 from src.services.agent_service import AgentService
+from src.services.skill_registry import SkillRegistry
 
 configure_logging(settings.log_level, settings.logs_dir)
 configure_audit_log(settings.logs_dir)
@@ -76,6 +77,11 @@ async def lifespan(app: FastAPI):
     events = EventsService(events_path=settings.events_data_path)
     logger.info(f"Events service initialized: {settings.events_data_path}")
 
+    # Initialize SkillRegistry
+    skill_registry = SkillRegistry(skills_dir=settings.skills_dir)
+    skill_registry.load()
+    logger.info("Skill registry loaded: %d skill(s) from %s", len(skill_registry.list()), settings.skills_dir)
+
     # Initialize AgentService (requires claude)
     if claude:
         agent = AgentService(
@@ -85,9 +91,20 @@ async def lifespan(app: FastAPI):
             calendar=calendar,
             media_path=settings.media_path,
             events=events,
+            skill_registry=skill_registry,
         )
         memory._claude = claude
         logger.info("Agent service initialized")
+
+        # Validate skill references against the agent's tool registry
+        warnings = skill_registry.validate(
+            known_tools=set(agent.tools.keys()),
+            known_skills={s.name for s in skill_registry.list()},
+        )
+        for w in warnings:
+            logger.warning("Skill validation: %s", w)
+        if not warnings:
+            logger.info("Skill validation: all references OK")
 
     from src.services.timeline_service import TimelineService
     if settings.timeline_data_path.exists():

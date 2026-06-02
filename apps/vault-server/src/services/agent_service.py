@@ -88,6 +88,9 @@ class AgentService:
         calendar: Any = None,
         media_path: Path | None = None,
         events: Any = None,
+        *,
+        skill_registry: Any = None,
+        router: Any = None,
     ):
         self.claude = claude
         self.vault = vault
@@ -95,6 +98,8 @@ class AgentService:
         self.calendar = calendar
         self.media_path = media_path or Path.home() / "dev" / "mazkir" / "data" / "media"
         self.events = events
+        self.skill_registry = skill_registry
+        self.router = router
         self.max_iterations = 10
         self.pending_confirmations: dict[str, PendingAction] = {}
         self.tools = self._register_tools()
