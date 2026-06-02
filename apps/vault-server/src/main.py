@@ -12,6 +12,7 @@ from src.services.calendar_service import CalendarService
 from src.services.memory_service import MemoryService
 from src.services.agent_service import AgentService
 from src.services.skill_registry import SkillRegistry
+from src.services.router_service import RouterService
 
 configure_logging(settings.log_level, settings.logs_dir)
 configure_audit_log(settings.logs_dir)
@@ -82,6 +83,12 @@ async def lifespan(app: FastAPI):
     skill_registry.load()
     logger.info("Skill registry loaded: %d skill(s) from %s", len(skill_registry.list()), settings.skills_dir)
 
+    # Initialize RouterService (requires claude)
+    router_service = None
+    if claude:
+        router_service = RouterService(claude=claude, fallback_skill="manager")
+        logger.info("Router service initialized")
+
     # Initialize AgentService (requires claude)
     if claude:
         agent = AgentService(
@@ -92,6 +99,7 @@ async def lifespan(app: FastAPI):
             media_path=settings.media_path,
             events=events,
             skill_registry=skill_registry,
+            router=router_service,
         )
         memory._claude = claude
         logger.info("Agent service initialized")
