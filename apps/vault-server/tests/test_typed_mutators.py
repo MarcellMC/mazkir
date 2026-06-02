@@ -99,3 +99,19 @@ def test_update_habit_returns_path_not_found(agent):
     result = agent._tool_update_habit({"name": "ghost", "scheduled_at": "09:00"})
     assert result["ok"] is False
     assert result["error"]["code"] == "PATH_NOT_FOUND"
+
+
+def test_update_goal_changes_progress(agent):
+    agent.vault.list_active_goals.return_value = [
+        {"path": "30-goals/2026/learn-ai.md", "metadata": {"name": "Learn AI"}}
+    ]
+    agent.vault.read_file.return_value = {
+        "metadata": {"name": "Learn AI", "progress": 20},
+        "content": "body\n",
+    }
+    agent.vault.append_history_line = lambda body, line: body + f"HIST:{line}\n"
+
+    result = agent._tool_update_goal({"name": "Learn AI", "progress": 40})
+    assert result["ok"] is True
+    args, _ = agent.vault.write_file.call_args
+    assert args[1]["progress"] == 40

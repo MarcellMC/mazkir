@@ -343,6 +343,31 @@ class AgentService:
                 "risk": "write",
                 "pre_hooks": ["validate_schema"],
             },
+            "update_goal": {
+                "schema": {
+                    "name": "update_goal",
+                    "description": "Update fields on an existing goal. Specify by fuzzy `name`.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "status": {"type": "string", "enum": ["active", "paused", "completed", "archived"]},
+                            "progress": {"type": "integer", "minimum": 0, "maximum": 100},
+                            "priority": {"type": "integer", "minimum": 1, "maximum": 5},
+                            "start_date": {"type": ["string", "null"]},
+                            "target_date": {"type": ["string", "null"]},
+                            "append_note": {"type": "string"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["name"],
+                        "additionalProperties": False,
+                    },
+                },
+                "handler": self._tool_update_goal,
+                "risk": "write",
+                "pre_hooks": ["validate_schema"],
+            },
             "update_item": {
                 "schema": {
                     "name": "update_item",
@@ -1568,6 +1593,48 @@ class AgentService:
             ("scheduled_at", "Scheduled at"),
             ("duration_minutes", "Duration (min)"),
             ("tokens_per_completion", "Tokens per completion"),
+        ]
+        for key, label in field_map:
+            if key in params and params[key] != meta.get(key):
+                history_lines.append(f"{label} changed: {meta.get(key)} → {params[key]}")
+                meta[key] = params[key]
+
+        if "append_note" in params and params["append_note"]:
+            body = body.rstrip() + "\n\n" + params["append_note"].strip() + "\n"
+            history_lines.append(f"Note appended: {params['append_note'][:60]}")
+
+        from datetime import datetime
+        today = datetime.now(self.vault.tz).strftime("%Y-%m-%d")
+        if history_lines:
+            meta["updated"] = today
+            for line in history_lines:
+                body = self.vault.append_history_line(body, line)
+
+        self.vault.write_file(path, meta, body)
+        return ok(
+            {"path": path, "name": meta.get("name", ""), "changes": history_lines},
+            items=[path],
+        )
+
+    def _tool_update_goal(self, params: dict) -> dict:
+        from src.services.resolver import resolve_item
+
+        resolved = resolve_item("goal", params["name"], self.vault)
+        if not resolved["ok"]:
+            return resolved
+
+        path = resolved["data"]["path"]
+        current = self.vault.read_file(path)
+        meta = dict(current["metadata"])
+        body = current["content"]
+
+        history_lines: list[str] = []
+        field_map = [
+            ("status", "Status"),
+            ("progress", "Progress"),
+            ("priority", "Priority"),
+            ("start_date", "Start date"),
+            ("target_date", "Target date"),
         ]
         for key, label in field_map:
             if key in params and params[key] != meta.get(key):
