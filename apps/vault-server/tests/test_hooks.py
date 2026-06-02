@@ -9,6 +9,7 @@ from src.services.hooks import (
     run_post_hooks,
 )
 from src.services.tool_response import ok, err, ErrorCode
+from src.services.hooks.validate_schema import validate_schema
 
 
 @pytest.fixture(autouse=True)
@@ -69,3 +70,74 @@ def test_post_hooks_run_after_handler():
 def test_run_pre_hooks_unknown_name_raises():
     with pytest.raises(KeyError):
         run_pre_hooks(["missing"], {}, ctx=None)
+
+
+def test_validate_schema_passes_valid_input():
+    ctx = {
+        "tool": {
+            "schema": {
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                    "additionalProperties": False,
+                }
+            }
+        }
+    }
+    assert validate_schema({"name": "x"}, ctx) is None
+
+
+def test_validate_schema_rejects_missing_required():
+    ctx = {
+        "tool": {
+            "schema": {
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                }
+            }
+        }
+    }
+    result = validate_schema({}, ctx)
+    assert result is not None
+    assert result["ok"] is False
+    assert result["error"]["code"] == "SCHEMA_INVALID"
+    assert "name" in result["error"]["message"]
+
+
+def test_validate_schema_rejects_additional_props():
+    """The Migdal failure mode: passing extra fields not in schema."""
+    ctx = {
+        "tool": {
+            "schema": {
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "additionalProperties": False,
+                }
+            }
+        }
+    }
+    result = validate_schema({"path": "x", "extra": "y"}, ctx)
+    assert result is not None
+    assert result["error"]["code"] == "SCHEMA_INVALID"
+
+
+def test_validate_schema_rejects_wrong_type():
+    """The 'JSON-string for updates' failure mode."""
+    ctx = {
+        "tool": {
+            "schema": {
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"updates": {"type": "object"}},
+                    "required": ["updates"],
+                }
+            }
+        }
+    }
+    result = validate_schema({"updates": '{"key": "value"}'}, ctx)
+    assert result is not None
+    assert result["error"]["code"] == "SCHEMA_INVALID"
