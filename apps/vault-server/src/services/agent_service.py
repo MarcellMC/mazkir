@@ -64,6 +64,7 @@ class AgentResponse:
     response: str
     awaiting_confirmation: bool = False
     pending_action_id: str | None = None
+    iterations: int = 0
 
 
 @dataclass
@@ -757,7 +758,109 @@ class AgentService:
 
         system = self._build_system_prompt(context)
 
-        return self._run_loop(chat_id, log_text, messages, system)
+        if self.skill_registry is not None and self.router is not None:
+            return self._handle_via_skills(
+                chat_id, log_text, messages, system, context,
+            )
+
+        return self._run_agent_turn(
+            chat_id, log_text, messages, system,
+            tool_schemas=self._tool_schemas(),
+            max_iterations=self.max_iterations,
+        )
+
+    # ── Skill-aware path ─────────────────────────────────────────
+
+    def _handle_via_skills(
+        self,
+        chat_id: int,
+        log_text: str,
+        messages: list[dict],
+        system: str,
+        context: Any,
+    ) -> AgentResponse:
+        """Route to a skill via the router and run with handoff support (3-hop cap)."""
+        skills = self.skill_registry.list()  # type: ignore[union-attr]
+        decision = self.router.pick(  # type: ignore[union-attr]
+            user_msg=log_text,
+            recent_messages=context.messages[-10:],
+            skills=skills,
+        )
+
+        MAX_HOPS = 3
+        visited: list[str] = []
+        response_text = ""
+        active: str | None = decision.skill
+        previous: str | None = None
+        reason: str = decision.reason
+
+        while active and len(visited) < MAX_HOPS:
+            if active in visited:
+                logger.warning("Skill cycle detected — stopping at %s", active)
+                break
+            visited.append(active)
+
+            skill = self.skill_registry.get(active)  # type: ignore[union-attr]
+            if skill is None:
+                logger.warning("Router/handoff requested unknown skill %r", active)
+                break
+
+            tool_schemas = self._skill_tool_schemas(skill)
+            skill_system = self._build_system_prompt_for_skill(skill, context)
+
+            with _tracer.start_as_current_span(
+                f"skill.{skill.name}",
+                attributes={
+                    "skill.name": skill.name,
+                    "skill.previous": previous or "",
+                    "skill.routing_reason": reason,
+                },
+            ):
+                response_text, _stop_reason = self._run_loop(
+                    chat_id=chat_id,
+                    log_text=log_text,
+                    messages=messages,
+                    system=skill_system,
+                    tool_schemas=tool_schemas,
+                    max_iterations=skill.max_iterations,
+                )
+
+            next_skill = self._extract_next_skill(response_text, skill.next_skills)
+            if next_skill:
+                previous = active
+                active = next_skill
+                reason = f"handoff from {previous}"
+            else:
+                active = None
+
+        return AgentResponse(response=response_text, iterations=len(visited))
+
+    def _skill_tool_schemas(self, skill: Any) -> list[dict]:
+        """Build the tool-schema list for a specific skill."""
+        return [
+            self.tools[t]["schema"]
+            for t in skill.tools
+            if t in self.tools
+        ]
+
+    def _build_system_prompt_for_skill(self, skill: Any, context: Any) -> str:
+        """Prepend the skill's own system prompt to the base vault prompt."""
+        base_prompt = self._build_system_prompt(context)
+        return f"{skill.system_prompt}\n\n{base_prompt}"
+
+    def _extract_next_skill(self, response_text: str, allowed: list[str]) -> str | None:
+        """Parse 'next_skill: <name>' from response_text if name is allowed."""
+        import re
+        m = re.search(r"next_skill:\s*([a-z_-]+)", response_text)
+        if not m:
+            return None
+        name = m.group(1)
+        if name not in allowed:
+            logger.warning(
+                "Skill emitted next_skill=%r not in allowed=%r", name, allowed
+            )
+            return None
+        return name
 
     def handle_confirmation(
         self, chat_id: int, action_id: str, user_response: str,
@@ -829,8 +932,10 @@ class AgentService:
             system = self._build_system_prompt(
                 self.memory.assemble_context(chat_id)
             )
-            return self._run_loop(
+            return self._run_agent_turn(
                 chat_id, user_response, messages, system,
+                tool_schemas=self._tool_schemas(),
+                max_iterations=self.max_iterations,
                 pre_tools=pre_tools_audit,
                 action_id=action_id,
             )
@@ -843,17 +948,48 @@ class AgentService:
             system = self._build_system_prompt(
                 self.memory.assemble_context(chat_id)
             )
-            return self._run_loop(
+            return self._run_agent_turn(
                 chat_id, user_response, messages, system,
+                tool_schemas=self._tool_schemas(),
+                max_iterations=self.max_iterations,
                 action_id=action_id,
             )
 
     def _run_loop(
         self,
         chat_id: int,
+        log_text: str,
+        messages: list[dict],
+        system: str,
+        tool_schemas: list[dict],
+        max_iterations: int,
+    ) -> tuple[str, str]:
+        """Parameterized inner Claude tool-use loop. Returns (response_text, stop_reason).
+
+        Delegates to _run_agent_turn which handles the full iteration logic including
+        confidence gating, confirmation flow, memory persistence, and audit emission.
+        When a confirmation is needed, "needs_confirmation" is returned as the stop_reason.
+        """
+        result = self._run_agent_turn(
+            chat_id=chat_id,
+            original_text=log_text,
+            messages=messages,
+            system=system,
+            tool_schemas=tool_schemas,
+            max_iterations=max_iterations,
+        )
+        if result.awaiting_confirmation:
+            return result.response, "needs_confirmation"
+        return result.response, "end_turn"
+
+    def _run_agent_turn(
+        self,
+        chat_id: int,
         original_text: str,
         messages: list[dict],
         system: str,
+        tool_schemas: list[dict],
+        max_iterations: int,
         pre_tools: list[dict] | None = None,
         action_id: str | None = None,
     ) -> AgentResponse:
@@ -865,7 +1001,7 @@ class AgentService:
         iters = 0
         stop_reason: str | None = None
 
-        for iter_num in range(self.max_iterations):
+        for iter_num in range(max_iterations):
             iters = iter_num + 1
             with _tracer.start_as_current_span(
                 "agent.loop",
@@ -877,7 +1013,7 @@ class AgentService:
                 response = self.claude.create(
                     system=system,
                     messages=messages,
-                    tools=self._tool_schemas(),
+                    tools=tool_schemas,
                 )
                 stop_reason = response.stop_reason
 
