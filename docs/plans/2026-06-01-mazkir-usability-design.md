@@ -1,6 +1,6 @@
 # Mazkir Usability Overhaul — Design (Checkpoint)
 
-**Status:** Brainstorm in progress. Block D parts 1–3 are locked. Blocks A, B, C, E, F and D4 are pending.
+**Status:** Brainstorm in progress. Block D is fully locked (D1–D4). Blocks A, B, C, E, F are pending.
 
 **Goal:** Make Mazkir more usable. Standard vault operations must be reliable, deterministic, and guard-railed; common workflows must be obvious; only necessary context goes into LLM requests; all observability instrumentation gaps are closed.
 
@@ -13,7 +13,7 @@
 | A | Correctness — vault ops are deterministic | pending design |
 | B | Context optimization — only send what's needed | pending design |
 | C | Observability — close gaps | pending design |
-| D | Workflows, schemas, tools, sub-agents | D1+D2+D3 locked here; D4 pending |
+| D | Workflows, schemas, tools, sub-agents | locked (D1–D4) |
 | E | Broken integrations — GCal sync, media path | pending design |
 | F | Latency (mostly falls out of A+B) | pending design |
 
@@ -332,9 +332,108 @@ Stays global at **0.85** for write + destructive risk. Per-skill thresholds defe
 
 ---
 
-## Pending / not-yet-discussed
+## D4 — Confidence gate, preview, and hook framework
 
-- **D4 — confidence gate review.** Current threshold 0.85 across write+destructive. Open: per-tool thresholds? per-skill thresholds? confirmation UX in Telegram? dry-run / preview for high-risk ops?
+### Per-tool thresholds
+
+Threshold lives on the **tool**, not the skill. Each tool in the registry declares:
+
+```python
+TOOL_REGISTRY["delete_task"] = {
+    "risk": "destructive",
+    "confidence_threshold": 0.95,
+    "preview": True,
+    "auth_level": "user",         # extensible: "biometric", "2fa", "user-typed-confirmation"
+    "pre_hooks": [],               # ordered list of pre-execution check names
+    "post_hooks": [],              # ordered list of post-execution side-effect names
+    "handler": ...,
+}
+```
+
+Default per risk class:
+
+| Risk | Default threshold | Default preview |
+| --- | --- | --- |
+| safe (read) | n/a (no gate) | n/a |
+| write | 0.85 | False |
+| destructive | 0.95 | True |
+
+Tools may override (e.g. `daily_add_task` is write but could drop to 0.75 because it's low-stakes).
+
+### Preview for destructive ops — always on
+
+Every destructive tool defines a `preview_fn(params) → str` that formats a human-readable description of what would change. Flow:
+
+1. Tool call resolved with `_confidence ≥ threshold`
+2. If `preview = True`: bot sends "Would do: <preview>" with **yes / no** inline keyboard
+3. On `yes`: handler runs. On `no`: action discarded, agent loop resumes with a tool-result like `{cancelled: true}`
+
+Example preview output for `delete_task`:
+
+```
+Would delete:
+  • Submit missing documents to Migdal Insurance
+  • Priority 2, no due date
+  • Has 1 note (Hebrew text from Migdal Insurance)
+  • Created 2026-04-15
+
+Yes / No
+```
+
+### Confirmation UX
+
+- **Buttons:** yes / no only. Keep minimal.
+- **Timeout:** none. Pending confirmations stay pending. Bot persists them in vault-server state (already does via `chat_id` + `action_id`).
+- **State drift protection:** before executing a confirmed action, handler re-reads the target file and verifies the expected pre-state. If something changed since the confirmation was issued, the handler returns `{error: "Target changed since confirmation issued; please re-issue."}` and the agent re-runs.
+
+### Hooks framework (forward-looking)
+
+The `pre_hooks` and `post_hooks` lists let us layer behavior without touching tool handlers:
+
+- `validate_schema` — input schema check beyond Claude SDK's basic validation
+- `check_path_exists` — resolve fuzzy paths to canonical ones
+- `audit_log` — write to `data/logs/agent-turns.jsonl` (already exists)
+- `notify_calendar` — push state changes to GCal
+- `require_2fa` — future: pause + send Telegram TOTP prompt
+- `require_biometric` — future: WebAuthn ping to webapp
+
+Implementation: each hook is a registered function in `apps/vault-server/src/services/hooks/`. Tool execution wraps:
+
+```python
+for hook_name in tool["pre_hooks"]:
+    result = HOOKS[hook_name](params, ctx)
+    if result.blocked: return result.to_tool_response()
+output = tool["handler"](params)
+for hook_name in tool["post_hooks"]:
+    HOOKS[hook_name](params, output, ctx)
+return output
+```
+
+**v1 ships with**: `validate_schema` (all write/destructive), `check_path_exists` (all that take paths), `audit_log` (all write/destructive). `require_2fa` / `require_biometric` not implemented but the registry slot exists.
+
+### Skill gates
+
+Skills do **not** override per-tool thresholds. The skill's tool subset determines what's reachable; the tool determines its own gate. `recall` simply has no write/destructive tools, so no gate fires.
+
+### Telegram preview flow
+
+```
+User: "delete the dentist task"
+  Bot → Mazkir: agent.handle_message
+    Router: → manager
+    Manager skill: delete_task with confidence 0.92
+      Preview: "Would delete: Visit dentist (P3, due 2026-06-10)..."
+    Bot ← Mazkir: pending_action {id: x, preview: "..."}
+  Bot: shows preview text + [✅] [❌]
+User taps ✅
+  Bot → Mazkir: /message/confirm {action_id: x, response: "yes"}
+    Manager skill: pre_hooks pass, handler runs, post_hooks run
+  Bot ← Mazkir: "Deleted: Visit dentist"
+```
+
+---
+
+## Pending / not-yet-discussed
 - **A — Block A correctness work** (fix A1, retire `update_item`, schema validation guard-rails, fuzzy path resolution standardized).
 - **B — context optimization.** Audit what enters system prompt; the May 21 example of lecture notes leaking in is the canonical bug. Right-size short/mid/long-term memory layers per request type. Token usage measurement.
 - **C — observability gaps.** Empty `input.value` / `output.value` on `POST /message`, `agent.loop`, `agent.tool_call` spans; investigate ERROR trace `122b1a07…`; add the open-coding / axial-coding workflow for ongoing trace review.
