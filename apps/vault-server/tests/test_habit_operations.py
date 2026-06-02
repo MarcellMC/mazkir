@@ -58,3 +58,18 @@ def test_get_habits_needing_sync(vault_service):
     # workout has google_event_id=evt-123, read-book has null
     assert "Read book" in names
     assert "Workout" not in names
+
+
+def test_create_habit_with_scheduled_at_and_duration(vault_service):
+    result = vault_service.create_habit(
+        name="Morning workout",
+        frequency="daily",
+        tokens_per_completion=5,
+        scheduled_at="07:00",
+        duration_minutes=30,
+    )
+    meta = result["metadata"]
+    assert meta["scheduled_at"] == "07:00"
+    assert meta["duration_minutes"] == 30
+    assert "created" in meta
+    assert "updated" in meta

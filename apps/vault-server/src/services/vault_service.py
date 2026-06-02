@@ -486,16 +486,28 @@ class VaultService:
         # Limit length
         return filename[:max_length]
 
-    def create_task(self, name: str, priority: int = 3, due_date: str = None,
-                    category: str = "personal", tokens_on_completion: int = 5) -> Dict:
+    def create_task(
+        self,
+        name: str,
+        priority: int = 3,
+        due_date: Optional[str] = None,
+        category: str = "personal",
+        tokens_on_completion: int = 5,
+        scheduled_at: Optional[str] = None,
+        duration_minutes: Optional[int] = None,
+        due_soft: Optional[str] = None,
+    ) -> Dict:
         """Create a new task using template
 
         Args:
             name: Task name/description
             priority: 1-5 (5=highest)
-            due_date: Optional due date (YYYY-MM-DD)
+            due_date: Optional hard due date (YYYY-MM-DD)
             category: work, personal, health, learning
             tokens_on_completion: Tokens awarded when done
+            scheduled_at: Optional ISO datetime when the task is scheduled to start
+            duration_minutes: Optional estimated duration in minutes
+            due_soft: Optional soft/target due date (YYYY-MM-DD)
 
         Returns:
             Dict with created task data and path
@@ -521,6 +533,15 @@ class VaultService:
         metadata['tags'] = ['task', category]
         metadata['created'] = today
         metadata['updated'] = today
+        metadata['completed'] = None
+
+        # Optional scheduling fields — omit from frontmatter when not provided
+        if scheduled_at is not None:
+            metadata['scheduled_at'] = scheduled_at
+        if duration_minutes is not None:
+            metadata['duration_minutes'] = duration_minutes
+        if due_soft is not None:
+            metadata['due_soft'] = due_soft
 
         # Generate filename and path
         filename = self._sanitize_filename(name)
@@ -535,9 +556,16 @@ class VaultService:
             'content': processed['content']
         }
 
-    def create_habit(self, name: str, frequency: str = "daily",
-                     category: str = "personal", difficulty: str = "medium",
-                     tokens_per_completion: int = 5) -> Dict:
+    def create_habit(
+        self,
+        name: str,
+        frequency: str = "daily",
+        category: str = "personal",
+        difficulty: str = "medium",
+        tokens_per_completion: int = 5,
+        scheduled_at: Optional[str] = None,
+        duration_minutes: Optional[int] = None,
+    ) -> Dict:
         """Create a new habit using template
 
         Args:
@@ -546,6 +574,8 @@ class VaultService:
             category: health, learning, productivity, personal
             difficulty: easy, medium, hard
             tokens_per_completion: Tokens per completion
+            scheduled_at: Optional HH:MM time when the habit is scheduled
+            duration_minutes: Optional estimated duration in minutes
 
         Returns:
             Dict with created habit data and path
@@ -575,6 +605,12 @@ class VaultService:
         metadata['created'] = today
         metadata['updated'] = today
 
+        # Optional scheduling fields — omit from frontmatter when not provided
+        if scheduled_at is not None:
+            metadata['scheduled_at'] = scheduled_at
+        if duration_minutes is not None:
+            metadata['duration_minutes'] = duration_minutes
+
         # Generate filename and path
         filename = self._sanitize_filename(name)
         habit_path = f"20-habits/{filename}.md"
@@ -588,15 +624,22 @@ class VaultService:
             'content': processed['content']
         }
 
-    def create_goal(self, name: str, priority: str = "medium",
-                    target_date: str = None, category: str = "personal") -> Dict:
+    def create_goal(
+        self,
+        name: str,
+        priority: str = "medium",
+        target_date: Optional[str] = None,
+        category: str = "personal",
+        start_date: Optional[str] = None,
+    ) -> Dict:
         """Create a new goal using template
 
         Args:
             name: Goal name
-            priority: high, medium, low
+            priority: high, medium, low (or integer 1-5)
             target_date: Optional target completion date (YYYY-MM-DD)
             category: career, health, learning, finance, personal
+            start_date: Optional start date (YYYY-MM-DD); defaults to today
 
         Returns:
             Dict with created goal data and path
@@ -618,7 +661,7 @@ class VaultService:
         metadata['name'] = name
         metadata['status'] = 'not-started'
         metadata['priority'] = priority
-        metadata['start_date'] = today
+        metadata['start_date'] = start_date if start_date is not None else today
         metadata['target_date'] = target_date
         metadata['progress'] = 0
         metadata['category'] = category
@@ -627,6 +670,7 @@ class VaultService:
         metadata['related_tasks'] = []
         metadata['created'] = today
         metadata['updated'] = today
+        metadata['completed'] = None
 
         # Generate filename and path
         filename = self._sanitize_filename(name)

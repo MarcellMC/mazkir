@@ -47,3 +47,18 @@ def test_list_active_goals_sorted_by_priority_then_progress(vault_service):
     # high priority first, then medium
     assert names[0] == "Get fit"       # high priority, 30% progress
     assert names[1] == "Learn Python"  # medium priority, 0% progress
+
+
+def test_create_goal_with_start_date(vault_service):
+    result = vault_service.create_goal(
+        name="Learn AI",
+        priority="high",
+        target_date="2026-12-31",
+        start_date="2026-01-01",
+    )
+    meta = result["metadata"]
+    assert meta["start_date"] == "2026-01-01"
+    assert meta["target_date"] == "2026-12-31"
+    assert "created" in meta
+    assert "updated" in meta
+    assert meta["completed"] is None

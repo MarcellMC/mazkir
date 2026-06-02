@@ -87,3 +87,31 @@ def test_get_tasks_needing_sync(vault_service):
     assert "Buy groceries" in names     # has due_date, no event_id
     assert "Finish report" in names     # has due_date, no event_id
     assert "Learn Rust basics" not in names  # no due_date
+
+
+def test_create_task_with_scheduled_at_and_due_soft(vault_service):
+    result = vault_service.create_task(
+        name="Test task",
+        priority=3,
+        due_date="2026-06-10",
+        category="general",
+        scheduled_at="2026-06-05T14:00",
+        duration_minutes=60,
+        due_soft="2026-06-08",
+    )
+    meta = result["metadata"]
+    assert meta["scheduled_at"] == "2026-06-05T14:00"
+    assert meta["duration_minutes"] == 60
+    assert meta["due_soft"] == "2026-06-08"
+    assert meta["due_date"] == "2026-06-10"
+    assert "created" in meta
+    assert "updated" in meta
+    assert meta["completed"] is None
+
+
+def test_create_task_omits_optional_fields_when_not_provided(vault_service):
+    result = vault_service.create_task(name="Minimal", priority=2, due_date=None)
+    meta = result["metadata"]
+    assert meta.get("scheduled_at") is None
+    assert meta.get("duration_minutes") is None
+    assert meta.get("due_soft") is None
