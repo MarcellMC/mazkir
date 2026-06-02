@@ -1018,3 +1018,48 @@ def test_search_knowledge_returns_normalized_ok_shape(mock_services):
     result = agent._tool_search_knowledge({"query": "test"})
     assert result["ok"] is True
     assert "results" in result["data"]
+
+
+def test_create_task_tool_schema_exposes_scheduling_fields(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    props = agent.tools["create_task"]["schema"]["input_schema"]["properties"]
+    assert "scheduled_at" in props
+    assert "duration_minutes" in props
+    assert "due_soft" in props
+
+
+def test_create_task_handler_passes_scheduling_fields_through(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    agent.vault.create_task.return_value = {
+        "path": "40-tasks/active/x.md",
+        "metadata": {"name": "X", "scheduled_at": "2026-06-05T14:00"},
+    }
+    result = agent._tool_create_task({
+        "name": "X",
+        "priority": 3,
+        "scheduled_at": "2026-06-05T14:00",
+        "duration_minutes": 60,
+        "due_soft": "2026-06-08",
+    })
+    assert result["ok"] is True
+    kwargs = agent.vault.create_task.call_args.kwargs
+    assert kwargs.get("scheduled_at") == "2026-06-05T14:00"
+    assert kwargs.get("duration_minutes") == 60
+    assert kwargs.get("due_soft") == "2026-06-08"
+
+
+def test_create_habit_tool_schema_exposes_scheduling_fields(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    props = agent.tools["create_habit"]["schema"]["input_schema"]["properties"]
+    assert "scheduled_at" in props
+    assert "duration_minutes" in props
+
+
+def test_create_goal_tool_schema_exposes_start_date(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    props = agent.tools["create_goal"]["schema"]["input_schema"]["properties"]
+    assert "start_date" in props

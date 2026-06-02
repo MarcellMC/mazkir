@@ -238,6 +238,9 @@ class AgentService:
                             "priority": {"type": "integer", "description": "Priority 1-5 (1=highest). Default 3."},
                             "due_date": {"type": "string", "description": "Due date YYYY-MM-DD (optional)"},
                             "category": {"type": "string", "description": "Category (default 'personal')"},
+                            "scheduled_at": {"type": ["string", "null"], "description": "ISO datetime (e.g. 2026-06-05T14:00)"},
+                            "duration_minutes": {"type": ["integer", "null"]},
+                            "due_soft": {"type": ["string", "null"], "description": "Soft deadline YYYY-MM-DD"},
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
@@ -258,6 +261,8 @@ class AgentService:
                             "name": {"type": "string", "description": "Habit name"},
                             "frequency": {"type": "string", "description": "daily, weekly, 2x/week, 3x/week"},
                             "category": {"type": "string", "description": "Category (default 'personal')"},
+                            "scheduled_at": {"type": ["string", "null"], "description": "Recurring daily slot HH:MM"},
+                            "duration_minutes": {"type": ["integer", "null"]},
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
@@ -278,6 +283,7 @@ class AgentService:
                             "name": {"type": "string", "description": "Goal name"},
                             "priority": {"type": "string", "description": "low, medium, high"},
                             "target_date": {"type": "string", "description": "Target date YYYY-MM-DD (optional)"},
+                            "start_date": {"type": ["string", "null"], "description": "Goal start date YYYY-MM-DD"},
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
@@ -1496,6 +1502,9 @@ class AgentService:
             priority=params.get("priority", 3),
             due_date=params.get("due_date"),
             category=params.get("category", "personal"),
+            scheduled_at=params.get("scheduled_at"),
+            duration_minutes=params.get("duration_minutes"),
+            due_soft=params.get("due_soft"),
         )
         return ok(
             {
@@ -1512,6 +1521,8 @@ class AgentService:
             name=params["name"],
             frequency=params.get("frequency", "daily"),
             category=params.get("category", "personal"),
+            scheduled_at=params.get("scheduled_at"),
+            duration_minutes=params.get("duration_minutes"),
         )
         return ok(
             {
@@ -1527,6 +1538,7 @@ class AgentService:
             name=params["name"],
             priority=params.get("priority", "medium"),
             target_date=params.get("target_date"),
+            start_date=params.get("start_date"),
         )
         return ok(
             {
