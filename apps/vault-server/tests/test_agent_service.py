@@ -807,6 +807,28 @@ class TestSavePhotoFilesystemSpans:
         assert all(s.attributes["fs.bytes"] > 0 for s in spans)
 
 
+def test_complete_task_returns_real_values_not_placeholders(mock_services):
+    """Regression: agent_service.py dict-unpacking iterated keys not values."""
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    agent.vault.find_task_by_name.return_value = {
+        "path": "40-tasks/active/x.md",
+        "metadata": {"name": "X", "google_event_id": None},
+    }
+    agent.vault.complete_task.return_value = {
+        "task_name": "X",
+        "tokens_earned": 5,
+        "archive_path": "40-tasks/archive/x.md",
+    }
+
+    result = agent._tool_complete_task({"task_name": "X"})
+
+    payload = result["data"] if "data" in result else result
+    assert payload["task"] == "X"
+    assert payload["tokens_earned"] == 5
+    assert payload["archived_to"] == "40-tasks/archive/x.md"
+
+
 def test_execute_tool_runs_pre_hooks_and_blocks_on_error(mock_services, tmp_path):
     """When a pre-hook returns an error, the handler is not called."""
     from src.services.hooks import register_hook, HOOK_REGISTRY

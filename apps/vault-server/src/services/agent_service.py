@@ -1699,9 +1699,15 @@ class AgentService:
     def _tool_complete_task(self, params: dict) -> dict:
         task = self.vault.find_task_by_name(params["task_name"])
         if not task:
-            return {"error": f"No task found matching '{params['task_name']}'"}
+            return err(
+                ErrorCode.PATH_NOT_FOUND,
+                f"No task found matching '{params['task_name']}'",
+            )
 
-        name, tokens, archive_path = self.vault.complete_task(task["path"])
+        result = self.vault.complete_task(task["path"])
+        name = result["task_name"]
+        tokens = result["tokens_earned"]
+        archive_path = result["archive_path"]
 
         if self.calendar and task["metadata"].get("google_event_id"):
             try:
@@ -1709,12 +1715,14 @@ class AgentService:
             except Exception as e:
                 logger.warning(f"Calendar update failed: {e}")
 
-        return {
-            "task": name,
-            "tokens_earned": tokens,
-            "archived_to": archive_path,
-            "_items": [archive_path],
-        }
+        return ok(
+            {
+                "task": name,
+                "tokens_earned": tokens,
+                "archived_to": archive_path,
+            },
+            items=[archive_path],
+        )
 
     def _tool_complete_habit(self, params: dict) -> dict:
         import datetime as dt
