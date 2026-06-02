@@ -1,6 +1,6 @@
 # Mazkir Usability Overhaul — Design (Checkpoint)
 
-**Status:** Brainstorm in progress. Blocks A, B, D, E are locked. Blocks C, F are pending.
+**Status:** Brainstorm in progress. Blocks A, B, C, D, E are locked. Block F pending.
 
 **Goal:** Make Mazkir more usable. Standard vault operations must be reliable, deterministic, and guard-railed; common workflows must be obvious; only necessary context goes into LLM requests; all observability instrumentation gaps are closed.
 
@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | A | Correctness — vault ops are deterministic | locked |
 | B | Context optimization — only send what's needed | locked |
-| C | Observability — close gaps | pending design |
+| C | Observability — close gaps | locked |
 | D | Workflows, schemas, tools, sub-agents | locked (D1–D4) |
 | E | Broken integrations — GCal sync, media path | locked (E1, E2) |
 | F | Latency (mostly falls out of A+B) | pending design |
@@ -543,6 +543,100 @@ Rough order-of-magnitude on a typical agent turn:
 | **Total fresh input** | **~6–14 k** | **~3–4 k uncached + ~1.5 k cached at 10% rate** |
 
 Multi-turn conversations get the cache hit, dropping effective billed input further.
+
+---
+
+## C — Observability gaps
+
+### Current state (from May 21 trace review)
+
+- `agent.loop` spans set only `iteration` + span kind — no input/output values
+- `agent.tool_call` sets `output.value` but **never** `input.value`
+- Status doesn't propagate: ERROR trace `122b1a07` had an inner POST error but root `telegram.update` stayed OK
+- Auto-instrumented HTTP/SDK spans (FastAPI, Anthropic) carry low-semantic attrs only (URLs, status codes)
+
+### C1 — Fill input / output gaps
+
+Set OpenInference `input.value` / `output.value` on every span we own.
+
+| Span | input.value | output.value |
+| --- | --- | --- |
+| `agent.handle_message` | `user_msg` (text + attachments summary) | response text |
+| `agent.loop` | last user/tool-result block (truncated) | `stop_reason` + first text block (truncated) |
+| `agent.tool_call` | params JSON (truncated 2 k) | normalized result JSON (truncated 2 k) |
+| `agent.router` (new) | user_msg | chosen skill name + routing reason |
+| `POST /message` | request body summary (chat_id + text length + attachment count) | response summary |
+| `POST /message/confirm` | action_id + response | result summary |
+
+Truncate at 2 k chars; set `truncated: true` attribute when applied.
+
+### C2 — Error status propagation
+
+Manual spans need explicit status setting on failure. Pattern:
+
+```python
+with _tracer.start_as_current_span("agent.tool_call", attributes=attrs) as span:
+    try:
+        output = handler(params)
+        if not output.get("ok", True):
+            span.set_status(Status(StatusCode.ERROR, output["error"]["code"]))
+            span.set_attribute("tool.error.code", output["error"]["code"])
+        else:
+            span.set_status(Status(StatusCode.OK))
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, json.dumps(output)[:2000])
+        return output
+    except Exception as e:
+        span.record_exception(e)
+        span.set_status(Status(StatusCode.ERROR, str(e)))
+        raise
+```
+
+Apply to `agent.handle_message`, `agent.loop`, `agent.tool_call`, `agent.router`. Outer-span propagation is automatic via OpenTelemetry's status semantics.
+
+### C3 — Investigate ERROR trace `122b1a07` — dropped
+
+Transient error from May 21. Not pursuing — if a recurring pattern emerges in future trace review, revisit.
+
+### C4 — New attributes from A, B, D3, D4
+
+| Source | Attribute | Span(s) |
+| --- | --- | --- |
+| D3 | `skill.name` | every span after router pick |
+| D3 | `skill.previous` | hand-off targets |
+| D3 | `skill.next_skill` | when a loop emits next_skill |
+| D3 | `skill.routing_reason` | `agent.router` |
+| A | `tool.ok` | `agent.tool_call` |
+| A | `tool.error.code` | `agent.tool_call` on failure |
+| D4 | `confirmation.required` | `agent.tool_call` when gate fires |
+| D4 | `confirmation.outcome` | `POST /message/confirm` |
+| B | `system_prompt.token_estimate` | `agent.loop` |
+| B | `llm.token_count.prompt_cached_read` | `messages.create` (from Anthropic response) |
+| B | `llm.token_count.prompt_cached_write` | `messages.create` |
+| B | `vault.snapshot.compute_ms` | `agent.handle_message` |
+
+### C5 — Logs ↔ traces correlation
+
+Add `trace_id` to every line written to `data/logs/agent-turns.jsonl` (and `vault-server.jsonl`, `telegram-bot.jsonl`).
+
+```python
+from opentelemetry.trace import get_current_span
+ctx = get_current_span().get_span_context()
+trace_id = format(ctx.trace_id, "032x") if ctx.is_valid else None
+logger.info(..., extra={..., "trace_id": trace_id})
+```
+
+This unlocks: copy the `trace_id` from any log line, paste into Phoenix UI, jump straight to the trace.
+
+### C6 — Open-coding review cadence — skipped
+
+Reviewing on demand (per-incident or when something feels off). The `phoenix-cli` skill workflow is documented in the skill itself; no separate process needed.
+
+### Out of scope for C
+
+- Backend log enrichment beyond `trace_id`
+- New Grafana dashboards
+- Custom Phoenix evaluators (revisit once a failure taxonomy emerges)
+- Phoenix sessions (auto-grouping by `session.id` — could add later; current setup uses chat_id but doesn't tag spans with session.id)
 
 ---
 
