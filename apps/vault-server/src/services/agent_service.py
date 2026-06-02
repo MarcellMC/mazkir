@@ -288,6 +288,37 @@ class AgentService:
                 "risk": "write",
                 "pre_hooks": ["validate_schema"],
             },
+            "update_task": {
+                "schema": {
+                    "name": "update_task",
+                    "description": (
+                        "Update fields on an existing task. Specify the task by fuzzy "
+                        "`name` match. Provide only the fields you want to change. "
+                        "`append_note` adds free-text to the task body with a timestamp."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Task name (fuzzy match)"},
+                            "priority": {"type": "integer", "minimum": 1, "maximum": 5},
+                            "status": {"type": "string", "enum": ["active", "blocked", "done"]},
+                            "category": {"type": "string"},
+                            "scheduled_at": {"type": ["string", "null"], "description": "ISO datetime"},
+                            "duration_minutes": {"type": ["integer", "null"]},
+                            "due_date": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+                            "due_soft": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+                            "append_note": {"type": "string"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["name"],
+                        "additionalProperties": False,
+                    },
+                },
+                "handler": self._tool_update_task,
+                "risk": "write",
+                "pre_hooks": ["validate_schema"],
+            },
             "update_item": {
                 "schema": {
                     "name": "update_item",
@@ -1448,6 +1479,52 @@ class AgentService:
     def _tool_update_item(self, params: dict) -> dict:
         self.vault.update_file(params["path"], params["updates"])
         return {"updated": params["path"], "_items": [params["path"]]}
+
+    def _tool_update_task(self, params: dict) -> dict:
+        from src.services.resolver import resolve_item
+
+        resolved = resolve_item("task", params["name"], self.vault)
+        if not resolved["ok"]:
+            return resolved
+
+        path = resolved["data"]["path"]
+        current = self.vault.read_file(path)
+        meta = dict(current["metadata"])
+        body = current["content"]
+
+        history_lines: list[str] = []
+
+        field_map = [
+            ("priority", "Priority"),
+            ("status", "Status"),
+            ("category", "Category"),
+            ("scheduled_at", "Scheduled"),
+            ("duration_minutes", "Duration (min)"),
+            ("due_date", "Due"),
+            ("due_soft", "Soft due"),
+        ]
+        for key, label in field_map:
+            if key in params and params[key] != meta.get(key):
+                history_lines.append(f"{label} changed: {meta.get(key)} → {params[key]}")
+                meta[key] = params[key]
+
+        if "append_note" in params and params["append_note"]:
+            body = body.rstrip() + "\n\n" + params["append_note"].strip() + "\n"
+            history_lines.append(f"Note appended: {params['append_note'][:60]}")
+
+        from datetime import datetime
+        today = datetime.now(self.vault.tz).strftime("%Y-%m-%d")
+        if history_lines:
+            meta["updated"] = today
+            for line in history_lines:
+                body = self.vault.append_history_line(body, line)
+
+        self.vault.write_file(path, meta, body)
+
+        return ok(
+            {"path": path, "name": meta.get("name", ""), "changes": history_lines},
+            items=[path],
+        )
 
     def _tool_save_knowledge(self, params: dict) -> dict:
         result = self.memory.save_knowledge(

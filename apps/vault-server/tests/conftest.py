@@ -1,5 +1,6 @@
 import pytest
 from pathlib import Path
+from unittest.mock import MagicMock
 from src.services.vault_service import VaultService
 
 
@@ -363,3 +364,41 @@ updated: '2026-02-15'
 def vault_service(vault_path):
     """Create a VaultService instance pointing at the temp vault."""
     return VaultService(vault_path)
+
+
+@pytest.fixture
+def mock_services(tmp_path):
+    """Create mock service dependencies as a dict.
+
+    Shared across test files (e.g. test_typed_mutators.py). The local
+    tuple-returning fixture in test_agent_service.py takes precedence there.
+    """
+    import pytz
+    from src.services.memory_service import ConversationContext
+
+    claude = MagicMock()
+    vault = MagicMock()
+    memory = MagicMock()
+    calendar = MagicMock()
+    events = MagicMock()
+
+    vault.vault_path = tmp_path / "vault"
+    vault.vault_path.mkdir()
+    vault.tz = pytz.timezone("Asia/Jerusalem")
+
+    memory.assemble_context.return_value = ConversationContext(
+        messages=[],
+        summary="",
+        vault_snapshot="No data.",
+        knowledge="",
+    )
+    memory.save_turn = MagicMock()
+    memory.summarize_and_decay = MagicMock()
+
+    return {
+        "claude": claude,
+        "vault": vault,
+        "memory": memory,
+        "calendar": calendar,
+        "events": events,
+    }
