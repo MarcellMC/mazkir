@@ -319,6 +319,30 @@ class AgentService:
                 "risk": "write",
                 "pre_hooks": ["validate_schema"],
             },
+            "update_habit": {
+                "schema": {
+                    "name": "update_habit",
+                    "description": "Update fields on an existing habit. Specify by fuzzy `name`.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "frequency": {"type": "string", "enum": ["daily", "weekly", "monthly"]},
+                            "scheduled_at": {"type": ["string", "null"], "description": "HH:MM"},
+                            "duration_minutes": {"type": ["integer", "null"]},
+                            "tokens_per_completion": {"type": "integer"},
+                            "append_note": {"type": "string"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["name"],
+                        "additionalProperties": False,
+                    },
+                },
+                "handler": self._tool_update_habit,
+                "risk": "write",
+                "pre_hooks": ["validate_schema"],
+            },
             "update_item": {
                 "schema": {
                     "name": "update_item",
@@ -1521,6 +1545,47 @@ class AgentService:
 
         self.vault.write_file(path, meta, body)
 
+        return ok(
+            {"path": path, "name": meta.get("name", ""), "changes": history_lines},
+            items=[path],
+        )
+
+    def _tool_update_habit(self, params: dict) -> dict:
+        from src.services.resolver import resolve_item
+
+        resolved = resolve_item("habit", params["name"], self.vault)
+        if not resolved["ok"]:
+            return resolved
+
+        path = resolved["data"]["path"]
+        current = self.vault.read_file(path)
+        meta = dict(current["metadata"])
+        body = current["content"]
+
+        history_lines: list[str] = []
+        field_map = [
+            ("frequency", "Frequency"),
+            ("scheduled_at", "Scheduled at"),
+            ("duration_minutes", "Duration (min)"),
+            ("tokens_per_completion", "Tokens per completion"),
+        ]
+        for key, label in field_map:
+            if key in params and params[key] != meta.get(key):
+                history_lines.append(f"{label} changed: {meta.get(key)} → {params[key]}")
+                meta[key] = params[key]
+
+        if "append_note" in params and params["append_note"]:
+            body = body.rstrip() + "\n\n" + params["append_note"].strip() + "\n"
+            history_lines.append(f"Note appended: {params['append_note'][:60]}")
+
+        from datetime import datetime
+        today = datetime.now(self.vault.tz).strftime("%Y-%m-%d")
+        if history_lines:
+            meta["updated"] = today
+            for line in history_lines:
+                body = self.vault.append_history_line(body, line)
+
+        self.vault.write_file(path, meta, body)
         return ok(
             {"path": path, "name": meta.get("name", ""), "changes": history_lines},
             items=[path],

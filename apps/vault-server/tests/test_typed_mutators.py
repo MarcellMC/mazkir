@@ -72,3 +72,30 @@ def test_update_task_returns_path_not_found_error(agent):
     result = agent._tool_update_task({"name": "nonexistent", "priority": 4})
     assert result["ok"] is False
     assert result["error"]["code"] == "PATH_NOT_FOUND"
+
+
+def test_update_habit_changes_scheduled_at(agent):
+    agent.vault.list_active_habits.return_value = [
+        {"path": "20-habits/workout.md", "metadata": {"name": "Workout"}}
+    ]
+    agent.vault.read_file.return_value = {
+        "metadata": {"name": "Workout", "scheduled_at": "07:00"},
+        "content": "body\n",
+    }
+    agent.vault.append_history_line = lambda body, line: body + f"HIST:{line}\n"
+
+    result = agent._tool_update_habit({
+        "name": "Workout",
+        "scheduled_at": "08:30",
+    })
+
+    assert result["ok"] is True
+    args, _ = agent.vault.write_file.call_args
+    assert args[1]["scheduled_at"] == "08:30"
+
+
+def test_update_habit_returns_path_not_found(agent):
+    agent.vault.list_active_habits.return_value = []
+    result = agent._tool_update_habit({"name": "ghost", "scheduled_at": "09:00"})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "PATH_NOT_FOUND"
