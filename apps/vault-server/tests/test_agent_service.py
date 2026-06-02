@@ -490,7 +490,7 @@ class TestDailySectionTools:
         vault = mock_services[1]
         vault.read_daily_section.return_value = "Some notes here"
         result = agent._tool_read_daily_section({"section": "Notes"})
-        assert result["content"] == "Some notes here"
+        assert result["data"]["content"] == "Some notes here"
         vault.read_daily_section.assert_called_once()
 
     def test_edit_daily_section_calls_vault(self, agent, mock_services):
@@ -564,7 +564,7 @@ class TestEventTools:
             {"id": "evt_abc", "name": "Lunch", "start_time": "12:00", "photos": []},
         ]
         result = agent._tool_list_events({})
-        assert len(result["events"]) == 1
+        assert len(result["data"]["events"]) == 1
         events_mock.get_events.assert_called_once()
 
     def test_create_event_calls_service(self, agent, mock_services):
@@ -979,3 +979,25 @@ def test_delete_task_ambiguous_returns_candidates(mock_services):
     assert result["ok"] is False
     assert result["error"]["code"] == "AMBIGUOUS_MATCH"
     assert "candidates" in result["error"]["details"]
+
+
+def test_list_tasks_returns_normalized_ok_shape(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    agent.vault.list_active_tasks.return_value = [
+        {"path": "40-tasks/active/x.md", "metadata": {"name": "X", "priority": 3}}
+    ]
+    result = agent._tool_list_tasks({})
+    assert result["ok"] is True
+    assert "data" in result
+    assert "tasks" in result["data"]
+    assert "_items" in result
+
+
+def test_search_knowledge_returns_normalized_ok_shape(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    agent.memory.search_knowledge.return_value = [{"path": "k.md", "name": "k", "tags": [], "score": 1}]
+    result = agent._tool_search_knowledge({"query": "test"})
+    assert result["ok"] is True
+    assert "results" in result["data"]

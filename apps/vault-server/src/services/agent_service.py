@@ -1401,70 +1401,79 @@ class AgentService:
 
     def _tool_list_tasks(self, params: dict) -> dict:
         tasks = self.vault.list_active_tasks()
-        return {
-            "tasks": [
-                {"name": t["metadata"].get("name", ""), "path": t["path"],
-                 "priority": t["metadata"].get("priority"), "due_date": t["metadata"].get("due_date")}
-                for t in tasks
-            ],
-            "_items": [t["path"] for t in tasks],
-        }
+        return ok(
+            {
+                "tasks": [
+                    {"name": t["metadata"].get("name", ""), "path": t["path"],
+                     "priority": t["metadata"].get("priority"), "due_date": t["metadata"].get("due_date")}
+                    for t in tasks
+                ],
+            },
+            items=[t["path"] for t in tasks],
+        )
 
     def _tool_list_habits(self, params: dict) -> dict:
         habits = self.vault.list_active_habits()
-        return {
-            "habits": [
-                {"name": h["metadata"].get("name", ""), "path": h["path"],
-                 "streak": h["metadata"].get("streak", 0),
-                 "frequency": h["metadata"].get("frequency", "daily")}
-                for h in habits
-            ],
-            "_items": [h["path"] for h in habits],
-        }
+        return ok(
+            {
+                "habits": [
+                    {"name": h["metadata"].get("name", ""), "path": h["path"],
+                     "streak": h["metadata"].get("streak", 0),
+                     "frequency": h["metadata"].get("frequency", "daily")}
+                    for h in habits
+                ],
+            },
+            items=[h["path"] for h in habits],
+        )
 
     def _tool_list_goals(self, params: dict) -> dict:
         goals = self.vault.list_active_goals()
-        return {
-            "goals": [
-                {"name": g["metadata"].get("name", ""), "path": g["path"],
-                 "progress": g["metadata"].get("progress", 0),
-                 "priority": g["metadata"].get("priority")}
-                for g in goals
-            ],
-            "_items": [g["path"] for g in goals],
-        }
+        return ok(
+            {
+                "goals": [
+                    {"name": g["metadata"].get("name", ""), "path": g["path"],
+                     "progress": g["metadata"].get("progress", 0),
+                     "priority": g["metadata"].get("priority")}
+                    for g in goals
+                ],
+            },
+            items=[g["path"] for g in goals],
+        )
 
     def _tool_get_daily(self, params: dict) -> dict:
         try:
             daily = self.vault.read_daily_note()
-            return {"daily": daily["metadata"], "content": daily["content"], "_items": [daily["path"]]}
+            return ok(
+                {"daily": daily["metadata"], "content": daily["content"]},
+                items=[daily["path"]],
+            )
         except Exception:
-            return {"error": "No daily note found for today."}
+            return err(ErrorCode.PATH_NOT_FOUND, "No daily note found for today.")
 
     def _tool_get_tokens(self, params: dict) -> dict:
         try:
             ledger = self.vault.read_token_ledger()
-            return {
+            return ok({
                 "total": ledger["metadata"].get("total_tokens", 0),
                 "today": ledger["metadata"].get("tokens_today", 0),
                 "all_time": ledger["metadata"].get("all_time_tokens", 0),
-            }
+            })
         except Exception:
-            return {"error": "Token ledger not found."}
+            return err(ErrorCode.PATH_NOT_FOUND, "Token ledger not found.")
 
     def _tool_search_knowledge(self, params: dict) -> dict:
         results = self.memory.search_knowledge(
             query=params["query"],
             limit=params.get("limit", 5),
         )
-        return {"results": results}
+        return ok({"results": results})
 
     def _tool_get_related(self, params: dict) -> dict:
         results = self.memory.get_related(
             topic=params["topic"],
             depth=params.get("depth", 2),
         )
-        return {"related": results}
+        return ok({"related": results})
 
     def _tool_create_task(self, params: dict) -> dict:
         result = self.vault.create_task(
@@ -1748,7 +1757,7 @@ class AgentService:
     def _tool_read_daily_section(self, params: dict) -> dict:
         date = self._parse_date(params.get("date"))
         content = self.vault.read_daily_section(params["section"], date)
-        return {"section": params["section"], "content": content}
+        return ok({"section": params["section"], "content": content})
 
     def _tool_edit_daily_section(self, params: dict) -> dict:
         date = self._parse_date(params.get("date"))
@@ -1763,7 +1772,7 @@ class AgentService:
         import datetime as dt
         date = params.get("date", dt.date.today().isoformat())
         if not self.events:
-            return {"events": [], "error": "Events service not available"}
+            return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
         events = self.events.get_events(date)
         summary = []
         for e in events:
@@ -1777,7 +1786,7 @@ class AgentService:
                 "photo_count": len(e.get("photos", [])),
                 "source": e.get("source"),
             })
-        return {"events": summary, "date": date}
+        return ok({"events": summary, "date": date})
 
     def _tool_attach_photo_to_event(self, params: dict) -> dict:
         import datetime as dt
