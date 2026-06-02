@@ -1,6 +1,6 @@
 # Mazkir Usability Overhaul — Design (Checkpoint)
 
-**Status:** Brainstorm in progress. Block D is fully locked (D1–D4). Blocks A, B, C, E, F are pending.
+**Status:** Brainstorm in progress. Blocks D and E are locked. Blocks A, B, C, F are pending.
 
 **Goal:** Make Mazkir more usable. Standard vault operations must be reliable, deterministic, and guard-railed; common workflows must be obvious; only necessary context goes into LLM requests; all observability instrumentation gaps are closed.
 
@@ -14,7 +14,7 @@
 | B | Context optimization — only send what's needed | pending design |
 | C | Observability — close gaps | pending design |
 | D | Workflows, schemas, tools, sub-agents | locked (D1–D4) |
-| E | Broken integrations — GCal sync, media path | pending design |
+| E | Broken integrations — GCal sync, media path | locked (E1, E2) |
 | F | Latency (mostly falls out of A+B) | pending design |
 
 ---
@@ -430,6 +430,119 @@ User taps ✅
     Manager skill: pre_hooks pass, handler runs, post_hooks run
   Bot ← Mazkir: "Deleted: Visit dentist"
 ```
+
+---
+
+## E — Broken integrations
+
+### E1 — Google Calendar sync (write-back)
+
+**Root cause:** the sync code exists and is correct (`calendar_service.py:674` `sync_habit`, `:703` `sync_task`), but it's not called from all write paths:
+
+- `POST /tasks` (REST route) does call `calendar.sync_task` on create — wired
+- `_tool_create_task` (agent) calls `vault.create_task` directly — **never syncs**
+- `_tool_complete_task` only marks an existing GCal event done; doesn't create one if missing
+- Agent's future `update_task` will face the same problem
+
+Also possible: `ENABLE_CALENDAR_SYNC=false` (the env default) — needs verification before code change, but irrelevant once the hook is wired (hook simply no-ops if calendar is uninitialized).
+
+**Fix:** wire calendar sync as a D4 **post-hook** on `create_task`, `update_task`, `complete_task`, `create_habit`, `update_habit`, `complete_habit`, `archive_task`, `delete_task`, `archive_goal`.
+
+```python
+TOOL_REGISTRY["create_task"]["post_hooks"] = ["sync_to_calendar"]
+TOOL_REGISTRY["update_task"]["post_hooks"] = ["sync_to_calendar"]
+TOOL_REGISTRY["complete_task"]["post_hooks"] = ["sync_to_calendar"]
+# ... etc
+
+def sync_to_calendar(params: dict, output: dict, ctx) -> None:
+    if not ctx.calendar or not ctx.calendar.is_initialized:
+        return
+    item_path = output.get("_items", [None])[0]
+    if not item_path: return
+    item = ctx.vault.read_file(item_path)
+    if item["metadata"]["type"] == "task":
+        ctx.calendar.sync_task(item)   # creates or updates GCal event
+    elif item["metadata"]["type"] == "habit":
+        ctx.calendar.sync_habit(item)
+```
+
+Single hook covers all write paths (REST + agent + future skills) because tool execution runs through one registry.
+
+**Bonus benefits:**
+- Idempotent — `sync_task` checks `google_event_id` and updates vs creates
+- Calendar sync now respects D4 confidence gates and previews (e.g. deleting a task previews "would also delete GCal event 'X' on 2026-06-10")
+- Sync failure logs but doesn't block the write — best-effort semantics preserved
+
+### E2 — Media path inside the Obsidian vault
+
+**Move from** `data/media/{date}/` **to** `memory/00-system/media/{date}/`.
+
+Existing daily-note embeds (`![](../../data/media/...)`) get rewritten to **Obsidian wikilink embeds** (`![[photo.jpg]]`). Wikilink embeds are Obsidian-native: it resolves the filename by searching all attachment folders in the vault, so the path stays robust to future moves. The webapp resolves wikilinks by asking vault-server for the path.
+
+**Configuration:**
+- `MEDIA_PATH` default → `~/dev/mazkir/memory/00-system/media` (env can still override)
+- `memory/.gitignore` (the nested vault repo): add `00-system/media/` so binaries don't bloat the vault git history
+
+**`attach_to_daily` change:**
+
+```python
+# before
+lines.append(f"![{caption}](../../{vault_path})")
+# after
+filename = Path(vault_path).name
+lines.append(f"![[{filename}]]")
+lines.append(f"*{time_str} — {caption}*")
+```
+
+**Webapp media route change** (`apps/vault-server/src/api/routes/media.py:16`):
+
+```python
+# before
+file_path = settings.media_path / date / filename
+# after — same code, but settings.media_path now points inside vault
+file_path = settings.media_path / date / filename     # path resolution unchanged
+# add fallback: if not file_path.exists(), search vault for wikilink-style {filename}
+```
+
+Add a `vault.find_attachment(filename)` helper for wikilink resolution in case dates ever shift.
+
+**Migration script** (`apps/vault-server/scripts/migrate_media_to_vault.py`):
+
+```python
+# 1. Move files
+shutil.move(old_path / date, new_path / date)        # per date directory
+# 2. Rewrite daily-note embeds
+for daily in vault.list_files("10-daily"):
+    content = vault.read_raw(daily)
+    new_content = re.sub(
+        r"!\[([^\]]*)\]\(\.\./\.\./data/media/(\d{4}-\d{2}-\d{2})/([^)]+)\)",
+        lambda m: f"![[{m.group(3)}]]",
+        content,
+    )
+    if new_content != content:
+        vault.write_raw(daily, new_content)
+# 3. Move sidecar metadata.json files (already in same dir, moves automatically)
+# 4. Add memory/.gitignore entry
+# 5. Print summary: files moved, daily notes rewritten
+```
+
+Run once, commit the rewrites in mazkir-memory repo, commit code changes in mazkir repo separately.
+
+**Agent photo-save path:**
+
+```python
+# agent_service.py:992 — before
+media_dir = self.media_path / today
+# after — self.media_path now defaults inside vault, no code change required
+```
+
+Just the default path changes. The agent emits wikilink-format embeds via `attach_to_daily` afterward.
+
+### Knock-on: scheduled_at for tasks needs GCal sync too
+
+Once `update_task` supports `scheduled_at` + `duration_minutes` (D-schema), the `sync_to_calendar` post-hook also needs to update the GCal event time. `calendar_service._build_task_event` already reads metadata, so as long as it learns the new fields, the hook covers this path too.
+
+Action item: extend `_build_task_event` to use `scheduled_at` + `duration_minutes` when present; fall back to `due_date` (current behavior) otherwise. Same for `_build_habit_event`.
 
 ---
 
