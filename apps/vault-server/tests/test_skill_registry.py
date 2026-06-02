@@ -97,3 +97,55 @@ Body.
     assert skill.max_iterations == 5  # default
     assert skill.next_skills == []     # default
     assert skill.when_to_use == ""     # default
+
+
+def test_validate_warns_on_unknown_tool(tmp_path, caplog):
+    content = """---
+name: bad
+description: refs missing tool
+tools: [nonexistent_tool]
+model: claude-haiku-4-5
+---
+body
+"""
+    _write_skill(tmp_path, "bad", content)
+    registry = SkillRegistry(skills_dir=tmp_path)
+    registry.load()
+    known_tools = {"save_knowledge", "create_task"}
+    with caplog.at_level("WARNING"):
+        warnings = registry.validate(known_tools=known_tools, known_skills={"bad"})
+    assert any("nonexistent_tool" in w for w in warnings)
+
+
+def test_validate_warns_on_unknown_next_skill(tmp_path):
+    content = """---
+name: bad
+description: bad handoff target
+tools: [save_knowledge]
+model: claude-haiku-4-5
+next_skills: [missing_skill]
+---
+body
+"""
+    _write_skill(tmp_path, "bad", content)
+    registry = SkillRegistry(skills_dir=tmp_path)
+    registry.load()
+    warnings = registry.validate(known_tools={"save_knowledge"}, known_skills={"bad"})
+    assert any("missing_skill" in w for w in warnings)
+
+
+def test_validate_passes_when_references_resolve(tmp_path):
+    content = """---
+name: ok
+description: ok
+tools: [save_knowledge]
+model: claude-haiku-4-5
+next_skills: []
+---
+body
+"""
+    _write_skill(tmp_path, "ok", content)
+    registry = SkillRegistry(skills_dir=tmp_path)
+    registry.load()
+    warnings = registry.validate(known_tools={"save_knowledge"}, known_skills={"ok"})
+    assert warnings == []

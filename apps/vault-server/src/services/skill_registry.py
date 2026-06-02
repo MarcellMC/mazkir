@@ -94,3 +94,27 @@ class SkillRegistry:
 
     def list(self) -> list[Skill]:
         return list(self._skills.values())
+
+    def validate(
+        self,
+        known_tools: set[str],
+        known_skills: set[str],
+    ) -> list[str]:
+        """Return a list of warning messages for unresolved tool / skill references.
+
+        Warnings are logged at WARNING level and also returned so callers can
+        surface them in startup logs / health checks.
+        """
+        warnings: list[str] = []
+        for skill in self._skills.values():
+            for t in skill.tools:
+                if t not in known_tools:
+                    msg = f"Skill {skill.name!r} references unknown tool {t!r}"
+                    logger.warning(msg)
+                    warnings.append(msg)
+            for n in skill.next_skills:
+                if n not in known_skills:
+                    msg = f"Skill {skill.name!r} declares unknown next_skill {n!r}"
+                    logger.warning(msg)
+                    warnings.append(msg)
+        return warnings
