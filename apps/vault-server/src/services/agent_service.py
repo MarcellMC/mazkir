@@ -1995,35 +1995,29 @@ class AgentService:
 
     def _tool_complete_habit(self, params: dict) -> dict:
         import datetime as dt
+        from src.services.resolver import resolve_item
 
-        habits = self.vault.list_active_habits()
-        target = params["habit_name"].lower()
+        resolved = resolve_item("habit", params["habit_name"], self.vault)
+        if not resolved["ok"]:
+            return resolved
 
-        habit = None
-        for h in habits:
-            name = h["metadata"].get("name", "").lower()
-            if target in name or name in target:
-                habit = h
-                break
-
-        if not habit:
-            return err(ErrorCode.PATH_NOT_FOUND, f"No habit found matching '{params['habit_name']}'")
+        path = resolved["data"]["path"]
+        habit = self.vault.read_file(path)
 
         today = dt.date.today().isoformat()
         if habit["metadata"].get("last_completed") == today:
             return err(
                 ErrorCode.ALREADY_DONE,
                 f"Habit '{habit['metadata'].get('name', '')}' already completed today",
-                details={"path": habit["path"], "streak": habit["metadata"].get("streak", 0)},
+                details={"path": path, "streak": habit["metadata"].get("streak", 0)},
             )
 
         meta = habit["metadata"]
         old_streak = meta.get("streak", 0)
         new_streak = old_streak + 1
         longest = max(meta.get("longest_streak", 0), new_streak)
-        today = dt.date.today().isoformat()
 
-        self.vault.update_file(habit["path"], {
+        self.vault.update_file(path, {
             "streak": new_streak,
             "longest_streak": longest,
             "last_completed": today,
@@ -2046,5 +2040,5 @@ class AgentService:
                 "longest_streak": longest,
                 "tokens_earned": tokens,
             },
-            items=[habit["path"]],
+            items=[path],
         )

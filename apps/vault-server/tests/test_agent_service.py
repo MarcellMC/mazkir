@@ -928,6 +928,10 @@ def test_complete_habit_idempotent_when_done_today(mock_services):
             "metadata": {"name": "Workout", "last_completed": today, "streak": 5},
         }
     ]
+    agent.vault.read_file.return_value = {
+        "path": "20-habits/workout.md",
+        "metadata": {"name": "Workout", "last_completed": today, "streak": 5},
+    }
 
     result = agent._tool_complete_habit({"habit_name": "Workout"})
 
@@ -1063,3 +1067,35 @@ def test_create_goal_tool_schema_exposes_start_date(mock_services):
     agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
     props = agent.tools["create_goal"]["schema"]["input_schema"]["properties"]
     assert "start_date" in props
+
+
+def test_complete_habit_uses_resolver_for_fuzzy_match(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    agent.vault.list_active_habits.return_value = [
+        {"path": "20-habits/morning-workout.md", "metadata": {"name": "Morning workout"}}
+    ]
+    agent.vault.read_file.return_value = {
+        "path": "20-habits/morning-workout.md",
+        "metadata": {"name": "Morning workout"},
+    }
+    agent.vault.complete_habit.return_value = {
+        "habit_name": "Morning workout",
+        "streak": 8,
+        "tokens_earned": 5,
+    }
+
+    result = agent._tool_complete_habit({"habit_name": "workout"})
+    assert result["ok"] is True
+
+
+def test_complete_habit_ambiguous_returns_candidates(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    agent.vault.list_active_habits.return_value = [
+        {"path": "20-habits/morning-workout.md", "metadata": {"name": "Morning workout"}},
+        {"path": "20-habits/evening-workout.md", "metadata": {"name": "Evening workout"}},
+    ]
+    result = agent._tool_complete_habit({"habit_name": "workout"})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "AMBIGUOUS_MATCH"
