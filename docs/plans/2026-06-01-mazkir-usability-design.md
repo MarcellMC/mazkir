@@ -19,6 +19,24 @@
 
 ---
 
+## Reading order
+
+Blocks were drafted in dialogue order, not dependency order. For implementation reading:
+
+1. **D1** — workflows (the "what")
+2. **D — schema** + **D — two-tier task model**
+3. **D2** — tool catalog
+4. **`/day` — concrete fixes**
+5. **D3** — sub-agent / skill architecture
+6. **D4** — confidence gate, preview, hook framework
+7. **A** — correctness & guardrails (depends on D2/D4)
+8. **B** — context optimization (depends on D3)
+9. **C** — observability gaps (depends on A/B/D3/D4 attribute work)
+10. **E** — broken integrations (depends on D4 hook framework)
+11. **F** — latency (depends on A + B + D3)
+
+---
+
 ## D1 — Workflows (grouped capture / plan / review)
 
 ### Capture (low-friction inbox)
@@ -320,7 +338,7 @@ Skill choice is **traced only**, not surfaced in user-facing replies. Phoenix sp
 
 ### Confidence gate
 
-Stays global at **0.85** for write + destructive risk. Per-skill thresholds deferred to D4 along with broader confirmation-UX review.
+Skills do **not** declare their own thresholds — gates live on the tool, per D4. The skill's tool subset determines which gates can fire. `recall` has no write/destructive tools, so no gate fires there.
 
 ### Implementation sketch
 
@@ -962,19 +980,23 @@ Action item: extend `_build_task_event` to use `scheduled_at` + `duration_minute
 
 ---
 
-## Pending / not-yet-discussed
-- **A — Block A correctness work** (fix A1, retire `update_item`, schema validation guard-rails, fuzzy path resolution standardized).
-- **B — context optimization.** Audit what enters system prompt; the May 21 example of lecture notes leaking in is the canonical bug. Right-size short/mid/long-term memory layers per request type. Token usage measurement.
-- **C — observability gaps.** Empty `input.value` / `output.value` on `POST /message`, `agent.loop`, `agent.tool_call` spans; investigate ERROR trace `122b1a07…`; add the open-coding / axial-coding workflow for ongoing trace review.
-- **E1 — calendar sync** (events written locally but not pushed to GCal).
-- **E2 — media path.** Move from `data/media/` into `memory/…` so Obsidian sees attachments (probably `memory/90-attachments/{date}/`).
-- **F — latency** (largely falls out of A + B).
+## Open questions to revisit during implementation
 
----
+These were left intentionally open during design:
 
-## Open questions to revisit
+- **`/day` Schedule layout:** chronological list vs grouped by part-of-day (morning/afternoon/evening). Decide when implementing the new `/day` formatter.
+- **`archive_habit` tool:** no equivalent exists today (we have `delete_habit` and `archive_goal`/`archive_task` but no archive for habits). Add if a real use case appears during testing.
+- **Per-tool `safe_for_parallel` defaults:** start with the few flagged in F1, then audit during implementation as more tools get reviewed.
+- **Skill `next_skill` transition prompts:** the system-prompt language that nudges a skill toward emitting `next_skill: manager` will need iteration based on real conversation traces.
+- **`memory/00-system/media/` Obsidian rendering:** confirm wikilink embed (`![[photo.jpg]]`) resolves correctly in your Obsidian config once migrated; fall back to `![](../00-system/media/{date}/photo.jpg)` if needed.
 
-- `/day` Schedule layout: chronological list, or grouped by part-of-day?
-- Where does `memory/90-attachments/` live within the Obsidian vault structure? (Block E2)
-- Should mutators expose a dry-run (`preview: true`) for confirmation flows? (Block D4)
-- Do we need separate `archive_habit` (currently no such tool)?
+## Deferred from this design (intentional)
+
+- **Schema migration script** — design only; migration ships separately.
+- **Block A: atomicity** — multi-step writes (complete_task, promote, rollover) not crash-safe. Revisit if observed.
+- **Block A: concurrency / file locks** — current design assumes single bot instance.
+- **B5 — vault snapshot cache** — modest win, ship after measuring.
+- **B6 — `list_preferences` tool** — defer until preferences exist.
+- **C3 — ERROR trace `122b1a07` root cause** — transient; revisit if pattern recurs.
+- **C6 — recurring trace review cadence** — review on demand via `phoenix-cli` skill.
+- **`require_2fa` / `require_biometric` hooks** — slots reserved in registry, not implemented.
