@@ -311,3 +311,27 @@ class TestFilesystemSpans:
         assert [s.name for s in spans] == ["fs.delete"]
         assert spans[0].attributes["fs.store"] == "vault"
         assert spans[0].attributes["fs.path"] == "40-tasks/active/span-del.md"
+
+
+# --- append_history_line ---
+
+
+def test_append_history_line_creates_section(vault_service):
+    body = "Task body text.\n"
+    new_body = vault_service.append_history_line(body, "Created (priority: 3)")
+    assert "## History" in new_body
+    assert "— Created (priority: 3)" in new_body
+
+
+def test_append_history_line_appends_to_existing(vault_service):
+    body = "Task body text.\n\n## History\n- 2026-05-21 14:00 — Created\n"
+    new_body = vault_service.append_history_line(body, "Priority changed: 3 → 4")
+    assert "- 2026-05-21 14:00 — Created" in new_body
+    assert "Priority changed: 3 → 4" in new_body
+    assert new_body.count("## History") == 1
+
+
+def test_append_history_line_timestamp_format(vault_service):
+    import re
+    new_body = vault_service.append_history_line("body\n", "Test event")
+    assert re.search(r"- \d{4}-\d{2}-\d{2} \d{2}:\d{2} — Test event", new_body)

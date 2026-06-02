@@ -89,6 +89,28 @@ class VaultService:
         # Write back
         self.write_file(relative_path, file_data['metadata'], file_data['content'])
 
+    def append_history_line(self, body: str, summary: str) -> str:
+        """Append a timestamped event line to the ## History section of `body`.
+
+        Creates the section if absent. Used by typed mutators to record schema
+        changes inline so the audit log lives next to the data in Obsidian.
+
+        Args:
+            body: Current markdown body (without frontmatter).
+            summary: Free-text description of what changed.
+
+        Returns:
+            Updated body with the new history line appended.
+        """
+        from datetime import datetime
+        ts = datetime.now(self.tz).strftime("%Y-%m-%d %H:%M")
+        line = f"- {ts} — {summary}"
+
+        if "## History" in body:
+            return body.rstrip() + "\n" + line + "\n"
+
+        return body.rstrip() + "\n\n## History\n" + line + "\n"
+
     def list_files(self, directory: str, pattern: str = "*.md") -> List[Path]:
         """List files in a directory
 
