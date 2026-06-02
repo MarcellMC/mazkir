@@ -1,6 +1,6 @@
 # Mazkir Usability Overhaul — Design (Checkpoint)
 
-**Status:** Brainstorm in progress. Blocks A, D, E are locked. Blocks B, C, F are pending.
+**Status:** Brainstorm in progress. Blocks A, B, D, E are locked. Blocks C, F are pending.
 
 **Goal:** Make Mazkir more usable. Standard vault operations must be reliable, deterministic, and guard-railed; common workflows must be obvious; only necessary context goes into LLM requests; all observability instrumentation gaps are closed.
 
@@ -11,7 +11,7 @@
 | Block | Theme | Status |
 | --- | --- | --- |
 | A | Correctness — vault ops are deterministic | locked |
-| B | Context optimization — only send what's needed | pending design |
+| B | Context optimization — only send what's needed | locked |
 | C | Observability — close gaps | pending design |
 | D | Workflows, schemas, tools, sub-agents | locked (D1–D4) |
 | E | Broken integrations — GCal sync, media path | locked (E1, E2) |
@@ -430,6 +430,119 @@ User taps ✅
     Manager skill: pre_hooks pass, handler runs, post_hooks run
   Bot ← Mazkir: "Deleted: Visit dentist"
 ```
+
+---
+
+## B — Context optimization
+
+### Root cause analysis (the lecture-notes leak)
+
+Two paths bloat the system prompt today:
+
+1. **`_gather_relevant_knowledge`** (`memory_service.py:426`) walks `items_referenced` from the conversation history. For each path, it splits the stem on hyphens (`learn-ai-engineering.md` → `learn`, `ai`, `engineering`) and runs `search_knowledge(term, limit=2)`. **The full content of every hit lands in `## Relevant knowledge`.** A goal titled "Learn AI engineering" pulls in every knowledge note with "ai" in its name or tags. That's the lecture-notes leak.
+2. **All preferences dumped every turn.** Same function reads every `00-system/preferences/*.md` and concatenates content. Dir is empty today; mechanism is the trap.
+
+Plus:
+- **`_build_vault_snapshot`** (`memory_service.py:373`) lists every active task with name + priority + due, every habit with streak, every goal with progress. Grows linearly with vault size.
+- **27 tool schemas** sent in every Claude call (~3–4 k tokens).
+- **No prompt caching** — full system prompt billed at fresh rate every turn.
+- **`items_referenced`** grows monotonically across the conversation; never pruned. Drives the leak above and adds bytes to the conversation file.
+
+### B1 — Stop auto-dumping knowledge content
+
+Delete the `items_referenced` → `search_knowledge` → "dump full content" path from `_gather_relevant_knowledge`. The agent already has `search_knowledge` as a tool and uses it when actually needed.
+
+```python
+# memory_service.py
+def assemble_context(self, chat_id: int) -> ConversationContext:
+    conversation = self.load_conversation(chat_id)
+    return ConversationContext(
+        messages=conversation["messages"],
+        summary=conversation["summary"],
+        vault_snapshot=self._build_vault_snapshot(),   # see B2 — no longer takes conversation
+        knowledge="",                                   # gone
+    )
+# _gather_relevant_knowledge function deleted
+```
+
+### B2 — Vault snapshot → summary line
+
+Replace per-item listings with one-line counts. Full data via `list_tasks` / `list_habits` / `list_goals` / `list_events` tools on demand.
+
+```
+Vault: 3 active tasks (1 overdue), 5 habits (2 done today), 2 active goals, 47 tokens today
+```
+
+The agent has tools to drill in; no need to spoon-feed the catalogue every turn.
+
+### B3 — Skill-specific prompts & tool subsets (already in D3)
+
+Each skill's system prompt is purpose-built and concise. Tool schemas per skill: `capture` ≈ 8, `recall` ≈ 7, `manager` ≈ 20 — vs current 27 always loaded. Counted at the system-prompt layer this is the biggest single reduction.
+
+### B4 — Prompt caching
+
+Wrap the static prefix of the system prompt with Anthropic's `cache_control`. The prefix (tool schemas + skill body + base guidelines) is identical across turns within a conversation. Dynamic tail (current date, vault summary numbers, recent message log) stays uncached.
+
+```python
+system = [
+    {
+        "type": "text",
+        "text": skill.system_prompt_static_prefix,   # tool docs, base guidelines
+        "cache_control": {"type": "ephemeral"},
+    },
+    {
+        "type": "text",
+        "text": f"\nCurrent time: {now}\n\n{vault_summary}",
+    },
+]
+```
+
+5-min TTL. Cache hits cost ~10% of fresh input. Big win on multi-turn conversations.
+
+### B5 — Vault snapshot cache (deferred)
+
+Cache the summary string for ~30 s with vault-mtime invalidation. Saves N file-frontmatter reads per turn during multi-turn bursts. **Deferred** — ship after measuring whether snapshot computation shows up as hot in traces.
+
+### B6 — Preferences pattern (forward-looking, falls out of B1)
+
+B1 deletes `_gather_relevant_knowledge` entirely, which is where preferences were also auto-dumped. So B6 is satisfied by B1 for free. When you start writing preferences, add a `list_preferences` read-only tool and (optionally) a `"You have N saved preferences"` hint in the system prompt. **Tool itself deferred** until preferences exist (YAGNI).
+
+### B7 — Remove `items_referenced` entirely
+
+Vestigial once B1 + B2 land. The `[referenced]` marker disappears with B2's summary-only snapshot. The agent has conversation history + tool results — that's enough recency signal.
+
+- Stop writing `items_referenced` on `save_turn`
+- Drop the field from the conversation YAML schema
+- Remove the unused load path
+
+### Measurement (Block C handoff)
+
+Add to every `messages.create` and `agent.handle_message` span:
+
+| Attribute | Source |
+| --- | --- |
+| `system_prompt.token_estimate` | `len(prompt) // 4` cheap proxy |
+| `llm.token_count.prompt_cached_read` | Anthropic API response field |
+| `llm.token_count.prompt_cached_write` | Anthropic API response field |
+| `vault.snapshot.compute_ms` | Wall time of `_build_vault_snapshot` |
+
+Validates B1+B2 by watching `system_prompt.token_estimate` drop. Validates B4 by watching `cache_read` rise on second+ turns of a conversation.
+
+### Expected impact
+
+Rough order-of-magnitude on a typical agent turn:
+
+| Source | Before | After (B1+B2+B3+B4) |
+| --- | --- | --- |
+| Tool schemas | ~3.5 k | ~1.5 k (per skill) |
+| Vault snapshot | ~0.5–2 k | ~0.05 k (one line) |
+| Knowledge auto-dump | ~1–5 k | 0 |
+| Preferences dump | 0 today | 0 (capped by B6) |
+| Conversation tail | ~1–3 k | unchanged |
+| Static guidelines | ~0.5 k | unchanged but cached |
+| **Total fresh input** | **~6–14 k** | **~3–4 k uncached + ~1.5 k cached at 10% rate** |
+
+Multi-turn conversations get the cache hit, dropping effective billed input further.
 
 ---
 
