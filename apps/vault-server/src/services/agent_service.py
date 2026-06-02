@@ -307,7 +307,7 @@ class AgentService:
                         "properties": {
                             "name": {"type": "string", "description": "Task name (fuzzy match)"},
                             "priority": {"type": "integer", "minimum": 1, "maximum": 5},
-                            "status": {"type": "string", "enum": ["active", "blocked", "done"]},
+                            "status": {"type": "string", "enum": ["active", "blocked", "done", "archived"]},
                             "category": {"type": "string"},
                             "scheduled_at": {"type": ["string", "null"], "description": "ISO datetime"},
                             "duration_minutes": {"type": ["integer", "null"]},
@@ -357,7 +357,7 @@ class AgentService:
                         "type": "object",
                         "properties": {
                             "name": {"type": "string"},
-                            "status": {"type": "string", "enum": ["active", "paused", "completed", "archived"]},
+                            "status": {"type": "string", "enum": ["active", "paused", "completed", "archived", "in-progress", "not-started"]},
                             "progress": {"type": "integer", "minimum": 0, "maximum": 100},
                             "priority": {"type": "integer", "minimum": 1, "maximum": 5},
                             "start_date": {"type": ["string", "null"]},
