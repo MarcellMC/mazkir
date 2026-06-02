@@ -426,13 +426,15 @@ class TestDeleteArchiveTools:
             "metadata": {"name": "Buy milk"},
         }
         result = agent._tool_delete_task({"task_name": "buy milk"})
-        assert result["deleted"] == "Buy milk"
+        assert result["ok"] is True
+        assert result["data"]["deleted"] == "Buy milk"
         vault.delete_file.assert_called_once_with("40-tasks/active/buy-milk.md")
 
     def test_delete_task_not_found(self, agent, mock_services):
         vault = mock_services[1]
         vault.list_active_tasks.return_value = []
         result = agent._tool_delete_task({"task_name": "nonexistent"})
+        assert result["ok"] is False
         assert "error" in result
 
     def test_archive_task_calls_vault(self, agent, mock_services):
@@ -445,7 +447,8 @@ class TestDeleteArchiveTools:
             "archive_path": "40-tasks/archive/buy-milk.md",
         }
         result = agent._tool_archive_task({"task_name": "buy milk"})
-        assert result["archived_to"] == "40-tasks/archive/buy-milk.md"
+        assert result["ok"] is True
+        assert result["data"]["archived_to"] == "40-tasks/archive/buy-milk.md"
         vault.archive_task.assert_called_once_with("40-tasks/active/buy-milk.md")
 
     def test_delete_habit_calls_vault(self, agent, mock_services):
@@ -458,7 +461,8 @@ class TestDeleteArchiveTools:
             "metadata": {"name": "Workout"},
         }
         result = agent._tool_delete_habit({"habit_name": "workout"})
-        assert result["deleted"] == "Workout"
+        assert result["ok"] is True
+        assert result["data"]["deleted"] == "Workout"
         vault.delete_file.assert_called_once_with("20-habits/workout.md")
 
     def test_archive_goal_calls_vault(self, agent, mock_services):
@@ -471,7 +475,8 @@ class TestDeleteArchiveTools:
             "metadata": {"name": "Get fit"},
         }
         result = agent._tool_archive_goal({"goal_name": "get fit"})
-        assert result["archived"] == "Get fit"
+        assert result["ok"] is True
+        assert result["data"]["archived"] == "Get fit"
         vault.update_file.assert_called_once_with(
             "30-goals/2026/get-fit.md", {"status": "archived"}
         )
@@ -497,7 +502,8 @@ class TestDailySectionTools:
         vault = mock_services[1]
         vault.replace_daily_section.return_value = {"path": "10-daily/2026-03-06.md", "section": "Notes"}
         result = agent._tool_edit_daily_section({"section": "Notes", "content": "Updated notes"})
-        assert "path" in result
+        assert result["ok"] is True
+        assert "path" in result["data"]
         vault.replace_daily_section.assert_called_once()
 
 
@@ -521,7 +527,8 @@ class TestAttachToDaily:
             "section": "Notes",
         })
 
-        assert "path" in result
+        assert result["ok"] is True
+        assert "path" in result["data"]
         vault.append_to_daily_section.assert_called_once()
 
     def test_attach_to_daily_with_location(self, agent, mock_services):
@@ -539,7 +546,8 @@ class TestAttachToDaily:
             "section": "Notes",
         })
 
-        assert "path" in result
+        assert result["ok"] is True
+        assert "path" in result["data"]
         call_args = vault.append_to_daily_section.call_args
         content = call_args.kwargs.get("content") or call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs["content"]
         assert "32.08" in content
@@ -577,7 +585,8 @@ class TestEventTools:
             "name": "Coffee break",
             "start_time": "15:00",
         })
-        assert result["event_id"] == "evt_new"
+        assert result["ok"] is True
+        assert result["data"]["event_id"] == "evt_new"
         events_mock.create_event.assert_called_once()
 
     def test_create_event_syncs_to_gcal(self, agent, mock_services):
@@ -593,8 +602,9 @@ class TestEventTools:
             "start_time": "12:30",
             "end_time": "13:30",
         })
-        assert result["event_id"] == "evt_new"
-        assert result.get("calendar_synced") is True
+        assert result["ok"] is True
+        assert result["data"]["event_id"] == "evt_new"
+        assert result["data"].get("calendar_synced") is True
         # source_ids should have been passed to events service
         call_kwargs = events_mock.create_event.call_args
         assert call_kwargs.kwargs.get("source_ids") == {"calendar_id": "gcal_event_123"}
@@ -609,8 +619,9 @@ class TestEventTools:
             "name": "Dinner",
             "start_time": "19:00",
         })
-        assert result["event_id"] == "evt_new"
-        assert "calendar_synced" not in result
+        assert result["ok"] is True
+        assert result["data"]["event_id"] == "evt_new"
+        assert "calendar_synced" not in result["data"]
         events_mock.create_event.assert_called_once()
 
     def test_create_event_no_calendar_skips_silently(self, agent, mock_services):
@@ -622,8 +633,9 @@ class TestEventTools:
             "name": "Walk",
             "start_time": "10:00",
         })
-        assert result["event_id"] == "evt_new"
-        assert "calendar_synced" not in result
+        assert result["ok"] is True
+        assert result["data"]["event_id"] == "evt_new"
+        assert "calendar_synced" not in result["data"]
 
     def test_create_event_with_explicit_date(self, agent, mock_services):
         events_mock = mock_services[4]
@@ -653,7 +665,8 @@ class TestEventTools:
             "event_id": "evt_abc",
             "end_time": "13:00",
         })
-        assert result["updated"] is True
+        assert result["ok"] is True
+        assert result["data"]["updated"] is True
         events_mock.update_event.assert_called_once()
 
     def test_update_event_normalizes_times(self, agent, mock_services):
@@ -675,19 +688,23 @@ class TestEventTools:
     def test_update_event_not_found(self, agent, mock_services):
         events_mock = mock_services[4]
         events_mock.update_event.return_value = {"error": "Event nonexistent not found"}
+        events_mock._file_path.return_value = "data/events/2026-03-04.json"
         result = agent._tool_update_event({"event_id": "nonexistent", "name": "X"})
+        assert result["ok"] is False
         assert "error" in result
 
     def test_attach_photo_calls_service(self, agent, mock_services):
         events_mock = mock_services[4]
         events_mock.attach_photo.return_value = {"attached": True, "event_id": "evt_abc"}
+        events_mock._file_path.return_value = "data/events/2026-03-04.json"
 
         result = agent._tool_attach_photo_to_event({
             "event_id": "evt_abc",
             "photo_path": "data/media/2026-03-04/photo.jpg",
             "caption": "Sunset",
         })
-        assert result["attached"] is True
+        assert result["ok"] is True
+        assert result["data"]["attached"] is True
 
 
 class TestTracingSpans:

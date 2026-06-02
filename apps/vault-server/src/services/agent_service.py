@@ -1482,13 +1482,15 @@ class AgentService:
             due_date=params.get("due_date"),
             category=params.get("category", "personal"),
         )
-        return {
-            "created": result["metadata"]["name"],
-            "path": result["path"],
-            "priority": result["metadata"].get("priority"),
-            "due_date": result["metadata"].get("due_date"),
-            "_items": [result["path"]],
-        }
+        return ok(
+            {
+                "created": result["metadata"]["name"],
+                "path": result["path"],
+                "priority": result["metadata"].get("priority"),
+                "due_date": result["metadata"].get("due_date"),
+            },
+            items=[result["path"]],
+        )
 
     def _tool_create_habit(self, params: dict) -> dict:
         result = self.vault.create_habit(
@@ -1496,12 +1498,14 @@ class AgentService:
             frequency=params.get("frequency", "daily"),
             category=params.get("category", "personal"),
         )
-        return {
-            "created": result["metadata"]["name"],
-            "path": result["path"],
-            "frequency": result["metadata"].get("frequency"),
-            "_items": [result["path"]],
-        }
+        return ok(
+            {
+                "created": result["metadata"]["name"],
+                "path": result["path"],
+                "frequency": result["metadata"].get("frequency"),
+            },
+            items=[result["path"]],
+        )
 
     def _tool_create_goal(self, params: dict) -> dict:
         result = self.vault.create_goal(
@@ -1509,11 +1513,13 @@ class AgentService:
             priority=params.get("priority", "medium"),
             target_date=params.get("target_date"),
         )
-        return {
-            "created": result["metadata"]["name"],
-            "path": result["path"],
-            "_items": [result["path"]],
-        }
+        return ok(
+            {
+                "created": result["metadata"]["name"],
+                "path": result["path"],
+            },
+            items=[result["path"]],
+        )
 
     def _tool_update_task(self, params: dict) -> dict:
         from src.services.resolver import resolve_item
@@ -1652,7 +1658,7 @@ class AgentService:
             links=params.get("links", []),
             source="conversation",
         )
-        return {"saved": result["path"], "_items": [result["path"]]}
+        return ok({"saved": result["path"]}, items=[result["path"]])
 
     def _tool_attach_to_daily(self, params: dict) -> dict:
         import datetime as dt
@@ -1683,12 +1689,14 @@ class AgentService:
         result = self.vault.append_to_daily_section(section=section, content=content)
         daily_path = result.get("path", self.vault.get_daily_note_path())
 
-        return {
-            "path": daily_path,
-            "section": section,
-            "attachment": vault_path,
-            "_items": [daily_path],
-        }
+        return ok(
+            {
+                "path": daily_path,
+                "section": section,
+                "attachment": vault_path,
+            },
+            items=[daily_path],
+        )
 
     def _tool_delete_task(self, params: dict) -> dict:
         from src.services.resolver import resolve_item
@@ -1700,7 +1708,7 @@ class AgentService:
         path = resolved["data"]["path"]
         task = self.vault.read_file(path)
         self.vault.delete_file(path)
-        return {"deleted": task["metadata"].get("name", ""), "_items": [path]}
+        return ok({"deleted": task["metadata"].get("name", "")}, items=[path])
 
     def _tool_archive_task(self, params: dict) -> dict:
         from src.services.resolver import resolve_item
@@ -1711,11 +1719,13 @@ class AgentService:
 
         path = resolved["data"]["path"]
         result = self.vault.archive_task(path)
-        return {
-            "task": result["task_name"],
-            "archived_to": result["archive_path"],
-            "_items": [result["archive_path"]],
-        }
+        return ok(
+            {
+                "task": result["task_name"],
+                "archived_to": result["archive_path"],
+            },
+            items=[result["archive_path"]],
+        )
 
     def _tool_delete_habit(self, params: dict) -> dict:
         from src.services.resolver import resolve_item
@@ -1727,7 +1737,7 @@ class AgentService:
         path = resolved["data"]["path"]
         habit = self.vault.read_file(path)
         self.vault.delete_file(path)
-        return {"deleted": habit["metadata"].get("name", ""), "_items": [path]}
+        return ok({"deleted": habit["metadata"].get("name", "")}, items=[path])
 
     def _tool_archive_goal(self, params: dict) -> dict:
         from src.services.resolver import resolve_item
@@ -1745,7 +1755,7 @@ class AgentService:
                 details={"path": path},
             )
         self.vault.update_file(path, {"status": "archived"})
-        return {"archived": goal["metadata"].get("name", ""), "_items": [path]}
+        return ok({"archived": goal["metadata"].get("name", "")}, items=[path])
 
     def _parse_date(self, date_str: str | None):
         """Parse YYYY-MM-DD string to datetime or None for today."""
@@ -1766,7 +1776,10 @@ class AgentService:
             new_content=params["content"],
             date=date,
         )
-        return {"path": result["path"], "section": result["section"], "_items": [result["path"]]}
+        return ok(
+            {"path": result["path"], "section": result["section"]},
+            items=[result["path"]],
+        )
 
     def _tool_list_events(self, params: dict) -> dict:
         import datetime as dt
@@ -1791,7 +1804,7 @@ class AgentService:
     def _tool_attach_photo_to_event(self, params: dict) -> dict:
         import datetime as dt
         if not self.events:
-            return {"error": "Events service not available"}
+            return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
         date = params.get("date", dt.date.today().isoformat())
         result = self.events.attach_photo(
             date=date,
@@ -1801,14 +1814,14 @@ class AgentService:
             wikilinks=params.get("wikilinks"),
         )
         if "error" in result:
-            return result
-        result["_items"] = [str(self.events._file_path(date))]
-        return result
+            return err(ErrorCode.PATH_NOT_FOUND, result["error"], details={"event_id": params["event_id"]})
+        items = [str(self.events._file_path(date))]
+        return ok(result, items=items)
 
     def _tool_create_event(self, params: dict) -> dict:
         import datetime as dt
         if not self.events:
-            return {"error": "Events service not available"}
+            return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
         date = params.get("date", dt.date.today().isoformat())
 
         def _normalize_time(t: str | None) -> str | None:
@@ -1876,15 +1889,15 @@ class AgentService:
             source_ids=source_ids,
         )
         result["event_id"] = result.pop("id")
-        result["_items"] = [result["path"]]
+        items = [result["path"]]
         if calendar_synced:
             result["calendar_synced"] = True
-        return result
+        return ok(result, items=items)
 
     def _tool_update_event(self, params: dict) -> dict:
         import datetime as dt
         if not self.events:
-            return {"error": "Events service not available"}
+            return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
         date = params.get("date", dt.date.today().isoformat())
 
         def _normalize_time(t: str | None) -> str | None:
@@ -1912,9 +1925,9 @@ class AgentService:
             updates=updates,
         )
         if "error" in result:
-            return result
-        result["_items"] = [str(self.events._file_path(date))]
-        return result
+            return err(ErrorCode.PATH_NOT_FOUND, result["error"], details={"event_id": params["event_id"]})
+        items = [str(self.events._file_path(date))]
+        return ok(result, items=items)
 
     def _tool_complete_task(self, params: dict) -> dict:
         from src.services.resolver import resolve_item
@@ -1967,7 +1980,7 @@ class AgentService:
                 break
 
         if not habit:
-            return {"error": f"No habit found matching '{params['habit_name']}'"}
+            return err(ErrorCode.PATH_NOT_FOUND, f"No habit found matching '{params['habit_name']}'")
 
         today = dt.date.today().isoformat()
         if habit["metadata"].get("last_completed") == today:
@@ -1998,11 +2011,13 @@ class AgentService:
             except Exception as e:
                 logger.warning(f"Calendar update failed: {e}")
 
-        return {
-            "habit": meta.get("name", ""),
-            "old_streak": old_streak,
-            "new_streak": new_streak,
-            "longest_streak": longest,
-            "tokens_earned": tokens,
-            "_items": [habit["path"]],
-        }
+        return ok(
+            {
+                "habit": meta.get("name", ""),
+                "old_streak": old_streak,
+                "new_streak": new_streak,
+                "longest_streak": longest,
+                "tokens_earned": tokens,
+            },
+            items=[habit["path"]],
+        )
