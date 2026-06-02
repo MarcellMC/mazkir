@@ -1,6 +1,6 @@
 # Mazkir Usability Overhaul — Design (Checkpoint)
 
-**Status:** Brainstorm in progress. Blocks D and E are locked. Blocks A, B, C, F are pending.
+**Status:** Brainstorm in progress. Blocks A, D, E are locked. Blocks B, C, F are pending.
 
 **Goal:** Make Mazkir more usable. Standard vault operations must be reliable, deterministic, and guard-railed; common workflows must be obvious; only necessary context goes into LLM requests; all observability instrumentation gaps are closed.
 
@@ -10,7 +10,7 @@
 
 | Block | Theme | Status |
 | --- | --- | --- |
-| A | Correctness — vault ops are deterministic | pending design |
+| A | Correctness — vault ops are deterministic | locked |
 | B | Context optimization — only send what's needed | pending design |
 | C | Observability — close gaps | pending design |
 | D | Workflows, schemas, tools, sub-agents | locked (D1–D4) |
@@ -430,6 +430,137 @@ User taps ✅
     Manager skill: pre_hooks pass, handler runs, post_hooks run
   Bot ← Mazkir: "Deleted: Visit dentist"
 ```
+
+---
+
+## A — Correctness & guardrails
+
+A1–A3 from the initial bug list are absorbed by D2's tool catalog redesign:
+- **A1** `complete_task` dict-iteration bug → fixed when the handler reads dict keys properly (`name = result["task_name"]`, etc.)
+- **A2** `update_item` JSON-string rejection → resolved by retiring `update_item` entirely; typed `update_task`/`update_habit`/`update_goal` use explicit field schemas
+- **A3** missing "attach note to existing task" → typed mutators expose `append_note` field
+
+A4 is the broader guardrails layer that makes every vault op deterministic and self-describing.
+
+### A4.1 — Unified fuzzy-path resolver
+
+One helper used by every name-accepting tool. Replaces the scattered `find_task_by_name` / `find_habit_by_name` / `find_goal_by_name` methods.
+
+```python
+class Resolver:
+    SCORE_AMBIGUOUS_DELTA = 0.10  # if top-1 and top-2 within this, mark ambiguous
+
+    def resolve_item(self, item_type: Literal["task","habit","goal"], query: str) -> dict:
+        candidates = self._scan(item_type)
+        # 1. exact path match (e.g. "40-tasks/active/foo.md")
+        # 2. exact name match (case-sensitive)
+        # 3. case-insensitive substring of name
+        # 4. fuzzy (token-set ratio via rapidfuzz)
+        ranked = self._rank(query, candidates)
+        if not ranked:
+            return {"ok": False, "error": {"code": "PATH_NOT_FOUND", "query": query}}
+        top, *rest = ranked
+        if rest and (top.score - rest[0].score) < self.SCORE_AMBIGUOUS_DELTA:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "AMBIGUOUS_MATCH",
+                    "query": query,
+                    "candidates": [{"path": c.path, "name": c.name, "score": c.score} for c in ranked[:5]],
+                },
+            }
+        return {"ok": True, "data": {"path": top.path, "name": top.name, "score": top.score}}
+```
+
+**Behavior on ambiguity:** return error with candidates. The agent re-prompts the user ("did you mean Migdal Insurance or Migdal Bank?") rather than silently mutating the wrong item.
+
+### A4.2 — Normalized tool response shape
+
+Every tool — read, write, destructive — returns one of two shapes. Wraps existing handlers; old `{"saved": ..., "deleted": ...}` keys move under `data`.
+
+```python
+# success
+{
+  "ok": True,
+  "data": { ...tool-specific fields... },
+  "_items": [ "path/that/changed.md", ... ],   # for memory layer tracking
+}
+
+# error
+{
+  "ok": False,
+  "error": {
+    "code": "PATH_NOT_FOUND",                    # see enum
+    "message": "...",                            # human-readable
+    "details": { ... },                          # candidate list, schema diff, etc.
+  },
+  "_items": [],
+}
+```
+
+The agent's tool-result parsing branches on `ok`. The trace `agent.tool_call` span gets `tool.ok`, `tool.error.code` attributes (closes part of Block C).
+
+### A4.3 — Error code enum (starting set)
+
+| Code | When |
+| --- | --- |
+| `PATH_NOT_FOUND` | Resolver returned no match for a name/path query |
+| `AMBIGUOUS_MATCH` | Two or more candidates within `SCORE_AMBIGUOUS_DELTA` |
+| `SCHEMA_INVALID` | Pre-hook validator rejected input against tool schema |
+| `STATE_CONFLICT` | Target file changed between confirmation issuance and execution; or rollover target already has the same item; or any pre-execution state assumption failed |
+| `ALREADY_DONE` | Idempotency guard: action is a no-op because target is in the desired terminal state |
+| `EXTERNAL_FAILURE` | External integration (GCal, Replicate) returned an error |
+| `AUTH_REQUIRED` | Tool needs an auth step the user hasn't completed (placeholder slot for future 2FA/biometric hook) |
+| `CANCELLED_BY_USER` | Confirmation flow returned no |
+
+Codes are stable; messages are free-text. The agent's prompt includes a short table of "what to do on each code" so retry / re-ask behavior is consistent.
+
+### A4.4 — Schema validation pre-hook
+
+Implements the `validate_schema` slot from D4. Every write or destructive tool gets it by default.
+
+```python
+def validate_schema(params: dict, ctx) -> Optional[dict]:
+    schema = ctx.tool["input_schema"]
+    try:
+        jsonschema.validate(params, schema)
+    except jsonschema.ValidationError as e:
+        return {
+            "ok": False,
+            "error": {
+                "code": "SCHEMA_INVALID",
+                "message": e.message,
+                "details": {"path": list(e.absolute_path), "schema_path": list(e.schema_path)},
+            },
+        }
+    return None  # pass
+```
+
+What this catches that Claude SDK doesn't:
+- `additionalProperties: false` enforcement (the Migdal "JSON string for `updates`" case)
+- Cross-field constraints (e.g. `scheduled_at` requires `duration_minutes`)
+- Enum mismatches on `state`-style fields
+
+### A4.5 — Idempotency
+
+Each state-changing handler runs a pre-check; returns `ALREADY_DONE` if the operation would be a no-op.
+
+| Tool | Idempotency check |
+| --- | --- |
+| `complete_task` | `metadata["status"] == "done"` → return `ALREADY_DONE` with current data. No double token award. |
+| `complete_habit` | `metadata["last_completed"] == today` → `ALREADY_DONE`. Streak not incremented. |
+| `daily_rollover` | For each source item, search today's `## Tasks` for `moved from [[<src_date>#Tasks]]` lines matching the item text. Skip if found. |
+| `promote_daily_task` | If `40-tasks/active/<slug>.md` already exists, return existing file path + `ALREADY_DONE`. |
+| `archive_task` | Already at `40-tasks/archive/<slug>.md` → `ALREADY_DONE`. |
+| `delete_task` | Target absent → `ALREADY_DONE` (don't error). |
+| `archive_goal` | `metadata["status"] == "archived"` → `ALREADY_DONE`. |
+
+Idempotency checks live in the handler, not a hook — they're tool-specific.
+
+### Out of scope for A (deferred)
+
+- **Atomicity on multi-step writes.** `complete_task` writes archive, awards tokens, deletes original; a crash mid-flight leaves inconsistent state. Single-user single-instance system → low probability. Re-evaluate if observability surfaces real incidents.
+- **Concurrency.** FastAPI async + sync vault writes work because the system is single-bot-instance. If we ever scale, vault writes need file locks. Note as known limitation.
 
 ---
 
