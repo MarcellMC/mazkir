@@ -29,6 +29,17 @@ _tracer = _otel_trace.get_tracer("mazkir.agent")
 
 CONFIDENCE_THRESHOLD = 0.85
 
+_RISK_DEFAULT_THRESHOLDS: dict[str, float | None] = {
+    "safe": None,
+    "write": 0.85,
+    "destructive": 0.95,
+}
+
+
+def _confidence_threshold_for(risk: str) -> float | None:
+    """Return the default confidence threshold for a given risk class."""
+    return _RISK_DEFAULT_THRESHOLDS.get(risk)
+
 
 def _sanitize_params(params: dict) -> dict:
     """Strip internal fields and truncate long strings for safe logging."""
@@ -111,7 +122,7 @@ class AgentService:
 
     def _register_tools(self) -> dict[str, dict]:
         """Register all available tools with schemas and handlers."""
-        return {
+        tools = {
             "list_tasks": {
                 "schema": {
                     "name": "list_tasks",
@@ -662,6 +673,10 @@ class AgentService:
                 "pre_hooks": ["validate_schema"],
             },
         }
+        for name, entry in tools.items():
+            if "confidence_threshold" not in entry:
+                entry["confidence_threshold"] = _confidence_threshold_for(entry["risk"])
+        return tools
 
     def _tool_schemas(self) -> list[dict]:
         """Get tool schemas for Claude API call."""
@@ -669,14 +684,22 @@ class AgentService:
 
     # ── Confidence Gate ──────────────────────────────────────────
 
-    def _check_confidence(self, name: str, params: dict) -> tuple[bool, float, str | None]:
-        """Strip internal fields and return (passes_gate, confidence, reasoning)."""
-        risk = self.tools[name]["risk"]
-        confidence = params.pop("_confidence", 0.0)
-        reasoning = params.pop("_reasoning", None)
-        if risk == "safe":
-            return True, confidence, reasoning
-        return confidence >= CONFIDENCE_THRESHOLD, confidence, reasoning
+    def _check_confidence(self, name: str, params: dict) -> tuple[float, str]:
+        """Strip internal fields and return (score, action).
+
+        action is 'auto_execute' or 'needs_confirmation'.
+        Internal fields (_confidence, _reasoning) are popped from params as a side effect.
+        """
+        threshold = self.tools[name].get("confidence_threshold")
+        params.pop("_reasoning", None)  # strip from params regardless
+        if threshold is None:
+            params.pop("_confidence", None)
+            return (1.0, "auto_execute")  # safe risk — no gate
+
+        score = float(params.pop("_confidence", 0.0))
+        if score >= threshold:
+            return (score, "auto_execute")
+        return (score, "needs_confirmation")
 
     # ── Agent Loop ───────────────────────────────────────────────
 
@@ -909,7 +932,8 @@ class AgentService:
             pre_tools_audit: list[dict] = []
             for call in pending.pending_calls:
                 params = dict(call["input"])
-                _, confidence, reasoning = self._check_confidence(call["name"], params)
+                reasoning = params.get("_reasoning")
+                confidence, _ = self._check_confidence(call["name"], params)
                 result = self._execute_tool(call["name"], params)
                 tool_results.append({
                     "type": "tool_result",
@@ -1038,9 +1062,10 @@ class AgentService:
                     auto_execute = []
                     gate_info: dict[str, tuple[float, str | None]] = {}
                     for call in tool_calls:
-                        passes, confidence, reasoning = self._check_confidence(call["name"], call["input"])
+                        reasoning = call["input"].get("_reasoning")
+                        confidence, action = self._check_confidence(call["name"], call["input"])
                         gate_info[call["id"]] = (confidence, reasoning)
-                        if passes:
+                        if action == "auto_execute":
                             auto_execute.append(call)
                         else:
                             needs_confirmation.append(call)

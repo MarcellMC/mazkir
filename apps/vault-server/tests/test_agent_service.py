@@ -66,38 +66,38 @@ class TestToolRegistry:
 
 class TestConfidenceGate:
     def test_safe_tools_always_pass(self, agent):
-        passes, _, _ = agent._check_confidence("list_tasks", {})
-        assert passes is True
+        score, action = agent._check_confidence("list_tasks", {})
+        assert action == "auto_execute"
 
     def test_write_tool_passes_with_high_confidence(self, agent):
         params = {"name": "test", "_confidence": 0.95, "_reasoning": "clear intent"}
-        passes, confidence, reasoning = agent._check_confidence("create_task", params)
-        assert passes is True
-        assert confidence == 0.95
-        assert reasoning == "clear intent"
+        score, action = agent._check_confidence("create_task", params)
+        assert action == "auto_execute"
+        assert score == 0.95
         assert "_confidence" not in params
         assert "_reasoning" not in params
 
     def test_write_tool_fails_with_low_confidence(self, agent):
         params = {"name": "test", "_confidence": 0.5, "_reasoning": "unsure"}
-        passes, _, _ = agent._check_confidence("create_task", params)
-        assert passes is False
+        _, action = agent._check_confidence("create_task", params)
+        assert action == "needs_confirmation"
 
     def test_destructive_tool_fails_with_low_confidence(self, agent):
         params = {"task_name": "buy milk", "_confidence": 0.6, "_reasoning": "maybe"}
-        passes, _, _ = agent._check_confidence("complete_task", params)
-        assert passes is False
+        _, action = agent._check_confidence("complete_task", params)
+        assert action == "needs_confirmation"
 
     def test_missing_confidence_defaults_low(self, agent):
         params = {"task_name": "test"}
-        passes, confidence, _ = agent._check_confidence("complete_task", params)
-        assert passes is False
-        assert confidence == 0.0
+        score, action = agent._check_confidence("complete_task", params)
+        assert action == "needs_confirmation"
+        assert score == 0.0
 
     def test_confidence_at_threshold_passes(self, agent):
+        # write tools have threshold 0.85; CONFIDENCE_THRESHOLD == 0.85 still passes
         params = {"name": "test", "_confidence": CONFIDENCE_THRESHOLD}
-        passes, _, _ = agent._check_confidence("create_task", params)
-        assert passes is True
+        _, action = agent._check_confidence("create_task", params)
+        assert action == "auto_execute"
 
 
 class TestAgentResponse:
