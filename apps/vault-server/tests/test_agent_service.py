@@ -418,7 +418,10 @@ class TestDeleteArchiveTools:
 
     def test_delete_task_calls_vault(self, agent, mock_services):
         vault = mock_services[1]
-        vault.find_task_by_name.return_value = {
+        vault.list_active_tasks.return_value = [
+            {"path": "40-tasks/active/buy-milk.md", "metadata": {"name": "Buy milk"}},
+        ]
+        vault.read_file.return_value = {
             "path": "40-tasks/active/buy-milk.md",
             "metadata": {"name": "Buy milk"},
         }
@@ -428,16 +431,15 @@ class TestDeleteArchiveTools:
 
     def test_delete_task_not_found(self, agent, mock_services):
         vault = mock_services[1]
-        vault.find_task_by_name.return_value = None
+        vault.list_active_tasks.return_value = []
         result = agent._tool_delete_task({"task_name": "nonexistent"})
         assert "error" in result
 
     def test_archive_task_calls_vault(self, agent, mock_services):
         vault = mock_services[1]
-        vault.find_task_by_name.return_value = {
-            "path": "40-tasks/active/buy-milk.md",
-            "metadata": {"name": "Buy milk"},
-        }
+        vault.list_active_tasks.return_value = [
+            {"path": "40-tasks/active/buy-milk.md", "metadata": {"name": "Buy milk"}},
+        ]
         vault.archive_task.return_value = {
             "task_name": "Buy milk",
             "archive_path": "40-tasks/archive/buy-milk.md",
@@ -448,7 +450,10 @@ class TestDeleteArchiveTools:
 
     def test_delete_habit_calls_vault(self, agent, mock_services):
         vault = mock_services[1]
-        vault.find_habit_by_name.return_value = {
+        vault.list_active_habits.return_value = [
+            {"path": "20-habits/workout.md", "metadata": {"name": "Workout"}},
+        ]
+        vault.read_file.return_value = {
             "path": "20-habits/workout.md",
             "metadata": {"name": "Workout"},
         }
@@ -458,7 +463,10 @@ class TestDeleteArchiveTools:
 
     def test_archive_goal_calls_vault(self, agent, mock_services):
         vault = mock_services[1]
-        vault.find_goal_by_name.return_value = {
+        vault.list_active_goals.return_value = [
+            {"path": "30-goals/2026/get-fit.md", "metadata": {"name": "Get fit"}},
+        ]
+        vault.read_file.return_value = {
             "path": "30-goals/2026/get-fit.md",
             "metadata": {"name": "Get fit"},
         }
@@ -811,7 +819,10 @@ def test_complete_task_returns_real_values_not_placeholders(mock_services):
     """Regression: agent_service.py dict-unpacking iterated keys not values."""
     claude, vault, memory, calendar, events = mock_services
     agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
-    agent.vault.find_task_by_name.return_value = {
+    agent.vault.list_active_tasks.return_value = [
+        {"path": "40-tasks/active/x.md", "metadata": {"name": "X"}},
+    ]
+    agent.vault.read_file.return_value = {
         "path": "40-tasks/active/x.md",
         "metadata": {"name": "X", "google_event_id": None},
     }
@@ -874,7 +885,10 @@ def test_complete_task_idempotent_when_already_done(mock_services):
     """Re-completing a done task returns ALREADY_DONE, no double-credit."""
     claude, vault, memory, calendar, events = mock_services
     agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
-    agent.vault.find_task_by_name.return_value = {
+    agent.vault.list_active_tasks.return_value = [
+        {"path": "40-tasks/active/x.md", "metadata": {"name": "X", "status": "done"}},
+    ]
+    agent.vault.read_file.return_value = {
         "path": "40-tasks/active/x.md",
         "metadata": {"name": "X", "status": "done"},
     }
@@ -908,7 +922,10 @@ def test_archive_goal_idempotent_when_already_archived(mock_services):
     """Re-archiving an already-archived goal returns ALREADY_DONE."""
     claude, vault, memory, calendar, events = mock_services
     agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
-    agent.vault.find_goal_by_name.return_value = {
+    agent.vault.list_active_goals.return_value = [
+        {"path": "30-goals/2026/x.md", "metadata": {"name": "X", "status": "archived"}},
+    ]
+    agent.vault.read_file.return_value = {
         "path": "30-goals/2026/x.md",
         "metadata": {"name": "X", "status": "archived"},
     }
@@ -923,9 +940,42 @@ def test_delete_task_idempotent_when_target_absent(mock_services):
     """Deleting a non-existent task returns PATH_NOT_FOUND."""
     claude, vault, memory, calendar, events = mock_services
     agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
-    agent.vault.find_task_by_name.return_value = None
+    agent.vault.list_active_tasks.return_value = []
 
     result = agent._tool_delete_task({"task_name": "ghost"})
 
     assert result["ok"] is False
     assert result["error"]["code"] == "PATH_NOT_FOUND"
+
+
+def test_delete_task_uses_resolver_for_fuzzy_match(mock_services):
+    """delete_task should match 'walke' to 'Walk the dog' via fuzzy resolver."""
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+
+    agent.vault.list_active_tasks.return_value = [
+        {"path": "40-tasks/active/walk-dog.md", "metadata": {"name": "Walk the dog"}}
+    ]
+    # vault.read_file is needed because new pattern calls it after resolver
+    agent.vault.read_file.return_value = {
+        "path": "40-tasks/active/walk-dog.md",
+        "metadata": {"name": "Walk the dog"},
+    }
+
+    result = agent._tool_delete_task({"task_name": "walke the dog"})
+    assert result.get("ok") is True or "deleted" in (result.get("data") or result)
+    agent.vault.delete_file.assert_called_once_with("40-tasks/active/walk-dog.md")
+
+
+def test_delete_task_ambiguous_returns_candidates(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+
+    agent.vault.list_active_tasks.return_value = [
+        {"path": "40-tasks/active/a.md", "metadata": {"name": "Project Alpha review"}},
+        {"path": "40-tasks/active/b.md", "metadata": {"name": "Project Alpha summary"}},
+    ]
+    result = agent._tool_delete_task({"task_name": "alpha"})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "AMBIGUOUS_MATCH"
+    assert "candidates" in result["error"]["details"]

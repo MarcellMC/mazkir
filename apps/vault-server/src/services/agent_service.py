@@ -1682,23 +1682,26 @@ class AgentService:
         }
 
     def _tool_delete_task(self, params: dict) -> dict:
-        task = self.vault.find_task_by_name(params["task_name"])
-        if not task:
-            return err(
-                ErrorCode.PATH_NOT_FOUND,
-                f"No task found matching '{params['task_name']}'",
-            )
-        self.vault.delete_file(task["path"])
-        return {"deleted": task["metadata"].get("name", ""), "_items": [task["path"]]}
+        from src.services.resolver import resolve_item
+
+        resolved = resolve_item("task", params["task_name"], self.vault)
+        if not resolved["ok"]:
+            return resolved
+
+        path = resolved["data"]["path"]
+        task = self.vault.read_file(path)
+        self.vault.delete_file(path)
+        return {"deleted": task["metadata"].get("name", ""), "_items": [path]}
 
     def _tool_archive_task(self, params: dict) -> dict:
-        task = self.vault.find_task_by_name(params["task_name"])
-        if not task:
-            return err(
-                ErrorCode.PATH_NOT_FOUND,
-                f"No task found matching '{params['task_name']}'",
-            )
-        result = self.vault.archive_task(task["path"])
+        from src.services.resolver import resolve_item
+
+        resolved = resolve_item("task", params["task_name"], self.vault)
+        if not resolved["ok"]:
+            return resolved
+
+        path = resolved["data"]["path"]
+        result = self.vault.archive_task(path)
         return {
             "task": result["task_name"],
             "archived_to": result["archive_path"],
@@ -1706,30 +1709,34 @@ class AgentService:
         }
 
     def _tool_delete_habit(self, params: dict) -> dict:
-        habit = self.vault.find_habit_by_name(params["habit_name"])
-        if not habit:
-            return err(
-                ErrorCode.PATH_NOT_FOUND,
-                f"No habit found matching '{params['habit_name']}'",
-            )
-        self.vault.delete_file(habit["path"])
-        return {"deleted": habit["metadata"].get("name", ""), "_items": [habit["path"]]}
+        from src.services.resolver import resolve_item
+
+        resolved = resolve_item("habit", params["habit_name"], self.vault)
+        if not resolved["ok"]:
+            return resolved
+
+        path = resolved["data"]["path"]
+        habit = self.vault.read_file(path)
+        self.vault.delete_file(path)
+        return {"deleted": habit["metadata"].get("name", ""), "_items": [path]}
 
     def _tool_archive_goal(self, params: dict) -> dict:
-        goal = self.vault.find_goal_by_name(params["goal_name"])
-        if not goal:
-            return err(
-                ErrorCode.PATH_NOT_FOUND,
-                f"No goal found matching '{params['goal_name']}'",
-            )
+        from src.services.resolver import resolve_item
+
+        resolved = resolve_item("goal", params["goal_name"], self.vault)
+        if not resolved["ok"]:
+            return resolved
+
+        path = resolved["data"]["path"]
+        goal = self.vault.read_file(path)
         if goal["metadata"].get("status") == "archived":
             return err(
                 ErrorCode.ALREADY_DONE,
                 f"Goal '{goal['metadata'].get('name', '')}' is already archived",
-                details={"path": goal["path"]},
+                details={"path": path},
             )
-        self.vault.update_file(goal["path"], {"status": "archived"})
-        return {"archived": goal["metadata"].get("name", ""), "_items": [goal["path"]]}
+        self.vault.update_file(path, {"status": "archived"})
+        return {"archived": goal["metadata"].get("name", ""), "_items": [path]}
 
     def _parse_date(self, date_str: str | None):
         """Parse YYYY-MM-DD string to datetime or None for today."""
@@ -1901,21 +1908,23 @@ class AgentService:
         return result
 
     def _tool_complete_task(self, params: dict) -> dict:
-        task = self.vault.find_task_by_name(params["task_name"])
-        if not task:
-            return err(
-                ErrorCode.PATH_NOT_FOUND,
-                f"No task found matching '{params['task_name']}'",
-            )
+        from src.services.resolver import resolve_item
+
+        resolved = resolve_item("task", params["task_name"], self.vault)
+        if not resolved["ok"]:
+            return resolved
+
+        path = resolved["data"]["path"]
+        task = self.vault.read_file(path)
 
         if task["metadata"].get("status") == "done":
             return err(
                 ErrorCode.ALREADY_DONE,
                 f"Task '{task['metadata'].get('name', '')}' is already done",
-                details={"path": task["path"]},
+                details={"path": path},
             )
 
-        result = self.vault.complete_task(task["path"])
+        result = self.vault.complete_task(path)
         name = result["task_name"]
         tokens = result["tokens_earned"]
         archive_path = result["archive_path"]
