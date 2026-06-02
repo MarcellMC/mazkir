@@ -1684,14 +1684,20 @@ class AgentService:
     def _tool_delete_task(self, params: dict) -> dict:
         task = self.vault.find_task_by_name(params["task_name"])
         if not task:
-            return {"error": f"No task found matching '{params['task_name']}'"}
+            return err(
+                ErrorCode.PATH_NOT_FOUND,
+                f"No task found matching '{params['task_name']}'",
+            )
         self.vault.delete_file(task["path"])
         return {"deleted": task["metadata"].get("name", ""), "_items": [task["path"]]}
 
     def _tool_archive_task(self, params: dict) -> dict:
         task = self.vault.find_task_by_name(params["task_name"])
         if not task:
-            return {"error": f"No task found matching '{params['task_name']}'"}
+            return err(
+                ErrorCode.PATH_NOT_FOUND,
+                f"No task found matching '{params['task_name']}'",
+            )
         result = self.vault.archive_task(task["path"])
         return {
             "task": result["task_name"],
@@ -1702,14 +1708,26 @@ class AgentService:
     def _tool_delete_habit(self, params: dict) -> dict:
         habit = self.vault.find_habit_by_name(params["habit_name"])
         if not habit:
-            return {"error": f"No habit found matching '{params['habit_name']}'"}
+            return err(
+                ErrorCode.PATH_NOT_FOUND,
+                f"No habit found matching '{params['habit_name']}'",
+            )
         self.vault.delete_file(habit["path"])
         return {"deleted": habit["metadata"].get("name", ""), "_items": [habit["path"]]}
 
     def _tool_archive_goal(self, params: dict) -> dict:
         goal = self.vault.find_goal_by_name(params["goal_name"])
         if not goal:
-            return {"error": f"No goal found matching '{params['goal_name']}'"}
+            return err(
+                ErrorCode.PATH_NOT_FOUND,
+                f"No goal found matching '{params['goal_name']}'",
+            )
+        if goal["metadata"].get("status") == "archived":
+            return err(
+                ErrorCode.ALREADY_DONE,
+                f"Goal '{goal['metadata'].get('name', '')}' is already archived",
+                details={"path": goal["path"]},
+            )
         self.vault.update_file(goal["path"], {"status": "archived"})
         return {"archived": goal["metadata"].get("name", ""), "_items": [goal["path"]]}
 

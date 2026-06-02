@@ -902,3 +902,30 @@ def test_complete_habit_idempotent_when_done_today(mock_services):
 
     assert result["ok"] is False
     assert result["error"]["code"] == "ALREADY_DONE"
+
+
+def test_archive_goal_idempotent_when_already_archived(mock_services):
+    """Re-archiving an already-archived goal returns ALREADY_DONE."""
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    agent.vault.find_goal_by_name.return_value = {
+        "path": "30-goals/2026/x.md",
+        "metadata": {"name": "X", "status": "archived"},
+    }
+
+    result = agent._tool_archive_goal({"goal_name": "X"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "ALREADY_DONE"
+
+
+def test_delete_task_idempotent_when_target_absent(mock_services):
+    """Deleting a non-existent task returns PATH_NOT_FOUND."""
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    agent.vault.find_task_by_name.return_value = None
+
+    result = agent._tool_delete_task({"task_name": "ghost"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "PATH_NOT_FOUND"
