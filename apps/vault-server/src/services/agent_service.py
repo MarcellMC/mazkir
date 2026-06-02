@@ -17,7 +17,10 @@ from openinference.semconv.trace import SpanAttributes
 from src.logging_setup import emit_agent_turn
 from src.tracing_setup import fs_span
 from src.services.claude_service import ClaudeService
+from src.services.hooks import register_hook, run_pre_hooks
+from src.services.hooks.validate_schema import validate_schema as _validate_schema_hook
 from src.services.memory_service import MemoryService
+from src.services.tool_response import ErrorCode, err, ok
 from src.services.vault_service import VaultService
 
 logger = logging.getLogger(__name__)
@@ -95,6 +98,8 @@ class AgentService:
         self.max_iterations = 10
         self.pending_confirmations: dict[str, PendingAction] = {}
         self.tools = self._register_tools()
+        # Register built-in hooks (idempotent — safe to call multiple times)
+        register_hook("validate_schema", _validate_schema_hook)
 
     # ── Tool Registry ────────────────────────────────────────────
 
@@ -109,6 +114,7 @@ class AgentService:
                 },
                 "handler": self._tool_list_tasks,
                 "risk": "safe",
+                "pre_hooks": [],
             },
             "list_habits": {
                 "schema": {
@@ -118,6 +124,7 @@ class AgentService:
                 },
                 "handler": self._tool_list_habits,
                 "risk": "safe",
+                "pre_hooks": [],
             },
             "list_goals": {
                 "schema": {
@@ -127,6 +134,7 @@ class AgentService:
                 },
                 "handler": self._tool_list_goals,
                 "risk": "safe",
+                "pre_hooks": [],
             },
             "get_daily": {
                 "schema": {
@@ -136,6 +144,7 @@ class AgentService:
                 },
                 "handler": self._tool_get_daily,
                 "risk": "safe",
+                "pre_hooks": [],
             },
             "read_daily_section": {
                 "schema": {
@@ -152,6 +161,7 @@ class AgentService:
                 },
                 "handler": self._tool_read_daily_section,
                 "risk": "safe",
+                "pre_hooks": [],
             },
             "edit_daily_section": {
                 "schema": {
@@ -171,6 +181,7 @@ class AgentService:
                 },
                 "handler": self._tool_edit_daily_section,
                 "risk": "write",
+                "pre_hooks": ["validate_schema"],
             },
             "get_tokens": {
                 "schema": {
@@ -180,6 +191,7 @@ class AgentService:
                 },
                 "handler": self._tool_get_tokens,
                 "risk": "safe",
+                "pre_hooks": [],
             },
             "search_knowledge": {
                 "schema": {
@@ -196,6 +208,7 @@ class AgentService:
                 },
                 "handler": self._tool_search_knowledge,
                 "risk": "safe",
+                "pre_hooks": [],
             },
             "get_related": {
                 "schema": {
@@ -212,6 +225,7 @@ class AgentService:
                 },
                 "handler": self._tool_get_related,
                 "risk": "safe",
+                "pre_hooks": [],
             },
             "create_task": {
                 "schema": {
@@ -232,6 +246,7 @@ class AgentService:
                 },
                 "handler": self._tool_create_task,
                 "risk": "write",
+                "pre_hooks": ["validate_schema"],
             },
             "create_habit": {
                 "schema": {
@@ -251,6 +266,7 @@ class AgentService:
                 },
                 "handler": self._tool_create_habit,
                 "risk": "write",
+                "pre_hooks": ["validate_schema"],
             },
             "create_goal": {
                 "schema": {
@@ -270,6 +286,7 @@ class AgentService:
                 },
                 "handler": self._tool_create_goal,
                 "risk": "write",
+                "pre_hooks": ["validate_schema"],
             },
             "update_item": {
                 "schema": {
@@ -288,6 +305,7 @@ class AgentService:
                 },
                 "handler": self._tool_update_item,
                 "risk": "write",
+                "pre_hooks": ["validate_schema"],
             },
             "save_knowledge": {
                 "schema": {
@@ -308,6 +326,7 @@ class AgentService:
                 },
                 "handler": self._tool_save_knowledge,
                 "risk": "write",
+                "pre_hooks": ["validate_schema"],
             },
             "attach_to_daily": {
                 "schema": {
@@ -354,6 +373,7 @@ class AgentService:
                 },
                 "handler": self._tool_attach_to_daily,
                 "risk": "write",
+                "pre_hooks": ["validate_schema"],
             },
             "complete_task": {
                 "schema": {
@@ -371,6 +391,7 @@ class AgentService:
                 },
                 "handler": self._tool_complete_task,
                 "risk": "destructive",
+                "pre_hooks": ["validate_schema"],
             },
             "complete_habit": {
                 "schema": {
@@ -388,6 +409,7 @@ class AgentService:
                 },
                 "handler": self._tool_complete_habit,
                 "risk": "destructive",
+                "pre_hooks": ["validate_schema"],
             },
             "delete_task": {
                 "schema": {
@@ -405,6 +427,7 @@ class AgentService:
                 },
                 "handler": self._tool_delete_task,
                 "risk": "destructive",
+                "pre_hooks": ["validate_schema"],
             },
             "archive_task": {
                 "schema": {
@@ -422,6 +445,7 @@ class AgentService:
                 },
                 "handler": self._tool_archive_task,
                 "risk": "destructive",
+                "pre_hooks": ["validate_schema"],
             },
             "delete_habit": {
                 "schema": {
@@ -439,6 +463,7 @@ class AgentService:
                 },
                 "handler": self._tool_delete_habit,
                 "risk": "destructive",
+                "pre_hooks": ["validate_schema"],
             },
             "archive_goal": {
                 "schema": {
@@ -456,6 +481,7 @@ class AgentService:
                 },
                 "handler": self._tool_archive_goal,
                 "risk": "destructive",
+                "pre_hooks": ["validate_schema"],
             },
             "list_events": {
                 "schema": {
@@ -471,6 +497,7 @@ class AgentService:
                 },
                 "handler": self._tool_list_events,
                 "risk": "safe",
+                "pre_hooks": [],
             },
             "attach_photo_to_event": {
                 "schema": {
@@ -494,6 +521,7 @@ class AgentService:
                 },
                 "handler": self._tool_attach_photo_to_event,
                 "risk": "write",
+                "pre_hooks": ["validate_schema"],
             },
             "create_event": {
                 "schema": {
@@ -527,6 +555,7 @@ class AgentService:
                 },
                 "handler": self._tool_create_event,
                 "risk": "write",
+                "pre_hooks": ["validate_schema"],
             },
             "update_event": {
                 "schema": {
@@ -557,6 +586,7 @@ class AgentService:
                 },
                 "handler": self._tool_update_event,
                 "risk": "write",
+                "pre_hooks": ["validate_schema"],
             },
         }
 
@@ -1206,6 +1236,8 @@ class AgentService:
     def _execute_tool_inner(self, name: str, params: dict, risk: str) -> dict:
         """Execute a registered tool and return its result.
 
+        Runs pre-hooks before the handler. If any pre-hook returns a blocking
+        response, the handler is skipped and the error is returned immediately.
         Always emits one structured log line per call with timing + status.
         """
         sanitized = _sanitize_params(params)
@@ -1227,9 +1259,31 @@ class AgentService:
             )
             return {"error": f"Unknown tool: {name}"}
 
+        tool = self.tools[name]
+        ctx = {"tool": tool, "vault": self.vault, "memory": self.memory}
+
+        # Pre-hooks: run before handler; first blocking response short-circuits
+        pre_hooks = tool.get("pre_hooks", [])
+        blocked = run_pre_hooks(pre_hooks, params, ctx)
+        if blocked is not None:
+            duration_ms = int((time.monotonic() - start) * 1000)
+            logger.info(
+                "tool_call",
+                extra={
+                    "event_type": "tool_call",
+                    "tool": name,
+                    "risk": risk,
+                    "params": sanitized,
+                    "status": "blocked",
+                    "duration_ms": duration_ms,
+                    "result_summary": _summarize_result(blocked),
+                },
+            )
+            return blocked
+
         try:
-            handler = self.tools[name]["handler"]
-            result = handler(params)
+            handler = tool["handler"]
+            raw = handler(params)
         except Exception as e:
             duration_ms = int((time.monotonic() - start) * 1000)
             logger.error(
@@ -1247,8 +1301,16 @@ class AgentService:
             )
             return {"error": str(e)}
 
+        # Backwards-compat: legacy handlers may return plain dicts. Wrap them.
+        if isinstance(raw, dict) and "ok" in raw and ("data" in raw or "error" in raw):
+            result = raw  # already normalized
+        else:
+            # Legacy success shape: extract _items if present, treat rest as data
+            items = raw.pop("_items", []) if isinstance(raw, dict) else []
+            result = ok(raw if isinstance(raw, dict) else {"value": raw}, items=items)
+
         duration_ms = int((time.monotonic() - start) * 1000)
-        status = "error" if isinstance(result, dict) and "error" in result else "ok"
+        status = "error" if isinstance(result, dict) and result.get("ok") is False else "ok"
         logger.info(
             "tool_call",
             extra={

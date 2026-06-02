@@ -805,3 +805,30 @@ class TestSavePhotoFilesystemSpans:
         assert all(s.name == "fs.write" for s in spans)
         assert all(s.attributes["fs.store"] == "media" for s in spans)
         assert all(s.attributes["fs.bytes"] > 0 for s in spans)
+
+
+def test_execute_tool_runs_pre_hooks_and_blocks_on_error(mock_services, tmp_path):
+    """When a pre-hook returns an error, the handler is not called."""
+    from src.services.hooks import register_hook, HOOK_REGISTRY
+    from src.services.tool_response import err, ErrorCode
+
+    HOOK_REGISTRY.clear()
+    register_hook(
+        "always_block",
+        lambda p, c: err(ErrorCode.SCHEMA_INVALID, "blocked by test"),
+    )
+
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(
+        claude=claude, vault=vault, memory=memory, calendar=calendar, events=events,
+        media_path=tmp_path / "media",
+    )
+    handler_called = []
+    agent.tools["list_tasks"]["pre_hooks"] = ["always_block"]
+    agent.tools["list_tasks"]["handler"] = lambda p: handler_called.append(True) or {"data": []}
+
+    result = agent._execute_tool_inner("list_tasks", {}, risk="safe")
+
+    assert handler_called == []
+    assert result["ok"] is False
+    assert result["error"]["code"] == "SCHEMA_INVALID"
