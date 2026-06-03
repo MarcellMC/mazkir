@@ -62,9 +62,10 @@ def test_router_picks_skill_and_loop_uses_its_tools(mock_services, monkeypatch):
     )
 
     captured = {}
-    def fake_run_loop(chat_id, log_text, messages, system, tool_schemas, max_iterations):
+    def fake_run_loop(chat_id, log_text, messages, system, tool_schemas, max_iterations, **kwargs):
         captured["tool_schemas"] = tool_schemas
         captured["system"] = system
+        captured["cache_static_prefix"] = kwargs.get("cache_static_prefix")
         captured["max_iterations"] = max_iterations
         return "ok", "end_turn"
     monkeypatch.setattr(agent, "_run_loop", fake_run_loop)
@@ -73,7 +74,9 @@ def test_router_picks_skill_and_loop_uses_its_tools(mock_services, monkeypatch):
 
     schema_names = [s["name"] for s in captured["tool_schemas"]]
     assert schema_names == ["list_tasks"]
-    assert "You are the manager skill" in captured["system"]
+    # With prompt caching the skill identity moves to the static prefix; the
+    # dynamic ``system`` tail contains the date/vault snapshot instead.
+    assert "You are the manager skill" in captured["cache_static_prefix"]
     assert captured["max_iterations"] == 3
 
 
@@ -97,8 +100,10 @@ def test_next_skill_handoff_runs_second_skill(mock_services, monkeypatch):
     )
 
     call_log = []
-    def fake_run_loop(chat_id, log_text, messages, system, tool_schemas, max_iterations):
-        skill_name = "capture" if "capture skill" in system else "manager"
+    def fake_run_loop(chat_id, log_text, messages, system, tool_schemas, max_iterations, **kwargs):
+        # With prompt caching the skill identity is in the static prefix.
+        static = kwargs.get("cache_static_prefix") or system
+        skill_name = "capture" if "capture skill" in static else "manager"
         call_log.append(skill_name)
         if skill_name == "capture":
             return "saved. next_skill: manager", "end_turn"
@@ -131,8 +136,10 @@ def test_loop_caps_at_three_hops(mock_services, monkeypatch):
     )
 
     call_log = []
-    def fake_run_loop(chat_id, log_text, messages, system, tool_schemas, max_iterations):
-        name = next(s for s in ("a", "b", "c") if f"{s} skill" in system)
+    def fake_run_loop(chat_id, log_text, messages, system, tool_schemas, max_iterations, **kwargs):
+        # With prompt caching the skill identity is in the static prefix.
+        static = kwargs.get("cache_static_prefix") or system
+        name = next(s for s in ("a", "b", "c") if f"{s} skill" in static)
         call_log.append(name)
         nxt = {"a": "b", "b": "c", "c": "a"}[name]
         return f"hop next_skill: {nxt}", "end_turn"

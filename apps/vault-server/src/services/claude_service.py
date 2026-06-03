@@ -22,22 +22,46 @@ class ClaudeService:
         tools: list[dict] | None = None,
         model: str = "claude-sonnet-4-20250514",
         max_tokens: int = 4096,
+        *,
+        cache_static_prefix: str | None = None,
     ) -> anthropic.types.Message:
         """Claude API call with tool-use support.
 
         Args:
-            system: System prompt.
+            system: Dynamic system prompt tail (current date, vault snapshot).
             messages: Conversation messages.
             tools: Tool definitions (optional).
             model: Model to use.
             max_tokens: Max tokens in response.
+            cache_static_prefix: Static system prompt prefix (skill instructions +
+                base guidelines + tool docs).  When provided the system arg is sent
+                as a two-block list: the static prefix with ``cache_control`` set to
+                ``{"type": "ephemeral"}`` followed by the dynamic tail without
+                caching.  This enables Anthropic prompt caching (~10 % input cost
+                reduction on cache hits).  When omitted the system arg is forwarded
+                as-is (plain string — existing behaviour).
 
         Returns:
             Raw Anthropic Message response.
         """
+        if cache_static_prefix is not None:
+            system_arg: str | list[dict] = [
+                {
+                    "type": "text",
+                    "text": cache_static_prefix,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": system,
+                },
+            ]
+        else:
+            system_arg = system
+
         kwargs: dict = {
             "model": model,
-            "system": system,
+            "system": system_arg,
             "messages": messages,
             "max_tokens": max_tokens,
         }

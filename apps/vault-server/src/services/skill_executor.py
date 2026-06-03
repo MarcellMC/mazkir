@@ -34,6 +34,7 @@ class SkillExecutorResult:
 
 RunLoopFn = Callable[..., tuple[str, str]]
 BuildBaseSystemPromptFn = Callable[[Any], str]
+BuildStaticPrefixFn = Callable[..., str]
 
 
 class SkillExecutor:
@@ -47,12 +48,14 @@ class SkillExecutor:
         tools: dict,
         run_loop: RunLoopFn,
         build_base_system_prompt: BuildBaseSystemPromptFn,
+        build_static_prefix: BuildStaticPrefixFn | None = None,
     ):
         self.skill_registry = skill_registry
         self.router = router
         self.tools = tools
         self._run_loop = run_loop
         self._build_base_system_prompt = build_base_system_prompt
+        self._build_static_prefix = build_static_prefix
 
     def run(
         self,
@@ -90,7 +93,15 @@ class SkillExecutor:
                 break
 
             tool_schemas = self._skill_tool_schemas(skill)
-            system = self._build_skill_system_prompt(skill, context)
+
+            # Build the static prefix (cacheable) and dynamic tail separately
+            # so that ClaudeService can attach cache_control to the static block.
+            if self._build_static_prefix is not None:
+                cache_static_prefix: str | None = self._build_static_prefix(skill)
+                system = self._build_base_system_prompt(context)
+            else:
+                cache_static_prefix = None
+                system = self._build_skill_system_prompt(skill, context)
 
             with _tracer.start_as_current_span(
                 f"skill.{skill.name}",
@@ -107,6 +118,7 @@ class SkillExecutor:
                     system=system,
                     tool_schemas=tool_schemas,
                     max_iterations=skill.max_iterations,
+                    cache_static_prefix=cache_static_prefix,
                 )
 
                 next_skill = self._extract_next_skill(response_text, skill.next_skills)

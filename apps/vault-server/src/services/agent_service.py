@@ -165,6 +165,7 @@ class AgentService:
                 tools=self.tools,
                 run_loop=lambda *a, **kw: self._run_loop(*a, **kw),
                 build_base_system_prompt=self._build_system_prompt,
+                build_static_prefix=self._build_static_prefix,
             )
         else:
             self._skill_executor = None
@@ -843,6 +844,7 @@ class AgentService:
         if reply_to:
             log_text = f"(replying to {reply_to.get('from', 'user')}: \"{reply_to['text'][:50]}\") {log_text}".strip()
 
+        static_prefix = self._build_static_prefix()
         system = self._build_system_prompt(context)
 
         if self._skill_executor is not None:
@@ -854,6 +856,7 @@ class AgentService:
             chat_id, log_text, messages, system,
             tool_schemas=self._tool_schemas(),
             max_iterations=self.max_iterations,
+            cache_static_prefix=static_prefix,
         )
 
     # ── Skill-aware path ─────────────────────────────────────────
@@ -945,15 +948,15 @@ class AgentService:
             messages.append({"role": "assistant", "content": pending.assistant_response.content})
             messages.append({"role": "user", "content": tool_results})
 
-            system = self._build_system_prompt(
-                self.memory.assemble_context(chat_id)
-            )
+            context = self.memory.assemble_context(chat_id)
+            system = self._build_system_prompt(context)
             return self._run_agent_turn(
                 chat_id, user_response, messages, system,
                 tool_schemas=self._tool_schemas(),
                 max_iterations=self.max_iterations,
                 pre_tools=pre_tools_audit,
                 action_id=action_id,
+                cache_static_prefix=self._build_static_prefix(),
             )
         else:
             messages = pending.messages
@@ -961,14 +964,14 @@ class AgentService:
                 "role": "user",
                 "content": f"User responded to confirmation: {user_response}",
             })
-            system = self._build_system_prompt(
-                self.memory.assemble_context(chat_id)
-            )
+            context = self.memory.assemble_context(chat_id)
+            system = self._build_system_prompt(context)
             return self._run_agent_turn(
                 chat_id, user_response, messages, system,
                 tool_schemas=self._tool_schemas(),
                 max_iterations=self.max_iterations,
                 action_id=action_id,
+                cache_static_prefix=self._build_static_prefix(),
             )
 
     def _run_loop(
@@ -979,12 +982,18 @@ class AgentService:
         system: str,
         tool_schemas: list[dict],
         max_iterations: int,
+        cache_static_prefix: str | None = None,
     ) -> tuple[str, str]:
         """Parameterized inner Claude tool-use loop. Returns (response_text, stop_reason).
 
         Delegates to _run_agent_turn which handles the full iteration logic including
         confidence gating, confirmation flow, memory persistence, and audit emission.
         When a confirmation is needed, "needs_confirmation" is returned as the stop_reason.
+
+        Args:
+            cache_static_prefix: Static system-prompt prefix to cache via Anthropic
+                prompt caching.  Passed through to ClaudeService.create so that
+                the cacheable portion is marked with ``cache_control``.
         """
         result = self._run_agent_turn(
             chat_id=chat_id,
@@ -993,6 +1002,7 @@ class AgentService:
             system=system,
             tool_schemas=tool_schemas,
             max_iterations=max_iterations,
+            cache_static_prefix=cache_static_prefix,
         )
         if result.awaiting_confirmation:
             return result.response, "needs_confirmation"
@@ -1008,6 +1018,7 @@ class AgentService:
         max_iterations: int,
         pre_tools: list[dict] | None = None,
         action_id: str | None = None,
+        cache_static_prefix: str | None = None,
     ) -> AgentResponse:
         """Core agent loop: Claude <-> tools until end_turn or max iterations."""
         items_referenced: list[str] = []
@@ -1030,6 +1041,7 @@ class AgentService:
                     system=system,
                     messages=messages,
                     tools=tool_schemas,
+                    cache_static_prefix=cache_static_prefix,
                 )
                 stop_reason = response.stop_reason
 
@@ -1387,15 +1399,18 @@ class AgentService:
 
     # ── Helpers ───────────────────────────────────────────────────
 
-    def _build_system_prompt(self, context) -> str:
-        """Build the system prompt with vault snapshot and knowledge."""
-        import datetime
-        now = datetime.datetime.now()
+    # ── Prompt construction ───────────────────────────────────────
 
-        parts = [
+    @staticmethod
+    def _static_guidelines() -> list[str]:
+        """Parts of the system prompt that are identical across every turn.
+
+        These lines are placed in the cacheable static prefix so that Anthropic
+        prompt caching can avoid re-charging input tokens on repeated requests
+        within the same conversation.
+        """
+        return [
             "You are Mazkir, a personal AI assistant for managing tasks, habits, goals, and knowledge.",
-            "",
-            f"Current date/time: {now.strftime('%Y-%m-%d %H:%M')}",
             "",
             "## Tools",
             "You have tools to manage tasks, habits, goals, calendar, and knowledge.",
@@ -1418,15 +1433,6 @@ class AgentService:
             "  - AUTH_REQUIRED: a permission step the user hasn't completed. Surface to the user.",
             "  - CANCELLED_BY_USER: confirmation flow returned no. Move on; do not retry the same action.",
             "",
-            "## Current vault state",
-            context.vault_snapshot,
-        ]
-
-        if context.knowledge:
-            parts.extend(["", "## Relevant knowledge", context.knowledge])
-
-        parts.extend([
-            "",
             "## Guidelines",
             "- Be concise and friendly",
             "- Use Telegram markdown: *bold*, _italic_, `monospace`",
@@ -1441,7 +1447,49 @@ class AgentService:
             "- When a location is provided, include it when attaching to daily note",
             "- Reply context [Replying to ...] shows what message the user is responding to — use it for context",
             "- Forward context [Forwarded from ...] shows forwarded messages — treat as shared information",
-        ])
+        ]
+
+    def _build_static_prefix(self, skill=None) -> str:
+        """Return the cacheable static prefix for the system prompt.
+
+        The prefix contains the skill's own system prompt (if any) followed by
+        the base guidelines that are identical across every conversation turn.
+        Because this text never changes within a conversation it is a perfect
+        candidate for Anthropic prompt caching.
+
+        Args:
+            skill: Optional Skill object whose ``system_prompt`` is prepended.
+
+        Returns:
+            Plain string to be passed as ``cache_static_prefix`` to
+            ``ClaudeService.create``.
+        """
+        parts: list[str] = []
+        if skill is not None:
+            parts.append(skill.system_prompt)
+            parts.append("")
+        parts.extend(self._static_guidelines())
+        return "\n".join(parts)
+
+    def _build_system_prompt(self, context) -> str:
+        """Build the dynamic system prompt tail (current date + vault snapshot).
+
+        This is the portion of the system prompt that changes each turn.  It is
+        kept separate from the static prefix so the static prefix can be cached
+        by Anthropic's prompt caching feature.
+        """
+        import datetime
+        now = datetime.datetime.now()
+
+        parts = [
+            f"Current date/time: {now.strftime('%Y-%m-%d %H:%M')}",
+            "",
+            "## Current vault state",
+            context.vault_snapshot,
+        ]
+
+        if context.knowledge:
+            parts.extend(["", "## Relevant knowledge", context.knowledge])
 
         return "\n".join(parts)
 
