@@ -20,12 +20,46 @@ from src.services.claude_service import ClaudeService
 from src.services.hooks import register_hook, run_pre_hooks
 from src.services.hooks.validate_schema import validate_schema as _validate_schema_hook
 from src.services.memory_service import MemoryService
+from src.services.preview import register_preview_fn, render_preview
 from src.services.tool_response import ErrorCode, err, ok
 from src.services.vault_service import VaultService
 
 logger = logging.getLogger(__name__)
 
 _tracer = _otel_trace.get_tracer("mazkir.agent")
+
+
+def _register_destructive_previews() -> None:
+    """Register human-readable preview functions for all destructive tools.
+
+    Called from AgentService.__init__ (idempotent — re-registration is a no-op
+    because register_preview_fn simply overwrites the same key).
+    """
+
+    def _preview_delete_task(params: dict, ctx: Any) -> str:
+        return f"Would delete task: **{params.get('task_name', '?')}**"
+
+    def _preview_archive_task(params: dict, ctx: Any) -> str:
+        return f"Would archive task: **{params.get('task_name', '?')}**"
+
+    def _preview_delete_habit(params: dict, ctx: Any) -> str:
+        return f"Would delete habit: **{params.get('habit_name', '?')}**"
+
+    def _preview_archive_goal(params: dict, ctx: Any) -> str:
+        return f"Would archive goal: **{params.get('goal_name', '?')}**"
+
+    def _preview_complete_task(params: dict, ctx: Any) -> str:
+        return f"Would mark task **{params.get('task_name', '?')}** as done"
+
+    def _preview_complete_habit(params: dict, ctx: Any) -> str:
+        return f"Would log completion of habit **{params.get('habit_name', '?')}**"
+
+    register_preview_fn("delete_task", _preview_delete_task)
+    register_preview_fn("archive_task", _preview_archive_task)
+    register_preview_fn("delete_habit", _preview_delete_habit)
+    register_preview_fn("archive_goal", _preview_archive_goal)
+    register_preview_fn("complete_task", _preview_complete_task)
+    register_preview_fn("complete_habit", _preview_complete_habit)
 
 CONFIDENCE_THRESHOLD = 0.85
 
@@ -117,6 +151,8 @@ class AgentService:
         self.tools = self._register_tools()
         # Register built-in hooks (idempotent — safe to call multiple times)
         register_hook("validate_schema", _validate_schema_hook)
+        # Register preview functions for destructive tools (idempotent)
+        _register_destructive_previews()
 
     # ── Tool Registry ────────────────────────────────────────────
 
@@ -475,6 +511,7 @@ class AgentService:
                 },
                 "handler": self._tool_complete_task,
                 "risk": "destructive",
+                "preview": True,
                 "pre_hooks": ["validate_schema"],
             },
             "complete_habit": {
@@ -493,6 +530,7 @@ class AgentService:
                 },
                 "handler": self._tool_complete_habit,
                 "risk": "destructive",
+                "preview": True,
                 "pre_hooks": ["validate_schema"],
             },
             "delete_task": {
@@ -511,6 +549,7 @@ class AgentService:
                 },
                 "handler": self._tool_delete_task,
                 "risk": "destructive",
+                "preview": True,
                 "pre_hooks": ["validate_schema"],
             },
             "archive_task": {
@@ -529,6 +568,7 @@ class AgentService:
                 },
                 "handler": self._tool_archive_task,
                 "risk": "destructive",
+                "preview": True,
                 "pre_hooks": ["validate_schema"],
             },
             "delete_habit": {
@@ -547,6 +587,7 @@ class AgentService:
                 },
                 "handler": self._tool_delete_habit,
                 "risk": "destructive",
+                "preview": True,
                 "pre_hooks": ["validate_schema"],
             },
             "archive_goal": {
@@ -565,6 +606,7 @@ class AgentService:
                 },
                 "handler": self._tool_archive_goal,
                 "risk": "destructive",
+                "preview": True,
                 "pre_hooks": ["validate_schema"],
             },
             "list_events": {
@@ -1061,10 +1103,23 @@ class AgentService:
                     needs_confirmation = []
                     auto_execute = []
                     gate_info: dict[str, tuple[float, str | None]] = {}
+                    preview_texts: dict[str, str] = {}
                     for call in tool_calls:
                         reasoning = call["input"].get("_reasoning")
                         confidence, action = self._check_confidence(call["name"], call["input"])
                         gate_info[call["id"]] = (confidence, reasoning)
+                        # Preview gate: destructive tools with preview=True always
+                        # require confirmation so the user sees the preview text
+                        # before the action executes — even at high confidence.
+                        tool_entry = self.tools.get(call["name"], {})
+                        if action == "auto_execute" and tool_entry.get("preview"):
+                            preview_text = render_preview(
+                                call["name"],
+                                dict(call["input"]),
+                                ctx={"vault": self.vault, "tool": tool_entry},
+                            )
+                            preview_texts[call["id"]] = preview_text
+                            action = "needs_confirmation"
                         if action == "auto_execute":
                             auto_execute.append(call)
                         else:
@@ -1132,7 +1187,7 @@ class AgentService:
                                 "pending": True,
                             })
 
-                        description = self._describe_pending_calls(needs_confirmation)
+                        description = self._describe_pending_calls(needs_confirmation, preview_texts)
                         self.memory.save_turn(chat_id, original_text, description, items_referenced)
                         _otel_trace.get_current_span().set_attribute(
                             SpanAttributes.METADATA,
@@ -1573,14 +1628,24 @@ class AgentService:
         )
         return result
 
-    def _describe_pending_calls(self, calls: list[dict]) -> str:
-        """Build a human-readable description of pending tool calls."""
+    def _describe_pending_calls(
+        self, calls: list[dict], preview_texts: dict[str, str] | None = None
+    ) -> str:
+        """Build a human-readable description of pending tool calls.
+
+        When a call has an entry in `preview_texts` (keyed by call ID), that
+        preview text is shown instead of the raw param list — giving the user
+        a friendlier "Would delete task: **X**" summary before they confirm.
+        """
         lines = ["I'd like to perform the following actions:\n"]
         for call in calls:
-            name = call["name"].replace("_", " ")
-            params = {k: v for k, v in call["input"].items() if not k.startswith("_")}
-            param_str = ", ".join(f"{k}={v}" for k, v in params.items())
-            lines.append(f"  - {name}: {param_str}")
+            if preview_texts and call["id"] in preview_texts:
+                lines.append(f"  - {preview_texts[call['id']]}")
+            else:
+                name = call["name"].replace("_", " ")
+                params = {k: v for k, v in call["input"].items() if not k.startswith("_")}
+                param_str = ", ".join(f"{k}={v}" for k, v in params.items())
+                lines.append(f"  - {name}: {param_str}")
         lines.append("\nShould I proceed? (yes/no)")
         return "\n".join(lines)
 
