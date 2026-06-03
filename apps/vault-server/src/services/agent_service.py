@@ -815,7 +815,12 @@ class AgentService:
         reply_to: dict | None,
         forwarded_from: dict | None,
     ) -> AgentResponse:
+        t0 = time.perf_counter()
         context = self.memory.assemble_context(chat_id)
+        _otel_trace.get_current_span().set_attribute(
+            "vault.snapshot.compute_ms",
+            int((time.perf_counter() - t0) * 1000),
+        )
 
         messages = []
         if context.summary:
@@ -1037,12 +1042,28 @@ class AgentService:
                     "iteration": iter_num,
                 },
             ):
+                _loop_span = _otel_trace.get_current_span()
+                _prompt_chars = len(system) + (len(cache_static_prefix) if cache_static_prefix else 0)
+                _loop_span.set_attribute("system_prompt.token_estimate", _prompt_chars // 4)
+
                 response = self.claude.create(
                     system=system,
                     messages=messages,
                     tools=tool_schemas,
                     cache_static_prefix=cache_static_prefix,
                 )
+
+                _usage = getattr(response, "usage", None)
+                if _usage is not None:
+                    _loop_span.set_attribute(
+                        "llm.token_count.prompt_cached_read",
+                        getattr(_usage, "cache_read_input_tokens", 0) or 0,
+                    )
+                    _loop_span.set_attribute(
+                        "llm.token_count.prompt_cached_write",
+                        getattr(_usage, "cache_creation_input_tokens", 0) or 0,
+                    )
+
                 stop_reason = response.stop_reason
 
                 if stop_reason == "end_turn":
