@@ -51,8 +51,8 @@ class MemoryService:
     def load_conversation(self, chat_id: int) -> dict[str, Any]:
         """Load conversation history for a chat.
 
-        Returns dict with: messages (list), summary (str),
-        message_count (int), items_referenced (list).
+        Returns dict with: messages (list), summary (str), message_count (int).
+        Note: items_referenced retired in P3 — no longer returned.
         """
         path = self._get_conversation_path(chat_id)
 
@@ -61,7 +61,6 @@ class MemoryService:
                 "messages": [],
                 "summary": "",
                 "message_count": 0,
-                "items_referenced": [],
             }
 
         post = frontmatter.load(str(path))
@@ -71,7 +70,6 @@ class MemoryService:
         messages = self._parse_messages(content)
         message_count = metadata.get("message_count", len(messages))
         summary = metadata.get("summary", "")
-        items_referenced = metadata.get("items_referenced", [])
 
         # Apply sliding window -- return only last N messages
         if len(messages) > self.window_size:
@@ -83,7 +81,6 @@ class MemoryService:
             "messages": windowed,
             "summary": summary,
             "message_count": message_count,
-            "items_referenced": items_referenced,
         }
 
     def save_turn(
@@ -98,10 +95,13 @@ class MemoryService:
         now = datetime.datetime.now(self.tz)
         time_str = now.strftime("%H:%M")
 
+        # items_referenced retired in P3 — kwarg kept for back-compat, ignored
         if path.exists():
             post = frontmatter.load(str(path))
             metadata = dict(post.metadata)
             existing_content = post.content
+            # Drop items_referenced from existing metadata on next write
+            metadata.pop("items_referenced", None)
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             metadata = {
@@ -113,7 +113,6 @@ class MemoryService:
                 "message_count": 0,
                 "summary": "",
                 "tags": [],
-                "items_referenced": [],
             }
             existing_content = ""
 
@@ -127,11 +126,6 @@ class MemoryService:
         # Update metadata
         metadata["last_active"] = now.isoformat()
         metadata["message_count"] = metadata.get("message_count", 0) + 2
-
-        # Merge items_referenced (deduplicate)
-        existing_refs = set(metadata.get("items_referenced", []))
-        existing_refs.update(items_referenced)
-        metadata["items_referenced"] = sorted(existing_refs)
 
         # Write file
         post = frontmatter.Post(new_content, **metadata)
@@ -377,7 +371,8 @@ class MemoryService:
         try:
             tasks = self.vault.list_active_tasks()
             if tasks:
-                referenced = set(conversation.get("items_referenced", []))
+                # items_referenced retired in P3 — [referenced] marker removed (T5 rewrites snapshot)
+                referenced = set()
                 task_lines = []
                 for t in tasks:
                     name = t["metadata"].get("name", Path(t["path"]).stem)
@@ -440,7 +435,8 @@ class MemoryService:
                 except Exception:
                     continue
 
-        items = conversation.get("items_referenced", [])
+        # items_referenced retired in P3 — knowledge auto-dump removed (T4 will delete this block)
+        items: list[str] = []
         if items:
             search_terms = set()
             for ref in items:
@@ -488,9 +484,7 @@ class MemoryService:
                 if match:
                     fm_links.add(match.group(1))
 
-            for ref in metadata.get("items_referenced", []):
-                fm_links.add(Path(ref).stem)
-
+            # items_referenced retired in P3 — no longer harvested as graph edges
             all_links = wiki_links | fm_links
 
             self.graph[node_id] = {

@@ -56,7 +56,8 @@ class TestConversationManagement:
 
         result = memory_service.load_conversation(123456)
         assert result["message_count"] == 4
-        assert "40-tasks/active/test.md" in result["items_referenced"]
+        # items_referenced retired in P3 — no longer stored or returned
+        assert "items_referenced" not in result
 
     def test_load_conversation_respects_window_size(self, memory_service):
         memory_service.window_size = 4  # 2 turns = 4 messages
@@ -71,6 +72,7 @@ class TestConversationManagement:
         assert result["message_count"] == 8
 
     def test_save_turn_tracks_items_referenced(self, memory_service):
+        # items_referenced retired in P3 — kwarg accepted but ignored; field absent from result
         memory_service.save_turn(
             123456, "done with gym", "completed!",
             items_referenced=["20-habits/gym.md"],
@@ -81,9 +83,19 @@ class TestConversationManagement:
         )
 
         result = memory_service.load_conversation(123456)
-        assert "20-habits/gym.md" in result["items_referenced"]
-        assert "40-tasks/active/buy-milk.md" in result["items_referenced"]
+        assert "items_referenced" not in result
 
+
+    def test_save_turn_does_not_write_items_referenced(self, memory_service):
+        """items_referenced is removed in P3."""
+        memory_service.save_turn(
+            chat_id=123,
+            user_msg="hi",
+            assistant_msg="hello",
+            items_referenced=["40-tasks/active/x.md"],
+        )
+        convo = memory_service.load_conversation(123)
+        assert "items_referenced" not in convo
 
     def test_save_turn_with_attachment_metadata(self, memory_service, vault_path):
         """Attachment metadata in user message is preserved in conversation log."""
