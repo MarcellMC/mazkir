@@ -53,6 +53,12 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   │   │       ├── claude_service.py # Claude API (thin wrapper)
 │   │   │       ├── memory_service.py # Three-tier memory + graph index
 │   │   │       ├── agent_service.py  # Agent loop + tool registry + confidence gate
+│   │   │       ├── router_service.py # Haiku LLM skill classifier (skill loop)
+│   │   │       ├── skill_registry.py # Loads skill definitions from memory/00-system/mazkir-skills/
+│   │   │       ├── preview.py        # Destructive-action preview rendering
+│   │   │       ├── resolver.py       # Tool input resolution + schema validation
+│   │   │       ├── tool_response.py  # Typed tool result helpers
+│   │   │       ├── hooks/            # Pre/post tool hook registry
 │   │   │       ├── calendar_service.py # Google Calendar sync
 │   │   │       ├── timeline_service.py # Google Takeout parser
 │   │   │       ├── merger_service.py   # Event merging + fuzzy matching
@@ -170,12 +176,15 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 - **telegram-bot** is a thin TypeScript UI layer (grammY + API calls + inline keyboards + NL routing)
 - **telegram-web-app** is a React SPA consuming vault-server REST endpoints
 - **@mazkir/shared-types** provides TypeScript interfaces shared between telegram-bot and telegram-web-app
+- **Skill loop:** `AgentService.handle_message` dispatches via `RouterService` (Haiku LLM classifier) to one of three skills loaded from `memory/00-system/mazkir-skills/` (`capture`, `manager`, `recall`). Skills chain via a `next_skill: <name>` token in their reply; the loop caps at 3 hops with cycle detection. Each skill has its own model, tool subset, and system prompt. When `skill_registry`/`router` aren't configured, `AgentService` falls back to a single-loop legacy path with all tools loaded.
 - New features → add route to vault-server, then add UI in telegram bot or web app
 
 ### Agent tool risk levels
 - **safe** (read-only): `list_tasks`, `list_habits`, `list_goals`, `get_daily`, `get_tokens`, `search_knowledge`, `get_related`, `read_daily_section`, `list_events`
 - **write** (auto-execute at ≥0.85 confidence): `create_task`, `create_habit`, `create_goal`, `update_task`, `update_habit`, `update_goal`, `save_knowledge`, `attach_to_daily`, `edit_daily_section`, `attach_photo_to_event`, `create_event`, `update_event`
-- **destructive** (auto-execute at ≥0.85 confidence): `complete_task`, `complete_habit`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`
+- **destructive** (auto-execute at ≥0.95 confidence): `complete_task`, `complete_habit`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`
+- Confidence thresholds are per-tool with risk-class defaults: `safe` ungated, `write` ≥0.85, `destructive` ≥0.95.
+- Destructive tools always render a preview ("Would delete X / Would archive Y") and require explicit yes/no confirmation before execution, regardless of confidence.
 
 ### When adding vault-server routes:
 1. Create route in `apps/vault-server/src/api/routes/`
@@ -246,3 +255,4 @@ curl http://localhost:8000/events/2026-03-05
 - **Rich Messages Plan:** `docs/plans/2026-03-04-rich-messages-plan.md`
 - **Photo Events Pipeline Design:** `docs/plans/2026-03-05-photo-events-pipeline-design.md`
 - **Photo Events Pipeline Plan:** `docs/plans/2026-03-05-photo-events-pipeline-plan.md`
+- **Skill Definitions:** `memory/00-system/mazkir-skills/*.md` — Mazkir sub-agent skill definitions (capture / manager / recall)
