@@ -16,6 +16,7 @@ from openinference.semconv.trace import SpanAttributes
 
 from src.logging_setup import emit_agent_turn
 from src.tracing_setup import fs_span
+from src.services.tracing_helpers import with_span_status
 from src.services.claude_service import ClaudeService
 from src.services.hooks import register_hook, run_pre_hooks, run_post_hooks
 from src.services.hooks.validate_schema import validate_schema as _validate_schema_hook
@@ -793,24 +794,24 @@ class AgentService:
                     "attachment_count": len(attachments or []),
                 },
             ) as span:
-                if len(text or "") > 2000:
-                    span.set_attribute("truncated", True)
-                result = self._handle_message_inner(
-                    text, chat_id, attachments, reply_to, forwarded_from
-                )
-                _output_text = result.response[:2000]
-                span.set_attribute(SpanAttributes.OUTPUT_VALUE, _output_text)
-                if len(result.response) > 2000:
-                    span.set_attribute("truncated", True)
-                span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, "text/plain")
-                span.set_attribute(
-                    SpanAttributes.METADATA,
-                    json.dumps({
-                        "awaiting_confirmation": result.awaiting_confirmation,
-                        "pending_action_id": result.pending_action_id,
-                    }),
-                )
-                span.set_status(Status(StatusCode.OK))
+                with with_span_status(span):
+                    if len(text or "") > 2000:
+                        span.set_attribute("truncated", True)
+                    result = self._handle_message_inner(
+                        text, chat_id, attachments, reply_to, forwarded_from
+                    )
+                    _output_text = result.response[:2000]
+                    span.set_attribute(SpanAttributes.OUTPUT_VALUE, _output_text)
+                    if len(result.response) > 2000:
+                        span.set_attribute("truncated", True)
+                    span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, "text/plain")
+                    span.set_attribute(
+                        SpanAttributes.METADATA,
+                        json.dumps({
+                            "awaiting_confirmation": result.awaiting_confirmation,
+                            "pending_action_id": result.pending_action_id,
+                        }),
+                    )
                 return result
 
     def _handle_message_inner(
@@ -1055,111 +1056,183 @@ class AgentService:
                     "iteration": iter_num,
                     SpanAttributes.INPUT_VALUE: _last_content,
                 },
-            ):
-                _loop_span = _otel_trace.get_current_span()
-                if len(str(_last_msg.get("content", ""))) > 2000:
-                    _loop_span.set_attribute("truncated", True)
-                _prompt_chars = len(system) + (len(cache_static_prefix) if cache_static_prefix else 0)
-                _loop_span.set_attribute("system_prompt.token_estimate", _prompt_chars // 4)
+            ) as _loop_otel_span:
+                with with_span_status(_loop_otel_span):
+                    _loop_span = _otel_trace.get_current_span()
+                    if len(str(_last_msg.get("content", ""))) > 2000:
+                        _loop_span.set_attribute("truncated", True)
+                    _prompt_chars = len(system) + (len(cache_static_prefix) if cache_static_prefix else 0)
+                    _loop_span.set_attribute("system_prompt.token_estimate", _prompt_chars // 4)
 
-                response = self.claude.create(
-                    system=system,
-                    messages=messages,
-                    tools=tool_schemas,
-                    cache_static_prefix=cache_static_prefix,
-                )
-
-                _usage = getattr(response, "usage", None)
-                if _usage is not None:
-                    _loop_span.set_attribute(
-                        "llm.token_count.prompt_cached_read",
-                        getattr(_usage, "cache_read_input_tokens", 0) or 0,
-                    )
-                    _loop_span.set_attribute(
-                        "llm.token_count.prompt_cached_write",
-                        getattr(_usage, "cache_creation_input_tokens", 0) or 0,
+                    response = self.claude.create(
+                        system=system,
+                        messages=messages,
+                        tools=tool_schemas,
+                        cache_static_prefix=cache_static_prefix,
                     )
 
-                stop_reason = response.stop_reason
+                    _usage = getattr(response, "usage", None)
+                    if _usage is not None:
+                        _loop_span.set_attribute(
+                            "llm.token_count.prompt_cached_read",
+                            getattr(_usage, "cache_read_input_tokens", 0) or 0,
+                        )
+                        _loop_span.set_attribute(
+                            "llm.token_count.prompt_cached_write",
+                            getattr(_usage, "cache_creation_input_tokens", 0) or 0,
+                        )
 
-                _first_text = ""
-                for _block in response.content:
-                    if hasattr(_block, "text"):
-                        _first_text = _block.text[:2000]
+                    stop_reason = response.stop_reason
+
+                    _first_text = ""
+                    for _block in response.content:
+                        if hasattr(_block, "text"):
+                            _first_text = _block.text[:2000]
+                            break
+                    _loop_output = f"stop_reason={stop_reason}; {_first_text}"
+                    _loop_span.set_attribute(SpanAttributes.OUTPUT_VALUE, _loop_output)
+
+                    if stop_reason == "end_turn":
+                        logger.info(
+                            "agent_iter",
+                            extra={
+                                "event_type": "agent_iter",
+                                "chat_id": chat_id,
+                                "iter": iters,
+                                "stop_reason": stop_reason,
+                                "tool_calls": 0,
+                            },
+                        )
+                        assistant_text = self._extract_text(response)
                         break
-                _loop_output = f"stop_reason={stop_reason}; {_first_text}"
-                _loop_span.set_attribute(SpanAttributes.OUTPUT_VALUE, _loop_output)
 
-                if stop_reason == "end_turn":
-                    logger.info(
-                        "agent_iter",
-                        extra={
-                            "event_type": "agent_iter",
-                            "chat_id": chat_id,
-                            "iter": iters,
-                            "stop_reason": stop_reason,
-                            "tool_calls": 0,
-                        },
-                    )
-                    assistant_text = self._extract_text(response)
-                    break
+                    if stop_reason == "tool_use":
+                        tool_calls = self._extract_tool_calls(response)
 
-                if stop_reason == "tool_use":
-                    tool_calls = self._extract_tool_calls(response)
+                        needs_confirmation = []
+                        auto_execute = []
+                        gate_info: dict[str, tuple[float, str | None]] = {}
+                        preview_texts: dict[str, str] = {}
+                        for call in tool_calls:
+                            reasoning = call["input"].get("_reasoning")
+                            confidence, action = self._check_confidence(call["name"], call["input"])
+                            gate_info[call["id"]] = (confidence, reasoning)
+                            # Preview gate: destructive tools with preview=True always
+                            # require confirmation so the user sees the preview text
+                            # before the action executes — even at high confidence.
+                            tool_entry = self.tools.get(call["name"], {})
+                            if action == "auto_execute" and tool_entry.get("preview"):
+                                preview_text = render_preview(
+                                    call["name"],
+                                    dict(call["input"]),
+                                    ctx={"vault": self.vault, "tool": tool_entry},
+                                )
+                                preview_texts[call["id"]] = preview_text
+                                action = "needs_confirmation"
+                                _otel_trace.get_current_span().set_attribute("preview.tool", call["name"])
+                                _otel_trace.get_current_span().set_attribute("preview.text_length", len(preview_text))
+                            if action == "auto_execute":
+                                auto_execute.append(call)
+                            else:
+                                needs_confirmation.append(call)
 
-                    needs_confirmation = []
-                    auto_execute = []
-                    gate_info: dict[str, tuple[float, str | None]] = {}
-                    preview_texts: dict[str, str] = {}
-                    for call in tool_calls:
-                        reasoning = call["input"].get("_reasoning")
-                        confidence, action = self._check_confidence(call["name"], call["input"])
-                        gate_info[call["id"]] = (confidence, reasoning)
-                        # Preview gate: destructive tools with preview=True always
-                        # require confirmation so the user sees the preview text
-                        # before the action executes — even at high confidence.
-                        tool_entry = self.tools.get(call["name"], {})
-                        if action == "auto_execute" and tool_entry.get("preview"):
-                            preview_text = render_preview(
-                                call["name"],
-                                dict(call["input"]),
-                                ctx={"vault": self.vault, "tool": tool_entry},
+                        logger.info(
+                            "agent_iter",
+                            extra={
+                                "event_type": "agent_iter",
+                                "chat_id": chat_id,
+                                "iter": iters,
+                                "stop_reason": stop_reason,
+                                "tool_calls": len(tool_calls),
+                                "auto_execute": [
+                                    {"name": c["name"], "confidence": gate_info[c["id"]][0]}
+                                    for c in auto_execute
+                                ],
+                                "needs_confirmation": [
+                                    {"name": c["name"], "confidence": gate_info[c["id"]][0]}
+                                    for c in needs_confirmation
+                                ],
+                            },
+                        )
+
+                        if needs_confirmation:
+                            executed = []
+                            for call in auto_execute:
+                                confidence, reasoning = gate_info[call["id"]]
+                                result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
+                                items_referenced.extend(result.get("_items", []))
+                                executed.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": call["id"],
+                                    "content": json.dumps(result),
+                                })
+                                tools_audit.append({
+                                    "name": call["name"],
+                                    "params": _sanitize_params(call["input"]),
+                                    "confidence": confidence,
+                                    "reasoning": reasoning,
+                                    "result_summary": _summarize_result(result) if isinstance(result, dict) else None,
+                                    "confirmed": False,
+                                })
+
+                            pending_action_id = str(uuid4())
+                            current_ctx = _otel_trace.get_current_span().get_span_context()
+                            self.pending_confirmations[pending_action_id] = PendingAction(
+                                chat_id=chat_id,
+                                messages=messages,
+                                assistant_response=response,
+                                executed_results=executed,
+                                pending_calls=needs_confirmation,
+                                parent_span_context=current_ctx if current_ctx.is_valid else None,
                             )
-                            preview_texts[call["id"]] = preview_text
-                            action = "needs_confirmation"
-                            _otel_trace.get_current_span().set_attribute("preview.tool", call["name"])
-                            _otel_trace.get_current_span().set_attribute("preview.text_length", len(preview_text))
-                        if action == "auto_execute":
-                            auto_execute.append(call)
-                        else:
-                            needs_confirmation.append(call)
 
-                    logger.info(
-                        "agent_iter",
-                        extra={
-                            "event_type": "agent_iter",
-                            "chat_id": chat_id,
-                            "iter": iters,
-                            "stop_reason": stop_reason,
-                            "tool_calls": len(tool_calls),
-                            "auto_execute": [
-                                {"name": c["name"], "confidence": gate_info[c["id"]][0]}
-                                for c in auto_execute
-                            ],
-                            "needs_confirmation": [
-                                {"name": c["name"], "confidence": gate_info[c["id"]][0]}
-                                for c in needs_confirmation
-                            ],
-                        },
-                    )
+                            for call in needs_confirmation:
+                                confidence, reasoning = gate_info[call["id"]]
+                                tools_audit.append({
+                                    "name": call["name"],
+                                    "params": _sanitize_params(call["input"]),
+                                    "confidence": confidence,
+                                    "reasoning": reasoning,
+                                    "result_summary": None,
+                                    "confirmed": False,
+                                    "pending": True,
+                                })
 
-                    if needs_confirmation:
-                        executed = []
+                            description = self._describe_pending_calls(needs_confirmation, preview_texts)
+                            self.memory.save_turn(chat_id, original_text, description, items_referenced)
+                            _otel_trace.get_current_span().set_attribute(
+                                SpanAttributes.METADATA,
+                                json.dumps({
+                                    "iters": iters,
+                                    "stop_reason": stop_reason,
+                                    "tools_used": [t["name"] for t in tools_audit],
+                                    "awaiting_confirmation": True,
+                                }),
+                            )
+                            self._emit_turn_audit(
+                                chat_id=chat_id,
+                                user_text=original_text,
+                                tools_audit=tools_audit,
+                                assistant_text=description,
+                                items_referenced=items_referenced,
+                                awaiting_confirmation=True,
+                                pending_action_id=pending_action_id,
+                                prior_action_id=action_id,
+                                iters=iters,
+                                stop_reason=stop_reason,
+                            )
+                            return AgentResponse(
+                                response=description,
+                                awaiting_confirmation=True,
+                                pending_action_id=pending_action_id,
+                            )
+
+                        tool_results = []
                         for call in auto_execute:
                             confidence, reasoning = gate_info[call["id"]]
                             result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
                             items_referenced.extend(result.get("_items", []))
-                            executed.append({
+                            tool_results.append({
                                 "type": "tool_result",
                                 "tool_use_id": call["id"],
                                 "content": json.dumps(result),
@@ -1173,79 +1246,8 @@ class AgentService:
                                 "confirmed": False,
                             })
 
-                        pending_action_id = str(uuid4())
-                        current_ctx = _otel_trace.get_current_span().get_span_context()
-                        self.pending_confirmations[pending_action_id] = PendingAction(
-                            chat_id=chat_id,
-                            messages=messages,
-                            assistant_response=response,
-                            executed_results=executed,
-                            pending_calls=needs_confirmation,
-                            parent_span_context=current_ctx if current_ctx.is_valid else None,
-                        )
-
-                        for call in needs_confirmation:
-                            confidence, reasoning = gate_info[call["id"]]
-                            tools_audit.append({
-                                "name": call["name"],
-                                "params": _sanitize_params(call["input"]),
-                                "confidence": confidence,
-                                "reasoning": reasoning,
-                                "result_summary": None,
-                                "confirmed": False,
-                                "pending": True,
-                            })
-
-                        description = self._describe_pending_calls(needs_confirmation, preview_texts)
-                        self.memory.save_turn(chat_id, original_text, description, items_referenced)
-                        _otel_trace.get_current_span().set_attribute(
-                            SpanAttributes.METADATA,
-                            json.dumps({
-                                "iters": iters,
-                                "stop_reason": stop_reason,
-                                "tools_used": [t["name"] for t in tools_audit],
-                                "awaiting_confirmation": True,
-                            }),
-                        )
-                        self._emit_turn_audit(
-                            chat_id=chat_id,
-                            user_text=original_text,
-                            tools_audit=tools_audit,
-                            assistant_text=description,
-                            items_referenced=items_referenced,
-                            awaiting_confirmation=True,
-                            pending_action_id=pending_action_id,
-                            prior_action_id=action_id,
-                            iters=iters,
-                            stop_reason=stop_reason,
-                        )
-                        return AgentResponse(
-                            response=description,
-                            awaiting_confirmation=True,
-                            pending_action_id=pending_action_id,
-                        )
-
-                    tool_results = []
-                    for call in auto_execute:
-                        confidence, reasoning = gate_info[call["id"]]
-                        result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
-                        items_referenced.extend(result.get("_items", []))
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": call["id"],
-                            "content": json.dumps(result),
-                        })
-                        tools_audit.append({
-                            "name": call["name"],
-                            "params": _sanitize_params(call["input"]),
-                            "confidence": confidence,
-                            "reasoning": reasoning,
-                            "result_summary": _summarize_result(result) if isinstance(result, dict) else None,
-                            "confirmed": False,
-                        })
-
-                    messages.append({"role": "assistant", "content": response.content})
-                    messages.append({"role": "user", "content": tool_results})
+                        messages.append({"role": "assistant", "content": response.content})
+                        messages.append({"role": "user", "content": tool_results})
         else:
             # Max iterations reached
             if response:
@@ -1583,19 +1585,26 @@ class AgentService:
         if schema.get("input_schema"):
             attrs[SpanAttributes.TOOL_PARAMETERS] = json.dumps(schema["input_schema"])
         with _tracer.start_as_current_span("agent.tool_call", attributes=attrs) as span:
-            threshold = entry.get("confidence_threshold")
-            span.set_attribute("tool.confidence_threshold", float(threshold) if threshold is not None else 0.0)
-            span.set_attribute("tool.confidence_score", float(confidence) if confidence is not None else 1.0)
-            span.set_attribute("confirmation.required", action == "needs_confirmation")
-            result = self._execute_tool_inner(name, params, risk)
-            if isinstance(result, dict):
-                summary = _summarize_result(result)
-                _tool_output_str = json.dumps(summary)[:2000]
-                span.set_attribute(SpanAttributes.OUTPUT_VALUE, _tool_output_str)
-                if len(json.dumps(summary)) > 2000:
-                    span.set_attribute("truncated", True)
-                span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, "application/json")
-            span.set_status(Status(StatusCode.OK))
+            with with_span_status(span):
+                threshold = entry.get("confidence_threshold")
+                span.set_attribute("tool.confidence_threshold", float(threshold) if threshold is not None else 0.0)
+                span.set_attribute("tool.confidence_score", float(confidence) if confidence is not None else 1.0)
+                span.set_attribute("confirmation.required", action == "needs_confirmation")
+                result = self._execute_tool_inner(name, params, risk)
+                if isinstance(result, dict):
+                    summary = _summarize_result(result)
+                    _tool_output_str = json.dumps(summary)[:2000]
+                    span.set_attribute(SpanAttributes.OUTPUT_VALUE, _tool_output_str)
+                    if len(json.dumps(summary)) > 2000:
+                        span.set_attribute("truncated", True)
+                    span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, "application/json")
+            # Option B: with_span_status sets OK on clean exit; override to ERROR
+            # when the handler returned an application-level error (ok=False) without
+            # raising — so error traces propagate even when no exception was thrown.
+            if isinstance(result, dict) and not result.get("ok", True):
+                _err_code = result.get("error", {}).get("code", "UNKNOWN") if isinstance(result.get("error"), dict) else "UNKNOWN"
+                span.set_status(Status(StatusCode.ERROR, _err_code))
+                span.set_attribute("tool.error.code", _err_code)
             return result
 
     def _execute_tool_inner(self, name: str, params: dict, risk: str) -> dict:

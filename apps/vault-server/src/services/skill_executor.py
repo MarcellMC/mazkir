@@ -17,6 +17,7 @@ from openinference.semconv.trace import SpanAttributes
 from opentelemetry import trace as _otel_trace
 
 from src.services.skill_registry import Skill
+from src.services.tracing_helpers import with_span_status
 
 logger = logging.getLogger(__name__)
 
@@ -114,26 +115,27 @@ class SkillExecutor:
                     SpanAttributes.INPUT_VALUE: _skill_input,
                 },
             ) as span:
-                if len(user_msg) > 2000:
-                    span.set_attribute("truncated", True)
-                response_text, stop_reason = self._run_loop(
-                    chat_id=chat_id,
-                    log_text=user_msg,
-                    messages=messages,
-                    system=system,
-                    tool_schemas=tool_schemas,
-                    max_iterations=skill.max_iterations,
-                    cache_static_prefix=cache_static_prefix,
-                )
+                with with_span_status(span):
+                    if len(user_msg) > 2000:
+                        span.set_attribute("truncated", True)
+                    response_text, stop_reason = self._run_loop(
+                        chat_id=chat_id,
+                        log_text=user_msg,
+                        messages=messages,
+                        system=system,
+                        tool_schemas=tool_schemas,
+                        max_iterations=skill.max_iterations,
+                        cache_static_prefix=cache_static_prefix,
+                    )
 
-                _skill_output = response_text[:2000]
-                span.set_attribute(SpanAttributes.OUTPUT_VALUE, _skill_output)
-                if len(response_text) > 2000:
-                    span.set_attribute("truncated", True)
+                    _skill_output = response_text[:2000]
+                    span.set_attribute(SpanAttributes.OUTPUT_VALUE, _skill_output)
+                    if len(response_text) > 2000:
+                        span.set_attribute("truncated", True)
 
-                next_skill = self._extract_next_skill(response_text, skill.next_skills)
-                if next_skill:
-                    span.set_attribute("skill.next_skill", next_skill)
+                    next_skill = self._extract_next_skill(response_text, skill.next_skills)
+                    if next_skill:
+                        span.set_attribute("skill.next_skill", next_skill)
 
             if next_skill:
                 previous = active
