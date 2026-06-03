@@ -419,42 +419,12 @@ class MemoryService:
         return "\n\n".join(parts) if parts else "No vault data available."
 
     def _gather_relevant_knowledge(self, conversation: dict) -> str:
-        """Gather preferences and knowledge relevant to the conversation."""
-        parts = []
+        """B1 (P3) — auto-dumping retired.
 
-        pref_dir = self.vault_path / "00-system" / "preferences"
-        if pref_dir.exists():
-            for pref_file in pref_dir.glob("*.md"):
-                try:
-                    rel_path = str(pref_file.relative_to(self.vault_path))
-                    data = self.vault.read_file(rel_path)
-                    name = data["metadata"].get("name", pref_file.stem)
-                    content = data["content"].strip()
-                    if content:
-                        parts.append(f"[Preference: {name}]\n{content}")
-                except Exception:
-                    continue
-
-        # items_referenced retired in P3 — knowledge auto-dump removed (T4 will delete this block)
-        items: list[str] = []
-        if items:
-            search_terms = set()
-            for ref in items:
-                stem = Path(ref).stem.replace("-", " ")
-                search_terms.add(stem)
-
-            for term in search_terms:
-                for result in self.search_knowledge(term, limit=2):
-                    try:
-                        data = self.vault.read_file(result["path"])
-                        name = data["metadata"].get("name", "")
-                        content = data["content"].strip()
-                        if content:
-                            parts.append(f"[Knowledge: {name}]\n{content}")
-                    except Exception:
-                        continue
-
-        return "\n\n".join(parts) if parts else ""
+        The agent calls `search_knowledge` explicitly when it needs notes. Preferences
+        will get their own list_preferences tool in a later P when populated.
+        """
+        return ""
 
     # -- Graph Index (Task 4) --------------------------------------------------
 

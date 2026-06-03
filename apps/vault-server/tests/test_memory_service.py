@@ -325,10 +325,23 @@ class TestContextAssembly:
         ctx = memory_service.assemble_context(123456)
         assert "task" in ctx.vault_snapshot.lower() or "habit" in ctx.vault_snapshot.lower()
 
-    def test_assemble_context_includes_preferences(self, memory_service):
+    def test_assemble_context_knowledge_is_empty(self, memory_service):
+        """B1 (P3): _gather_relevant_knowledge returns "" unconditionally; no auto-dump."""
         memory_service.update_preference("Test pref", "Some observation")
         ctx = memory_service.assemble_context(123456)
-        assert "Test pref" in ctx.knowledge or "test pref" in ctx.knowledge.lower()
+        assert ctx.knowledge == ""
+
+
+def test_assemble_context_does_not_auto_dump_knowledge(memory_service):
+    """B1: knowledge content no longer leaks into the system prompt."""
+    # Seed a knowledge note that previous behavior would have surfaced
+    notes_dir = memory_service.vault_path / "60-knowledge" / "notes"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    (notes_dir / "ai-lecture.md").write_text(
+        "---\nname: ai-lecture\ntype: knowledge\ntags: [ai]\n---\n\nLecture body text."
+    )
+    context = memory_service.assemble_context(chat_id=42)
+    assert context.knowledge == ""
 
 
 class TestConversationDecay:
