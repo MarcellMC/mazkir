@@ -69,4 +69,12 @@ class RouterService:
                 reason=f"fallback: router picked unknown skill {picked!r}",
             )
 
+        logger.info(
+            "router_pick",
+            extra={
+                "event_type": "router_pick",
+                "skill": picked,
+                "reason": reason,
+            },
+        )
         return RouterDecision(skill=picked, reason=reason)

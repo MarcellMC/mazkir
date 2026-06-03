@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 
 import anthropic
 
@@ -100,6 +101,9 @@ class ClaudeService:
             messages=msgs,
         )
         text = response.content[0].text.strip()
-        if text.startswith("```"):
-            text = text.strip("`").lstrip("json").strip()
+        # Extract the first JSON object, ignoring any surrounding markdown fences
+        # or trailing prose the model may append.
+        m = re.search(r"\{.*?\}", text, re.DOTALL)
+        if m:
+            text = m.group(0)
         return json.loads(text)
