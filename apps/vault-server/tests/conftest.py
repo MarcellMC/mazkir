@@ -1,7 +1,14 @@
+import os
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 from src.services.vault_service import VaultService
+
+
+@pytest.fixture(autouse=True)
+def _isolate_audit_log(tmp_path, monkeypatch):
+    """Make sure tests don't write to the shared data/logs/tool-calls.jsonl."""
+    monkeypatch.setenv("MAZKIR_AUDIT_LOG_PATH", str(tmp_path / "audit-test.jsonl"))
 
 
 # --- Template contents (copied from memory/00-system/templates/) ---

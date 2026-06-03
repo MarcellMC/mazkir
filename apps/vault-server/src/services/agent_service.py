@@ -19,6 +19,7 @@ from src.tracing_setup import fs_span
 from src.services.claude_service import ClaudeService
 from src.services.hooks import register_hook, run_pre_hooks, run_post_hooks
 from src.services.hooks.validate_schema import validate_schema as _validate_schema_hook
+from src.services.hooks.audit_log import audit_log as _audit_log_hook
 from src.services.memory_service import MemoryService
 from src.services.preview import register_preview_fn, render_preview
 from src.services.skill_executor import SkillExecutor
@@ -152,6 +153,7 @@ class AgentService:
         self.tools = self._register_tools()
         # Register built-in hooks (idempotent — safe to call multiple times)
         register_hook("validate_schema", _validate_schema_hook)
+        register_hook("audit_log", _audit_log_hook)
         # Register preview functions for destructive tools (idempotent)
         _register_destructive_previews()
         # Instantiate the skill loop orchestrator when skills are enabled.
@@ -734,6 +736,10 @@ class AgentService:
         for name, entry in tools.items():
             if "post_hooks" not in entry:
                 entry["post_hooks"] = []
+        for entry in tools.values():
+            if entry["risk"] in ("write", "destructive"):
+                if "audit_log" not in entry["post_hooks"]:
+                    entry["post_hooks"] = entry["post_hooks"] + ["audit_log"]
         return tools
 
     def _tool_schemas(self) -> list[dict]:
