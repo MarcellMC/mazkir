@@ -780,22 +780,28 @@ class AgentService:
         session_id = str(chat_id)
         user_id = str(chat_id)
         with using_attributes(session_id=session_id, user_id=user_id):
+            _input_text = (text or "")[:2000]
             with _tracer.start_as_current_span(
                 "agent.handle_message",
                 attributes={
                     SpanAttributes.OPENINFERENCE_SPAN_KIND: "AGENT",
                     SpanAttributes.SESSION_ID: session_id,
                     SpanAttributes.USER_ID: user_id,
-                    SpanAttributes.INPUT_VALUE: text or "",
+                    SpanAttributes.INPUT_VALUE: _input_text,
                     SpanAttributes.INPUT_MIME_TYPE: "text/plain",
                     "chat_id": chat_id,
                     "attachment_count": len(attachments or []),
                 },
             ) as span:
+                if len(text or "") > 2000:
+                    span.set_attribute("truncated", True)
                 result = self._handle_message_inner(
                     text, chat_id, attachments, reply_to, forwarded_from
                 )
-                span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.response)
+                _output_text = result.response[:2000]
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, _output_text)
+                if len(result.response) > 2000:
+                    span.set_attribute("truncated", True)
                 span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, "text/plain")
                 span.set_attribute(
                     SpanAttributes.METADATA,
@@ -908,14 +914,19 @@ class AgentService:
                     SpanAttributes.OPENINFERENCE_SPAN_KIND: "AGENT",
                     SpanAttributes.SESSION_ID: session_id,
                     SpanAttributes.USER_ID: user_id,
-                    SpanAttributes.INPUT_VALUE: user_response,
+                    SpanAttributes.INPUT_VALUE: user_response[:2000],
                     SpanAttributes.INPUT_MIME_TYPE: "text/plain",
                     "chat_id": chat_id,
                     "action_id": action_id,
                 },
             ) as span:
+                if len(user_response) > 2000:
+                    span.set_attribute("truncated", True)
                 result = self._handle_confirmation_inner(chat_id, action_id, user_response)
-                span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.response)
+                _conf_output = result.response[:2000]
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, _conf_output)
+                if len(result.response) > 2000:
+                    span.set_attribute("truncated", True)
                 span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, "text/plain")
                 span.set_status(Status(StatusCode.OK))
                 return result
@@ -1035,14 +1046,19 @@ class AgentService:
 
         for iter_num in range(max_iterations):
             iters = iter_num + 1
+            _last_msg = messages[-1] if messages else {}
+            _last_content = str(_last_msg.get("content", ""))[:2000]
             with _tracer.start_as_current_span(
                 "agent.loop",
                 attributes={
                     SpanAttributes.OPENINFERENCE_SPAN_KIND: "CHAIN",
                     "iteration": iter_num,
+                    SpanAttributes.INPUT_VALUE: _last_content,
                 },
             ):
                 _loop_span = _otel_trace.get_current_span()
+                if len(str(_last_msg.get("content", ""))) > 2000:
+                    _loop_span.set_attribute("truncated", True)
                 _prompt_chars = len(system) + (len(cache_static_prefix) if cache_static_prefix else 0)
                 _loop_span.set_attribute("system_prompt.token_estimate", _prompt_chars // 4)
 
@@ -1065,6 +1081,14 @@ class AgentService:
                     )
 
                 stop_reason = response.stop_reason
+
+                _first_text = ""
+                for _block in response.content:
+                    if hasattr(_block, "text"):
+                        _first_text = _block.text[:2000]
+                        break
+                _loop_output = f"stop_reason={stop_reason}; {_first_text}"
+                _loop_span.set_attribute(SpanAttributes.OUTPUT_VALUE, _loop_output)
 
                 if stop_reason == "end_turn":
                     logger.info(
@@ -1544,13 +1568,16 @@ class AgentService:
         entry = self.tools.get(name, {})
         risk = entry.get("risk", "unknown")
         schema = entry.get("schema", {}) or {}
+        _tool_input_str = json.dumps(_sanitize_params(params))[:2000]
         attrs: dict[str, Any] = {
             SpanAttributes.OPENINFERENCE_SPAN_KIND: "TOOL",
             SpanAttributes.TOOL_NAME: name,
-            SpanAttributes.INPUT_VALUE: json.dumps(_sanitize_params(params)),
+            SpanAttributes.INPUT_VALUE: _tool_input_str,
             SpanAttributes.INPUT_MIME_TYPE: "application/json",
             "tool.risk": risk,
         }
+        if len(json.dumps(_sanitize_params(params))) > 2000:
+            attrs["truncated"] = True
         if schema.get("description"):
             attrs[SpanAttributes.TOOL_DESCRIPTION] = schema["description"]
         if schema.get("input_schema"):
@@ -1563,7 +1590,10 @@ class AgentService:
             result = self._execute_tool_inner(name, params, risk)
             if isinstance(result, dict):
                 summary = _summarize_result(result)
-                span.set_attribute(SpanAttributes.OUTPUT_VALUE, json.dumps(summary))
+                _tool_output_str = json.dumps(summary)[:2000]
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, _tool_output_str)
+                if len(json.dumps(summary)) > 2000:
+                    span.set_attribute("truncated", True)
                 span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, "application/json")
             span.set_status(Status(StatusCode.OK))
             return result

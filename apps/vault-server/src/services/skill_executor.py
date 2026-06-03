@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from openinference.semconv.trace import SpanAttributes
 from opentelemetry import trace as _otel_trace
 
 from src.services.skill_registry import Skill
@@ -103,14 +104,18 @@ class SkillExecutor:
                 cache_static_prefix = None
                 system = self._build_skill_system_prompt(skill, context)
 
+            _skill_input = user_msg[:2000]
             with _tracer.start_as_current_span(
                 f"skill.{skill.name}",
                 attributes={
                     "skill.name": skill.name,
                     "skill.previous": previous or "",
                     "skill.routing_reason": reason,
+                    SpanAttributes.INPUT_VALUE: _skill_input,
                 },
             ) as span:
+                if len(user_msg) > 2000:
+                    span.set_attribute("truncated", True)
                 response_text, stop_reason = self._run_loop(
                     chat_id=chat_id,
                     log_text=user_msg,
@@ -120,6 +125,11 @@ class SkillExecutor:
                     max_iterations=skill.max_iterations,
                     cache_static_prefix=cache_static_prefix,
                 )
+
+                _skill_output = response_text[:2000]
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, _skill_output)
+                if len(response_text) > 2000:
+                    span.set_attribute("truncated", True)
 
                 next_skill = self._extract_next_skill(response_text, skill.next_skills)
                 if next_skill:
