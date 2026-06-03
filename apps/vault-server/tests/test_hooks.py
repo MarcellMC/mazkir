@@ -141,3 +141,26 @@ def test_validate_schema_rejects_wrong_type():
     result = validate_schema({"updates": '{"key": "value"}'}, ctx)
     assert result is not None
     assert result["error"]["code"] == "SCHEMA_INVALID"
+
+
+def test_execute_tool_runs_post_hooks_after_handler():
+    """Post-hooks run after a successful handler, receiving (params, output, ctx)."""
+    from src.services.agent_service import AgentService
+    from src.services.hooks import register_hook, HOOK_REGISTRY
+    from unittest.mock import MagicMock
+
+    HOOK_REGISTRY.clear()
+    calls = []
+    register_hook("audit", lambda p, o, c: calls.append(("audit", p, o)))
+
+    claude, vault, memory = MagicMock(), MagicMock(), MagicMock()
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=None, events=None)
+    agent.tools["list_tasks"]["post_hooks"] = ["audit"]
+    agent.tools["list_tasks"]["handler"] = lambda p: {"ok": True, "data": {"tasks": []}, "_items": []}
+    agent.tools["list_tasks"]["pre_hooks"] = []
+
+    result = agent._execute_tool_inner("list_tasks", {}, risk="safe")
+    assert result["ok"] is True
+    assert len(calls) == 1
+    assert calls[0][0] == "audit"
+    assert calls[0][2]["data"]["tasks"] == []

@@ -17,7 +17,7 @@ from openinference.semconv.trace import SpanAttributes
 from src.logging_setup import emit_agent_turn
 from src.tracing_setup import fs_span
 from src.services.claude_service import ClaudeService
-from src.services.hooks import register_hook, run_pre_hooks
+from src.services.hooks import register_hook, run_pre_hooks, run_post_hooks
 from src.services.hooks.validate_schema import validate_schema as _validate_schema_hook
 from src.services.memory_service import MemoryService
 from src.services.preview import register_preview_fn, render_preview
@@ -718,6 +718,9 @@ class AgentService:
         for name, entry in tools.items():
             if "confidence_threshold" not in entry:
                 entry["confidence_threshold"] = _confidence_threshold_for(entry["risk"])
+        for name, entry in tools.items():
+            if "post_hooks" not in entry:
+                entry["post_hooks"] = []
         return tools
 
     def _tool_schemas(self) -> list[dict]:
@@ -1611,6 +1614,11 @@ class AgentService:
             # Legacy success shape: extract _items if present, treat rest as data
             items = raw.pop("_items", []) if isinstance(raw, dict) else []
             result = ok(raw if isinstance(raw, dict) else {"value": raw}, items=items)
+
+        # Post-hooks: run after a successful handler, receiving (params, output, ctx)
+        post_hooks = tool.get("post_hooks", [])
+        if post_hooks:
+            run_post_hooks(post_hooks, params, result, ctx)
 
         duration_ms = int((time.monotonic() - start) * 1000)
         status = "error" if isinstance(result, dict) and result.get("ok") is False else "ok"
