@@ -21,6 +21,7 @@ from src.services.hooks import register_hook, run_pre_hooks, run_post_hooks
 from src.services.hooks.validate_schema import validate_schema as _validate_schema_hook
 from src.services.memory_service import MemoryService
 from src.services.preview import register_preview_fn, render_preview
+from src.services.skill_executor import SkillExecutor
 from src.services.tool_response import ErrorCode, err, ok
 from src.services.vault_service import VaultService
 
@@ -153,6 +154,18 @@ class AgentService:
         register_hook("validate_schema", _validate_schema_hook)
         # Register preview functions for destructive tools (idempotent)
         _register_destructive_previews()
+        # Instantiate the skill loop orchestrator when skills are enabled.
+        # Use a lambda so monkeypatching agent._run_loop in tests still works.
+        if self.skill_registry is not None and self.router is not None:
+            self._skill_executor: SkillExecutor | None = SkillExecutor(
+                skill_registry=self.skill_registry,
+                router=self.router,
+                tools=self.tools,
+                run_loop=lambda *a, **kw: self._run_loop(*a, **kw),
+                build_base_system_prompt=self._build_system_prompt,
+            )
+        else:
+            self._skill_executor = None
 
     # ── Tool Registry ────────────────────────────────────────────
 
@@ -826,7 +839,7 @@ class AgentService:
 
         system = self._build_system_prompt(context)
 
-        if self.skill_registry is not None and self.router is not None:
+        if self._skill_executor is not None:
             return self._handle_via_skills(
                 chat_id, log_text, messages, system, context,
             )
@@ -847,90 +860,16 @@ class AgentService:
         system: str,
         context: Any,
     ) -> AgentResponse:
-        """Route to a skill via the router and run with handoff support (3-hop cap)."""
-        skills = self.skill_registry.list()  # type: ignore[union-attr]
-        decision = self.router.pick(  # type: ignore[union-attr]
+        """Delegate to SkillExecutor for router→skill→handoff loop."""
+        assert self._skill_executor is not None
+        result = self._skill_executor.run(
+            chat_id=chat_id,
             user_msg=log_text,
-            recent_messages=context.messages[-10:],
-            skills=skills,
+            context_messages=context.messages,
+            messages=messages,
+            context=context,
         )
-
-        MAX_HOPS = 3
-        visited: list[str] = []
-        response_text = ""
-        active: str | None = decision.skill
-        previous: str | None = None
-        reason: str = decision.reason
-
-        while active and len(visited) < MAX_HOPS:
-            if active in visited:
-                logger.warning("Skill cycle detected — stopping at %s", active)
-                break
-            visited.append(active)
-
-            skill = self.skill_registry.get(active)  # type: ignore[union-attr]
-            if skill is None:
-                logger.warning("Router/handoff requested unknown skill %r", active)
-                break
-
-            tool_schemas = self._skill_tool_schemas(skill)
-            skill_system = self._build_system_prompt_for_skill(skill, context)
-
-            with _tracer.start_as_current_span(
-                f"skill.{skill.name}",
-                attributes={
-                    "skill.name": skill.name,
-                    "skill.previous": previous or "",
-                    "skill.routing_reason": reason,
-                },
-            ) as skill_span:
-                response_text, _stop_reason = self._run_loop(
-                    chat_id=chat_id,
-                    log_text=log_text,
-                    messages=messages,
-                    system=skill_system,
-                    tool_schemas=tool_schemas,
-                    max_iterations=skill.max_iterations,
-                )
-
-            next_skill = self._extract_next_skill(response_text, skill.next_skills)
-            if next_skill:
-                skill_span.set_attribute("skill.next_skill", next_skill)
-            if next_skill:
-                previous = active
-                active = next_skill
-                reason = f"handoff from {previous}"
-            else:
-                active = None
-
-        return AgentResponse(response=response_text, iterations=len(visited))
-
-    def _skill_tool_schemas(self, skill: Any) -> list[dict]:
-        """Build the tool-schema list for a specific skill."""
-        return [
-            self.tools[t]["schema"]
-            for t in skill.tools
-            if t in self.tools
-        ]
-
-    def _build_system_prompt_for_skill(self, skill: Any, context: Any) -> str:
-        """Prepend the skill's own system prompt to the base vault prompt."""
-        base_prompt = self._build_system_prompt(context)
-        return f"{skill.system_prompt}\n\n{base_prompt}"
-
-    def _extract_next_skill(self, response_text: str, allowed: list[str]) -> str | None:
-        """Parse 'next_skill: <name>' from response_text if name is allowed."""
-        import re
-        m = re.search(r"next_skill:\s*([a-z_-]+)", response_text)
-        if not m:
-            return None
-        name = m.group(1)
-        if name not in allowed:
-            logger.warning(
-                "Skill emitted next_skill=%r not in allowed=%r", name, allowed
-            )
-            return None
-        return name
+        return AgentResponse(response=result.response_text, iterations=result.iterations)
 
     def handle_confirmation(
         self, chat_id: int, action_id: str, user_response: str,
