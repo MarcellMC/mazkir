@@ -23,21 +23,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from src.services.tracing_helpers import current_trace_id
+
 logger = logging.getLogger(__name__)
 
 MAX_STR_LEN = 200
-
-
-def _current_trace_id() -> Optional[str]:
-    """Inline trace_id lookup. Hoisted to tracing_helpers in T8."""
-    try:
-        from opentelemetry.trace import get_current_span
-        ctx = get_current_span().get_span_context()
-        if ctx.is_valid:
-            return format(ctx.trace_id, "032x")
-    except Exception:
-        pass
-    return None
 
 
 def _summarize_value(v: Any) -> Any:
@@ -86,7 +76,7 @@ def audit_log(params: dict, output: dict, ctx: Any) -> None:
             tool_name=tool_name,
             params=params,
             output=output,
-            trace_id=_current_trace_id(),
+            trace_id=current_trace_id(),
         )
         path = _log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
