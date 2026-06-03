@@ -883,7 +883,7 @@ class AgentService:
                     "skill.previous": previous or "",
                     "skill.routing_reason": reason,
                 },
-            ):
+            ) as skill_span:
                 response_text, _stop_reason = self._run_loop(
                     chat_id=chat_id,
                     log_text=log_text,
@@ -894,6 +894,8 @@ class AgentService:
                 )
 
             next_skill = self._extract_next_skill(response_text, skill.next_skills)
+            if next_skill:
+                skill_span.set_attribute("skill.next_skill", next_skill)
             if next_skill:
                 previous = active
                 active = next_skill
@@ -979,7 +981,7 @@ class AgentService:
                 params = dict(call["input"])
                 reasoning = params.get("_reasoning")
                 confidence, _ = self._check_confidence(call["name"], params)
-                result = self._execute_tool(call["name"], params)
+                result = self._execute_tool(call["name"], params, confidence=confidence, action="auto_execute")
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": call["id"],
@@ -1123,6 +1125,8 @@ class AgentService:
                             )
                             preview_texts[call["id"]] = preview_text
                             action = "needs_confirmation"
+                            _otel_trace.get_current_span().set_attribute("preview.tool", call["name"])
+                            _otel_trace.get_current_span().set_attribute("preview.text_length", len(preview_text))
                         if action == "auto_execute":
                             auto_execute.append(call)
                         else:
@@ -1151,7 +1155,7 @@ class AgentService:
                         executed = []
                         for call in auto_execute:
                             confidence, reasoning = gate_info[call["id"]]
-                            result = self._execute_tool(call["name"], call["input"])
+                            result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
                             items_referenced.extend(result.get("_items", []))
                             executed.append({
                                 "type": "tool_result",
@@ -1222,7 +1226,7 @@ class AgentService:
                     tool_results = []
                     for call in auto_execute:
                         confidence, reasoning = gate_info[call["id"]]
-                        result = self._execute_tool(call["name"], call["input"])
+                        result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
                         items_referenced.extend(result.get("_items", []))
                         tool_results.append({
                             "type": "tool_result",
@@ -1515,7 +1519,14 @@ class AgentService:
                 })
         return calls
 
-    def _execute_tool(self, name: str, params: dict) -> dict:
+    def _execute_tool(
+        self,
+        name: str,
+        params: dict,
+        *,
+        confidence: float | None = None,
+        action: str | None = None,
+    ) -> dict:
         entry = self.tools.get(name, {})
         risk = entry.get("risk", "unknown")
         schema = entry.get("schema", {}) or {}
@@ -1531,6 +1542,10 @@ class AgentService:
         if schema.get("input_schema"):
             attrs[SpanAttributes.TOOL_PARAMETERS] = json.dumps(schema["input_schema"])
         with _tracer.start_as_current_span("agent.tool_call", attributes=attrs) as span:
+            threshold = entry.get("confidence_threshold")
+            span.set_attribute("tool.confidence_threshold", float(threshold) if threshold is not None else 0.0)
+            span.set_attribute("tool.confidence_score", float(confidence) if confidence is not None else 1.0)
+            span.set_attribute("confirmation.required", action == "needs_confirmation")
             result = self._execute_tool_inner(name, params, risk)
             if isinstance(result, dict):
                 summary = _summarize_result(result)
