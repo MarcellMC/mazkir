@@ -364,59 +364,57 @@ class MemoryService:
             knowledge=knowledge,
         )
 
-    def _build_vault_snapshot(self, conversation: dict) -> str:
-        """Build a compact vault state summary for the system prompt."""
-        parts = []
+    def _build_vault_snapshot(self, conversation: dict | None = None) -> str:
+        """B2 (P3) — one-line summary of vault state.
 
+        Agent uses list_* tools for detail. The dynamic counts go into the
+        "dynamic tail" of the cached prompt; the per-item listing was bloat.
+        """
         try:
             tasks = self.vault.list_active_tasks()
-            if tasks:
-                # items_referenced retired in P3 — [referenced] marker removed (T5 rewrites snapshot)
-                referenced = set()
-                task_lines = []
-                for t in tasks:
-                    name = t["metadata"].get("name", Path(t["path"]).stem)
-                    priority = t["metadata"].get("priority", 3)
-                    due = t["metadata"].get("due_date", "no due date")
-                    ref_marker = " [referenced]" if t["path"] in referenced else ""
-                    task_lines.append(f"  - {name} (P{priority}, due: {due}){ref_marker}")
-                parts.append(f"Active tasks ({len(tasks)}):\n" + "\n".join(task_lines))
-        except Exception:
-            pass
-
-        try:
             habits = self.vault.list_active_habits()
-            if habits:
-                habit_items = []
-                for h in habits:
-                    name = h["metadata"].get("name", Path(h["path"]).stem)
-                    streak = h["metadata"].get("streak", 0)
-                    habit_items.append(f"{name} (streak {streak})")
-                parts.append("Habits: " + ", ".join(habit_items))
-        except Exception:
-            pass
-
-        try:
             goals = self.vault.list_active_goals()
-            if goals:
-                goal_items = []
-                for g in goals:
-                    name = g["metadata"].get("name", Path(g["path"]).stem)
-                    progress = g["metadata"].get("progress", 0)
-                    goal_items.append(f"{name} ({progress}%)")
-                parts.append("Goals: " + ", ".join(goal_items))
+        except Exception:
+            return "Vault: unavailable"
+
+        from datetime import date
+        today_str = date.today().isoformat()
+
+        overdue = 0
+        try:
+            overdue = sum(
+                1 for t in tasks
+                if (t["metadata"].get("due_date") or "") < today_str
+                and t["metadata"].get("status") == "active"
+                and t["metadata"].get("due_date")  # don't count "no due date" as overdue
+            )
         except Exception:
             pass
 
+        habits_done_today = 0
+        try:
+            habits_done_today = sum(
+                1 for h in habits
+                if h["metadata"].get("last_completed") == today_str
+            )
+        except Exception:
+            pass
+
+        tokens_today = 0
+        tokens_total = 0
         try:
             ledger = self.vault.read_token_ledger()
-            total = ledger["metadata"].get("total_tokens", 0)
-            today = ledger["metadata"].get("tokens_today", 0)
-            parts.append(f"Tokens: {today} earned today, {total} total")
+            tokens_today = ledger["metadata"].get("tokens_today", 0)
+            tokens_total = ledger["metadata"].get("total_tokens", 0)
         except Exception:
             pass
 
-        return "\n\n".join(parts) if parts else "No vault data available."
+        return (
+            f"Vault: {len(tasks)} active tasks ({overdue} overdue), "
+            f"{len(habits)} habits ({habits_done_today} done today), "
+            f"{len(goals)} active goals, "
+            f"{tokens_today} tokens today / {tokens_total} total"
+        )
 
     def _gather_relevant_knowledge(self, conversation: dict) -> str:
         """B1 (P3) — auto-dumping retired.

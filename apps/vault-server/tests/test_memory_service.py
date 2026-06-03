@@ -368,3 +368,17 @@ class TestConversationDecay:
         result = memory_service.load_conversation(123456)
         assert result["summary"] != ""
         assert result["message_count"] == 8
+
+
+def test_vault_snapshot_is_summary_line(memory_service):
+    """B2: snapshot reports counts, not per-item lists."""
+    snapshot = memory_service._build_vault_snapshot(conversation={})
+    # Single line, contains the four key cells
+    assert "active tasks" in snapshot
+    assert "habits" in snapshot
+    assert "goals" in snapshot
+    assert "tokens" in snapshot
+    # No per-item details: no markdown bullets, no priorities, no streak words
+    assert "- " not in snapshot
+    assert "P1" not in snapshot
+    assert "streak" not in snapshot
