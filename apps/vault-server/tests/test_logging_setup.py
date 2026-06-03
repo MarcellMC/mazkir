@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from opentelemetry import trace
@@ -91,3 +92,56 @@ def test_log_record_service_field_preserved(tmp_path: Path):
 
     record = _read_last_log_line(tmp_path)
     assert record.get("service") == "vault-server"
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for attach_trace_id_filter / _TraceIdFilter
+# ---------------------------------------------------------------------------
+
+
+def test_attach_trace_id_filter_adds_filter_to_handler():
+    """attach_trace_id_filter attaches a _TraceIdFilter instance to the handler."""
+    from src.logging_setup import attach_trace_id_filter, _TraceIdFilter
+
+    handler = logging.StreamHandler()
+    attach_trace_id_filter(handler)
+    assert any(isinstance(f, _TraceIdFilter) for f in handler.filters)
+
+
+def test_attach_trace_id_filter_is_idempotent():
+    """Calling attach_trace_id_filter twice doesn't add the filter twice."""
+    from src.logging_setup import attach_trace_id_filter, _TraceIdFilter
+
+    handler = logging.StreamHandler()
+    attach_trace_id_filter(handler)
+    attach_trace_id_filter(handler)
+    matching = [f for f in handler.filters if isinstance(f, _TraceIdFilter)]
+    assert len(matching) == 1
+
+
+def test_filter_sets_trace_id_from_current_trace_id():
+    """_TraceIdFilter.filter() sets record.trace_id to the value returned by current_trace_id()."""
+    from src.logging_setup import attach_trace_id_filter
+
+    handler = logging.StreamHandler()
+    attach_trace_id_filter(handler)
+    record = logging.LogRecord("test", logging.INFO, __file__, 0, "msg", (), None)
+
+    with patch("src.logging_setup.current_trace_id", return_value="abc123"):
+        for f in handler.filters:
+            f.filter(record)
+    assert record.trace_id == "abc123"  # type: ignore[attr-defined]
+
+
+def test_filter_sets_trace_id_to_none_outside_span():
+    """_TraceIdFilter.filter() sets record.trace_id to None when current_trace_id() returns None."""
+    from src.logging_setup import attach_trace_id_filter
+
+    handler = logging.StreamHandler()
+    attach_trace_id_filter(handler)
+    record = logging.LogRecord("test", logging.INFO, __file__, 0, "msg", (), None)
+
+    with patch("src.logging_setup.current_trace_id", return_value=None):
+        for f in handler.filters:
+            f.filter(record)
+    assert record.trace_id is None  # type: ignore[attr-defined]

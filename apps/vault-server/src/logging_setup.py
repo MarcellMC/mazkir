@@ -16,6 +16,8 @@ from typing import Any
 from opentelemetry import trace
 from pythonjsonlogger.json import JsonFormatter
 
+from src.services.tracing_helpers import current_trace_id
+
 
 SERVICE_NAME = "vault-server"
 
@@ -26,7 +28,17 @@ class _ServiceFilter(logging.Filter):
         return True
 
 
+class _TraceIdFilter(logging.Filter):
+    """Injects record.trace_id from the current OTel span context via current_trace_id()."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+        record.trace_id = current_trace_id()
+        return True
+
+
 class _TraceContextFilter(logging.Filter):
+    """Injects both trace_id and span_id into structured log records."""
+
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
         ctx = trace.get_current_span().get_span_context()
         if ctx.is_valid:
@@ -36,6 +48,14 @@ class _TraceContextFilter(logging.Filter):
             record.trace_id = None
             record.span_id = None
         return True
+
+
+def attach_trace_id_filter(handler: logging.Handler) -> None:
+    """Attach the _TraceIdFilter to a handler. Idempotent — calling twice is a no-op."""
+    for existing in handler.filters:
+        if isinstance(existing, _TraceIdFilter):
+            return
+    handler.addFilter(_TraceIdFilter())
 
 
 def configure_logging(log_level: str, logs_dir: Path) -> None:
