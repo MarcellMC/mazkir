@@ -253,6 +253,31 @@ class AgentService:
                 "risk": "write",
                 "pre_hooks": ["validate_schema"],
             },
+            "daily_add_task": {
+                "schema": {
+                    "name": "daily_add_task",
+                    "description": (
+                        "Add a checkbox task to today's daily note `## Tasks` section. "
+                        "Optional `scheduled_at` (HH:MM) and `duration_minutes` produce "
+                        "the inline `HH:MM — text (NNm)` annotation."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "scheduled_at": {"type": ["string", "null"], "description": "HH:MM"},
+                            "duration_minutes": {"type": ["integer", "null"]},
+                            "date": {"type": ["string", "null"], "description": "YYYY-MM-DD; default today"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["text"],
+                        "additionalProperties": False,
+                    },
+                },
+                "handler": self._tool_daily_add_task,
+                "risk": "write",
+            },
             "get_tokens": {
                 "schema": {
                     "name": "get_tokens",
@@ -2022,6 +2047,31 @@ class AgentService:
         return ok(
             {"path": result["path"], "section": result["section"]},
             items=[result["path"]],
+        )
+
+    def _tool_daily_add_task(self, params: dict) -> dict:
+        from src.services.daily_tasks import (
+            DailyTask, parse_tasks_section, render_tasks_section, replace_or_append_section,
+        )
+        import datetime as dt
+
+        date_str = params.get("date") or dt.date.today().isoformat()
+        daily = self.vault.read_daily_note(date_str)
+        body = daily["content"]
+
+        tasks = parse_tasks_section(body)
+        tasks.append(DailyTask(
+            text=params["text"],
+            state="unchecked",
+            scheduled_at=params.get("scheduled_at"),
+            duration_minutes=params.get("duration_minutes"),
+        ))
+        new_section = render_tasks_section(tasks)
+        new_body = replace_or_append_section(body, "Tasks", new_section)
+        self.vault.write_daily_note(date_str, new_body)
+        return ok(
+            {"date": date_str, "text": params["text"]},
+            items=[f"10-daily/{date_str}.md"],
         )
 
     def _tool_list_events(self, params: dict) -> dict:

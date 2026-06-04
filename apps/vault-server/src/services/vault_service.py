@@ -139,10 +139,37 @@ class VaultService:
             date = datetime.now(self.tz)
         return f"10-daily/{date.strftime('%Y-%m-%d')}.md"
 
-    def read_daily_note(self, date: Optional[datetime] = None) -> Dict:
-        """Read daily note for given date"""
-        path = self.get_daily_note_path(date)
-        return self.read_file(path)
+    def read_daily_note(self, date=None) -> Dict:
+        """Read daily note for given date.
+
+        Args:
+            date: datetime object, YYYY-MM-DD string, or None for today.
+        """
+        if isinstance(date, str):
+            from datetime import datetime as _dt
+            path = f"10-daily/{date}.md"
+        else:
+            path = self.get_daily_note_path(date)
+        try:
+            return self.read_file(path)
+        except FileNotFoundError:
+            return {"path": path, "metadata": {"type": "daily", "date": date or ""}, "content": ""}
+
+    def write_daily_note(self, date_str: str, content: str) -> Dict:
+        """Write body content to a daily note, preserving or creating frontmatter.
+
+        Args:
+            date_str: YYYY-MM-DD string
+            content: Markdown body (without frontmatter)
+        """
+        path = f"10-daily/{date_str}.md"
+        try:
+            existing = self.read_file(path)
+            metadata = existing["metadata"]
+        except FileNotFoundError:
+            metadata = {"type": "daily", "date": date_str}
+        self.write_file(path, metadata, content)
+        return {"path": path}
 
     def append_to_daily_section(
         self,
