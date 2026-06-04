@@ -1164,3 +1164,30 @@ def test_list_tasks_flags_overdue(mock_services):
     result = agent._tool_list_tasks({})
     assert len(result["data"]["overdue"]) == 1
     assert result["data"]["overdue"][0]["name"] == "Old"
+
+
+def test_create_task_post_hook_includes_sync_to_calendar(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    assert "sync_to_calendar" in agent.tools["create_task"]["post_hooks"]
+    assert "sync_to_calendar" in agent.tools["update_habit"]["post_hooks"]
+    assert "sync_to_calendar" in agent.tools["complete_task"]["post_hooks"]
+    # safe (read) tools should NOT have it
+    assert "sync_to_calendar" not in agent.tools["list_tasks"].get("post_hooks", [])
+
+
+def test_execute_tool_includes_calendar_in_ctx(mock_services, monkeypatch):
+    """When a tool runs, calendar is in the ctx for hooks to use."""
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+
+    captured = {}
+
+    def _fake_execute(*, name, params, risk, tools, ctx):
+        captured["ctx"] = ctx
+        return {"ok": True, "data": {}, "_items": []}
+
+    monkeypatch.setattr("src.services.tool_executor.execute_tool", _fake_execute)
+    agent._execute_tool_inner("list_tasks", {}, risk="safe")
+    assert "calendar" in captured["ctx"]
+    assert captured["ctx"]["calendar"] is calendar

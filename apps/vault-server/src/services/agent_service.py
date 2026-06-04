@@ -21,6 +21,7 @@ from src.services.claude_service import ClaudeService
 from src.services.hooks import register_hook, run_pre_hooks, run_post_hooks
 from src.services.hooks.validate_schema import validate_schema as _validate_schema_hook
 from src.services.hooks.audit_log import audit_log as _audit_log_hook
+from src.services.hooks.sync_to_calendar import sync_to_calendar as _sync_to_calendar_hook
 from src.services.memory_service import MemoryService
 from src.services.preview import register_preview_fn, render_preview
 from src.services.skill_executor import SkillExecutor
@@ -155,6 +156,7 @@ class AgentService:
         # Register built-in hooks (idempotent — safe to call multiple times)
         register_hook("validate_schema", _validate_schema_hook)
         register_hook("audit_log", _audit_log_hook)
+        register_hook("sync_to_calendar", _sync_to_calendar_hook)
         # Register preview functions for destructive tools (idempotent)
         _register_destructive_previews()
         # Instantiate the skill loop orchestrator when skills are enabled.
@@ -846,6 +848,16 @@ class AgentService:
         for name in SAFE_WRITES:
             if name in tools:
                 tools[name]["safe_for_parallel"] = True
+        # Attach sync_to_calendar post-hook to all task/habit write tools.
+        SYNC_TOOLS = {
+            "create_task", "update_task", "complete_task",
+            "archive_task", "delete_task",
+            "create_habit", "update_habit", "complete_habit",
+            "delete_habit",
+        }
+        for name in SYNC_TOOLS:
+            if name in tools and "sync_to_calendar" not in tools[name].get("post_hooks", []):
+                tools[name].setdefault("post_hooks", []).append("sync_to_calendar")
         return tools
 
     def _tool_schemas(self) -> list[dict]:
@@ -1719,7 +1731,7 @@ class AgentService:
             params=params,
             risk=risk,
             tools=self.tools,
-            ctx={"vault": self.vault, "memory": self.memory},
+            ctx={"vault": self.vault, "memory": self.memory, "calendar": self.calendar},
         )
 
     def _execute_tool_batch(self, calls: list[dict], gate_info: dict) -> list[tuple[dict, float, str | None, dict]]:
