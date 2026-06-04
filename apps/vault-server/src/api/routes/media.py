@@ -15,7 +15,12 @@ async def get_media_file(date: str, filename: str):
     """Serve a photo file from data/media/{date}/{filename}."""
     file_path = settings.media_path / date / filename
     if not file_path.is_file():
-        raise HTTPException(404, f"File not found: {date}/{filename}")
+        # Fallback: search media tree for matching filename (supports wikilink-style refs)
+        matches = list(settings.media_path.rglob(filename))
+        if matches:
+            file_path = matches[0]
+        else:
+            raise HTTPException(404, f"File not found: {date}/{filename}")
     if not file_path.resolve().is_relative_to(settings.media_path.resolve()):
         raise HTTPException(403, "Access denied")
     return FileResponse(file_path)
