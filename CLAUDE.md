@@ -60,6 +60,9 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   │   │       ├── resolver.py       # Tool input resolution + schema validation
 │   │   │       ├── tool_response.py  # Typed tool result helpers
 │   │   │       ├── tracing_helpers.py # with_span_status ctx mgr + span I/O helpers (P3)
+│   │   │       ├── tool_registry.py  # Risk-class thresholds + pre/post hook stamps + preview flag (P4)
+│   │   │       ├── tool_executor.py  # Per-call execution path (pre-hooks → handler → post-hooks → error override) (P4)
+│   │   │       ├── daily_tasks.py    # DailyTasksService: parse/render ## Tasks section (P4)
 │   │   │       ├── hooks/            # Pre/post tool hook registry
 │   │   │       ├── calendar_service.py # Google Calendar sync
 │   │   │       ├── timeline_service.py # Google Takeout parser
@@ -68,6 +71,8 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   │   │       ├── exif_service.py   # EXIF metadata extraction (Pillow)
 │   │   │       ├── generation_service.py # Replicate image generation
 │   │   │       └── imagery_service.py  # Wikimedia Commons geosearch
+│   │   ├── scripts/
+│   │   │   └── migrate_media_to_vault.py # Migrated 16 date dirs + rewrote 10 daily-note embeds (P4)
 │   │   ├── pyproject.toml
 │   │   └── .env
 │   │
@@ -93,7 +98,8 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   ├── 00-system/
 │   │   ├── templates/                 # Note templates
 │   │   ├── conversations/             # Short-term memory (per day/chat)
-│   │   └── preferences/              # Inferred user patterns
+│   │   ├── preferences/              # Inferred user patterns
+│   │   └── media/                     # Photo attachments per day ({YYYY-MM-DD}/*.jpg) — gitignored in vault (P4)
 │   ├── 10-daily/                      # Daily notes
 │   ├── 20-habits/                     # Habit files
 │   ├── 30-goals/                      # Goal files
@@ -109,7 +115,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │       └── tsconfig.json
 │
 ├── data/                              # External data (gitignored)
-│   ├── media/                         # Saved photo attachments ({YYYY-MM-DD}/*.jpg + metadata.json)
+│   ├── media/                         # [LEGACY] Old photo location — migrated to memory/00-system/media/ in P4
 │   ├── events/                        # Persisted merged events ({YYYY-MM-DD}.json)
 │   ├── timeline/                      # Google Takeout Semantic Location History
 │   └── logs/                          # Structured JSON logs (vault-server.jsonl, agent-turns.jsonl, telegram-bot.jsonl, tool-calls.jsonl)
@@ -130,7 +136,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 ## Current Capabilities
 
 ### Telegram Bot Commands
-- `/day` - Today's daily note with habits, calendar events, and notes (photo captions)
+- `/day` - Time-based feed: `GET /day` returns `{date, tokens_today, tokens_total, schedule[], notes[]}`. Schedule items sorted by start time, sourced from `calendar` (filtered by `GOOGLE_CALENDAR_INCLUDE`), `daily-task` (timed checkboxes from today's daily note), or `habit` (habits with `scheduled_at`). Notes parsed from `## Notes` section. Standalone tasks/habits arrays dropped — use `/tasks` and `/habits`.
 - `/tasks` - Active tasks by priority
 - `/habits` - Habit tracker with streaks
 - `/goals` - Goals with progress bars
@@ -138,7 +144,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 - `/calendar` - Today's schedule from Google Calendar
 - `/sync_calendar` - Sync habits/tasks to Google Calendar
 - NL messages routed through agent loop with conversational context, multi-step actions, and knowledge recall
-- Photo messages — downloaded, EXIF extracted (GPS/timestamp/camera), saved to `data/media/` with sidecar `metadata.json`, sent to Claude vision with EXIF context
+- Photo messages — downloaded, EXIF extracted (GPS/timestamp/camera), saved to `memory/00-system/media/{YYYY-MM-DD}/` (vault, gitignored) with sidecar `metadata.json`, embedded in daily note as Obsidian wikilinks (`![[photo.jpg]]`), sent to Claude vision with EXIF context
 - Location/venue messages — coordinates passed through agent loop
 - Reply-to context and forwarded messages — included as context for the agent
 
@@ -149,12 +155,14 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 ### vault-server API Endpoints
 - `POST /message` - Agent loop: `{text, chat_id, attachments?, reply_to?, forwarded_from?}` → multi-turn tool-use with confidence gate + Claude vision
 - `POST /message/confirm` - Confirmation for low-confidence actions: `{chat_id, action_id, response}`
+- `GET /day` - Time-based feed: `{date, tokens_today, tokens_total, schedule[], notes[]}` — schedule sorted by start time, sources: calendar (filtered by `GOOGLE_CALENDAR_INCLUDE`, default `Mazkir` only), daily-task (timed checkboxes), habit (habits with `scheduled_at`)
 - `GET /timeline/{date}` - Google Takeout location history for a date
 - `POST /generate` - AI image generation via Replicate (SDXL)
 - `GET /events/{date}` - Auto-merges calendar+timeline+habits+daily notes, reconciles with persisted data (preserving photos/assets/manual events), returns enriched events
 - `POST /events/{date}/refresh` - Force-refresh events from sources (same as GET, explicit intent)
 - `PATCH /events/{date}/{event_id}` - Update a single persisted event
 - `GET /imagery/search?lat=&lng=` - Wikimedia Commons geosearch for location imagery
+- `GET /media/{date}/{file}` - Serve photo from vault media dir; falls back to vault-wide filename search when date URL doesn't match storage location
 
 ## Data Schemas
 
@@ -171,7 +179,7 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 
 ### Architecture
 - **vault-server** owns ALL business logic (vault CRUD, Claude AI, calendar sync, timeline, generation)
-- **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 27 registered tools (incl. `attach_to_daily`, `list_events`, `attach_photo_to_event`, `create_event`, `update_event`, `update_task`, `update_habit`, `update_goal`, `read_daily_section`, `edit_daily_section`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`), max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation, Claude vision for photo messages with EXIF context. All tool calls return `{ok, data|error, _items}`; agent reacts to `error.code` (PATH_NOT_FOUND, AMBIGUOUS_MATCH, SCHEMA_INVALID, STATE_CONFLICT, ALREADY_DONE, EXTERNAL_FAILURE, AUTH_REQUIRED, CANCELLED_BY_USER).
+- **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 31 registered tools (incl. `attach_to_daily`, `list_events`, `attach_photo_to_event`, `create_event`, `update_event`, `update_task`, `update_habit`, `update_goal`, `read_daily_section`, `edit_daily_section`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`, `daily_add_task`, `daily_set_task_state`, `daily_rollover`, `promote_daily_task`), max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation, Claude vision for photo messages with EXIF context. All tool calls return `{ok, data|error, _items}`; agent reacts to `error.code` (PATH_NOT_FOUND, AMBIGUOUS_MATCH, SCHEMA_INVALID, STATE_CONFLICT, ALREADY_DONE, EXTERNAL_FAILURE, AUTH_REQUIRED, CANCELLED_BY_USER).
 - **Events persistence** (`EventsService`): merged events stored in `data/events/{date}.json`, supports create/attach/refresh with source-ID matching to preserve photos across re-merges
 - **EXIF extraction** (`exif_service`): extracts GPS coordinates, timestamp, camera info from photo EXIF data using Pillow
 - **Memory system** (`MemoryService`): short-term (conversation sliding window, 20 messages + decay), mid-term (vault state snapshot in system prompt), long-term (knowledge graph + keyword search)
@@ -180,13 +188,18 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 - **@mazkir/shared-types** provides TypeScript interfaces shared between telegram-bot and telegram-web-app
 - **Skill loop:** `AgentService.handle_message` dispatches via `RouterService` (Haiku LLM classifier) to one of three skills loaded from `memory/00-system/mazkir-skills/` (`capture`, `manager`, `recall`). Skills chain via a `next_skill: <name>` token in their reply; the loop caps at 3 hops with cycle detection. Each skill has its own model, tool subset, and system prompt. When `skill_registry`/`router` aren't configured, `AgentService` falls back to a single-loop legacy path with all tools loaded.
 - **Skill executor module (P3):** Skill loop extracted to `services/skill_executor.py`. `AgentService` constructs a `SkillExecutor` when both `skill_registry` and `router` are present and delegates the per-turn loop to it.
+- **Two-tier tasks (P4):** Default capture is a `- [ ]` line in the daily note's `## Tasks` section. Multi-day items promote to `40-tasks/active/{slug}.md` files via `promote_daily_task`. Daily-tier tools: `daily_add_task`, `daily_set_task_state` (check/uncheck/move), `daily_rollover` (yesterday's unfinished → today, anchored to first-original date via the `moved from [[...]]` chain), `promote_daily_task`. The `## Tasks` section is parsed/rendered by `DailyTasksService` (`services/daily_tasks.py`).
+- **`/day` as time-based feed (P4):** `GET /day` returns `{date, tokens_today, tokens_total, schedule[], notes[]}`. Schedule items have `{start, end?, title, source, completed, calendar_name?}` sorted by start time. Source is `calendar` (filtered by `GOOGLE_CALENDAR_INCLUDE`, defaults to `Mazkir` only — drops holidays/subscribed calendars), `daily-task` (timed checkboxes from today's daily note), or `habit` (habits with `scheduled_at`). Notes are parsed from today's `## Notes` section. Standalone `tasks`/`habits` arrays dropped — use `/tasks` and `/habits` for those.
+- **Media in vault (P4):** Default `MEDIA_PATH` is `~/dev/mazkir/memory/00-system/media/{YYYY-MM-DD}/`. Daily-note photo embeds are Obsidian wikilinks (`![[photo.jpg]]`). The folder is gitignored in the nested vault repo (binaries don't bloat git). The `/media/{date}/{file}` route falls back to vault-wide filename search when the date URL doesn't match storage location. Migration script at `apps/vault-server/scripts/migrate_media_to_vault.py` moved 16 date dirs + rewrote 10 daily-note embeds.
+- **`list_tasks` returns grouped object (P4):** `{daily_pending, daily_done_today, file_tier_by_priority (dict keyed by int priority), overdue (file-tier tasks past due_date with status=active)}`. Replaces the flat list.
+- **Tool registry + executor extracted (P4):** `services/tool_registry.py` owns risk-class threshold defaults + pre/post hook stamps + preview flag. `services/tool_executor.py` owns the per-call execution path (pre-hooks → handler → post-hooks → status propagation → error code override). `AgentService` delegates both.
 - **Context assembly (P3):** `MemoryService.assemble_context` returns the conversation sliding window + a one-line vault summary. Knowledge auto-dump and `items_referenced` retired in P3; the agent calls `search_knowledge` explicitly when it needs notes. `_build_vault_snapshot` returns a single line of counts (active tasks / habits / goals / tokens), not per-item listings.
 - **Prompt caching (P3):** The system prompt is split into a static prefix (active skill's system prompt + base guidelines + tool docs — identical across turns) and a dynamic tail (current date + vault summary line — changes each turn). The static prefix is sent with Anthropic's `cache_control: ephemeral`. Watch `llm.token_count.prompt_cached_read` in Phoenix to confirm cache hits on repeated calls from the same chat.
 - New features → add route to vault-server, then add UI in telegram bot or web app
 
 ### Agent tool risk levels
 - **safe** (read-only): `list_tasks`, `list_habits`, `list_goals`, `get_daily`, `get_tokens`, `search_knowledge`, `get_related`, `read_daily_section`, `list_events`
-- **write** (auto-execute at ≥0.85 confidence): `create_task`, `create_habit`, `create_goal`, `update_task`, `update_habit`, `update_goal`, `save_knowledge`, `attach_to_daily`, `edit_daily_section`, `attach_photo_to_event`, `create_event`, `update_event`
+- **write** (auto-execute at ≥0.85 confidence): `create_task`, `create_habit`, `create_goal`, `update_task`, `update_habit`, `update_goal`, `save_knowledge`, `attach_to_daily`, `edit_daily_section`, `attach_photo_to_event`, `create_event`, `update_event`, `daily_add_task`, `daily_set_task_state`, `daily_rollover`, `promote_daily_task`
 - **destructive** (auto-execute at ≥0.95 confidence): `complete_task`, `complete_habit`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`
 - Confidence thresholds are per-tool with risk-class defaults: `safe` ungated, `write` ≥0.85, `destructive` ≥0.95.
 - Destructive tools always render a preview ("Would delete X / Would archive Y") and require explicit yes/no confirmation before execution, regardless of confidence.
@@ -268,3 +281,4 @@ curl http://localhost:8000/events/2026-03-05
 - **Photo Events Pipeline Design:** `docs/plans/2026-03-05-photo-events-pipeline-design.md`
 - **Photo Events Pipeline Plan:** `docs/plans/2026-03-05-photo-events-pipeline-plan.md`
 - **Skill Definitions:** `memory/00-system/mazkir-skills/*.md` — Mazkir sub-agent skill definitions (capture / manager / recall)
+- **P4 Daily Tier + Media Plan:** `docs/plans/2026-06-04-mazkir-p4-daily-tier-media-plan.md`
