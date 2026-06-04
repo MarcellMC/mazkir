@@ -325,6 +325,33 @@ class AgentService:
                 "handler": self._tool_daily_rollover,
                 "risk": "write",
             },
+            "promote_daily_task": {
+                "schema": {
+                    "name": "promote_daily_task",
+                    "description": (
+                        "Convert a daily-tier checkbox task into a file-tier task in "
+                        "40-tasks/active/. Walks the `moved from [[...]]` chain to find "
+                        "the original creation date and uses it for the new file's "
+                        "`created` field. Replaces the daily line with a wikilink "
+                        "[[<slug>]] to the new file."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string", "description": "Daily task text (substring match)"},
+                            "priority": {"type": ["integer", "null"], "minimum": 1, "maximum": 5},
+                            "due_date": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+                            "date": {"type": ["string", "null"], "description": "Daily note date; default today"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["text"],
+                        "additionalProperties": False,
+                    },
+                },
+                "handler": self._tool_promote_daily_task,
+                "risk": "write",
+            },
             "get_tokens": {
                 "schema": {
                     "name": "get_tokens",
@@ -2229,6 +2256,77 @@ class AgentService:
         return ok(
             {"from_date": from_date, "to_date": to_date, "rolled": rolled},
             items=items,
+        )
+
+    def _tool_promote_daily_task(self, params: dict) -> dict:
+        import datetime as dt
+        import re
+        from pathlib import Path
+        from src.services.daily_tasks import (
+            parse_tasks_section, render_tasks_section, replace_or_append_section,
+        )
+
+        date_str = params.get("date") or dt.date.today().isoformat()
+        daily = self.vault.read_daily_note(date_str)
+        body = daily["content"]
+        tasks = parse_tasks_section(body)
+
+        moved_re = re.compile(r"moved from\s+\[\[(\d{4}-\d{2}-\d{2})#Tasks\]\]")
+
+        q = params["text"].lower()
+        # For unchecked tasks, the annotation may be embedded in text (e.g. "Order phone — moved from [[...]]")
+        # so we strip it for matching and display
+        def _task_bare_text(t):
+            """Return task text with any trailing ' — moved from ...' annotation stripped."""
+            return re.sub(r"\s+—\s+moved from\s+\[\[.*?\]\]", "", t.text).strip()
+
+        matches = [t for t in tasks if q in _task_bare_text(t).lower() and t.state == "unchecked"]
+        if not matches:
+            return err(
+                ErrorCode.PATH_NOT_FOUND,
+                f"No unchecked daily task matches '{params['text']}'",
+            )
+        if len(matches) > 1:
+            return err(
+                ErrorCode.AMBIGUOUS_MATCH,
+                f"Multiple unchecked daily tasks match '{params['text']}'",
+                details={"candidates": [_task_bare_text(t) for t in matches]},
+            )
+        target = matches[0]
+        bare_text = _task_bare_text(target)
+
+        # Walk moved_from chain to find first-original date
+        # Annotation may be in target.annotation (moved state) or embedded in target.text (unchecked)
+        search_in = (target.annotation or "") + " " + target.text
+        m = moved_re.search(search_in)
+        first_original = m.group(1) if m else date_str
+
+        # Create file-tier task
+        create_result = self.vault.create_task(
+            name=bare_text,
+            priority=params.get("priority") or 3,
+            due_date=params.get("due_date"),
+            created=first_original,
+        )
+        new_file_path = create_result["path"]
+        # Derive slug from path (last segment without .md)
+        slug = Path(new_file_path).stem
+
+        # Replace the daily task with a wikilink
+        target.text = f"[[{slug}]]"
+        target.annotation = None  # drop the old moved-from annotation; wikilink IS the reference now
+
+        new_section = render_tasks_section(tasks)
+        new_body = replace_or_append_section(body, "Tasks", new_section)
+        self.vault.write_daily_note(date_str, new_body)
+
+        return ok(
+            {
+                "path": new_file_path,
+                "name": create_result["metadata"]["name"],
+                "first_original": first_original,
+            },
+            items=[new_file_path, f"10-daily/{date_str}.md"],
         )
 
     def _tool_list_events(self, params: dict) -> dict:

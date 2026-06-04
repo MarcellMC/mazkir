@@ -195,3 +195,63 @@ def test_daily_rollover_does_not_copy_checked_items():
     assert result["ok"] is True
     # No unchecked items to roll → no writes
     assert vault.write_daily_note.call_count == 0
+
+
+def test_promote_daily_task_creates_file_with_today_when_no_chain():
+    agent = _agent_with_daily_body("## Tasks\n- [ ] Order phone\n")
+    agent.vault.create_task = MagicMock(return_value={
+        "path": "40-tasks/active/order-phone.md",
+        "metadata": {"name": "Order phone", "created": "2026-06-04"},
+    })
+
+    result = agent._tool_promote_daily_task({"text": "Order"})
+    assert result["ok"] is True
+
+    # vault.create_task called with name and (some) created date
+    args = agent.vault.create_task.call_args
+    kwargs = args.kwargs
+    assert kwargs["name"] == "Order phone"
+    # When no chain, created = today (handler default)
+    import datetime as dt
+    assert kwargs.get("created") == dt.date.today().isoformat()
+
+    # Daily note rewritten with wikilink
+    new_body = agent.vault.write_daily_note.call_args.args[1]
+    assert "[[order-phone]]" in new_body
+    assert "- [ ] Order phone" not in new_body
+
+
+def test_promote_daily_task_uses_first_original_when_chain_present():
+    agent = _agent_with_daily_body(
+        "## Tasks\n- [ ] Order phone — moved from [[2026-05-21#Tasks]]\n"
+    )
+    agent.vault.create_task = MagicMock(return_value={
+        "path": "40-tasks/active/order-phone.md",
+        "metadata": {"name": "Order phone", "created": "2026-05-21"},
+    })
+
+    result = agent._tool_promote_daily_task({"text": "Order"})
+    assert result["ok"] is True
+
+    kwargs = agent.vault.create_task.call_args.kwargs
+    assert kwargs.get("created") == "2026-05-21"
+
+
+def test_promote_daily_task_ambiguous_returns_error():
+    agent = _agent_with_daily_body(
+        "## Tasks\n- [ ] Buy milk\n- [ ] Buy bread\n"
+    )
+    agent.vault.create_task = MagicMock()
+    result = agent._tool_promote_daily_task({"text": "Buy"})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "AMBIGUOUS_MATCH"
+    agent.vault.create_task.assert_not_called()
+
+
+def test_promote_daily_task_no_match_returns_path_not_found():
+    agent = _agent_with_daily_body("## Tasks\n- [ ] Buy milk\n")
+    agent.vault.create_task = MagicMock()
+    result = agent._tool_promote_daily_task({"text": "nonexistent"})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "PATH_NOT_FOUND"
+    agent.vault.create_task.assert_not_called()

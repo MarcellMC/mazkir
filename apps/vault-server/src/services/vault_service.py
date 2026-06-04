@@ -523,6 +523,7 @@ class VaultService:
         scheduled_at: Optional[str] = None,
         duration_minutes: Optional[int] = None,
         due_soft: Optional[str] = None,
+        created: Optional[str] = None,
     ) -> Dict:
         """Create a new task using template
 
@@ -558,7 +559,7 @@ class VaultService:
         metadata['category'] = category
         metadata['tokens_on_completion'] = tokens_on_completion
         metadata['tags'] = ['task', category]
-        metadata['created'] = today
+        metadata['created'] = created or today
         metadata['updated'] = today
         metadata['completed'] = None
 
