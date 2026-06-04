@@ -1736,17 +1736,67 @@ class AgentService:
     # ── Tool Handlers ────────────────────────────────────────────
 
     def _tool_list_tasks(self, params: dict) -> dict:
-        tasks = self.vault.list_active_tasks()
-        return ok(
+        import datetime as dt
+        from src.services.daily_tasks import parse_tasks_section
+
+        today = dt.date.today().isoformat()
+
+        # Daily-tier
+        try:
+            daily = self.vault.read_daily_note(today)
+            daily_tasks = parse_tasks_section(daily["content"])
+        except Exception:
+            daily_tasks = []
+
+        daily_pending = [
             {
-                "tasks": [
-                    {"name": t["metadata"].get("name", ""), "path": t["path"],
-                     "priority": t["metadata"].get("priority"), "due_date": t["metadata"].get("due_date")}
-                    for t in tasks
-                ],
-            },
-            items=[t["path"] for t in tasks],
-        )
+                "text": t.text,
+                "scheduled_at": t.scheduled_at,
+                "duration_minutes": t.duration_minutes,
+            }
+            for t in daily_tasks if t.state == "unchecked"
+        ]
+        daily_done_today = [
+            {"text": t.text} for t in daily_tasks if t.state == "checked"
+        ]
+
+        # File-tier
+        file_tier = self.vault.list_active_tasks()
+        by_priority: dict[int, list] = {}
+        overdue: list = []
+        for t in file_tier:
+            meta = t["metadata"]
+            try:
+                prio = int(meta.get("priority", 3))
+            except (TypeError, ValueError):
+                prio = 3
+            entry = {
+                "path": t["path"],
+                "name": meta.get("name", ""),
+                "priority": prio,
+                "due_date": meta.get("due_date"),
+                "scheduled_at": meta.get("scheduled_at"),
+                "status": meta.get("status"),
+            }
+            by_priority.setdefault(prio, []).append(entry)
+            if (
+                meta.get("due_date")
+                and str(meta["due_date"]) < today
+                and meta.get("status") == "active"
+            ):
+                overdue.append({
+                    "path": t["path"],
+                    "name": meta.get("name", ""),
+                    "due_date": str(meta["due_date"]),
+                    "priority": prio,
+                })
+
+        return ok({
+            "daily_pending": daily_pending,
+            "daily_done_today": daily_done_today,
+            "file_tier_by_priority": by_priority,
+            "overdue": overdue,
+        }, items=[])
 
     def _tool_list_habits(self, params: dict) -> dict:
         habits = self.vault.list_active_habits()

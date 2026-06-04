@@ -1006,12 +1006,17 @@ def test_list_tasks_returns_normalized_ok_shape(mock_services):
     claude, vault, memory, calendar, events = mock_services
     agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
     agent.vault.list_active_tasks.return_value = [
-        {"path": "40-tasks/active/x.md", "metadata": {"name": "X", "priority": 3}}
+        {"path": "40-tasks/active/x.md", "metadata": {"name": "X", "priority": 3, "status": "active"}}
     ]
+    agent.vault.read_daily_note.return_value = {"metadata": {}, "content": ""}
     result = agent._tool_list_tasks({})
     assert result["ok"] is True
     assert "data" in result
-    assert "tasks" in result["data"]
+    # Grouped shape: all four keys present
+    assert "daily_pending" in result["data"]
+    assert "daily_done_today" in result["data"]
+    assert "file_tier_by_priority" in result["data"]
+    assert "overdue" in result["data"]
     assert "_items" in result
 
 
@@ -1099,3 +1104,41 @@ def test_complete_habit_ambiguous_returns_candidates(mock_services):
     result = agent._tool_complete_habit({"habit_name": "workout"})
     assert result["ok"] is False
     assert result["error"]["code"] == "AMBIGUOUS_MATCH"
+
+
+def test_list_tasks_returns_grouped_object(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    agent.vault.list_active_tasks.return_value = [
+        {"path": "40-tasks/active/x.md", "metadata": {"name": "X", "priority": 3, "status": "active"}}
+    ]
+    agent.vault.read_daily_note.return_value = {
+        "metadata": {},
+        "content": "## Tasks\n- [ ] Walk dog\n- [x] Done thing\n",
+    }
+    result = agent._tool_list_tasks({})
+    assert result["ok"] is True
+    data = result["data"]
+    assert "daily_pending" in data
+    assert "daily_done_today" in data
+    assert "file_tier_by_priority" in data
+    assert "overdue" in data
+    # Daily pending has the unchecked item
+    assert any(t["text"] == "Walk dog" for t in data["daily_pending"])
+    # Daily done has the checked item
+    assert any(t["text"] == "Done thing" for t in data["daily_done_today"])
+    # File-tier grouped by priority — priority 3 has 1 item
+    assert 3 in data["file_tier_by_priority"]
+    assert len(data["file_tier_by_priority"][3]) == 1
+
+
+def test_list_tasks_flags_overdue(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    agent.vault.list_active_tasks.return_value = [
+        {"path": "40-tasks/active/old.md", "metadata": {"name": "Old", "priority": 4, "status": "active", "due_date": "2020-01-01"}}
+    ]
+    agent.vault.read_daily_note.return_value = {"metadata": {}, "content": "## Tasks\n"}
+    result = agent._tool_list_tasks({})
+    assert len(result["data"]["overdue"]) == 1
+    assert result["data"]["overdue"][0]["name"] == "Old"
