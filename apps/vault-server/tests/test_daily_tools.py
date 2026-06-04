@@ -255,3 +255,37 @@ def test_promote_daily_task_no_match_returns_path_not_found():
     assert result["ok"] is False
     assert result["error"]["code"] == "PATH_NOT_FOUND"
     agent.vault.create_task.assert_not_called()
+
+
+def test_daily_set_state_matches_child_subtask():
+    agent = _agent_with_daily_body(
+        "## Tasks\n- [ ] Plan picnic\n  - [ ] Buy bread\n  - [ ] Bring blanket\n"
+    )
+    result = agent._tool_daily_set_task_state({"text": "bread", "state": "checked"})
+    assert result["ok"] is True
+    new_body = agent.vault.write_daily_note.call_args.args[1]
+    assert "- [x] Buy bread" in new_body
+    # parent untouched
+    assert "- [ ] Plan picnic" in new_body
+
+
+def test_daily_set_state_ambiguous_across_levels():
+    """A substring that matches both a top-level item and a child should return AMBIGUOUS_MATCH."""
+    agent = _agent_with_daily_body(
+        "## Tasks\n- [ ] Buy milk\n- [ ] Plan picnic\n  - [ ] Buy bread\n"
+    )
+    result = agent._tool_daily_set_task_state({"text": "Buy", "state": "checked"})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "AMBIGUOUS_MATCH"
+    candidates = result["error"]["details"]["candidates"]
+    assert "Buy milk" in candidates
+    assert "Buy bread" in candidates
+
+
+def test_daily_set_state_still_no_match():
+    agent = _agent_with_daily_body(
+        "## Tasks\n- [ ] Plan picnic\n  - [ ] Buy bread\n"
+    )
+    result = agent._tool_daily_set_task_state({"text": "ghost", "state": "checked"})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "PATH_NOT_FOUND"

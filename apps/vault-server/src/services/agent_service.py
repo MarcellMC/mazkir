@@ -2206,13 +2206,19 @@ class AgentService:
         )
         import datetime as dt
 
+        def _flatten(tasks):
+            """Yield every task in the tree (depth-first, all levels)."""
+            for t in tasks:
+                yield t
+                yield from _flatten(t.children)
+
         date_str = params.get("date") or dt.date.today().isoformat()
         daily = self.vault.read_daily_note(date_str)
         body = daily["content"]
         tasks = parse_tasks_section(body)
 
         q = params["text"].lower()
-        matches = [t for t in tasks if q in t.text.lower()]
+        matches = [t for t in _flatten(tasks) if q in t.text.lower()]
         if not matches:
             return err(
                 ErrorCode.PATH_NOT_FOUND,
