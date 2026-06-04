@@ -62,3 +62,45 @@ def test_daily_add_task_with_explicit_date():
     result = agent._tool_daily_add_task({"text": "Future task", "date": "2026-12-25"})
     assert result["ok"] is True
     agent.vault.read_daily_note.assert_called_with("2026-12-25")
+
+
+def test_daily_check_task_by_text_substring():
+    agent = _agent_with_daily_body("## Tasks\n- [ ] Buy milk\n- [ ] Walk dog\n")
+    result = agent._tool_daily_set_task_state({"text": "milk", "state": "checked"})
+    assert result["ok"] is True
+    new_body = agent.vault.write_daily_note.call_args.args[1]
+    assert "- [x] Buy milk" in new_body
+    assert "- [ ] Walk dog" in new_body
+
+
+def test_daily_uncheck_task():
+    agent = _agent_with_daily_body("## Tasks\n- [x] Buy milk\n")
+    result = agent._tool_daily_set_task_state({"text": "milk", "state": "unchecked"})
+    assert result["ok"] is True
+    new_body = agent.vault.write_daily_note.call_args.args[1]
+    assert "- [ ] Buy milk" in new_body
+
+
+def test_daily_set_state_to_moved():
+    agent = _agent_with_daily_body("## Tasks\n- [ ] Order phone\n")
+    result = agent._tool_daily_set_task_state({"text": "Order", "state": "moved"})
+    assert result["ok"] is True
+    new_body = agent.vault.write_daily_note.call_args.args[1]
+    assert "~~Order phone~~" in new_body
+
+
+def test_daily_set_state_ambiguous_returns_error():
+    agent = _agent_with_daily_body("## Tasks\n- [ ] Buy milk\n- [ ] Buy bread\n")
+    result = agent._tool_daily_set_task_state({"text": "Buy", "state": "checked"})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "AMBIGUOUS_MATCH"
+    candidates = result["error"]["details"]["candidates"]
+    assert "Buy milk" in candidates
+    assert "Buy bread" in candidates
+
+
+def test_daily_set_state_no_match_returns_path_not_found():
+    agent = _agent_with_daily_body("## Tasks\n- [ ] Buy milk\n")
+    result = agent._tool_daily_set_task_state({"text": "nonexistent", "state": "checked"})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "PATH_NOT_FOUND"

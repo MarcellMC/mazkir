@@ -278,6 +278,29 @@ class AgentService:
                 "handler": self._tool_daily_add_task,
                 "risk": "write",
             },
+            "daily_set_task_state": {
+                "schema": {
+                    "name": "daily_set_task_state",
+                    "description": (
+                        "Change a daily-tier task's state. Match by `text` substring "
+                        "(case-insensitive). state is one of: checked, unchecked, moved."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "state": {"type": "string", "enum": ["checked", "unchecked", "moved"]},
+                            "date": {"type": ["string", "null"], "description": "YYYY-MM-DD; default today"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["text", "state"],
+                        "additionalProperties": False,
+                    },
+                },
+                "handler": self._tool_daily_set_task_state,
+                "risk": "write",
+            },
             "get_tokens": {
                 "schema": {
                     "name": "get_tokens",
@@ -2071,6 +2094,41 @@ class AgentService:
         self.vault.write_daily_note(date_str, new_body)
         return ok(
             {"date": date_str, "text": params["text"]},
+            items=[f"10-daily/{date_str}.md"],
+        )
+
+    def _tool_daily_set_task_state(self, params: dict) -> dict:
+        from src.services.daily_tasks import (
+            parse_tasks_section, render_tasks_section, replace_or_append_section,
+        )
+        import datetime as dt
+
+        date_str = params.get("date") or dt.date.today().isoformat()
+        daily = self.vault.read_daily_note(date_str)
+        body = daily["content"]
+        tasks = parse_tasks_section(body)
+
+        q = params["text"].lower()
+        matches = [t for t in tasks if q in t.text.lower()]
+        if not matches:
+            return err(
+                ErrorCode.PATH_NOT_FOUND,
+                f"No daily task matches '{params['text']}'",
+            )
+        if len(matches) > 1:
+            return err(
+                ErrorCode.AMBIGUOUS_MATCH,
+                f"Multiple daily tasks match '{params['text']}'",
+                details={"candidates": [t.text for t in matches]},
+            )
+        target = matches[0]
+        target.state = params["state"]
+
+        new_section = render_tasks_section(tasks)
+        new_body = replace_or_append_section(body, "Tasks", new_section)
+        self.vault.write_daily_note(date_str, new_body)
+        return ok(
+            {"date": date_str, "text": target.text, "state": target.state},
             items=[f"10-daily/{date_str}.md"],
         )
 
