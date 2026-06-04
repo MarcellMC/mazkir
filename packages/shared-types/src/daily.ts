@@ -1,24 +1,22 @@
-export interface HabitStatus {
-  name: string;
+export interface DailyScheduleItem {
+  start: string;           // ISO datetime or "HH:MM" for daily tasks / habits
+  end?: string;            // ISO datetime; optional
+  title: string;
+  source: "calendar" | "daily-task" | "habit";
   completed: boolean;
-  streak: number;
+  calendar_name?: string;  // present when source = "calendar"
 }
 
-export interface CalendarEvent {
-  id: string;
-  summary: string;
-  start: string;
-  end: string;
-  completed: boolean;
-  calendar: string;
+export interface DailyNote {
+  text?: string;
+  photo_path?: string;
+  caption?: string;
 }
 
 export interface DailyResponse {
   date: string;
-  day_of_week: string;
-  tokens_earned: number;
+  tokens_today: number;
   tokens_total: number;
-  habits: HabitStatus[];
-  calendar_events: CalendarEvent[];
-  notes: string[];
+  schedule: DailyScheduleItem[];
+  notes: DailyNote[];
 }

@@ -61,18 +61,59 @@ describe("formatGoals", () => {
 });
 
 describe("formatDay", () => {
-  it("formats daily summary", () => {
+  it("formats daily summary with schedule and notes", () => {
     const result = formatDay({
       date: "2026-03-02",
-      day_of_week: "Monday",
-      tokens_earned: 10,
+      tokens_today: 10,
       tokens_total: 100,
-      habits: [{ name: "gym", completed: true, streak: 5 }],
-      calendar_events: [],
+      schedule: [
+        { start: "2026-03-02T09:00:00", title: "Meeting", source: "calendar", completed: false, calendar_name: "Work" },
+        { start: "07:00", title: "gym", source: "habit", completed: true },
+      ],
+      notes: [{ text: "Remember to call mom" }],
     });
     expect(result).toContain("Daily Note");
+    expect(result).toContain("10");
+    expect(result).toContain("Meeting");
+    expect(result).toContain("(Work)");
     expect(result).toContain("gym");
     expect(result).toContain("✅");
+    expect(result).toContain("Remember to call mom");
+  });
+
+  it("shows photo notes with caption", () => {
+    const result = formatDay({
+      date: "2026-03-02",
+      tokens_today: 0,
+      tokens_total: 0,
+      schedule: [],
+      notes: [{ caption: "sunset photo", photo_path: "/data/media/photo.jpg" }],
+    });
+    expect(result).toContain("📷 sunset photo");
+  });
+
+  it("drops calendar_name when it is Mazkir", () => {
+    const result = formatDay({
+      date: "2026-03-02",
+      tokens_today: 0,
+      tokens_total: 0,
+      schedule: [{ start: "08:00", title: "Gym", source: "habit", completed: false, calendar_name: "Mazkir" }],
+      notes: [],
+    });
+    expect(result).not.toContain("(Mazkir)");
+  });
+
+  it("returns shape without habits/calendar_events sections", () => {
+    const result = formatDay({
+      date: "2026-03-02",
+      tokens_today: 5,
+      tokens_total: 50,
+      schedule: [],
+      notes: [],
+    });
+    expect(result).toContain("Daily Note");
+    expect(result).not.toContain("Habits");
+    expect(result).not.toContain("calendar_events");
   });
 });
 

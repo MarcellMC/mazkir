@@ -8,6 +8,7 @@ import type {
   MessageResponse,
 } from "@mazkir/shared-types";
 
+
 export function progressBar(percent: number, length = 10): string {
   const filled = Math.round((percent / 100) * length);
   return "█".repeat(filled) + "░".repeat(length - filled);
@@ -32,38 +33,25 @@ function priorityEmoji(priority: number): string {
 export function formatDay(data: DailyResponse): string {
   const lines: string[] = [];
   lines.push(`📅 <b>Daily Note — ${data.date}</b>`);
-  lines.push(`🪙 Tokens today: <b>${data.tokens_earned}</b> | Total: <b>${data.tokens_total}</b>`);
+  lines.push(`🪙 Tokens today: <b>${data.tokens_today}</b> | Total: <b>${data.tokens_total}</b>`);
   lines.push("");
 
-  if (data.habits.length > 0) {
-    lines.push("💪 <b>Habits</b>");
-    for (const h of data.habits) {
-      const icon = h.completed ? "✅" : "⏳";
-      lines.push(`  ${icon} ${h.name} — 🔥 ${h.streak} day streak`);
-    }
-    lines.push("");
-  }
-
-  if (data.calendar_events.length > 0) {
+  if (data.schedule.length > 0) {
     lines.push("📆 <b>Schedule</b>");
-    for (const e of data.calendar_events) {
-      const time = formatTime(e.start);
-      const icon = e.completed ? "✅" : "⏳";
-      const summary = e.summary.replace(/^✅\s*/, "");
-      const cal = e.calendar !== "Mazkir" ? ` (${e.calendar})` : "";
-      lines.push(`  ${icon} ${time} — ${summary}${cal}`);
+    for (const item of data.schedule) {
+      const icon = item.completed ? "✅" : item.source === "habit" ? "🔁" : "⏳";
+      const time = item.start.includes("T") ? formatTime(item.start) : item.start;
+      const cal = item.calendar_name && item.calendar_name !== "Mazkir" ? ` (${item.calendar_name})` : "";
+      lines.push(`  ${icon} ${time} — ${item.title}${cal}`);
     }
   }
 
   if (data.notes && data.notes.length > 0) {
-    lines.push("");
+    if (data.schedule.length > 0) lines.push("");
     lines.push("📝 <b>Notes</b>");
-    for (const note of data.notes) {
-      // Strip markdown image syntax, show caption text only
-      const cleaned = note
-        .replace(/!\[([^\]]*)\]\([^)]*\)/g, "📷 $1") // ![caption](path) → 📷 caption
-        .replace(/\[\[([^\]]*)\]\]/g, "$1"); // [[wikilink]] → wikilink
-      lines.push(`  ${cleaned}`);
+    for (const n of data.notes) {
+      const text = n.text ?? (n.caption ? `📷 ${n.caption}` : "📷");
+      lines.push(`  ${text}`);
     }
   }
 
