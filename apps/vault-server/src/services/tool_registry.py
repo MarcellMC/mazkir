@@ -38,6 +38,7 @@ def build_tool_registry(
             "pre_hooks": [],
             "post_hooks": [],
             "preview": risk == "destructive",
+            "safe_for_parallel": risk == "safe",
         }
         if risk in ("write", "destructive"):
             entry["pre_hooks"].append("validate_schema")
@@ -59,6 +60,7 @@ def stamp_tool_registry(tools: dict[str, dict]) -> dict[str, dict]:
         entry.setdefault("pre_hooks", [])
         entry.setdefault("post_hooks", [])
         entry.setdefault("preview", risk == "destructive")
+        entry.setdefault("safe_for_parallel", risk == "safe")
         if risk in ("write", "destructive"):
             if "validate_schema" not in entry["pre_hooks"]:
                 entry["pre_hooks"].append("validate_schema")

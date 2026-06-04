@@ -72,3 +72,36 @@ def test_destructive_tools_get_preview_flag():
     tools = build_tool_registry(handlers, schemas)
     assert tools["delete_task"]["preview"] is True
     assert tools["create_task"].get("preview", False) is False
+
+
+def test_safe_tools_default_to_parallel_safe():
+    handlers = {"list_tasks": (_h(), "safe")}
+    schemas = {"list_tasks": _schema("list_tasks")}
+    tools = build_tool_registry(handlers, schemas)
+    assert tools["list_tasks"]["safe_for_parallel"] is True
+
+
+def test_write_tools_default_to_parallel_unsafe():
+    handlers = {"create_task": (_h(), "write")}
+    schemas = {"create_task": _schema("create_task")}
+    tools = build_tool_registry(handlers, schemas)
+    assert tools["create_task"]["safe_for_parallel"] is False
+
+
+def test_destructive_tools_default_to_parallel_unsafe():
+    handlers = {"delete_task": (_h(), "destructive")}
+    schemas = {"delete_task": _schema("delete_task")}
+    tools = build_tool_registry(handlers, schemas)
+    assert tools["delete_task"]["safe_for_parallel"] is False
+
+
+def test_stamp_registry_also_sets_safe_for_parallel():
+    """stamp_tool_registry path stamps the field on a pre-built dict."""
+    from src.services.tool_registry import stamp_tool_registry
+    tools = {
+        "list_tasks": {"risk": "safe", "schema": {}, "handler": _h()},
+        "create_task": {"risk": "write", "schema": {}, "handler": _h()},
+    }
+    stamp_tool_registry(tools)
+    assert tools["list_tasks"]["safe_for_parallel"] is True
+    assert tools["create_task"]["safe_for_parallel"] is False

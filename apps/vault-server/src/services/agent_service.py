@@ -832,7 +832,21 @@ class AgentService:
             },
         }
         from src.services.tool_registry import stamp_tool_registry
-        return stamp_tool_registry(tools)
+        stamp_tool_registry(tools)
+        # File-tier writes touch distinct vault paths via the resolver, so they
+        # can run concurrently. Daily-section and event writes share a single
+        # file and stay unsafe (default False from stamp_tool_registry).
+        SAFE_WRITES = {
+            "create_task", "create_habit", "create_goal",
+            "update_task", "update_habit", "update_goal",
+            "complete_task", "complete_habit",
+            "delete_task", "archive_task", "delete_habit", "archive_goal",
+            "save_knowledge",
+        }
+        for name in SAFE_WRITES:
+            if name in tools:
+                tools[name]["safe_for_parallel"] = True
+        return tools
 
     def _tool_schemas(self) -> list[dict]:
         """Get tool schemas for Claude API call."""
