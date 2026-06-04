@@ -732,17 +732,8 @@ class AgentService:
                 "pre_hooks": ["validate_schema"],
             },
         }
-        for name, entry in tools.items():
-            if "confidence_threshold" not in entry:
-                entry["confidence_threshold"] = _confidence_threshold_for(entry["risk"])
-        for name, entry in tools.items():
-            if "post_hooks" not in entry:
-                entry["post_hooks"] = []
-        for entry in tools.values():
-            if entry["risk"] in ("write", "destructive"):
-                if "audit_log" not in entry["post_hooks"]:
-                    entry["post_hooks"] = entry["post_hooks"] + ["audit_log"]
-        return tools
+        from src.services.tool_registry import stamp_tool_registry
+        return stamp_tool_registry(tools)
 
     def _tool_schemas(self) -> list[dict]:
         """Get tool schemas for Claude API call."""
