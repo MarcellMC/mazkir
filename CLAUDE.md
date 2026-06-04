@@ -50,14 +50,16 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   │   │   │   └── imagery.py        # Wikimedia Commons search
 │   │   │   └── services/             # Business logic
 │   │   │       ├── vault_service.py  # Obsidian vault CRUD
-│   │   │       ├── claude_service.py # Claude API (thin wrapper)
+│   │   │       ├── claude_service.py # Claude API (thin wrapper + split system prompt for caching)
 │   │   │       ├── memory_service.py # Three-tier memory + graph index
 │   │   │       ├── agent_service.py  # Agent loop + tool registry + confidence gate
 │   │   │       ├── router_service.py # Haiku LLM skill classifier (skill loop)
 │   │   │       ├── skill_registry.py # Loads skill definitions from memory/00-system/mazkir-skills/
+│   │   │       ├── skill_executor.py # Skill loop extracted from AgentService (P3)
 │   │   │       ├── preview.py        # Destructive-action preview rendering
 │   │   │       ├── resolver.py       # Tool input resolution + schema validation
 │   │   │       ├── tool_response.py  # Typed tool result helpers
+│   │   │       ├── tracing_helpers.py # with_span_status ctx mgr + span I/O helpers (P3)
 │   │   │       ├── hooks/            # Pre/post tool hook registry
 │   │   │       ├── calendar_service.py # Google Calendar sync
 │   │   │       ├── timeline_service.py # Google Takeout parser
@@ -110,7 +112,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   ├── media/                         # Saved photo attachments ({YYYY-MM-DD}/*.jpg + metadata.json)
 │   ├── events/                        # Persisted merged events ({YYYY-MM-DD}.json)
 │   ├── timeline/                      # Google Takeout Semantic Location History
-│   └── logs/                          # Structured JSON logs (vault-server.jsonl, agent-turns.jsonl, telegram-bot.jsonl)
+│   └── logs/                          # Structured JSON logs (vault-server.jsonl, agent-turns.jsonl, telegram-bot.jsonl, tool-calls.jsonl)
 ├── infra/observability/               # Local Loki + Alloy + Grafana docker-compose stack
 ├── docs/plans/                        # Design and implementation docs
 ├── turbo.json                         # Turborepo config
@@ -177,6 +179,9 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 - **telegram-web-app** is a React SPA consuming vault-server REST endpoints
 - **@mazkir/shared-types** provides TypeScript interfaces shared between telegram-bot and telegram-web-app
 - **Skill loop:** `AgentService.handle_message` dispatches via `RouterService` (Haiku LLM classifier) to one of three skills loaded from `memory/00-system/mazkir-skills/` (`capture`, `manager`, `recall`). Skills chain via a `next_skill: <name>` token in their reply; the loop caps at 3 hops with cycle detection. Each skill has its own model, tool subset, and system prompt. When `skill_registry`/`router` aren't configured, `AgentService` falls back to a single-loop legacy path with all tools loaded.
+- **Skill executor module (P3):** Skill loop extracted to `services/skill_executor.py`. `AgentService` constructs a `SkillExecutor` when both `skill_registry` and `router` are present and delegates the per-turn loop to it.
+- **Context assembly (P3):** `MemoryService.assemble_context` returns the conversation sliding window + a one-line vault summary. Knowledge auto-dump and `items_referenced` retired in P3; the agent calls `search_knowledge` explicitly when it needs notes. `_build_vault_snapshot` returns a single line of counts (active tasks / habits / goals / tokens), not per-item listings.
+- **Prompt caching (P3):** The system prompt is split into a static prefix (active skill's system prompt + base guidelines + tool docs — identical across turns) and a dynamic tail (current date + vault summary line — changes each turn). The static prefix is sent with Anthropic's `cache_control: ephemeral`. Watch `llm.token_count.prompt_cached_read` in Phoenix to confirm cache hits on repeated calls from the same chat.
 - New features → add route to vault-server, then add UI in telegram bot or web app
 
 ### Agent tool risk levels
@@ -185,6 +190,13 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 - **destructive** (auto-execute at ≥0.95 confidence): `complete_task`, `complete_habit`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`
 - Confidence thresholds are per-tool with risk-class defaults: `safe` ungated, `write` ≥0.85, `destructive` ≥0.95.
 - Destructive tools always render a preview ("Would delete X / Would archive Y") and require explicit yes/no confirmation before execution, regardless of confidence.
+
+### Observability (P3)
+
+- **Span input/output:** Owned spans (`agent.handle_message`, `agent.loop`, `agent.tool_call`, `skill.<name>`) carry `input.value` and `output.value` attributes (truncated at 2000 chars with a `truncated: true` marker). Visible in Phoenix span detail view.
+- **Status propagation:** Manual spans use the `with_span_status` context manager from `services/tracing_helpers.py`. Exceptions are recorded automatically; `agent.tool_call` additionally marks ERROR when the handler returns `ok=False` even without raising.
+- **trace_id in logs:** Every structured log record carries a `trace_id` field (when inside an active span context). Grep a log line in `data/logs/vault-server.jsonl`, copy the `trace_id`, and paste it into Phoenix to jump straight to the trace.
+- **Audit log:** `data/logs/tool-calls.jsonl` (path overridable via `MAZKIR_AUDIT_LOG_PATH`) records one JSON row per write/destructive tool call: `{ts, trace_id, tool, ok, error_code?, params_summary, items}`. Useful for grepping agent activity offline and correlating with Phoenix traces.
 
 ### When adding vault-server routes:
 1. Create route in `apps/vault-server/src/api/routes/`
