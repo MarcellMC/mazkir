@@ -66,7 +66,10 @@ class CalendarService:
         self.default_habit_time = default_habit_time
         self.default_event_duration = default_event_duration
         self._calendar_id = calendar_id
-        self._calendar_include = calendar_include
+        # P4: default to Mazkir-only when no explicit include list is configured.
+        # This prevents subscribed calendars (e.g. Israeli Holidays) from leaking
+        # into /day when GOOGLE_CALENDAR_INCLUDE env var is unset.
+        self._calendar_include = calendar_include if calendar_include else ["Mazkir"]
         self._service = None
         self._initialized = False
 
