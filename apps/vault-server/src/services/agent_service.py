@@ -1261,9 +1261,7 @@ class AgentService:
 
                         if needs_confirmation:
                             executed = []
-                            for call in auto_execute:
-                                confidence, reasoning = gate_info[call["id"]]
-                                result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
+                            for call, confidence, reasoning, result in self._execute_tool_batch(auto_execute, gate_info):
                                 items_referenced.extend(result.get("_items", []))
                                 executed.append({
                                     "type": "tool_result",
@@ -1332,9 +1330,7 @@ class AgentService:
                             )
 
                         tool_results = []
-                        for call in auto_execute:
-                            confidence, reasoning = gate_info[call["id"]]
-                            result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
+                        for call, confidence, reasoning, result in self._execute_tool_batch(auto_execute, gate_info):
                             items_referenced.extend(result.get("_items", []))
                             tool_results.append({
                                 "type": "tool_result",
@@ -1725,6 +1721,93 @@ class AgentService:
             tools=self.tools,
             ctx={"vault": self.vault, "memory": self.memory},
         )
+
+    def _execute_tool_batch(self, calls: list[dict], gate_info: dict) -> list[tuple[dict, float, str | None, dict]]:
+        """Execute a batch of auto_execute tool calls, using parallel dispatch when safe.
+
+        Returns a list of (call, confidence, reasoning, result) tuples in input order.
+
+        When every call in the batch has `safe_for_parallel = True` in the tool registry,
+        calls are dispatched concurrently via :func:`parallel_executor.execute_calls_maybe_parallel`.
+        Otherwise falls back to serial execution. OTel spans are emitted per-call via
+        `_execute_tool`, which is called from each thread.
+        """
+        import concurrent.futures as _cf
+        import asyncio as _asyncio
+
+        if not calls:
+            return []
+
+        if len(calls) == 1:
+            call = calls[0]
+            confidence, reasoning = gate_info[call["id"]]
+            result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
+            return [(call, confidence, reasoning, result)]
+
+        all_parallel_safe = all(
+            self.tools.get(c["name"], {}).get("safe_for_parallel", False) for c in calls
+        )
+
+        if not all_parallel_safe:
+            # Serial path
+            out = []
+            for call in calls:
+                confidence, reasoning = gate_info[call["id"]]
+                result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
+                out.append((call, confidence, reasoning, result))
+            return out
+
+        # Parallel path — each call runs in its own thread with its own OTel span
+        logger.info(
+            "parallel_executor",
+            extra={
+                "event_type": "parallel_executor",
+                "mode": "parallel",
+                "call_count": len(calls),
+                "calls": [c["name"] for c in calls],
+            },
+        )
+
+        def _run_one(call: dict) -> tuple[dict, float, str | None, dict]:
+            confidence, reasoning = gate_info[call["id"]]
+            result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
+            return (call, confidence, reasoning, result)
+
+        async def _run_all() -> list[tuple]:
+            loop = _asyncio.get_running_loop()
+            with _cf.ThreadPoolExecutor(max_workers=len(calls)) as pool:
+                tasks = [
+                    loop.run_in_executor(pool, lambda c=c: _run_one(c))
+                    for c in calls
+                ]
+                return list(await _asyncio.gather(*tasks))
+
+        try:
+            try:
+                loop = _asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop is not None and loop.is_running():
+                # FastAPI context: nested loop — run in worker thread with its own event loop
+                with _cf.ThreadPoolExecutor(max_workers=1) as ex:
+                    results = ex.submit(_asyncio.run, _run_all()).result()
+            else:
+                results = _asyncio.run(_run_all())
+
+            # asyncio.gather preserves task order matching input, so results[i] corresponds to calls[i]
+            return results
+        except Exception as e:
+            logger.warning(
+                "parallel_executor: parallel dispatch failed (%s), falling back to serial", e,
+                extra={"event_type": "parallel_executor", "mode": "serial_fallback"},
+            )
+            out = []
+            for call in calls:
+                confidence, reasoning = gate_info[call["id"]]
+                result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
+                out.append((call, confidence, reasoning, result))
+            return out
 
     def _describe_pending_calls(
         self, calls: list[dict], preview_texts: dict[str, str] | None = None
