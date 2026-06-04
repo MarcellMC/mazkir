@@ -104,3 +104,94 @@ def test_daily_set_state_no_match_returns_path_not_found():
     result = agent._tool_daily_set_task_state({"text": "nonexistent", "state": "checked"})
     assert result["ok"] is False
     assert result["error"]["code"] == "PATH_NOT_FOUND"
+
+
+def _agent_with_two_daily_bodies(yesterday_body: str, today_body: str, yesterday_date="2026-06-03", today_date="2026-06-04"):
+    """Helper: vault.read_daily_note returns yesterday_body or today_body
+    based on the date argument; write_daily_note is a mock."""
+    claude = MagicMock()
+    vault = MagicMock()
+    memory = MagicMock()
+
+    def _read(date_str):
+        if date_str == yesterday_date:
+            return {"metadata": {}, "content": yesterday_body}
+        if date_str == today_date:
+            return {"metadata": {}, "content": today_body}
+        return {"metadata": {}, "content": ""}
+
+    vault.read_daily_note.side_effect = _read
+    vault.write_daily_note = MagicMock()
+    return AgentService(claude=claude, vault=vault, memory=memory), vault
+
+
+def test_daily_rollover_copies_unchecked_items():
+    agent, vault = _agent_with_two_daily_bodies(
+        yesterday_body="## Tasks\n- [ ] Order phone\n- [x] Walk dog\n",
+        today_body="## Tasks\n",
+    )
+    result = agent._tool_daily_rollover({
+        "from_date": "2026-06-03",
+        "to_date": "2026-06-04",
+    })
+    assert result["ok"] is True
+    assert vault.write_daily_note.call_count == 2
+
+    written = {call.args[0]: call.args[1] for call in vault.write_daily_note.call_args_list}
+    # Yesterday: Order phone is now strikethrough/moved
+    assert "~~Order phone~~" in written["2026-06-03"]
+    assert "moved to [[2026-06-04#Tasks]]" in written["2026-06-03"]
+    # Yesterday: Walk dog is still checked (not touched)
+    assert "- [x] Walk dog" in written["2026-06-03"]
+    # Today: Order phone copied with first-original annotation
+    assert "- [ ] Order phone" in written["2026-06-04"]
+    assert "moved from [[2026-06-03#Tasks]]" in written["2026-06-04"]
+
+
+def test_daily_rollover_chain_anchor_walks_back_to_first_original():
+    """Item already rolled once: today's copy should anchor to the original
+    date, not the intermediate date."""
+    agent, vault = _agent_with_two_daily_bodies(
+        yesterday_body="## Tasks\n- [ ] Plan picnic — moved from [[2026-05-21#Tasks]]\n",
+        today_body="## Tasks\n",
+        yesterday_date="2026-06-03",
+        today_date="2026-06-04",
+    )
+    result = agent._tool_daily_rollover({
+        "from_date": "2026-06-03",
+        "to_date": "2026-06-04",
+    })
+    assert result["ok"] is True
+    written = {call.args[0]: call.args[1] for call in vault.write_daily_note.call_args_list}
+    # Today's annotation points to the original 2026-05-21, not yesterday
+    assert "moved from [[2026-05-21#Tasks]]" in written["2026-06-04"]
+
+
+def test_daily_rollover_idempotent_skips_already_rolled():
+    """Today already has a 'moved from' copy of yesterday's task. Re-running
+    rollover should not duplicate it."""
+    agent, vault = _agent_with_two_daily_bodies(
+        yesterday_body="## Tasks\n- [ ] ~~Order phone~~ — moved to [[2026-06-04#Tasks]]\n",
+        today_body="## Tasks\n- [ ] Order phone — moved from [[2026-06-03#Tasks]]\n",
+    )
+    result = agent._tool_daily_rollover({
+        "from_date": "2026-06-03",
+        "to_date": "2026-06-04",
+    })
+    assert result["ok"] is True
+    # No writes — both files already in the target state
+    assert vault.write_daily_note.call_count == 0
+
+
+def test_daily_rollover_does_not_copy_checked_items():
+    agent, vault = _agent_with_two_daily_bodies(
+        yesterday_body="## Tasks\n- [x] Already done\n",
+        today_body="## Tasks\n",
+    )
+    result = agent._tool_daily_rollover({
+        "from_date": "2026-06-03",
+        "to_date": "2026-06-04",
+    })
+    assert result["ok"] is True
+    # No unchecked items to roll → no writes
+    assert vault.write_daily_note.call_count == 0

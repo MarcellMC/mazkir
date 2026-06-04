@@ -301,6 +301,30 @@ class AgentService:
                 "handler": self._tool_daily_set_task_state,
                 "risk": "write",
             },
+            "daily_rollover": {
+                "schema": {
+                    "name": "daily_rollover",
+                    "description": (
+                        "Roll over unchecked top-level tasks from one day to another. "
+                        "Marks originals as moved (strikethrough) and copies them to the "
+                        "target day with a `moved from [[<first_original>#Tasks]]` "
+                        "annotation. Defaults: from_date = yesterday, to_date = today. "
+                        "Idempotent — skips items already rolled over."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "from_date": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+                            "to_date":   {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "handler": self._tool_daily_rollover,
+                "risk": "write",
+            },
             "get_tokens": {
                 "schema": {
                     "name": "get_tokens",
@@ -2130,6 +2154,81 @@ class AgentService:
         return ok(
             {"date": date_str, "text": target.text, "state": target.state},
             items=[f"10-daily/{date_str}.md"],
+        )
+
+    def _tool_daily_rollover(self, params: dict) -> dict:
+        import datetime as dt
+        import re
+        from src.services.daily_tasks import (
+            DailyTask, parse_tasks_section, render_tasks_section, replace_or_append_section,
+        )
+
+        today = dt.date.today()
+        to_date = params.get("to_date") or today.isoformat()
+        from_date = params.get("from_date") or (today - dt.timedelta(days=1)).isoformat()
+
+        src = self.vault.read_daily_note(from_date)
+        src_body = src["content"]
+        src_tasks = parse_tasks_section(src_body)
+
+        dst = self.vault.read_daily_note(to_date)
+        dst_body = dst["content"]
+        dst_tasks = parse_tasks_section(dst_body)
+
+        # Find unchecked top-level items in src
+        moved_re = re.compile(r"moved from\s+\[\[(\d{4}-\d{2}-\d{2})#Tasks\]\]")
+        src_changed = False
+        dst_changed = False
+        rolled: list[str] = []
+
+        for task in src_tasks:
+            if task.state != "unchecked":
+                continue
+
+            # Determine first-original date
+            m = moved_re.search(task.annotation or "")
+            first_original = m.group(1) if m else from_date
+
+            # Idempotency: skip if dst already has the same text with matching first-original
+            already = False
+            for d in dst_tasks:
+                if d.text == task.text and d.annotation and f"moved from [[{first_original}#Tasks]]" in (d.annotation or ""):
+                    already = True
+                    break
+            if already:
+                continue
+
+            # Update src: mark moved, annotation = moved to [[to_date#Tasks]]
+            task.state = "moved"
+            task.annotation = f"moved to [[{to_date}#Tasks]]"
+            src_changed = True
+
+            # Append a copy to dst
+            copy = DailyTask(
+                text=task.text,
+                state="unchecked",
+                scheduled_at=task.scheduled_at,
+                duration_minutes=task.duration_minutes,
+                annotation=f"moved from [[{first_original}#Tasks]]",
+                children=[],  # children stay in src per design
+            )
+            dst_tasks.append(copy)
+            dst_changed = True
+            rolled.append(task.text)
+
+        items: list[str] = []
+        if src_changed:
+            new_src = replace_or_append_section(src_body, "Tasks", render_tasks_section(src_tasks))
+            self.vault.write_daily_note(from_date, new_src)
+            items.append(f"10-daily/{from_date}.md")
+        if dst_changed:
+            new_dst = replace_or_append_section(dst_body, "Tasks", render_tasks_section(dst_tasks))
+            self.vault.write_daily_note(to_date, new_dst)
+            items.append(f"10-daily/{to_date}.md")
+
+        return ok(
+            {"from_date": from_date, "to_date": to_date, "rolled": rolled},
+            items=items,
         )
 
     def _tool_list_events(self, params: dict) -> dict:
