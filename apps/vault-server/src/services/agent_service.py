@@ -2064,8 +2064,10 @@ class AgentService:
         time_str = now.strftime("%H:%M")
 
         # Build markdown content block
+        from pathlib import Path
+        filename = Path(vault_path).name
         lines = []
-        lines.append(f"![{caption}](../../{vault_path})")
+        lines.append(f"![[{filename}]]")
         meta_parts = [f"*{time_str} — {caption}*"]
         if wikilinks:
             meta_parts.append(" | ".join(f"[[{link}]]" for link in wikilinks))

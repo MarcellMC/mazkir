@@ -552,6 +552,28 @@ class TestAttachToDaily:
         content = call_args.kwargs.get("content") or call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs["content"]
         assert "32.08" in content
 
+    def test_attach_to_daily_emits_wikilink_embed(self, mock_services):
+        claude, vault, memory, calendar, events = mock_services
+        agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+        agent.vault.append_to_daily_section.return_value = {
+            "path": "10-daily/2026-06-04.md",
+            "section": "Notes",
+        }
+        result = agent._tool_attach_to_daily({
+            "vault_path": "data/media/2026-06-04/photo_xyz.jpg",
+            "caption": "A nice picture",
+        })
+        assert result["ok"] is True
+        kwargs = agent.vault.append_to_daily_section.call_args
+        # The content arg may be passed positionally or as kwarg — handle both
+        content = (
+            kwargs.kwargs.get("content")
+            or (kwargs.args[1] if len(kwargs.args) > 1 else "")
+        )
+        assert "![[photo_xyz.jpg]]" in content
+        assert "![](" not in content  # no old-style relative path
+        assert "../../" not in content  # no relative-path leakage
+
 
 class TestEventTools:
     def test_list_events_tool_registered(self, agent):
