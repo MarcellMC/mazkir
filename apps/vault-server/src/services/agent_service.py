@@ -1601,99 +1601,17 @@ class AgentService:
     def _execute_tool_inner(self, name: str, params: dict, risk: str) -> dict:
         """Execute a registered tool and return its result.
 
-        Runs pre-hooks before the handler. If any pre-hook returns a blocking
-        response, the handler is skipped and the error is returned immediately.
-        Always emits one structured log line per call with timing + status.
+        Delegates to :func:`src.services.tool_executor.execute_tool` which owns
+        the pre-hooks → handler → post-hooks → structured-log pipeline.
         """
-        sanitized = _sanitize_params(params)
-        start = time.monotonic()
-
-        if name not in self.tools:
-            duration_ms = int((time.monotonic() - start) * 1000)
-            logger.warning(
-                "tool_call",
-                extra={
-                    "event_type": "tool_call",
-                    "tool": name,
-                    "risk": risk,
-                    "params": sanitized,
-                    "status": "error",
-                    "error": "unknown_tool",
-                    "duration_ms": duration_ms,
-                },
-            )
-            return {"error": f"Unknown tool: {name}"}
-
-        tool = self.tools[name]
-        ctx = {"tool": tool, "vault": self.vault, "memory": self.memory}
-
-        # Pre-hooks: run before handler; first blocking response short-circuits
-        pre_hooks = tool.get("pre_hooks", [])
-        blocked = run_pre_hooks(pre_hooks, params, ctx)
-        if blocked is not None:
-            duration_ms = int((time.monotonic() - start) * 1000)
-            logger.info(
-                "tool_call",
-                extra={
-                    "event_type": "tool_call",
-                    "tool": name,
-                    "risk": risk,
-                    "params": sanitized,
-                    "status": "blocked",
-                    "duration_ms": duration_ms,
-                    "result_summary": _summarize_result(blocked),
-                },
-            )
-            return blocked
-
-        try:
-            handler = tool["handler"]
-            raw = handler(params)
-        except Exception as e:
-            duration_ms = int((time.monotonic() - start) * 1000)
-            logger.error(
-                "tool_call",
-                exc_info=True,
-                extra={
-                    "event_type": "tool_call",
-                    "tool": name,
-                    "risk": risk,
-                    "params": sanitized,
-                    "status": "error",
-                    "error": str(e),
-                    "duration_ms": duration_ms,
-                },
-            )
-            return {"error": str(e)}
-
-        # Backwards-compat: legacy handlers may return plain dicts. Wrap them.
-        if isinstance(raw, dict) and "ok" in raw and ("data" in raw or "error" in raw):
-            result = raw  # already normalized
-        else:
-            # Legacy success shape: extract _items if present, treat rest as data
-            items = raw.pop("_items", []) if isinstance(raw, dict) else []
-            result = ok(raw if isinstance(raw, dict) else {"value": raw}, items=items)
-
-        # Post-hooks: run after a successful handler, receiving (params, output, ctx)
-        post_hooks = tool.get("post_hooks", [])
-        if post_hooks:
-            run_post_hooks(post_hooks, params, result, ctx)
-
-        duration_ms = int((time.monotonic() - start) * 1000)
-        status = "error" if isinstance(result, dict) and result.get("ok") is False else "ok"
-        logger.info(
-            "tool_call",
-            extra={
-                "event_type": "tool_call",
-                "tool": name,
-                "risk": risk,
-                "params": sanitized,
-                "status": status,
-                "duration_ms": duration_ms,
-                "result_summary": _summarize_result(result) if isinstance(result, dict) else {"value": str(result)[:200]},
-            },
+        from src.services.tool_executor import execute_tool
+        return execute_tool(
+            name=name,
+            params=params,
+            risk=risk,
+            tools=self.tools,
+            ctx={"vault": self.vault, "memory": self.memory},
         )
-        return result
 
     def _describe_pending_calls(
         self, calls: list[dict], preview_texts: dict[str, str] | None = None
