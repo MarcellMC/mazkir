@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from collections.abc import Callable
 
 import anthropic
 
@@ -24,6 +25,8 @@ class ClaudeService:
         max_tokens: int = 4096,
         *,
         cache_static_prefix: str | None = None,
+        stream: bool = False,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> anthropic.types.Message:
         """Claude API call with tool-use support.
 
@@ -40,6 +43,10 @@ class ClaudeService:
                 caching.  This enables Anthropic prompt caching (~10 % input cost
                 reduction on cache hits).  When omitted the system arg is forwarded
                 as-is (plain string — existing behaviour).
+            stream: When True, use the streaming API and collect text deltas via
+                ``on_chunk``.  Returns the final Message after the stream completes.
+            on_chunk: Optional callback invoked with each text delta string when
+                ``stream=True``.  Ignored in non-streaming mode.
 
         Returns:
             Raw Anthropic Message response.
@@ -67,7 +74,19 @@ class ClaudeService:
         }
         if tools:
             kwargs["tools"] = tools
-        return self.client.messages.create(**kwargs)
+
+        if not stream:
+            return self.client.messages.create(**kwargs)
+
+        with self.client.messages.stream(**kwargs) as stream_ctx:
+            for event in stream_ctx:
+                if (
+                    event.type == "content_block_delta"
+                    and getattr(event.delta, "type", None) == "text_delta"
+                ):
+                    if on_chunk:
+                        on_chunk(event.delta.text)
+            return stream_ctx.get_final_message()
 
     def complete(
         self,
