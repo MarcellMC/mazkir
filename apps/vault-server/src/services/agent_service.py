@@ -152,6 +152,8 @@ class AgentService:
         self.router = router
         self.max_iterations = 10
         self.pending_confirmations: dict[str, PendingAction] = {}
+        # Transient: set during a streaming handle_message turn, cleared in finally.
+        self._stream_callback: "Callable[[str], None] | None" = None
         self.tools = self._register_tools()
         # Register built-in hooks (idempotent — safe to call multiple times)
         register_hook("validate_schema", _validate_schema_hook)
@@ -892,30 +894,41 @@ class AgentService:
         attachments: list[dict] | None = None,
         reply_to: dict | None = None,
         forwarded_from: dict | None = None,
+        stream_callback: "Callable[[str], None] | None" = None,
     ) -> AgentResponse:
-        """Main entry point: process a user message through the agent loop."""
+        """Main entry point: process a user message through the agent loop.
+
+        Args:
+            stream_callback: Optional callable invoked with each final text chunk
+                when streaming is requested.  Only the last agent iteration's
+                chunks are forwarded (i.e. after all tool calls complete).
+                Intermediate tool-use iterations are buffered and discarded so
+                that internal reasoning steps are not surfaced to the caller.
+        """
+        self._stream_callback = stream_callback
         session_id = str(chat_id)
         user_id = str(chat_id)
-        with using_attributes(session_id=session_id, user_id=user_id):
-            _input_text = (text or "")[:2000]
-            with _tracer.start_as_current_span(
-                "agent.handle_message",
-                attributes={
-                    SpanAttributes.OPENINFERENCE_SPAN_KIND: "AGENT",
-                    SpanAttributes.SESSION_ID: session_id,
-                    SpanAttributes.USER_ID: user_id,
-                    SpanAttributes.INPUT_VALUE: _input_text,
-                    SpanAttributes.INPUT_MIME_TYPE: "text/plain",
-                    "chat_id": chat_id,
-                    "attachment_count": len(attachments or []),
-                },
-            ) as span:
-                with with_span_status(span):
-                    if len(text or "") > 2000:
-                        span.set_attribute("truncated", True)
-                    result = self._handle_message_inner(
-                        text, chat_id, attachments, reply_to, forwarded_from
-                    )
+        try:
+            with using_attributes(session_id=session_id, user_id=user_id):
+                _input_text = (text or "")[:2000]
+                with _tracer.start_as_current_span(
+                    "agent.handle_message",
+                    attributes={
+                        SpanAttributes.OPENINFERENCE_SPAN_KIND: "AGENT",
+                        SpanAttributes.SESSION_ID: session_id,
+                        SpanAttributes.USER_ID: user_id,
+                        SpanAttributes.INPUT_VALUE: _input_text,
+                        SpanAttributes.INPUT_MIME_TYPE: "text/plain",
+                        "chat_id": chat_id,
+                        "attachment_count": len(attachments or []),
+                    },
+                ) as span:
+                    with with_span_status(span):
+                        if len(text or "") > 2000:
+                            span.set_attribute("truncated", True)
+                        result = self._handle_message_inner(
+                            text, chat_id, attachments, reply_to, forwarded_from
+                        )
                     _output_text = result.response[:2000]
                     span.set_attribute(SpanAttributes.OUTPUT_VALUE, _output_text)
                     if len(result.response) > 2000:
@@ -929,6 +942,8 @@ class AgentService:
                         }),
                     )
                 return result
+        finally:
+            self._stream_callback = None
 
     def _handle_message_inner(
         self,
@@ -1180,11 +1195,23 @@ class AgentService:
                     _prompt_chars = len(system) + (len(cache_static_prefix) if cache_static_prefix else 0)
                     _loop_span.set_attribute("system_prompt.token_estimate", _prompt_chars // 4)
 
+                    # Buffer streaming chunks for this iteration; only flush to
+                    # the caller when this turns out to be the final iteration
+                    # (i.e. no tool_use blocks).  Intermediate tool-use iterations
+                    # are silently discarded so the user never sees internal steps.
+                    _iter_chunks: list[str] = []
+
+                    def _on_chunk(text: str) -> None:
+                        _iter_chunks.append(text)
+
+                    _use_stream = self._stream_callback is not None
                     response = self.claude.create(
                         system=system,
                         messages=messages,
                         tools=tool_schemas,
                         cache_static_prefix=cache_static_prefix,
+                        stream=_use_stream,
+                        on_chunk=_on_chunk if _use_stream else None,
                     )
 
                     _usage = getattr(response, "usage", None)
@@ -1220,6 +1247,14 @@ class AgentService:
                             },
                         )
                         assistant_text = self._extract_text(response)
+                        # Flush buffered chunks to the caller — this is the final
+                        # iteration (no tool calls) so it's safe to stream.
+                        if self._stream_callback is not None:
+                            for _chunk in _iter_chunks:
+                                try:
+                                    self._stream_callback(_chunk)
+                                except Exception:
+                                    pass
                         break
 
                     if stop_reason == "tool_use":
