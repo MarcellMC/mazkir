@@ -50,7 +50,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   │   │   │   └── imagery.py        # Wikimedia Commons search
 │   │   │   └── services/             # Business logic
 │   │   │       ├── vault_service.py  # Obsidian vault CRUD
-│   │   │       ├── claude_service.py # Claude API (thin wrapper + split system prompt for caching)
+│   │   │       ├── claude_service.py # Claude API (thin wrapper + split system prompt for caching + stream support)
 │   │   │       ├── memory_service.py # Three-tier memory + graph index
 │   │   │       ├── agent_service.py  # Agent loop + tool registry + confidence gate
 │   │   │       ├── router_service.py # Haiku LLM skill classifier (skill loop)
@@ -63,7 +63,12 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   │   │       ├── tool_registry.py  # Risk-class thresholds + pre/post hook stamps + preview flag (P4)
 │   │   │       ├── tool_executor.py  # Per-call execution path (pre-hooks → handler → post-hooks → error override) (P4)
 │   │   │       ├── daily_tasks.py    # DailyTasksService: parse/render ## Tasks section (P4)
+│   │   │       ├── parallel_executor.py # Parallel tool dispatch via asyncio.gather (P5)
 │   │   │       ├── hooks/            # Pre/post tool hook registry
+│   │   │       │   └── sync_to_calendar.py # Post-hook: sync task/habit writes to GCal (P5)
+│   │   │       ├── tool_handlers/    # Extracted tool handler bodies (P5)
+│   │   │       │   ├── __init__.py
+│   │   │       │   └── daily.py      # daily_add_task, daily_set_task_state, daily_rollover, promote_daily_task
 │   │   │       ├── calendar_service.py # Google Calendar sync
 │   │   │       ├── timeline_service.py # Google Takeout parser
 │   │   │       ├── merger_service.py   # Event merging + fuzzy matching
@@ -148,6 +153,12 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 - Location/venue messages — coordinates passed through agent loop
 - Reply-to context and forwarded messages — included as context for the agent
 
+- **GCal sync as post-hook (P5):** Every task/habit write fires the `sync_to_calendar` post-hook (`services/hooks/sync_to_calendar.py`), which reads the affected vault path from `output._items`, loads the metadata, and dispatches to `CalendarService.sync_task` / `sync_habit` / `mark_event_complete` (all async; bridged via `_maybe_await`). Failures log at WARNING and never block the tool result. Wired into `create_task`, `update_task`, `complete_task`, `archive_task`, `delete_task`, `create_habit`, `update_habit`, `complete_habit`, `delete_habit`.
+- **Parallel tool execution (P5):** Each tool entry carries `safe_for_parallel: bool`. Read tools default safe; file-tier writes touching distinct paths (`create/update/complete/archive/delete` on task/habit/goal + `save_knowledge`) are overridden to safe; daily-section writes (`daily_*`, `attach_to_daily`, `edit_daily_section`) and event writes stay unsafe. The agent loop dispatches a batch of auto-execute tool calls via `parallel_executor.execute_calls_maybe_parallel` — concurrent via `asyncio.gather` in a worker thread when all calls are safe, serial fallback otherwise. Bulk-completion latency (May 21 trace: 13.7 s for 11 calls) drops to ~1–2 s.
+- **Streaming responses (P5):** `ClaudeService.create(stream=True, on_chunk=…)` uses the Anthropic SDK's `messages.stream` context manager and forwards `text_delta` events. `AgentService.handle_message(stream_callback=…)` buffers per iteration and flushes chunks to the callback **only** on the final iteration (`stop_reason=end_turn` with no tool calls). The `/message?stream=true` route returns Server-Sent Events; the bot (with `STREAM_RESPONSES=true`) sends a placeholder message and edits it every ~500 ms as chunks arrive. Tool-use iterations stay hidden.
+- **Tool handler split (P5):** `services/tool_handlers/daily.py` owns the daily-tier handler bodies (`daily_add_task`, `daily_set_task_state`, `daily_rollover`, `promote_daily_task`). AgentService delegates via thin wrappers. Other handler groups remain in `agent_service.py`; extraction continues incrementally.
+- **`daily_set_task_state` walks nested children (P5):** the matcher now flattens the task tree depth-first; a substring matching both a top-level task and a sub-task correctly returns `AMBIGUOUS_MATCH` with all candidates.
+
 ### Telegram Mini App (Web)
 - **Dayplanner** - Enriched timeline with date navigation, merging calendar events, Google Takeout location history, habits, and daily notes
 - **Playground** - AI asset generation with date navigation (micro icons, route sketches, keyframe scenes, full day maps) using Replicate + Wikimedia Commons imagery
@@ -195,6 +206,9 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 - **Tool registry + executor extracted (P4):** `services/tool_registry.py` owns risk-class threshold defaults + pre/post hook stamps + preview flag. `services/tool_executor.py` owns the per-call execution path (pre-hooks → handler → post-hooks → status propagation → error code override). `AgentService` delegates both.
 - **Context assembly (P3):** `MemoryService.assemble_context` returns the conversation sliding window + a one-line vault summary. Knowledge auto-dump and `items_referenced` retired in P3; the agent calls `search_knowledge` explicitly when it needs notes. `_build_vault_snapshot` returns a single line of counts (active tasks / habits / goals / tokens), not per-item listings.
 - **Prompt caching (P3):** The system prompt is split into a static prefix (active skill's system prompt + base guidelines + tool docs — identical across turns) and a dynamic tail (current date + vault summary line — changes each turn). The static prefix is sent with Anthropic's `cache_control: ephemeral`. Watch `llm.token_count.prompt_cached_read` in Phoenix to confirm cache hits on repeated calls from the same chat.
+- **GCal sync post-hook (P5):** `services/hooks/sync_to_calendar.py` implements `sync_to_calendar_hook(tool_name, output, services)`. Registered as a post-hook on all task/habit write tools. Reads `output._items`, detects item type from vault path prefix (`40-tasks` → task, `20-habits` → habit), calls `CalendarService.sync_task` / `sync_habit` / `mark_event_complete` as appropriate. Never raises — failures are WARNING-logged with the trace_id so they correlate to the Phoenix span.
+- **Parallel tool execution (P5):** `services/parallel_executor.py` exports `execute_calls_maybe_parallel(calls, executor_fn, safe_predicate)`. The tool registry's `safe_for_parallel` flag drives the predicate. When a batch is fully safe, calls run via `asyncio.gather` dispatched from a background thread. Serial fallback when any call is unsafe or the batch has side effects on the same path. AgentService passes the batch to this helper after the confidence gate instead of looping serially.
+- **Streaming responses (P5):** `ClaudeService.create(stream=True, on_chunk=callback)` wraps `client.messages.stream(...)` and calls `callback(delta_text)` for each `text_delta` event. `AgentService.handle_message(stream_callback=cb)` accumulates text per iteration; on the final iteration (`stop_reason=end_turn`, no tool calls) it flushes accumulated chunks through the callback. Intermediate tool-use iterations are not streamed. The `/message?stream=true` endpoint returns `text/event-stream` (SSE); the Telegram bot (env `STREAM_RESPONSES=true`) sends a placeholder and edits it on each chunk via `bot.editMessageText`.
 - New features → add route to vault-server, then add UI in telegram bot or web app
 
 ### Agent tool risk levels
@@ -282,3 +296,4 @@ curl http://localhost:8000/events/2026-03-05
 - **Photo Events Pipeline Plan:** `docs/plans/2026-03-05-photo-events-pipeline-plan.md`
 - **Skill Definitions:** `memory/00-system/mazkir-skills/*.md` — Mazkir sub-agent skill definitions (capture / manager / recall)
 - **P4 Daily Tier + Media Plan:** `docs/plans/2026-06-04-mazkir-p4-daily-tier-media-plan.md`
+- **P5 Integrations + Latency Plan:** `docs/plans/2026-06-04-mazkir-p5-integrations-latency-plan.md`
