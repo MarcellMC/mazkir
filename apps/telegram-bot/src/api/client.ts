@@ -13,6 +13,14 @@ import type {
 
 import { logger } from "../logger.js";
 
+export interface StreamMessagePayload {
+  text: string;
+  chat_id: number;
+  attachments?: Attachment[];
+  reply_to?: ReplyContext;
+  forwarded_from?: ForwardContext;
+}
+
 export function createApiClient(baseUrl: string, apiKey: string) {
   async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const method = options?.method ?? "GET";
@@ -123,3 +131,60 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 import { config } from "../config.js";
 
 export const api = createApiClient(config.vaultServerUrl, config.vaultServerApiKey);
+
+/**
+ * Stream a message via SSE. Calls `onChunk` for each partial text chunk, then
+ * resolves with the final MessageResponse when the stream ends.
+ */
+export async function streamMessage(
+  payload: StreamMessagePayload,
+  onChunk: (text: string) => void,
+  baseUrl: string = config.vaultServerUrl,
+  apiKey: string = config.vaultServerApiKey,
+): Promise<MessageResponse> {
+  const url = `${baseUrl}/message?stream=true`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+    ...(apiKey ? { "X-API-Key": apiKey } : {}),
+  };
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok || !res.body) {
+    throw new Error(`SSE stream failed: ${res.status} ${res.statusText}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let final: MessageResponse | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      const event = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const line = event.trim();
+      if (!line.startsWith("data: ")) continue;
+      const data = JSON.parse(line.slice(6)) as Record<string, unknown>;
+      if (data["done"] === true) {
+        final = data["response"] as MessageResponse;
+      } else if (typeof data["text"] === "string") {
+        onChunk(data["text"]);
+      }
+    }
+  }
+
+  if (!final) {
+    throw new Error("SSE stream ended without final payload");
+  }
+  return final;
+}

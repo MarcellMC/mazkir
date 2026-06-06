@@ -1,7 +1,7 @@
 import { Composer } from "grammy";
 import type { Message } from "grammy/types";
 import type { Attachment, ReplyContext, ForwardContext } from "@mazkir/shared-types";
-import { api } from "../api/client.js";
+import { api, streamMessage } from "../api/client.js";
 import { config } from "../config.js";
 import { markActiveSpanError, setActiveSpanOutput } from "../tracing-utils.js";
 
@@ -172,14 +172,86 @@ messageHandler.on(
         }
       }
 
-      const response = await api.sendMessage(payload);
+      if (config.streamResponses) {
+        // Streaming path: send placeholder, edit in chunks as they arrive
+        const placeholder = await ctx.reply("…");
+        let buffered = "";
+        let lastEdit = Date.now();
+        const EDIT_INTERVAL_MS = 500;
 
-      if (response.awaiting_confirmation && response.pending_action_id) {
-        pendingConfirmations.set(chatId, response.pending_action_id);
+        try {
+          const response = await streamMessage(payload, async (chunk) => {
+            buffered += chunk;
+            if (Date.now() - lastEdit > EDIT_INTERVAL_MS) {
+              try {
+                await ctx.api.editMessageText(
+                  ctx.chat.id,
+                  placeholder.message_id,
+                  buffered,
+                );
+              } catch {
+                // Telegram rate limits / duplicate-content errors are non-fatal mid-stream
+              }
+              lastEdit = Date.now();
+            }
+          });
+
+          if (response.awaiting_confirmation && response.pending_action_id) {
+            pendingConfirmations.set(chatId, response.pending_action_id);
+          }
+
+          setActiveSpanOutput(response.response);
+
+          // Final edit with full content and HTML formatting
+          try {
+            await ctx.api.editMessageText(
+              ctx.chat.id,
+              placeholder.message_id,
+              response.response,
+              { parse_mode: "HTML" },
+            );
+          } catch {
+            // Fall back to plain text if HTML parse_mode fails
+            await ctx.api.editMessageText(
+              ctx.chat.id,
+              placeholder.message_id,
+              response.response,
+            );
+          }
+        } catch (streamErr) {
+          // Fall back to non-streaming on any stream error
+          try {
+            const response = await api.sendMessage(payload);
+            if (response.awaiting_confirmation && response.pending_action_id) {
+              pendingConfirmations.set(chatId, response.pending_action_id);
+            }
+            setActiveSpanOutput(response.response);
+            await ctx.api.editMessageText(
+              ctx.chat.id,
+              placeholder.message_id,
+              response.response,
+              { parse_mode: "HTML" },
+            );
+          } catch (fallbackErr) {
+            markActiveSpanError(fallbackErr);
+            await ctx.api.editMessageText(
+              ctx.chat.id,
+              placeholder.message_id,
+              "❌ Something went wrong. Is vault-server running?",
+            );
+          }
+        }
+      } else {
+        // Non-streaming path (default)
+        const response = await api.sendMessage(payload);
+
+        if (response.awaiting_confirmation && response.pending_action_id) {
+          pendingConfirmations.set(chatId, response.pending_action_id);
+        }
+
+        setActiveSpanOutput(response.response);
+        await ctx.reply(response.response, { parse_mode: "HTML" });
       }
-
-      setActiveSpanOutput(response.response);
-      await ctx.reply(response.response, { parse_mode: "HTML" });
     } catch (err) {
       markActiveSpanError(err);
       await ctx.reply("❌ Something went wrong. Is vault-server running?");

@@ -7,6 +7,7 @@ interface Config {
   vaultServerApiKey: string;
   webappUrl: string;
   logLevel: string;
+  streamResponses: boolean;
 }
 
 function loadConfig(): Config {
@@ -24,6 +25,7 @@ function loadConfig(): Config {
     vaultServerApiKey: process.env.VAULT_SERVER_API_KEY ?? "",
     webappUrl: process.env.WEBAPP_URL ?? "http://localhost:5173",
     logLevel: process.env.LOG_LEVEL ?? "INFO",
+    streamResponses: process.env.STREAM_RESPONSES === "true",
   };
 }
 
