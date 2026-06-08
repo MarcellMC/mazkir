@@ -26,8 +26,8 @@ _LINE_RE = re.compile(
 @dataclass
 class ScheduleEntry:
     start: str
-    end: str | None
     text: str
+    end: str | None = None
 
 
 def parse_schedule_section(body: str) -> list[ScheduleEntry]:

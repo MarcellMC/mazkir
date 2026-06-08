@@ -44,3 +44,14 @@ def test_round_trip_preserves_entries():
     body = "## Schedule\n- 09:00 Standup\n- 20:00–22:30 Pub meeting [[Momentick]]\n"
     entries = parse_schedule_section(body)
     assert render_schedule_section(entries) == body
+
+
+def test_parse_empty_section_returns_empty():
+    body = "## Schedule\n\n## Food\n"
+    assert parse_schedule_section(body) == []
+
+
+def test_parse_schedule_at_end_of_file():
+    body = "## Tasks\n- [ ] Walk dog\n\n## Schedule\n- 09:00 Standup\n"
+    entries = parse_schedule_section(body)
+    assert entries == [ScheduleEntry(start="09:00", end=None, text="Standup")]
