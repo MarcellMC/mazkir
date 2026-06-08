@@ -63,6 +63,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   │   │       ├── tool_registry.py  # Risk-class thresholds + pre/post hook stamps + preview flag (P4)
 │   │   │       ├── tool_executor.py  # Per-call execution path (pre-hooks → handler → post-hooks → error override) (P4)
 │   │   │       ├── daily_tasks.py    # DailyTasksService: parse/render ## Tasks section (P4)
+│   │   │       ├── daily_schedule.py # parse/render daily-note ## Schedule section (timed events)
 │   │   │       ├── parallel_executor.py # Parallel tool dispatch via asyncio.gather (P5)
 │   │   │       ├── hooks/            # Pre/post tool hook registry
 │   │   │       │   └── sync_to_calendar.py # Post-hook: sync task/habit writes to GCal (P5)

@@ -775,7 +775,8 @@ class AgentService:
                     "description": (
                         "Create a new event. Use for photo stops, ad-hoc activities, "
                         "or any event not already in the calendar/timeline. "
-                        "Events are synced to Google Calendar when available."
+                        "Events are recorded in the daily note's ## Schedule section "
+                        "and synced to Google Calendar when available."
                     ),
                     "input_schema": {
                         "type": "object",

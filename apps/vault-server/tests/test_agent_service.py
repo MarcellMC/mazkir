@@ -700,6 +700,26 @@ class TestEventTools:
         assert "- 20:00–22:30 Pub meeting @ Shnitt brewery [[Momentick]]" in written_body
         assert "10-daily/2026-06-07.md" in result["_items"]
 
+    def test_create_event_appends_to_existing_schedule(self, agent, mock_services):
+        vault = mock_services[1]
+        events_mock = mock_services[4]
+        agent.calendar = None
+        events_mock.create_event.return_value = {"id": "evt_2", "path": "data/events/2026-06-07.json"}
+        vault.read_daily_note.return_value = {
+            "content": "## Schedule\n- 09:00 Standup\n\n## Food\n"
+        }
+
+        result = agent._tool_create_event({
+            "name": "Afternoon walk",
+            "date": "2026-06-07",
+            "start_time": "15:00",
+        })
+
+        assert result["ok"] is True
+        _, written_body = vault.write_daily_note.call_args[0]
+        assert "- 09:00 Standup" in written_body
+        assert "- 15:00 Afternoon walk" in written_body
+
     def test_create_event_skips_schedule_for_photo(self, agent, mock_services):
         vault = mock_services[1]
         events_mock = mock_services[4]
