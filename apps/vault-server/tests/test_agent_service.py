@@ -29,6 +29,8 @@ def mock_services(tmp_path):
     memory.save_turn = MagicMock()
     memory.summarize_and_decay = MagicMock()
 
+    vault.read_daily_note.return_value = {"content": ""}
+
     return claude, vault, memory, calendar, events
 
 
@@ -696,7 +698,7 @@ class TestEventTools:
         assert written_date == "2026-06-07"
         assert "## Schedule" in written_body
         assert "- 20:00–22:30 Pub meeting @ Shnitt brewery [[Momentick]]" in written_body
-        assert any("2026-06-07" in str(p) for p in result["_items"])
+        assert "10-daily/2026-06-07.md" in result["_items"]
 
     def test_create_event_skips_schedule_for_photo(self, agent, mock_services):
         vault = mock_services[1]
