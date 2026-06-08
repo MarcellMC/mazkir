@@ -63,6 +63,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   │   │       ├── tool_registry.py  # Risk-class thresholds + pre/post hook stamps + preview flag (P4)
 │   │   │       ├── tool_executor.py  # Per-call execution path (pre-hooks → handler → post-hooks → error override) (P4)
 │   │   │       ├── daily_tasks.py    # DailyTasksService: parse/render ## Tasks section (P4)
+│   │   │       ├── daily_schedule.py # parse/render daily-note ## Schedule section (timed events)
 │   │   │       ├── parallel_executor.py # Parallel tool dispatch via asyncio.gather (P5)
 │   │   │       ├── hooks/            # Pre/post tool hook registry
 │   │   │       │   └── sync_to_calendar.py # Post-hook: sync task/habit writes to GCal (P5)
@@ -158,6 +159,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 - **Streaming responses (P5):** `ClaudeService.create(stream=True, on_chunk=…)` uses the Anthropic SDK's `messages.stream` context manager and forwards `text_delta` events. `AgentService.handle_message(stream_callback=…)` buffers per iteration and flushes chunks to the callback **only** on the final iteration (`stop_reason=end_turn` with no tool calls). The `/message?stream=true` route returns Server-Sent Events; the bot (with `STREAM_RESPONSES=true`) sends a placeholder message and edits it every ~500 ms as chunks arrive. Tool-use iterations stay hidden.
 - **Tool handler split (P5):** `services/tool_handlers/daily.py` owns the daily-tier handler bodies (`daily_add_task`, `daily_set_task_state`, `daily_rollover`, `promote_daily_task`). AgentService delegates via thin wrappers. Other handler groups remain in `agent_service.py`; extraction continues incrementally.
 - **`daily_set_task_state` walks nested children (P5):** the matcher now flattens the task tree depth-first; a substring matching both a top-level task and a sub-task correctly returns `AMBIGUOUS_MATCH` with all candidates.
+- **Unified timed-event capture:** `create_event` is the canonical "timed thing" action — it writes the events store, syncs Google Calendar (best-effort), AND appends a line to the daily note's `## Schedule` section (`services/daily_schedule.py`), skipped for `photo_path` events. The `capture` skill now includes `create_event` and a prompt rule routing time-anchored content there instead of `save_knowledge`.
 
 ### Telegram Mini App (Web)
 - **Dayplanner** - Enriched timeline with date navigation, merging calendar events, Google Takeout location history, habits, and daily notes

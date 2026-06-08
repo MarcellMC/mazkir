@@ -775,7 +775,8 @@ class AgentService:
                     "description": (
                         "Create a new event. Use for photo stops, ad-hoc activities, "
                         "or any event not already in the calendar/timeline. "
-                        "Events are synced to Google Calendar when available."
+                        "Events are recorded in the daily note's ## Schedule section "
+                        "and synced to Google Calendar when available."
                     ),
                     "input_schema": {
                         "type": "object",
@@ -2446,6 +2447,44 @@ class AgentService:
         items = [result["path"]]
         if calendar_synced:
             result["calendar_synced"] = True
+
+        # Unified record: also log the event in the daily note's ## Schedule section.
+        # Best-effort — a failure here never invalidates the events-store write.
+        if not params.get("photo_path"):
+            try:
+                from src.services.daily_schedule import (
+                    ScheduleEntry,
+                    parse_schedule_section,
+                    render_schedule_section,
+                )
+                from src.services.daily_tasks import replace_or_append_section
+
+                text = params["name"]
+                loc = params.get("location") or {}
+                if loc.get("name"):
+                    text = f"{text} @ {loc['name']}"
+                for link in params.get("wikilinks") or []:
+                    text = f"{text} [[{link}]]"
+
+                daily = self.vault.read_daily_note(date)
+                body = daily["content"]
+                entries = parse_schedule_section(body)
+                entries.append(
+                    ScheduleEntry(
+                        start=_extract_hhmm(start_time),
+                        end=_extract_hhmm(end_time),
+                        text=text,
+                    )
+                )
+                new_section = render_schedule_section(entries)
+                new_body = replace_or_append_section(body, "Schedule", new_section)
+                self.vault.write_daily_note(date, new_body)
+                daily_path = f"10-daily/{date}.md"
+                items.append(daily_path)
+                result["daily_note"] = daily_path
+            except Exception as e:
+                logger.warning(f"Failed to write event to daily note: {e}")
+
         return ok(result, items=items)
 
     def _tool_update_event(self, params: dict) -> dict:
