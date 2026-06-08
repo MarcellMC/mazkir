@@ -674,6 +674,62 @@ class TestEventTools:
         assert call_kwargs.kwargs["date"] == "2026-03-20"
         assert call_kwargs.kwargs["start_time"] == "2026-03-20T14:00:00"
 
+    def test_create_event_writes_schedule_line(self, agent, mock_services):
+        vault = mock_services[1]
+        events_mock = mock_services[4]
+        agent.calendar = None
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "data/events/2026-06-07.json"}
+        vault.read_daily_note.return_value = {"content": "## Tasks\n- [ ]\n\n## Food\n"}
+
+        result = agent._tool_create_event({
+            "name": "Pub meeting",
+            "date": "2026-06-07",
+            "start_time": "20:00",
+            "end_time": "22:30",
+            "location": {"name": "Shnitt brewery"},
+            "wikilinks": ["Momentick"],
+        })
+
+        assert result["ok"] is True
+        vault.write_daily_note.assert_called_once()
+        written_date, written_body = vault.write_daily_note.call_args[0]
+        assert written_date == "2026-06-07"
+        assert "## Schedule" in written_body
+        assert "- 20:00–22:30 Pub meeting @ Shnitt brewery [[Momentick]]" in written_body
+        assert any("2026-06-07" in str(p) for p in result["_items"])
+
+    def test_create_event_skips_schedule_for_photo(self, agent, mock_services):
+        vault = mock_services[1]
+        events_mock = mock_services[4]
+        agent.calendar = None
+        events_mock.create_event.return_value = {"id": "evt_p", "path": "data/events/2026-06-07.json"}
+
+        result = agent._tool_create_event({
+            "name": "Lunch photo",
+            "date": "2026-06-07",
+            "start_time": "12:00",
+            "photo_path": "memory/00-system/media/2026-06-07/lunch.jpg",
+        })
+
+        assert result["ok"] is True
+        vault.write_daily_note.assert_not_called()
+
+    def test_create_event_schedule_failure_does_not_break_result(self, agent, mock_services):
+        vault = mock_services[1]
+        events_mock = mock_services[4]
+        agent.calendar = None
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "data/events/2026-06-07.json"}
+        vault.read_daily_note.side_effect = Exception("vault down")
+
+        result = agent._tool_create_event({
+            "name": "Pub meeting",
+            "date": "2026-06-07",
+            "start_time": "20:00",
+        })
+
+        assert result["ok"] is True
+        assert result["data"]["event_id"] == "evt_new"
+
     def test_update_event_tool_registered(self, agent):
         assert "update_event" in agent.tools
         assert agent.tools["update_event"]["risk"] == "write"
