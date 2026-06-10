@@ -599,7 +599,7 @@ class AgentService:
                                     "lng": {"type": "number"},
                                     "name": {"type": "string"},
                                 },
-                                "description": "Location coordinates to show with the attachment",
+                                "description": "Location coordinates — rendered as a map link in the daily note (name used as the link label)",
                             },
                             "section": {
                                 "type": "string",
@@ -2218,10 +2218,10 @@ class AgentService:
             meta_parts.append(" | ".join(f"[[{link}]]" for link in wikilinks))
         lines.append(" | ".join(meta_parts))
         if location:
-            loc_parts = [f"{location['lat']}, {location['lng']}"]
-            if location.get("name"):
-                loc_parts.append(location["name"])
-            lines.append(f"\U0001f4cd {' — '.join(loc_parts)}")
+            lat, lng = location["lat"], location["lng"]
+            label = location.get("name") or "Map"
+            map_url = f"https://www.google.com/maps?q={lat},{lng}"
+            lines.append(f"\U0001f4cd [{label}]({map_url})")
 
         content = "\n".join(lines)
 

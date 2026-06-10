@@ -552,7 +552,28 @@ class TestAttachToDaily:
         assert "path" in result["data"]
         call_args = vault.append_to_daily_section.call_args
         content = call_args.kwargs.get("content") or call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs["content"]
-        assert "32.08" in content
+        # Coordinates render as a map link, not raw numbers
+        assert "[Tel Aviv](https://www.google.com/maps?q=32.08,34.78)" in content
+        assert "\U0001f4cd" in content
+
+    def test_attach_to_daily_location_without_name_uses_map_label(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.append_to_daily_section.return_value = {
+            "path": "10-daily/2026-03-04.md",
+            "section": "Notes",
+        }
+
+        result = agent._tool_attach_to_daily({
+            "vault_path": "data/media/2026-03-04/photo.jpg",
+            "caption": "Street photo",
+            "location": {"lat": 32.08, "lng": 34.78},
+            "section": "Notes",
+        })
+
+        assert result["ok"] is True
+        call_args = vault.append_to_daily_section.call_args
+        content = call_args.kwargs.get("content") or call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs["content"]
+        assert "[Map](https://www.google.com/maps?q=32.08,34.78)" in content
 
     def test_attach_to_daily_emits_wikilink_embed(self, mock_services):
         claude, vault, memory, calendar, events = mock_services
