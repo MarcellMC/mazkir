@@ -1,4 +1,6 @@
 """Task API routes."""
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from src.main import get_vault, get_calendar
@@ -18,6 +20,22 @@ class TaskCreate(BaseModel):
 
 class TaskComplete(BaseModel):
     completed: bool = True
+
+
+def find_task_by_slug(vault, slug: str) -> dict | None:
+    """Resolve a task by filename slug — exact stem match, then unique prefix.
+
+    Prefix matching supports slugs truncated to fit Telegram's 64-byte
+    callback_data limit.
+    """
+    tasks = vault.list_active_tasks()
+    for task in tasks:
+        if Path(task["path"]).stem == slug:
+            return task
+    prefixed = [t for t in tasks if Path(t["path"]).stem.startswith(slug)]
+    if len(prefixed) == 1:
+        return prefixed[0]
+    return None
 
 
 @router.get("")
@@ -72,6 +90,31 @@ async def create_task(body: TaskCreate):
     }
 
 
+@router.get("/{slug}")
+async def get_task(slug: str):
+    """Full task detail by filename slug (truncated prefixes accepted)."""
+    vault = get_vault()
+    task = find_task_by_slug(vault, slug)
+    if not task:
+        raise HTTPException(404, f"Task not found: {slug}")
+
+    meta = task["metadata"]
+    return {
+        "name": item_name(task),
+        "slug": Path(task["path"]).stem,
+        "status": meta.get("status", "active"),
+        "priority": meta.get("priority", 3),
+        "due_date": meta.get("due_date"),
+        "category": meta.get("category", "personal"),
+        "tokens_on_completion": meta.get("tokens_on_completion"),
+        "created": meta.get("created"),
+        "updated": meta.get("updated"),
+        "google_event_id": meta.get("google_event_id"),
+        "path": task["path"],
+        "content": task.get("content", ""),
+    }
+
+
 @router.patch("/{name}")
 async def complete_task(name: str, body: TaskComplete):
     vault = get_vault()
@@ -80,7 +123,8 @@ async def complete_task(name: str, body: TaskComplete):
     if not body.completed:
         raise HTTPException(400, "Only completion is supported via PATCH")
 
-    task = vault.find_task_by_name(name)
+    # Accept either a filename slug (from inline keyboards) or a task name
+    task = find_task_by_slug(vault, name) or vault.find_task_by_name(name)
     if not task:
         raise HTTPException(404, f"Task not found: {name}")
 

@@ -1,6 +1,7 @@
 import type {
   DailyResponse,
   Task,
+  TaskDetail,
   Habit,
   Goal,
   TokensResponse,
@@ -8,6 +9,13 @@ import type {
   MessageResponse,
 } from "@mazkir/shared-types";
 
+
+export function escapeHtml(text: string): string {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
 
 export function progressBar(percent: number, length = 10): string {
   const filled = Math.round((percent / 100) * length);
@@ -80,6 +88,48 @@ export function formatTasks(tasks: Task[]): string {
   if (low.length > 0) {
     lines.push("🟢 <b>Low Priority</b>");
     for (const t of low) lines.push(`  ⏳ ${t.name}${t.due_date ? ` (due ${t.due_date})` : ""}`);
+  }
+
+  return lines.join("\n");
+}
+
+const PRIORITY_ICONS: Record<number, string> = { 5: "🔴", 4: "🔴", 3: "🟡", 2: "🟢", 1: "🟢" };
+const DETAIL_BODY_MAX = 800;
+
+/** Drop the "# Title" heading and `## Section` blocks with no real content
+ * (template boilerplate like an empty Description or a lone `- [ ]`). */
+function stripEmptySections(content: string): string {
+  const withoutTitle = content.replace(/^#\s+.*\n?/, "");
+  const blocks = withoutTitle.split(/^(?=##\s)/m);
+  const kept = blocks.filter((block) => {
+    if (!block.startsWith("## ")) return block.trim().length > 0;
+    const body = block.split("\n").slice(1).join("\n");
+    return body.replaceAll(/- \[ \]\s*$/gm, "").trim().length > 0;
+  });
+  return kept.join("").trim();
+}
+
+export function formatTaskDetail(task: TaskDetail): string {
+  const lines: string[] = [`📋 <b>${escapeHtml(task.name)}</b>\n`];
+
+  const icon = PRIORITY_ICONS[task.priority] ?? "🟡";
+  lines.push(`${icon} Priority: <b>${task.priority}</b>`);
+  if (task.category) lines.push(`🏷 Category: ${escapeHtml(task.category)}`);
+  if (task.due_date) lines.push(`📅 Due: ${escapeHtml(String(task.due_date))}`);
+  lines.push(`📌 Status: ${escapeHtml(task.status)}`);
+  if (task.tokens_on_completion != null) {
+    lines.push(`🪙 Tokens on completion: ${task.tokens_on_completion}`);
+  }
+  if (task.created) lines.push(`🕐 Created: ${escapeHtml(String(task.created))}`);
+  if (task.google_event_id) lines.push(`📆 Synced to Google Calendar`);
+
+  // Note body: drop the title heading (duplicates the name) and empty
+  // template sections, keep everything the user actually wrote.
+  const body = stripEmptySections(task.content);
+  if (body) {
+    const truncated =
+      body.length > DETAIL_BODY_MAX ? body.slice(0, DETAIL_BODY_MAX) + "…" : body;
+    lines.push("", `<blockquote>${escapeHtml(truncated)}</blockquote>`);
   }
 
   return lines.join("\n");

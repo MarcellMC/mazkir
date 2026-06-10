@@ -1,6 +1,7 @@
 import type {
   DailyResponse,
   Task,
+  TaskDetail,
   Habit,
   Goal,
   TokensResponse,
@@ -73,6 +74,8 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     // Tasks
     listTasks: () => request<Task[]>("/tasks"),
+    getTask: (slug: string) =>
+      request<TaskDetail>(`/tasks/${encodeURIComponent(slug)}`),
     createTask: (data: Record<string, unknown>) =>
       request<Task>("/tasks", { method: "POST", body: JSON.stringify(data) }),
     completeTask: (name: string) =>

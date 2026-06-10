@@ -1,6 +1,13 @@
 import { Composer } from "grammy";
 import { api } from "../api/client.js";
-import { formatTasks, formatHabits, formatCalendar, formatGoals } from "../formatters/telegram.js";
+import {
+  formatTasks,
+  formatTaskDetail,
+  formatHabits,
+  formatCalendar,
+  formatGoals,
+} from "../formatters/telegram.js";
+import { buildTasksKeyboard, buildTaskDetailKeyboard } from "../keyboards/tasks.js";
 import { markActiveSpanError } from "../tracing-utils.js";
 
 export const callbackHandlers = new Composer();
@@ -20,14 +27,35 @@ callbackHandlers.callbackQuery(/^habit:complete:(.+)$/, async (ctx) => {
   }
 });
 
-// Task completion
-callbackHandlers.callbackQuery(/^task:complete:(.+)$/, async (ctx) => {
-  const name = ctx.match[1]!;
+// Task detail view — tapping a task in the list shows its full data
+// with a Complete button.
+callbackHandlers.callbackQuery(/^task:view:(.+)$/, async (ctx) => {
+  const slug = ctx.match[1]!;
   try {
-    await api.completeTask(name);
-    await ctx.answerCallbackQuery({ text: `✅ ${name} completed!` });
+    const detail = await api.getTask(slug);
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(formatTaskDetail(detail), {
+      parse_mode: "HTML",
+      reply_markup: buildTaskDetailKeyboard(detail.slug),
+    });
+  } catch (err) {
+    markActiveSpanError(err);
+    await ctx.answerCallbackQuery({ text: "❌ Failed to load task" });
+  }
+});
+
+// Task completion. `task:done:` carries a slug (from the detail view);
+// legacy `task:complete:` buttons carry a name — the server resolves both.
+callbackHandlers.callbackQuery(/^task:(?:done|complete):(.+)$/, async (ctx) => {
+  const ref = ctx.match[1]!;
+  try {
+    await api.completeTask(ref);
+    await ctx.answerCallbackQuery({ text: "✅ Task completed!" });
     const tasks = await api.listTasks();
-    await ctx.editMessageText(formatTasks(tasks), { parse_mode: "HTML" });
+    await ctx.editMessageText(formatTasks(tasks), {
+      parse_mode: "HTML",
+      reply_markup: buildTasksKeyboard(tasks),
+    });
   } catch (err) {
     markActiveSpanError(err);
     await ctx.answerCallbackQuery({ text: "❌ Failed to complete task" });
@@ -42,7 +70,10 @@ callbackHandlers.callbackQuery(/^nav:(.+)$/, async (ctx) => {
     switch (target) {
       case "tasks": {
         const tasks = await api.listTasks();
-        await ctx.editMessageText(formatTasks(tasks), { parse_mode: "HTML" });
+        await ctx.editMessageText(formatTasks(tasks), {
+          parse_mode: "HTML",
+          reply_markup: buildTasksKeyboard(tasks),
+        });
         break;
       }
       case "habits": {

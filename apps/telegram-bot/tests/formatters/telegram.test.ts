@@ -155,3 +155,54 @@ describe("formatCalendar", () => {
     expect(result).not.toContain("(Mazkir)");
   });
 });
+
+describe("formatTaskDetail", () => {
+  const detail = {
+    name: "Ship feature <v2>",
+    slug: "ship-feature-v2",
+    status: "active",
+    priority: 5,
+    category: "work",
+    due_date: "2026-06-15",
+    tokens_on_completion: 10,
+    created: "2026-06-01",
+    google_event_id: "abc123",
+    path: "40-tasks/active/ship-feature-v2.md",
+    content: "# Ship feature <v2>\n\n## Description\nBig & important release\n\n## Checklist\n- [ ]\n\n## Notes\n",
+  };
+
+  it("escapes HTML in name and body", async () => {
+    const { formatTaskDetail } = await import("../../src/formatters/telegram.js");
+    const result = formatTaskDetail(detail as any);
+    expect(result).toContain("Ship feature &lt;v2&gt;");
+    expect(result).toContain("Big &amp; important release");
+    expect(result).not.toContain("<v2>");
+  });
+
+  it("shows frontmatter fields", async () => {
+    const { formatTaskDetail } = await import("../../src/formatters/telegram.js");
+    const result = formatTaskDetail(detail as any);
+    expect(result).toContain("Priority: <b>5</b>");
+    expect(result).toContain("Category: work");
+    expect(result).toContain("Due: 2026-06-15");
+    expect(result).toContain("Tokens on completion: 10");
+    expect(result).toContain("Synced to Google Calendar");
+  });
+
+  it("drops empty template sections but keeps written content", async () => {
+    const { formatTaskDetail } = await import("../../src/formatters/telegram.js");
+    const result = formatTaskDetail(detail as any);
+    expect(result).toContain("## Description");
+    expect(result).not.toContain("## Checklist");
+    expect(result).not.toContain("## Notes");
+  });
+
+  it("omits the body block when content is pure boilerplate", async () => {
+    const { formatTaskDetail } = await import("../../src/formatters/telegram.js");
+    const result = formatTaskDetail({
+      ...detail,
+      content: "# Title\n\n## Description\n\n\n## Checklist\n- [ ]\n\n## Notes\n",
+    } as any);
+    expect(result).not.toContain("<blockquote>");
+  });
+});
