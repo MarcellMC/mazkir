@@ -47,6 +47,17 @@ describe("formatTasks", () => {
     const result = formatTasks([]);
     expect(result).toContain("No active tasks");
   });
+  it("numbers tasks sequentially across priority groups", () => {
+    const tasks = [
+      { name: "urgent", status: "active", priority: 5 },
+      { name: "medium", status: "active", priority: 3 },
+      { name: "low", status: "active", priority: 1 },
+    ];
+    const result = formatTasks(tasks);
+    expect(result).toContain("1. ⏳ urgent");
+    expect(result).toContain("2. ⏳ medium");
+    expect(result).toContain("3. ⏳ low");
+  });
 });
 
 describe("formatGoals", () => {

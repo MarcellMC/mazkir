@@ -1893,14 +1893,17 @@ class AgentService:
         except Exception:
             daily_tasks = []
 
-        daily_pending = [
-            {
-                "text": t.text,
-                "scheduled_at": t.scheduled_at,
-                "duration_minutes": t.duration_minutes,
-            }
-            for t in daily_tasks if t.state == "unchecked"
-        ]
+        n = 1
+        daily_pending = []
+        for t in daily_tasks:
+            if t.state == "unchecked":
+                daily_pending.append({
+                    "n": n,
+                    "text": t.text,
+                    "scheduled_at": t.scheduled_at,
+                    "duration_minutes": t.duration_minutes,
+                })
+                n += 1
         daily_done_today = [
             {"text": t.text} for t in daily_tasks if t.state == "checked"
         ]
@@ -1935,6 +1938,12 @@ class AgentService:
                     "due_date": str(meta["due_date"]),
                     "priority": prio,
                 })
+
+        # Assign sequential numbers to file-tier tasks (high → medium → low, matching UI order)
+        for prio in sorted(by_priority.keys(), reverse=True):
+            for entry in by_priority[prio]:
+                entry["n"] = n
+                n += 1
 
         return ok({
             "daily_pending": daily_pending,

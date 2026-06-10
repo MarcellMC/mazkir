@@ -75,19 +75,20 @@ export function formatTasks(tasks: Task[]): string {
   const medium = tasks.filter((t) => t.priority === 3);
   const low = tasks.filter((t) => t.priority <= 2);
 
+  let n = 1;
   if (high.length > 0) {
     lines.push("🔴 <b>High Priority</b>");
-    for (const t of high) lines.push(`  ⏳ ${t.name}${t.due_date ? ` (due ${t.due_date})` : ""}`);
+    for (const t of high) lines.push(`  ${n++}. ⏳ ${t.name}${t.due_date ? ` (due ${t.due_date})` : ""}`);
     lines.push("");
   }
   if (medium.length > 0) {
     lines.push("🟡 <b>Medium Priority</b>");
-    for (const t of medium) lines.push(`  ⏳ ${t.name}${t.due_date ? ` (due ${t.due_date})` : ""}`);
+    for (const t of medium) lines.push(`  ${n++}. ⏳ ${t.name}${t.due_date ? ` (due ${t.due_date})` : ""}`);
     lines.push("");
   }
   if (low.length > 0) {
     lines.push("🟢 <b>Low Priority</b>");
-    for (const t of low) lines.push(`  ⏳ ${t.name}${t.due_date ? ` (due ${t.due_date})` : ""}`);
+    for (const t of low) lines.push(`  ${n++}. ⏳ ${t.name}${t.due_date ? ` (due ${t.due_date})` : ""}`);
   }
 
   return lines.join("\n");
