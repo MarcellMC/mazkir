@@ -113,9 +113,23 @@ async function downloadPhoto(
 
 export const messageHandler = new Composer();
 
-// Handle text, photo, and location messages
+/** Image MIME types Claude vision accepts — other documents are skipped. */
+export const SUPPORTED_IMAGE_MIMES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+]);
+
+function timestampFilename(ext = "jpg"): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `photo_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.${ext}`;
+}
+
+// Handle text, photo, document (image files keep EXIF), and location messages
 messageHandler.on(
-  ["message:text", "message:photo", "message:location"],
+  ["message:text", "message:photo", "message:document", "message:location"],
   async (ctx) => {
     const msg = ctx.message;
     const chatId = ctx.chat.id;
@@ -155,20 +169,48 @@ messageHandler.on(
           photoData = await downloadPhoto(largest.file_id, config.botToken);
         }
         if (photoData) {
-          const now = new Date();
-          const filename = `photo_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}-${String(now.getSeconds()).padStart(2, "0")}.jpg`;
           if (!payload.attachments) payload.attachments = [];
           payload.attachments.push({
             type: "photo",
             data: photoData.data,
             mime_type: photoData.mime_type,
-            filename,
+            filename: timestampFilename(),
             telegram_date: new Date(msg.date * 1000).toISOString(),
           });
         } else {
           // Photo download failed — append note to text
           payload.text = (payload.text ? payload.text + "\n" : "") +
             "[Photo attachment failed to download]";
+        }
+      }
+
+      // Image sent as file (document) — Telegram preserves EXIF on these,
+      // so GPS/camera metadata survives, unlike compressed photos.
+      if (msg.document) {
+        const mime = msg.document.mime_type ?? "";
+        if (SUPPORTED_IMAGE_MIMES.has(mime)) {
+          let fileData = await downloadPhoto(msg.document.file_id, config.botToken);
+          if (!fileData) {
+            fileData = await downloadPhoto(msg.document.file_id, config.botToken);
+          }
+          if (fileData) {
+            const filename =
+              msg.document.file_name?.replaceAll("/", "-") ?? timestampFilename();
+            if (!payload.attachments) payload.attachments = [];
+            payload.attachments.push({
+              type: "photo",
+              data: fileData.data,
+              mime_type: mime,
+              filename,
+              telegram_date: new Date(msg.date * 1000).toISOString(),
+            });
+          } else {
+            payload.text = (payload.text ? payload.text + "\n" : "") +
+              "[File attachment failed to download]";
+          }
+        } else {
+          payload.text = (payload.text ? payload.text + "\n" : "") +
+            `[Unsupported file attachment: ${msg.document.file_name ?? mime ?? "unknown"}]`;
         }
       }
 

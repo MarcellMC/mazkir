@@ -169,3 +169,85 @@ describe("buildMessagePayload", () => {
     expect(payload.text).toBe("Dog walk photo");
   });
 });
+
+const { api } = await import("../../src/api/client.js");
+const { messageHandler } = await import("../../src/conversations/message.js");
+
+describe("document attachments", () => {
+  function makeDocCtx(document: Record<string, unknown>, caption?: string) {
+    const msg = {
+      message_id: 1,
+      date: 1749500000,
+      chat: { id: 123, type: "private" },
+      document,
+      caption,
+    };
+    return {
+      update: { update_id: 1, message: msg },
+      message: msg,
+      chat: msg.chat,
+      me: { id: 42, is_bot: true, username: "test_bot" },
+      replyWithChatAction: vi.fn(),
+      reply: vi.fn().mockResolvedValue({ message_id: 2 }),
+      api: { editMessageText: vi.fn() },
+    } as any;
+  }
+
+  beforeEach(() => {
+    vi.mocked(api.sendMessage).mockReset().mockResolvedValue({
+      intent: "GENERAL_CHAT",
+      response: "ok",
+    } as any);
+  });
+
+  it("downloads an image document and forwards it as a photo attachment", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        json: async () => ({ ok: true, result: { file_path: "documents/file_1.jpg" } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () => new TextEncoder().encode("img-bytes").buffer,
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeDocCtx({
+      file_id: "doc-file-id",
+      file_name: "IMG_1234.jpg",
+      mime_type: "image/jpeg",
+    });
+    await messageHandler.middleware()(ctx, async () => {});
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    const payload = vi.mocked(api.sendMessage).mock.calls[0]![0] as any;
+    expect(payload.attachments).toHaveLength(1);
+    expect(payload.attachments[0]).toMatchObject({
+      type: "photo",
+      filename: "IMG_1234.jpg",
+      mime_type: "image/jpeg",
+    });
+    expect(payload.attachments[0].data).toBe(
+      Buffer.from("img-bytes").toString("base64"),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("skips non-image documents with a note in the text", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeDocCtx({
+      file_id: "doc-file-id",
+      file_name: "report.pdf",
+      mime_type: "application/pdf",
+    });
+    await messageHandler.middleware()(ctx, async () => {});
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const payload = vi.mocked(api.sendMessage).mock.calls[0]![0] as any;
+    expect(payload.attachments).toBeUndefined();
+    expect(payload.text).toContain("[Unsupported file attachment: report.pdf]");
+    vi.unstubAllGlobals();
+  });
+});
