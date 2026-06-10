@@ -58,6 +58,22 @@ describe("buildTasksKeyboard", () => {
     const kb = buildTasksKeyboard(tasks);
     expect(kb.inline_keyboard.flat().length).toBe(8);
   });
+
+  it("labels buttons with sequential numbers", () => {
+    const kb = buildTasksKeyboard([LONG_TASK, SHORT_TASK]);
+    const buttons = kb.inline_keyboard.flat() as { text: string; callback_data: string }[];
+    expect(buttons[0].text).toMatch(/^1\. /);
+    expect(buttons[1].text).toMatch(/^2\. /);
+  });
+
+  it("sorts by priority before numbering (high first)", () => {
+    const high: Task = { name: "Urgent", status: "active", priority: 5, path: "40-tasks/active/urgent.md" };
+    const low: Task = { name: "Minor", status: "active", priority: 1, path: "40-tasks/active/minor.md" };
+    const kb = buildTasksKeyboard([low, high]);
+    const buttons = kb.inline_keyboard.flat() as { text: string; callback_data: string }[];
+    expect(buttons[0].text).toMatch(/^1\. Urgent/);
+    expect(buttons[1].text).toMatch(/^2\. Minor/);
+  });
 });
 
 describe("buildTaskDetailKeyboard", () => {

@@ -1244,13 +1244,15 @@ def test_list_tasks_returns_grouped_object(mock_services):
     assert "daily_done_today" in data
     assert "file_tier_by_priority" in data
     assert "overdue" in data
-    # Daily pending has the unchecked item
+    # Daily pending has the unchecked item with sequential number starting at 1
     assert any(t["text"] == "Walk dog" for t in data["daily_pending"])
+    assert data["daily_pending"][0]["n"] == 1
     # Daily done has the checked item
     assert any(t["text"] == "Done thing" for t in data["daily_done_today"])
-    # File-tier grouped by priority — priority 3 has 1 item
+    # File-tier grouped by priority — priority 3 has 1 item, numbered after daily tasks
     assert 3 in data["file_tier_by_priority"]
     assert len(data["file_tier_by_priority"][3]) == 1
+    assert data["file_tier_by_priority"][3][0]["n"] == 2
 
 
 def test_list_tasks_flags_overdue(mock_services):

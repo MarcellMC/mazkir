@@ -23,9 +23,14 @@ export function taskSlug(task: Task): string {
 /** One button per task — tapping shows the task detail view. */
 export function buildTasksKeyboard(tasks: Task[], limit = 8): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (const t of tasks.slice(0, limit)) {
-    kb.text(`👀 ${t.name}`, `task:view:${taskSlug(t)}`).row();
-  }
+  const sorted = [
+    ...tasks.filter((t) => t.priority >= 4),
+    ...tasks.filter((t) => t.priority === 3),
+    ...tasks.filter((t) => t.priority <= 2),
+  ];
+  sorted.slice(0, limit).forEach((t, i) => {
+    kb.text(`${i + 1}. ${t.name}`, `task:view:${taskSlug(t)}`).row();
+  });
   return kb;
 }
 
