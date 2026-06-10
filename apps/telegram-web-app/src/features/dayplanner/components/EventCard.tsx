@@ -91,7 +91,7 @@ export default function EventCard({ event }: EventCardProps) {
         )}
       </div>
 
-      {event.route_from && event.type !== 'transit' && (
+      {event.route_from && (
         <div className="mt-2 text-xs text-gray-400 flex items-center gap-1">
           <span>{event.route_from.mode}</span>
           <span>{'\u00B7'}</span>

@@ -3,6 +3,5 @@ export type {
   MergedEventsResponse,
   DailyResponse,
   TokensResponse,
-  HabitStatus,
   CalendarEvent,
 } from "@mazkir/shared-types";

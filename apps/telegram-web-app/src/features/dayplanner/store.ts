@@ -13,7 +13,7 @@ interface DayplannerState {
 }
 
 function todayISO(): string {
-  return new Date().toISOString().split('T')[0]
+  return new Date().toISOString().slice(0, 10)
 }
 
 export const useDayplannerStore = create<DayplannerState>((set) => ({
