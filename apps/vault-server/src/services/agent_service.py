@@ -32,6 +32,18 @@ logger = logging.getLogger(__name__)
 
 _tracer = _otel_trace.get_tracer("mazkir.agent")
 
+# Canonical task-priority scale (matches memory/AGENTS.md and the Telegram UI):
+# 5 = highest urgency, 1 = lowest. Keep tool schemas and reply text aligned.
+_PRIORITY_LABELS = {1: "lowest", 2: "low", 3: "medium", 4: "high", 5: "highest"}
+
+
+def _fmt_priority(value: Any) -> str:
+    """Render a priority value with its label, e.g. '4 (high)'."""
+    try:
+        return f"{value} ({_PRIORITY_LABELS[int(value)]})"
+    except (KeyError, TypeError, ValueError):
+        return str(value)
+
 
 def _register_destructive_previews() -> None:
     """Register human-readable preview functions for all destructive tools.
@@ -343,7 +355,7 @@ class AgentService:
                         "type": "object",
                         "properties": {
                             "text": {"type": "string", "description": "Daily task text (substring match)"},
-                            "priority": {"type": ["integer", "null"], "minimum": 1, "maximum": 5},
+                            "priority": {"type": ["integer", "null"], "minimum": 1, "maximum": 5, "description": "Priority 1-5. 5=highest/most urgent, 1=lowest."},
                             "due_date": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
                             "date": {"type": ["string", "null"], "description": "Daily note date; default today"},
                             "_confidence": {"type": "number"},
@@ -409,7 +421,7 @@ class AgentService:
                         "properties": {
                             "name": {"type": "string", "description": "Task name"},
                             "description": {"type": "string", "description": "Details accompanying the task (steps, context, links). Saved into the task note's ## Description section — use this instead of a separate knowledge note."},
-                            "priority": {"type": "integer", "description": "Priority 1-5 (1=highest). Default 3."},
+                            "priority": {"type": "integer", "minimum": 1, "maximum": 5, "description": "Priority 1-5. 5=highest/most urgent, 1=lowest. Default 3."},
                             "due_date": {"type": "string", "description": "Due date YYYY-MM-DD (optional)"},
                             "category": {"type": "string", "description": "Category (default 'personal')"},
                             "scheduled_at": {"type": ["string", "null"], "description": "ISO datetime (e.g. 2026-06-05T14:00)"},
@@ -480,7 +492,7 @@ class AgentService:
                         "type": "object",
                         "properties": {
                             "name": {"type": "string", "description": "Task name (fuzzy match)"},
-                            "priority": {"type": "integer", "minimum": 1, "maximum": 5},
+                            "priority": {"type": "integer", "minimum": 1, "maximum": 5, "description": "Priority 1-5. 5=highest/most urgent, 1=lowest. 'min/lowest priority' means 1; 'top/highest priority' means 5."},
                             "status": {"type": "string", "enum": ["active", "blocked", "done", "archived"]},
                             "category": {"type": "string"},
                             "scheduled_at": {"type": ["string", "null"], "description": "ISO datetime"},
@@ -533,7 +545,7 @@ class AgentService:
                             "name": {"type": "string"},
                             "status": {"type": "string", "enum": ["active", "paused", "completed", "archived", "in-progress", "not-started"]},
                             "progress": {"type": "integer", "minimum": 0, "maximum": 100},
-                            "priority": {"type": "integer", "minimum": 1, "maximum": 5},
+                            "priority": {"type": "integer", "minimum": 1, "maximum": 5, "description": "Priority 1-5. 5=highest/most urgent, 1=lowest."},
                             "start_date": {"type": ["string", "null"]},
                             "target_date": {"type": ["string", "null"]},
                             "append_note": {"type": "string"},
@@ -1817,10 +1829,20 @@ class AgentService:
             },
         )
 
+        # Worker threads start with an empty OTel context, which would make the
+        # agent.tool_call spans roots of separate traces. Capture the caller's
+        # context and attach it in each worker so spans parent correctly.
+        from opentelemetry import context as _otel_context
+        parent_otel_ctx = _otel_context.get_current()
+
         def _run_one(call: dict) -> tuple[dict, float, str | None, dict]:
-            confidence, reasoning = gate_info[call["id"]]
-            result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
-            return (call, confidence, reasoning, result)
+            token = _otel_context.attach(parent_otel_ctx)
+            try:
+                confidence, reasoning = gate_info[call["id"]]
+                result = self._execute_tool(call["name"], call["input"], confidence=confidence, action="auto_execute")
+                return (call, confidence, reasoning, result)
+            finally:
+                _otel_context.detach(token)
 
         async def _run_all() -> list[tuple]:
             loop = _asyncio.get_running_loop()
@@ -2094,7 +2116,12 @@ class AgentService:
         ]
         for key, label in field_map:
             if key in params and params[key] != meta.get(key):
-                history_lines.append(f"{label} changed: {meta.get(key)} → {params[key]}")
+                if key == "priority":
+                    history_lines.append(
+                        f"{label} changed: {_fmt_priority(meta.get(key))} → {_fmt_priority(params[key])}"
+                    )
+                else:
+                    history_lines.append(f"{label} changed: {meta.get(key)} → {params[key]}")
                 meta[key] = params[key]
 
         if "append_note" in params and params["append_note"]:

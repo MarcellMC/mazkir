@@ -14,6 +14,8 @@ import concurrent.futures
 import logging
 from typing import Any
 
+from opentelemetry import context as otel_context
+
 from src.services.tool_executor import execute_tool
 
 logger = logging.getLogger(__name__)
@@ -68,17 +70,25 @@ def execute_calls_maybe_parallel(
         extra={"calls": [c["name"] for c in calls]},
     )
 
+    # Worker threads start with an empty OTel context — capture the caller's
+    # so spans created inside handlers stay in the caller's trace.
+    parent_otel_ctx = otel_context.get_current()
+
+    def _run_one(c: dict) -> dict:
+        token = otel_context.attach(parent_otel_ctx)
+        try:
+            return execute_tool(
+                name=c["name"], params=c["params"], risk=c["risk"],
+                tools=tools, ctx=ctx,
+            )
+        finally:
+            otel_context.detach(token)
+
     async def _run_all() -> list[dict]:
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(calls)) as pool:
             tasks = [
-                loop.run_in_executor(
-                    pool,
-                    lambda c=c: execute_tool(
-                        name=c["name"], params=c["params"], risk=c["risk"],
-                        tools=tools, ctx=ctx,
-                    ),
-                )
+                loop.run_in_executor(pool, lambda c=c: _run_one(c))
                 for c in calls
             ]
             return list(await asyncio.gather(*tasks))

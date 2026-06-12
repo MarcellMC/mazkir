@@ -181,7 +181,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 
 All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schemas.
 
-**Task** (`memory/40-tasks/active/*.md`): type, name, status, priority (1-5), due_date, category
+**Task** (`memory/40-tasks/active/*.md`): type, name, status, priority (1-5, 5=highest), due_date, category
 **Habit** (`memory/20-habits/*.md`): type, name, frequency, streak, last_completed, tokens_per_completion
 **Goal** (`memory/30-goals/YYYY/*.md`): type, name, status, priority, progress (0-100), target_date
 **Conversation** (`memory/00-system/conversations/{date}/{chat_id}.md`): type, chat_id, date, summary, items_referenced

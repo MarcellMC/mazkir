@@ -52,7 +52,26 @@ def test_update_task_changes_priority_and_logs_history(agent):
     written_meta = args[1]
     written_body = args[2]
     assert written_meta["priority"] == 4
-    assert "HIST:Priority changed: 2 → 4" in written_body
+    assert "HIST:Priority changed: 2 (low) → 4 (high)" in written_body
+
+
+def test_update_task_priority_labels_min_and_max(agent):
+    """Priority changes are self-labeling (5=highest … 1=lowest) so the
+    agent's reply and the UI can't disagree about which end is 'high'."""
+    agent.vault.list_active_tasks.return_value = [
+        {"path": "40-tasks/active/x.md", "metadata": {"name": "X", "priority": 3}}
+    ]
+    agent.vault.read_file.return_value = {
+        "metadata": {"name": "X", "priority": 3},
+        "content": "body\n",
+    }
+    agent.vault.append_history_line = lambda body, line: body + f"HIST:{line}\n"
+
+    result = agent._tool_update_task({"name": "X", "priority": 5})
+    assert result["data"]["changes"] == ["Priority changed: 3 (medium) → 5 (highest)"]
+
+    result = agent._tool_update_task({"name": "X", "priority": 1})
+    assert result["data"]["changes"] == ["Priority changed: 3 (medium) → 1 (lowest)"]
 
 
 def test_update_task_returns_ambiguous_match_error(agent):
