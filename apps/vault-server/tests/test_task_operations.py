@@ -115,3 +115,21 @@ def test_create_task_omits_optional_fields_when_not_provided(vault_service):
     assert meta.get("scheduled_at") is None
     assert meta.get("duration_minutes") is None
     assert meta.get("due_soft") is None
+
+
+def test_create_task_with_description_fills_description_section(vault_service, vault_path):
+    result = vault_service.create_task(
+        "Fix KVM failure",
+        description="1. Replace the USB cable.\n2. Check the power brick.",
+    )
+    content = (vault_path / result["path"]).read_text()
+    assert "## Description\n\n1. Replace the USB cable.\n2. Check the power brick.\n" in content
+    # Rest of the template stays intact
+    assert "## Checklist" in content
+    assert "## Notes" in content
+
+
+def test_create_task_without_description_keeps_empty_section(vault_service, vault_path):
+    result = vault_service.create_task("Plain task")
+    content = (vault_path / result["path"]).read_text()
+    assert "## Description" in content

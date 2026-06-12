@@ -408,6 +408,7 @@ class AgentService:
                         "type": "object",
                         "properties": {
                             "name": {"type": "string", "description": "Task name"},
+                            "description": {"type": "string", "description": "Details accompanying the task (steps, context, links). Saved into the task note's ## Description section — use this instead of a separate knowledge note."},
                             "priority": {"type": "integer", "description": "Priority 1-5 (1=highest). Default 3."},
                             "due_date": {"type": "string", "description": "Due date YYYY-MM-DD (optional)"},
                             "category": {"type": "string", "description": "Category (default 'personal')"},
@@ -2024,6 +2025,7 @@ class AgentService:
             scheduled_at=params.get("scheduled_at"),
             duration_minutes=params.get("duration_minutes"),
             due_soft=params.get("due_soft"),
+            description=params.get("description"),
         )
         return ok(
             {

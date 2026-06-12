@@ -1180,6 +1180,29 @@ def test_create_task_handler_passes_scheduling_fields_through(mock_services):
     assert kwargs.get("due_soft") == "2026-06-08"
 
 
+def test_create_task_tool_schema_exposes_description(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    props = agent.tools["create_task"]["schema"]["input_schema"]["properties"]
+    assert "description" in props
+
+
+def test_create_task_handler_passes_description_through(mock_services):
+    claude, vault, memory, calendar, events = mock_services
+    agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
+    agent.vault.create_task.return_value = {
+        "path": "40-tasks/active/x.md",
+        "metadata": {"name": "X"},
+    }
+    result = agent._tool_create_task({
+        "name": "X",
+        "description": "Step 1. Step 2.",
+    })
+    assert result["ok"] is True
+    kwargs = agent.vault.create_task.call_args.kwargs
+    assert kwargs.get("description") == "Step 1. Step 2."
+
+
 def test_create_habit_tool_schema_exposes_scheduling_fields(mock_services):
     claude, vault, memory, calendar, events = mock_services
     agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)

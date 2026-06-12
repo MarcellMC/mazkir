@@ -524,6 +524,7 @@ class VaultService:
         duration_minutes: Optional[int] = None,
         due_soft: Optional[str] = None,
         created: Optional[str] = None,
+        description: Optional[str] = None,
     ) -> Dict:
         """Create a new task using template
 
@@ -536,6 +537,7 @@ class VaultService:
             scheduled_at: Optional ISO datetime when the task is scheduled to start
             duration_minutes: Optional estimated duration in minutes
             due_soft: Optional soft/target due date (YYYY-MM-DD)
+            description: Optional body text for the ## Description section
 
         Returns:
             Dict with created task data and path
@@ -548,6 +550,17 @@ class VaultService:
             'title': name,
             'date': today
         })
+
+        if description:
+            body = description.strip()
+            content = processed['content']
+            if '## Description\n' in content:
+                content = content.replace(
+                    '## Description\n', f'## Description\n\n{body}\n', 1
+                )
+            else:
+                content = f"{content.rstrip()}\n\n## Description\n\n{body}\n"
+            processed['content'] = content
 
         # Override metadata with provided values
         metadata = processed['metadata']
