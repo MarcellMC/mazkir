@@ -150,24 +150,51 @@ class EventsService:
 
         return {"error": f"Event {event_id} not found"}
 
+    def find_event_date(self, event_id: str) -> str | None:
+        """Scan all persisted event files for an event ID; return its date (file stem).
+
+        Event IDs are globally unique, so this lets callers locate an event
+        without knowing which date's file it lives in.
+        """
+        for path in sorted(self.events_path.glob("*.json")):
+            try:
+                events = json.loads(path.read_text())
+            except Exception:
+                continue
+            if any(e.get("id") == event_id for e in events):
+                return path.stem
+        return None
+
     def attach_photo(
         self,
-        date: str,
+        date: str | None,
         event_id: str,
         photo_path: str,
         caption: str | None = None,
         wikilinks: list[str] | None = None,
     ) -> dict:
-        """Attach a photo to an existing event."""
-        events = self.get_events(date)
+        """Attach a photo to an existing event.
+
+        `date` is a hint: if it's omitted or the event isn't in that date's
+        file, all event files are scanned for the ID (IDs are unique). This
+        keeps attachment robust when the caller doesn't know the event's date.
+        """
+        target_date = date
+        events = self.get_events(date) if date else []
+        if not any(e.get("id") == event_id for e in events):
+            found = self.find_event_date(event_id)
+            if found:
+                target_date = found
+                events = self.get_events(found)
+
         for event in events:
             if event["id"] == event_id:
                 event.setdefault("photos", [])
                 event["photos"].append(
                     PhotoRef(path=photo_path, caption=caption, wikilinks=wikilinks or []).to_dict()
                 )
-                self.save_events(date, events)
-                return {"attached": True, "event_id": event_id}
+                self.save_events(target_date, events)
+                return {"attached": True, "event_id": event_id, "date": target_date}
 
         return {"error": f"Event {event_id} not found"}
 

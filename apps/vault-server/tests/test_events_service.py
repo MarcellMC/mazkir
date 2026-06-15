@@ -196,6 +196,39 @@ class TestAttachPhoto:
         )
         assert "error" in result
 
+    def test_attach_photo_finds_event_in_other_date_file(self, events_service):
+        # Event lives on 2026-06-17 but caller passes the wrong (today's) date.
+        events_service.create_event(date="2026-06-17", name="Band Practice", start_time="14:00")
+        event_id = events_service.get_events("2026-06-17")[0]["id"]
+
+        result = events_service.attach_photo(
+            date="2026-06-15",
+            event_id=event_id,
+            photo_path="form.jpg",
+            caption="Entry code",
+        )
+        assert result["attached"] is True
+        assert result["date"] == "2026-06-17"
+
+        # Photo landed on the correct date's file...
+        events = events_service.get_events("2026-06-17")
+        assert len(events[0]["photos"]) == 1
+        assert events[0]["photos"][0]["caption"] == "Entry code"
+        # ...and the wrong-date file was never created.
+        assert events_service.get_events("2026-06-15") == []
+
+    def test_attach_photo_scans_when_date_omitted(self, events_service):
+        events_service.create_event(date="2026-06-17", name="X", start_time="14:00")
+        event_id = events_service.get_events("2026-06-17")[0]["id"]
+
+        result = events_service.attach_photo(
+            date=None,
+            event_id=event_id,
+            photo_path="p.jpg",
+        )
+        assert result["attached"] is True
+        assert result["date"] == "2026-06-17"
+
     def test_attach_multiple_photos(self, events_service):
         events_service.create_event(date="2026-03-04", name="Hike", start_time="09:00")
         event_id = events_service.get_events("2026-03-04")[0]["id"]

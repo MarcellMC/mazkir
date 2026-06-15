@@ -585,7 +585,8 @@ class AgentService:
                 "schema": {
                     "name": "attach_to_daily",
                     "description": (
-                        "Attach a saved photo or file to today's daily note. "
+                        "Attach a saved photo or file to a daily note (today's by default). "
+                        "Pass 'date' to target a different day's note. "
                         "Use after a photo has been saved to disk. "
                         "Can include wikilinks (e.g. [[City Watch]]) and location coordinates."
                     ),
@@ -617,6 +618,10 @@ class AgentService:
                             "section": {
                                 "type": "string",
                                 "description": "Daily note section to add under (default: 'Notes')",
+                            },
+                            "date": {
+                                "type": "string",
+                                "description": "Target daily note date (YYYY-MM-DD). Defaults to today.",
                             },
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
@@ -772,6 +777,13 @@ class AgentService:
                             "photo_path": {"type": "string", "description": "Path from '[Photo saved to: ...]'"},
                             "caption": {"type": "string", "description": "Photo caption"},
                             "wikilinks": {"type": "array", "items": {"type": "string"}, "description": "Wikilinks"},
+                            "date": {
+                                "type": "string",
+                                "description": (
+                                    "Date of the event (YYYY-MM-DD), e.g. from list_events. "
+                                    "Optional — the event is located by ID across dates if omitted."
+                                ),
+                            },
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
@@ -2242,6 +2254,7 @@ class AgentService:
         wikilinks = params.get("wikilinks", [])
         location = params.get("location")
         section = params.get("section", "Notes")
+        date = params.get("date")
 
         now = dt.datetime.now()
         time_str = now.strftime("%H:%M")
@@ -2263,7 +2276,7 @@ class AgentService:
 
         content = "\n".join(lines)
 
-        result = self.vault.append_to_daily_section(section=section, content=content)
+        result = self.vault.append_to_daily_section(section=section, content=content, date=date)
         daily_path = result.get("path", self.vault.get_daily_note_path())
 
         return ok(
@@ -2395,10 +2408,11 @@ class AgentService:
         return ok({"events": summary, "date": date})
 
     def _tool_attach_photo_to_event(self, params: dict) -> dict:
-        import datetime as dt
         if not self.events:
             return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
-        date = params.get("date", dt.date.today().isoformat())
+        # date is an optional hint — attach_photo locates the event by ID across
+        # all date files when it's omitted or doesn't match.
+        date = params.get("date")
         result = self.events.attach_photo(
             date=date,
             event_id=params["event_id"],
@@ -2408,7 +2422,8 @@ class AgentService:
         )
         if "error" in result:
             return err(ErrorCode.PATH_NOT_FOUND, result["error"], details={"event_id": params["event_id"]})
-        items = [str(self.events._file_path(date))]
+        resolved_date = result.get("date")
+        items = [str(self.events._file_path(resolved_date))] if resolved_date else []
         return ok(result, items=items)
 
     def _tool_create_event(self, params: dict) -> dict:

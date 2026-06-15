@@ -533,6 +533,35 @@ class TestAttachToDaily:
         assert "path" in result["data"]
         vault.append_to_daily_section.assert_called_once()
 
+    def test_attach_to_daily_forwards_optional_date(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.append_to_daily_section.return_value = {
+            "path": "10-daily/2026-06-17.md",
+            "section": "Notes",
+        }
+
+        result = agent._tool_attach_to_daily({
+            "vault_path": "photo.jpg",
+            "caption": "Band practice form",
+            "date": "2026-06-17",
+        })
+        assert result["ok"] is True
+        assert vault.append_to_daily_section.call_args.kwargs["date"] == "2026-06-17"
+
+    def test_attach_to_daily_defaults_date_to_none(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.append_to_daily_section.return_value = {
+            "path": "10-daily/2026-03-04.md",
+            "section": "Notes",
+        }
+
+        result = agent._tool_attach_to_daily({
+            "vault_path": "photo.jpg",
+            "caption": "A note",
+        })
+        assert result["ok"] is True
+        assert vault.append_to_daily_section.call_args.kwargs["date"] is None
+
     def test_attach_to_daily_with_location(self, agent, mock_services):
         vault = mock_services[1]
 
@@ -826,6 +855,25 @@ class TestEventTools:
         })
         assert result["ok"] is True
         assert result["data"]["attached"] is True
+        # No date passed → service receives None and locates the event by ID.
+        assert events_mock.attach_photo.call_args.kwargs["date"] is None
+
+    def test_attach_photo_forwards_optional_date(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.attach_photo.return_value = {
+            "attached": True, "event_id": "evt_abc", "date": "2026-06-17",
+        }
+        events_mock._file_path.return_value = "data/events/2026-06-17.json"
+
+        result = agent._tool_attach_photo_to_event({
+            "event_id": "evt_abc",
+            "photo_path": "photo.jpg",
+            "date": "2026-06-17",
+        })
+        assert result["ok"] is True
+        assert events_mock.attach_photo.call_args.kwargs["date"] == "2026-06-17"
+        # _items reflect the resolved date returned by the service.
+        events_mock._file_path.assert_called_with("2026-06-17")
 
 
 class TestTracingSpans:
