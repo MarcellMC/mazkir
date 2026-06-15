@@ -1157,6 +1157,7 @@ class AgentService:
         tool_schemas: list[dict],
         max_iterations: int,
         cache_static_prefix: str | None = None,
+        model: str | None = None,
     ) -> tuple[str, str]:
         """Parameterized inner Claude tool-use loop. Returns (response_text, stop_reason).
 
@@ -1177,6 +1178,7 @@ class AgentService:
             tool_schemas=tool_schemas,
             max_iterations=max_iterations,
             cache_static_prefix=cache_static_prefix,
+            model=model,
         )
         if result.awaiting_confirmation:
             return result.response, "needs_confirmation"
@@ -1193,8 +1195,13 @@ class AgentService:
         pre_tools: list[dict] | None = None,
         action_id: str | None = None,
         cache_static_prefix: str | None = None,
+        model: str | None = None,
     ) -> AgentResponse:
-        """Core agent loop: Claude <-> tools until end_turn or max iterations."""
+        """Core agent loop: Claude <-> tools until end_turn or max iterations.
+
+        ``model`` overrides the LLM model for this turn (e.g. the active skill's
+        declared model). When None, ClaudeService.create's default is used.
+        """
         items_referenced: list[str] = []
         tools_audit: list[dict] = list(pre_tools) if pre_tools else []
         assistant_text = ""
@@ -1238,6 +1245,9 @@ class AgentService:
                         cache_static_prefix=cache_static_prefix,
                         stream=_use_stream,
                         on_chunk=_on_chunk if _use_stream else None,
+                        # Use the skill's declared model when provided; otherwise
+                        # fall back to ClaudeService.create's default.
+                        **({"model": model} if model else {}),
                     )
 
                     _usage = getattr(response, "usage", None)

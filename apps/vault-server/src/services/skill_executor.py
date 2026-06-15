@@ -126,6 +126,7 @@ class SkillExecutor:
                         tool_schemas=tool_schemas,
                         max_iterations=skill.max_iterations,
                         cache_static_prefix=cache_static_prefix,
+                        model=skill.model,
                     )
 
                     _skill_output = response_text[:2000]

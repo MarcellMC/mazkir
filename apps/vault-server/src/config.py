@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # Claude API
     anthropic_api_key: str | None = None
-    claude_model: str = "claude-sonnet-4-20250514"
+    claude_model: str = "claude-sonnet-4-6"
     claude_max_tokens: int = 4000
 
     # Google Calendar

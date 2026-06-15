@@ -58,6 +58,39 @@ def test_router_picks_skill_and_executor_uses_its_tools():
     assert result.iterations == 1
 
 
+def test_executor_passes_skill_model_to_run_loop():
+    skill = Skill(
+        name="manager",
+        description="manager skill",
+        system_prompt="You are the manager skill.",
+        tools=["list_tasks"],
+        model="claude-sonnet-4-6",
+        max_iterations=3,
+    )
+    registry = MagicMock()
+    registry.list.return_value = [skill]
+    registry.get.side_effect = lambda n: skill if n == "manager" else None
+
+    router = MagicMock()
+    router.pick.return_value = MagicMock(skill="manager", reason="planning intent")
+
+    captured = {}
+    def fake_run_loop(*, model, **kwargs):
+        captured["model"] = model
+        return "ok", "end_turn"
+
+    executor = SkillExecutor(
+        skill_registry=registry,
+        router=router,
+        tools={"list_tasks": {"schema": {"name": "list_tasks"}}},
+        run_loop=fake_run_loop,
+        build_base_system_prompt=lambda context: "base prompt",
+    )
+    executor.run(chat_id=1, user_msg="hi", context_messages=[], messages=[])
+
+    assert captured["model"] == "claude-sonnet-4-6"
+
+
 def test_next_skill_handoff_runs_second_skill():
     capture_skill = _mk_skill("capture", ["save_knowledge"], next_skills=["manager"])
     manager_skill = _mk_skill("manager", ["list_tasks"])
