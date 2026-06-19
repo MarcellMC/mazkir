@@ -8,6 +8,7 @@ import type {
   CalendarEvent,
   MessageResponse,
 } from "@mazkir/shared-types";
+import type { InputRichMessage } from "@grammyjs/types";
 
 
 export function escapeHtml(text: string): string {
@@ -170,21 +171,19 @@ export function formatGoals(goals: Goal[]): string {
   return lines.join("\n");
 }
 
-export function formatTokens(data: TokensResponse): string {
-  const lines: string[] = [];
-  lines.push("🪙 <b>Motivation Tokens</b>\n");
-  lines.push(`💰 Balance: <b>${data.total}</b>`);
-  lines.push(`📈 Today: <b>+${data.today}</b>`);
-  lines.push(`🏆 All-time: <b>${data.all_time}</b>`);
-
-  // Next milestone
+export function formatTokens(data: TokensResponse): InputRichMessage {
+  const lines = [
+    "<h2>🪙 Motivation Tokens</h2>",
+    `💰 Balance: <b>${data.total}</b>`,
+    `📈 Today: <b>+${data.today}</b>`,
+    `🏆 All-time: <b>${data.all_time}</b>`,
+  ];
   const milestones = [50, 100, 250, 500, 1000, 2500, 5000];
   const next = milestones.find((m) => m > data.total);
   if (next) {
-    lines.push(`\n🎯 Next milestone: <b>${next}</b> (${next - data.total} to go)`);
+    lines.push(`🎯 Next milestone: <b>${next}</b> (${next - data.total} to go)`);
   }
-
-  return lines.join("\n");
+  return { html: lines.join("\n") };
 }
 
 export function formatCalendar(events: CalendarEvent[]): string {
