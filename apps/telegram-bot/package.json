@@ -20,7 +20,7 @@
     "@opentelemetry/sdk-node": "^0.55.0",
     "@opentelemetry/semantic-conventions": "^1.41.1",
     "dotenv": "^16.4.0",
-    "grammy": "^1.31.0",
+    "grammy": "^1.44.0",
     "pino": "^10.3.1"
   },
   "devDependencies": {
