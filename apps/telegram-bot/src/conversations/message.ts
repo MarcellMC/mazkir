@@ -4,6 +4,7 @@ import type { Attachment, ReplyContext, ForwardContext } from "@mazkir/shared-ty
 import { api, streamMessage } from "../api/client.js";
 import { config } from "../config.js";
 import { markActiveSpanError, setActiveSpanOutput } from "../tracing-utils.js";
+import { sendRich } from "../bot-utils/send-rich.js";
 
 // Pending confirmations: chatId -> actionId
 const pendingConfirmations = new Map<number, string>();
@@ -292,7 +293,8 @@ messageHandler.on(
         }
 
         setActiveSpanOutput(response.response);
-        await ctx.reply(response.response, { parse_mode: "HTML" });
+        // Agent already emits markdown — send it through as a rich message.
+        await sendRich(ctx, { markdown: response.response });
       }
     } catch (err) {
       markActiveSpanError(err);
