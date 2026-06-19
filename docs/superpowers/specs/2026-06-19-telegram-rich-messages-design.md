@@ -2,164 +2,161 @@
 
 **Date:** 2026-06-19
 **Status:** Approved (design); implementation plan pending
-**Scope:** `apps/telegram-bot` (full cutover to Bot API 10.1 Rich Messages)
+**Scope:** `apps/telegram-bot`
+
+> **Revision note (2026-06-19):** An earlier draft of this design assumed
+> `sendRichMessage` took a structured **block-object tree** (`RichBlock` /
+> `RichText`) that the bot would build with helpers. That was wrong. Verifying
+> against the published `@grammyjs/types@3.28.0` `rich.d.ts` showed the send API
+> takes an **extended markup string** instead. This document reflects the
+> corrected model. The block-builder / walker / `markdownToRich` AST machinery
+> from the earlier draft is dropped.
 
 ## Background
 
-Telegram **Bot API 10.1** (released 2026-06-11) introduced a "Rich Messages"
-system: a JSON object model (`RichMessage` / `RichBlock` / `RichText`) sent via
-the new `sendRichMessage` and `sendRichMessageDraft` methods, with
-`editMessageText` gaining a `rich_message` parameter. Block-level elements
-include section headings, dividers, tables, lists, blockquotes / pull quotes,
-preformatted code, paragraphs, math, media blocks, expandable `details`
-sections, and "thinking" blocks. grammY exposes these methods as of
-`grammy@1.44` / `@grammyjs/types@3.28`.
+Telegram **Bot API 10.1** (released 2026-06-11) added "Rich Messages." The send
+side is:
 
-Today the bot uses HTML `parse_mode` everywhere and *fakes* structure with
-emoji prefixes, Unicode bars (`progressBar()` draws `█░`), and hand-numbered
-lists. Rich Messages let us replace that faking with native structure.
+```typescript
+// @grammyjs/types@3.28.0
+interface InputRichMessage {
+  html?: string;       // extended Telegram rich HTML
+  markdown?: string;   // extended Telegram rich markdown
+  is_rtl?: boolean;
+  skip_entity_detection?: boolean;
+}
+// sendRichMessage(chat_id, { rich_message: InputRichMessage, ... })
+// sendRichMessageDraft(chat_id, { rich_message: InputRichMessage, ... })  // streaming
+```
 
-Mazkir is a **single-user** tool — the user controls the only Telegram client
-that matters — so the usual "will end users' clients render this yet?" rollout
-risk does not apply. This justifies a full cutover rather than a cautious
-incremental migration or a dual-render abstraction.
+So a bot sends rich content as an **HTML or markdown string in an extended
+dialect** — not a block tree. The extended dialect adds block-level constructs
+on top of classic `parse_mode`:
+
+- HTML: `<h1>`–`<h6>`, `<ul>`/`<ol>`, `<table>`, `<blockquote>` (expandable),
+  `<details>`, `<hr>`, plus custom `<tg-collage>`, `<tg-slideshow>`,
+  `<tg-math-block>`.
+- Markdown: headings, lists, tables, blockquotes, fenced code.
+
+The `RichBlock` / `RichText` union in the API is the **parsed/received** form of
+a rich message — never what the bot constructs to send.
+
+**Limits:** ≤ 32 768 UTF-8 chars; ≤ 500 blocks (incl. nested / list items /
+table rows); ≤ 16 nesting levels; ≤ 50 media; ≤ 20 table columns.
+
+**No `editRichMessage`.** `editMessageText` cannot edit rich content — editing a
+rich message strips its formatting (confirmed by early-adopter reports). To
+"edit" a rich message you must delete and resend. This is the central
+constraint shaping scope.
+
+## The editing constraint shapes scope
+
+The bot's inline-keyboard UI is **edit-driven**: `/tasks` sends a list with a
+keyboard; tapping `editMessageText`s the same message into a task detail, into a
+refreshed list after completion, or (via the nav keyboard on `/day`) into
+habits/goals/calendar views. Verified `editMessageText` targets:
+`formatTasks`, `formatHabits`, `formatGoals`, `formatCalendar`,
+`formatTaskDetail`. `/day` holds the nav keyboard.
+
+Because rich messages can't be edited in place, **only send-once surfaces can be
+rich.** The user rejected the delete-and-resend workaround (messages jumping to
+the chat bottom on every tap). Therefore the edit-driven command digests **stay
+on classic HTML `parse_mode`**, and rich is applied only where a message is sent
+once and never edited.
+
+## Send-once surfaces (rich candidates)
+
+| Surface | Send-once? | Decision |
+|---------|-----------|----------|
+| NL agent replies (non-stream) | Yes | **Rich** — `{ markdown: response }` (agent already emits markdown; near pass-through) |
+| NL agent replies (streaming) | Yes | **Rich** — `sendRichMessageDraft` (purpose-built for progressive content) |
+| `/tokens` | Yes — no keyboard, not a nav/edit target | **Rich (first)** — `{ html }` |
+| Task detail | Only if delivery changes | **Deferred** — would require switching list→detail from `editMessageText` to a fresh send |
+| `/tasks`, `/habits`, `/goals`, `/calendar`, `/day` | No — edit targets | **Stay classic HTML** |
 
 ## Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Migration shape | **Full cutover** (Approach A) | Single client we control; no value in a dual-render abstraction (rejected as YAGNI) or staged hedging. |
-| Surfaces | Command views, task detail, NL replies (incl. streaming) | Data-viz (raw progress bars) left as lower priority. |
-| NL reply rendering | **Bot-side `markdownToRich()`** (Option 1) | No non-Telegram surface renders agent responses (web app is dayplanner + playground only), so a neutral block model in `shared-types` (Option 2) has no current reuse payoff. Claude-emits-blocks (Option 3) ruled out — fights the streaming path. |
-| Backend changes | **None core** | vault-server stays Telegram-agnostic. Optional: a one-line system-prompt nudge so Claude emits clean, parser-friendly markdown — added only if the parser proves flaky. |
-| Failure handling | **Plain-text escaped catch-all** around every send | A malformed/rejected rich payload must never silently drop a message. This is a last-resort catch, not the rejected dual-render layer. |
-
-## Prerequisite
-
-Bump dependencies in `apps/telegram-bot/package.json`:
-
-- `grammy` `^1.31.0` → `^1.44.0`
-- `@grammyjs/types` `3.25.0` → `^3.28.0` (transitive; pin if needed)
-
-The currently installed versions predate Bot API 10.1 and do **not** expose
-`sendRichMessage` (verified: no `sendRichMessage` symbol in installed
-`node_modules`).
+| Send mechanism | Extended markup **string** via `sendRichMessage` / `sendRichMessageDraft` | Matches the verified `InputRichMessage` shape; no block builder. |
+| Dialect per surface | NL replies → `markdown`; `/tokens` → `html` | NL agent text is already markdown (pass-through); command formatters already build HTML strings. |
+| Scope | Rich only on **send-once** surfaces | `editMessageText` cannot edit rich; delete-and-resend rejected. |
+| Sequencing | **`/tokens` first as a spike**, evaluate live, then NL replies | User wants to see it rendered before committing to NL + deciding on other sections. |
+| Task detail + other digests | Deferred / classic HTML | Edit-driven; reconsider only after the `/tokens` evaluation. |
+| Failure handling | Plain-text catch-all (tag-stripped) around every rich send | A rejected/oversized rich payload must never drop a message. |
+| Backend | Unchanged | vault-server stays Telegram-agnostic. Optional later: a prompt nudge for clean agent markdown. |
 
 ## Architecture
 
-### Formatter contract change
+### Formatter contract
 
-Formatters in `src/formatters/telegram.ts` change from `(data) => string` (HTML)
-to `(data) => InputRichMessage`. To keep them declarative rather than
-hand-authoring nested JSON, add a new builder module:
+Rich formatters return `InputRichMessage` (i.e. `{ html }` or `{ markdown }`),
+not a string. `formatTokens` is rewritten to build an extended-HTML string and
+return `{ html }`. NL replies build `{ markdown: response.response }` inline at
+the send site (no dedicated formatter).
 
-**`src/formatters/rich.ts`** — composable helpers wrapping grammY's
-`RichBlock` / `RichText` object literals:
+### Send helper — `src/bot-utils/send-rich.ts`
 
-- Block helpers: `heading()`, `paragraph()`, `divider()`, `list()`,
-  `table()`, `blockquote({ expandable })`, `details()`, `code()`
-- Inline helpers: `bold()`, `italic()`, `code()` (inline), `link()`,
-  `text()`
-- A top-level `richMessage(...blocks)` assembling an `InputRichMessage`.
+```typescript
+sendRich(ctx, msg: InputRichMessage, extra?): Promise<void>
+```
 
-The exact grammY type names are confirmed against `@grammyjs/types@^3.28`
-during implementation; helpers isolate the rest of the codebase from that
-surface.
+Calls the grammY rich-send method (exact context/api method name reconciled
+against the installed types during implementation) and, on any failure, falls
+back to `ctx.reply(plainText)` where `plainText` is the rich content with markup
+stripped. Every rich send goes through this helper. This is the only place the
+grammY rich-send method name appears.
 
-### Send sites
+### Streaming
 
-- `ctx.reply(text, { parse_mode: "HTML" })` → `ctx.replyWithRichMessage(...)`
-- `ctx.editMessageText(text, { parse_mode: "HTML" })` (in
-  `src/callbacks/index.ts`) → its `rich_message` form
-- Streaming edits in `src/conversations/message.ts` → `sendRichMessageDraft`
-
-### Safety wrapper
-
-A single helper (e.g. `sendRich(ctx, richMessage, fallbackText)`) wraps the
-send in `try/catch`; on any failure it falls back to `ctx.reply(escapeHtml(
-fallbackText))` as plain text. Every send goes through this helper.
-
-## Per-surface mapping
-
-### Command views (`src/formatters/telegram.ts`)
-
-These format **already-structured typed data** from vault-server — purely a bot
-concern, no backend involvement.
-
-| Formatter | Rich rendering |
-|-----------|----------------|
-| `formatDay` | Section heading (`Daily Note — {date}`) + definition list for tokens + `list` for schedule + notes section |
-| `formatTasks` | Heading + native `list` items per priority group — removes the hand-numbering counter `n` |
-| `formatHabits` | `table` (habit · streak · done) + average-streak paragraph |
-| `formatGoals` | `table` (goal · progress · target); `progressBar()` **retained** as cell text (no native progress block) |
-| `formatTokens` | Definition list + milestone paragraph |
-| `formatCalendar` | `list` of timed items |
-
-### Task detail (`formatTaskDetail`)
-
-Heading = task name; metadata as a list/table; the note body goes in an
-**expandable blockquote / `details` block**. This lets us **drop the 800-char
-`DETAIL_BODY_MAX` truncation** and present the full body collapsed.
-
-### NL agent replies
-
-Claude returns a text/markdown string (`MessageResponse.response`). A new
-shared bot-side converter:
-
-**`markdownToRich(md: string): InputRichMessage`** — parses headings, lists,
-fenced code, blockquotes, and inline emphasis/links into rich blocks. Used by
-**both** paths:
-
-- **Non-stream** (`src/conversations/message.ts`): `POST /message` → string →
-  `markdownToRich()` → `sendRichMessage`.
-- **Stream** (`STREAM_RESPONSES=true`): SSE deltas accumulate into a buffer →
-  `markdownToRich(partial)` → `sendRichMessageDraft` on the ~500 ms tick →
-  finalize. This replaces the current placeholder-message + `editMessageText`
-  HTML loop with the API purpose-built for progressive AI content.
+The streaming path in `src/conversations/message.ts` replaces the
+placeholder-message + `editMessageText`-HTML loop with `sendRichMessageDraft`
+(its purpose: progressive rich content). Accumulate SSE text deltas into a
+buffer, push the buffer as `{ markdown: buffer }` on the ~500 ms tick, finalize.
+`editMessageText` is not used on the rich path.
 
 ## Data flow
 
 ```
-Command:        handler ─► formatter ─► InputRichMessage ─► sendRich ─► sendRichMessage
-NL (non-stream): POST /message ─► string ─► markdownToRich() ─► sendRich ─► sendRichMessage
-NL (stream):     SSE deltas ─► accumulate ─► markdownToRich(partial) ─► sendRichMessageDraft ─► finalize
+/tokens:        handler ─► formatTokens(data): {html} ─► sendRich ─► sendRichMessage
+NL (non-stream): POST /message ─► response.response (md) ─► {markdown} ─► sendRich ─► sendRichMessage
+NL (stream):     SSE deltas ─► accumulate ─► {markdown: buffer} ─► sendRichMessageDraft ─► finalize
 ```
 
-Backend (`vault-server`) data contracts are **unchanged**.
+Backend (`vault-server`) contracts are unchanged.
 
 ## Error handling
 
-- Every send routes through the plain-text catch-all wrapper (see Safety
-  wrapper above).
-- **Open item:** confirm Rich Message structural limits (max blocks / nesting /
-  payload size) against the 10.1 docs during implementation; if a formatter can
-  exceed them (e.g. a very long task list), truncate gracefully before send.
+- Every rich send routes through the `sendRich` plain-text catch-all.
+- Respect the 32 768-char / 500-block limits: NL replies are bounded by the
+  agent; if a reply could exceed limits, the catch-all plain-text path covers
+  it. Revisit truncation only if it occurs in practice.
 
 ## Testing
 
-- **Formatter unit tests** (vitest): replace HTML string assertions with
-  `InputRichMessage` object-shape assertions. Existing specs in
-  `apps/telegram-bot/tests` updated accordingly.
-- **`markdownToRich()`** gets its own suite: headings, nested lists, fenced
-  code with language, blockquotes, inline bold/italic/links, and degenerate
-  input (empty, partial mid-stream buffers).
-- **Manual pass** against real Telegram: each command (`/day`, `/tasks`,
-  `/habits`, `/goals`, `/tokens`, `/calendar`), one NL query, and one streamed
-  reply — confirm rendering and the plain-text fallback path.
+- `formatTokens` unit test: assert the returned `{ html }` string contains the
+  expected balance / milestone substrings (still string `.toContain` checks).
+- `sendRich` test: success calls the rich method; failure falls back to a
+  tag-stripped plain `ctx.reply`.
+- Manual pass against real Telegram: `/tokens` renders correctly (the spike
+  checkpoint); then an NL query and a streamed reply.
 
 ## Build order
 
-1. Dependency bump + `src/formatters/rich.ts` helpers + `sendRich` catch-all.
-2. Command formatters + their handlers + callback (`editMessageText`) edits.
-3. Task detail (expandable body, drop truncation).
-4. `markdownToRich()` + NL non-stream path.
-5. Streaming via `sendRichMessageDraft`.
+1. Dependency bump (`grammy@^1.44` / `@grammyjs/types@^3.28`) + verify API
+   surface + `sendRich` helper.
+2. **`/tokens` → rich.** → **CHECKPOINT: evaluate live; decide keep / rethink.**
+3. NL non-stream → `{ markdown }` via `sendRich`.
+4. NL streaming → `sendRichMessageDraft`.
 
-## Out of scope
+## Out of scope (pending the `/tokens` evaluation)
 
-- Neutral cross-client block model in `@mazkir/shared-types` (Option 2) — defer
-  until a non-Telegram surface renders agent responses.
-- Backend agent-response changes beyond an optional prompt nudge.
-- Native progress-bar / data-viz blocks (no native primitive; Unicode bar kept).
-- Custom emoji (`tg-emoji`), math, maps, collages/slideshows — not needed by
-  current surfaces.
+- Task detail as a fresh rich send (expandable `<details>` body) — revisit after
+  the spike.
+- Rich for the edit-driven command digests (`/tasks`, `/habits`, `/goals`,
+  `/calendar`, `/day`) — incompatible with in-place edit; would need a UI
+  rework.
+- Block-object builders / walkers / `markdownToRich` AST — not needed under the
+  string model.
+- Neutral cross-client block model in `@mazkir/shared-types`.
+- Custom emoji, math, maps, collages/slideshows.
