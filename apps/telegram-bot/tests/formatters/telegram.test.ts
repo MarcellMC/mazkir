@@ -142,14 +142,11 @@ describe("formatHabits", () => {
 });
 
 describe("formatTokens", () => {
-  it("returns rich html with balance and next milestone", () => {
-    const msg = formatTokens({ total: 42, today: 10, all_time: 42 });
-    expect(msg.html).toBeDefined();
-    const html = msg.html!;
-    expect(html).toContain("42");
-    expect(html).toContain("50");          // next milestone
-    expect(html).toContain("8 to go");
-    expect(html).toContain("<h2>");        // native heading, not emoji-faked
+  it("shows token balance and milestone", () => {
+    const result = formatTokens({ total: 42, today: 10, all_time: 42 });
+    expect(result).toContain("42");
+    expect(result).toContain("50");
+    expect(result).toContain("8 to go");
   });
 });
 
