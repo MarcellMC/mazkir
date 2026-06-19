@@ -216,25 +216,32 @@ messageHandler.on(
       }
 
       if (config.streamResponses) {
-        // Streaming path: send placeholder, edit in chunks as they arrive
-        const placeholder = await ctx.reply("…");
+        // Streaming: progressively push the accumulating buffer as a rich draft,
+        // then finalize. editMessageText is NOT used (it can't edit rich content).
+        // Drafts are ephemeral 30s previews keyed by a non-zero draft_id; reusing
+        // the same draft_id animates the update. Persist by sending the complete
+        // message via sendRich at the end.
         let buffered = "";
         let lastEdit = Date.now();
         const EDIT_INTERVAL_MS = 500;
+        const draftId = (Date.now() % 2_000_000_000) || 1; // non-zero, stable per stream
+
+        const pushDraft = async () => {
+          try {
+            await ctx.replyWithRichMessageDraft(
+              { markdown: buffered },
+              { draft_id: draftId },
+            );
+          } catch {
+            // rate-limit / partial-parse errors are non-fatal mid-stream
+          }
+        };
 
         try {
           const response = await streamMessage(payload, async (chunk) => {
             buffered += chunk;
             if (Date.now() - lastEdit > EDIT_INTERVAL_MS) {
-              try {
-                await ctx.api.editMessageText(
-                  ctx.chat.id,
-                  placeholder.message_id,
-                  buffered,
-                );
-              } catch {
-                // Telegram rate limits / duplicate-content errors are non-fatal mid-stream
-              }
+              await pushDraft();
               lastEdit = Date.now();
             }
           });
@@ -242,46 +249,22 @@ messageHandler.on(
           if (response.awaiting_confirmation && response.pending_action_id) {
             pendingConfirmations.set(chatId, response.pending_action_id);
           }
-
           setActiveSpanOutput(response.response);
 
-          // Final edit with full content and HTML formatting
-          try {
-            await ctx.api.editMessageText(
-              ctx.chat.id,
-              placeholder.message_id,
-              response.response,
-              { parse_mode: "HTML" },
-            );
-          } catch {
-            // Fall back to plain text if HTML parse_mode fails
-            await ctx.api.editMessageText(
-              ctx.chat.id,
-              placeholder.message_id,
-              response.response,
-            );
-          }
-        } catch (streamErr) {
-          // Fall back to non-streaming on any stream error
+          // Finalize as a full rich message (catch-all → plain text on failure).
+          await sendRich(ctx, { markdown: response.response });
+        } catch {
+          // Fall back to non-streaming on any stream error.
           try {
             const response = await api.sendMessage(payload);
             if (response.awaiting_confirmation && response.pending_action_id) {
               pendingConfirmations.set(chatId, response.pending_action_id);
             }
             setActiveSpanOutput(response.response);
-            await ctx.api.editMessageText(
-              ctx.chat.id,
-              placeholder.message_id,
-              response.response,
-              { parse_mode: "HTML" },
-            );
+            await sendRich(ctx, { markdown: response.response });
           } catch (fallbackErr) {
             markActiveSpanError(fallbackErr);
-            await ctx.api.editMessageText(
-              ctx.chat.id,
-              placeholder.message_id,
-              "❌ Something went wrong. Is vault-server running?",
-            );
+            await ctx.reply("❌ Something went wrong. Is vault-server running?");
           }
         }
       } else {
