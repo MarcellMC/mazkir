@@ -195,7 +195,14 @@ git commit -m "feat(bot): add sendRich wrapper with plain-text catch-all"
 
 ---
 
-## Task 3: `/tokens` → rich (the spike)
+## Task 3: `/tokens` → rich (the spike) — ⚠️ DONE THEN REVERTED
+
+> **Outcome (2026-06-19):** Implemented and viewed live. Rich HTML collapses
+> `\n` (needs `<br>`/`<p>`) and `<h2>` renders as a large serif heading; once
+> corrected, rich `/tokens` is cosmetically identical to the classic-HTML
+> version — a flat numeric widget gains nothing from rich. **Reverted** (commit
+> `6d106b0`). Do not re-implement. Rich is scoped to NL replies (Tasks 4–5).
+> The steps below are kept for the record.
 
 **Files:**
 - Modify: `apps/telegram-bot/src/formatters/telegram.ts`
@@ -376,15 +383,22 @@ Replace the `if (config.streamResponses) { ... }` block (currently `message.ts:2
       if (config.streamResponses) {
         // Streaming: progressively push the accumulating buffer as a rich draft,
         // then finalize. editMessageText is NOT used (it can't edit rich content).
+        // Drafts are ephemeral 30s previews keyed by a non-zero draft_id; sending
+        // the same draft_id animates the update. Persist by sending the complete
+        // message via sendRich (sendRichMessage) at the end.
         let buffered = "";
         let lastEdit = Date.now();
         const EDIT_INTERVAL_MS = 500;
+        const draftId = (Date.now() % 2_000_000_000) || 1; // non-zero, stable per stream
 
         const pushDraft = async () => {
           try {
-            await ctx.api.sendRichMessageDraft(ctx.chat.id, {
-              rich_message: { markdown: buffered },
-            });
+            // Context alias injects chat_id; signature is
+            // replyWithRichMessageDraft(rich_message, { draft_id }).
+            await ctx.replyWithRichMessageDraft(
+              { markdown: buffered },
+              { draft_id: draftId },
+            );
           } catch {
             // rate-limit / partial-parse errors are non-fatal mid-stream
           }
@@ -423,7 +437,7 @@ Replace the `if (config.streamResponses) { ... }` block (currently `message.ts:2
       } else {
 ```
 
-> Reconcile `sendRichMessageDraft`'s exact argument shape and how a draft is finalized/committed against Task 1 Step 3. If drafts must be committed via a dedicated call rather than a final `sendRichMessage`, follow the installed signature; the streaming contract (accumulate buffer → push `{ markdown }` on a 500 ms tick → finalize) stays the same. Note: this drops the placeholder-message pattern, since drafts manage their own message.
+> Verified API (Task 1): `ctx.replyWithRichMessageDraft(rich_message, { draft_id })` — `draft_id` is a required non-zero number; reusing it animates the same preview, which is ephemeral (~30s). The draft does NOT persist — you finalize by sending the complete message via `sendRich` (which calls `sendRichMessage`). The streaming contract (accumulate buffer → push `{ markdown }` on a 500 ms tick → finalize with `sendRich`) drops the old placeholder-message + `editMessageText` pattern entirely.
 
 - [ ] **Step 2: Verify build + tests**
 

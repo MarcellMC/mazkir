@@ -70,9 +70,33 @@ once and never edited.
 |---------|-----------|----------|
 | NL agent replies (non-stream) | Yes | **Rich** — `{ markdown: response }` (agent already emits markdown; near pass-through) |
 | NL agent replies (streaming) | Yes | **Rich** — `sendRichMessageDraft` (purpose-built for progressive content) |
-| `/tokens` | Yes — no keyboard, not a nav/edit target | **Rich (first)** — `{ html }` |
+| `/tokens` | Yes — no keyboard, not a nav/edit target | **Spiked, then reverted** — see Spike outcome below |
 | Task detail | Only if delivery changes | **Deferred** — would require switching list→detail from `editMessageText` to a fresh send |
 | `/tasks`, `/habits`, `/goals`, `/calendar`, `/day` | No — edit targets | **Stay classic HTML** |
+
+## Spike outcome (`/tokens`, 2026-06-19)
+
+`/tokens` was implemented as rich (`{ html }`) and viewed live. Two findings:
+
+1. **Rich HTML collapses newlines.** The dialect treats `\n` as insignificant
+   whitespace (the spec literally notes "all the text above was on the same
+   line"); block separation needs explicit tags — `<br>` for a tight line
+   break, `<p>` for a spaced paragraph, `<hr/>` for a divider.
+2. **`<h1>`–`<h6>` render as real (large, serif) headings** — visually heavy for
+   a small stat widget.
+
+Fixing both (plain `<b>` heading + `<br>` lines) makes the rich `/tokens`
+**cosmetically identical to the prior classic-HTML version** — a flat numeric
+widget gains nothing from rich (no heading hierarchy / lists / tables help it).
+**Decision: revert `/tokens` to classic HTML** and apply rich only where its
+block features pay off — **NL agent replies**. The `sendRich` helper (Task 2) is
+retained for the NL path.
+
+Other useful facts learned: only a small set of named entities is supported
+(`&lt; &gt; &amp; &quot; &apos; &nbsp; &hellip; &mdash; &ndash; &lsquo; &rsquo;
+&ldquo; &rdquo;`); `escapeHtml` stays within it. **Watch in NL testing:** the
+agent's markdown `#`/`##` headings will render as these large serif headings —
+may need a prompt nudge to avoid top-level headings if they look heavy.
 
 ## Decisions
 
@@ -81,8 +105,8 @@ once and never edited.
 | Send mechanism | Extended markup **string** via `sendRichMessage` / `sendRichMessageDraft` | Matches the verified `InputRichMessage` shape; no block builder. |
 | Dialect per surface | NL replies → `markdown`; `/tokens` → `html` | NL agent text is already markdown (pass-through); command formatters already build HTML strings. |
 | Scope | Rich only on **send-once** surfaces | `editMessageText` cannot edit rich; delete-and-resend rejected. |
-| Sequencing | **`/tokens` first as a spike**, evaluate live, then NL replies | User wants to see it rendered before committing to NL + deciding on other sections. |
-| Task detail + other digests | Deferred / classic HTML | Edit-driven; reconsider only after the `/tokens` evaluation. |
+| Sequencing | `/tokens` spike first (done → reverted), then NL replies | Spike showed flat widgets don't benefit; rich now scoped to NL replies only. |
+| Task detail + other digests | Deferred / classic HTML | Edit-driven; reconsider only if a future surface needs rich. |
 | Failure handling | Plain-text catch-all (tag-stripped) around every rich send | A rejected/oversized rich payload must never drop a message. |
 | Backend | Unchanged | vault-server stays Telegram-agnostic. Optional later: a prompt nudge for clean agent markdown. |
 
@@ -143,11 +167,14 @@ Backend (`vault-server`) contracts are unchanged.
 
 ## Build order
 
-1. Dependency bump (`grammy@^1.44` / `@grammyjs/types@^3.28`) + verify API
-   surface + `sendRich` helper.
-2. **`/tokens` → rich.** → **CHECKPOINT: evaluate live; decide keep / rethink.**
-3. NL non-stream → `{ markdown }` via `sendRich`.
-4. NL streaming → `sendRichMessageDraft`.
+1. ✅ Dependency bump (`grammy@^1.44` / `@grammyjs/types@^3.28`) + verify API
+   surface.
+2. ✅ `sendRich` helper + plain-text catch-all.
+3. ✅→↩ `/tokens` spike → reverted (see Spike outcome).
+4. NL non-stream → `{ markdown }` via `sendRich`.
+5. NL streaming → `sendRichMessageDraft` (ephemeral 30s draft keyed by a
+   non-zero `draft_id`; finalize by sending the complete message via
+   `sendRich`).
 
 ## Out of scope (pending the `/tokens` evaluation)
 
