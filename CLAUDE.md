@@ -54,7 +54,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │   │   │       ├── memory_service.py # Three-tier memory + graph index
 │   │   │       ├── agent_service.py  # Agent loop + tool registry + confidence gate
 │   │   │       ├── router_service.py # Haiku LLM skill classifier (skill loop)
-│   │   │       ├── skill_registry.py # Loads skill definitions from memory/00-system/mazkir-skills/
+│   │   │       ├── skill_registry.py # Loads skill definitions from memory/00-system/skills/
 │   │   │       ├── skill_executor.py # Skill loop extracted from AgentService (P3)
 │   │   │       ├── preview.py        # Destructive-action preview rendering
 │   │   │       ├── resolver.py       # Tool input resolution + schema validation
@@ -192,14 +192,14 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 
 ### Architecture
 - **vault-server** owns ALL business logic (vault CRUD, Claude AI, calendar sync, timeline, generation)
-- **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 31 registered tools (incl. `attach_to_daily`, `list_events`, `attach_photo_to_event`, `create_event`, `update_event`, `update_task`, `update_habit`, `update_goal`, `read_daily_section`, `edit_daily_section`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`, `daily_add_task`, `daily_set_task_state`, `daily_rollover`, `promote_daily_task`), max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation, Claude vision for photo messages with EXIF context. All tool calls return `{ok, data|error, _items}`; agent reacts to `error.code` (PATH_NOT_FOUND, AMBIGUOUS_MATCH, SCHEMA_INVALID, STATE_CONFLICT, ALREADY_DONE, EXTERNAL_FAILURE, AUTH_REQUIRED, CANCELLED_BY_USER).
+- **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 32 registered tools (incl. `attach_to_daily`, `list_events`, `attach_photo_to_event`, `create_event`, `update_event`, `update_task`, `update_habit`, `update_goal`, `read_daily_section`, `read_knowledge`, `edit_daily_section`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`, `daily_add_task`, `daily_set_task_state`, `daily_rollover`, `promote_daily_task`), max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation, Claude vision for photo messages with EXIF context. All tool calls return `{ok, data|error, _items}`; agent reacts to `error.code` (PATH_NOT_FOUND, AMBIGUOUS_MATCH, SCHEMA_INVALID, STATE_CONFLICT, ALREADY_DONE, EXTERNAL_FAILURE, AUTH_REQUIRED, CANCELLED_BY_USER).
 - **Events persistence** (`EventsService`): merged events stored in `data/events/{date}.json`, supports create/attach/refresh with source-ID matching to preserve photos across re-merges
 - **EXIF extraction** (`exif_service`): extracts GPS coordinates, timestamp, camera info from photo EXIF data using Pillow
 - **Memory system** (`MemoryService`): short-term (conversation sliding window, 20 messages + decay), mid-term (vault state snapshot in system prompt), long-term (knowledge graph + keyword search)
 - **telegram-bot** is a thin TypeScript UI layer (grammY + API calls + inline keyboards + NL routing)
 - **telegram-web-app** is a React SPA consuming vault-server REST endpoints
 - **@mazkir/shared-types** provides TypeScript interfaces shared between telegram-bot and telegram-web-app
-- **Skill loop:** `AgentService.handle_message` dispatches via `RouterService` (Haiku LLM classifier) to one of three skills loaded from `memory/00-system/mazkir-skills/` (`capture`, `manager`, `recall`). Skills chain via a `next_skill: <name>` token in their reply; the loop caps at 3 hops with cycle detection. Each skill has its own model, tool subset, and system prompt. When `skill_registry`/`router` aren't configured, `AgentService` falls back to a single-loop legacy path with all tools loaded.
+- **Skill loop:** `AgentService.handle_message` dispatches via `RouterService` (Haiku LLM classifier) to one of four domain skills loaded from `memory/00-system/skills/` (`mazkir`, `time-management`, `knowledge-management`, `motivation-management`). `mazkir` is the conversational router fallback: it converses, answers general questions, reads vault data (incl. `read_knowledge` for note bodies), and owns the daily journal, handing off writes to a domain skill via a `next_skill: <name>` token. The loop caps at 3 hops with cycle detection. Each skill has its own model, tool subset, and system prompt. When `skill_registry`/`router` aren't configured, `AgentService` falls back to a single-loop legacy path with all tools loaded.
 - **Skill executor module (P3):** Skill loop extracted to `services/skill_executor.py`. `AgentService` constructs a `SkillExecutor` when both `skill_registry` and `router` are present and delegates the per-turn loop to it.
 - **Two-tier tasks (P4):** Default capture is a `- [ ]` line in the daily note's `## Tasks` section. Multi-day items promote to `40-tasks/active/{slug}.md` files via `promote_daily_task`. Daily-tier tools: `daily_add_task`, `daily_set_task_state` (check/uncheck/move), `daily_rollover` (yesterday's unfinished → today, anchored to first-original date via the `moved from [[...]]` chain), `promote_daily_task`. The `## Tasks` section is parsed/rendered by `DailyTasksService` (`services/daily_tasks.py`).
 - **`/day` as time-based feed (P4):** `GET /day` returns `{date, tokens_today, tokens_total, schedule[], notes[]}`. Schedule items have `{start, end?, title, source, completed, calendar_name?}` sorted by start time. Source is `calendar` (filtered by `GOOGLE_CALENDAR_INCLUDE`, defaults to `Mazkir` only — drops holidays/subscribed calendars), `daily-task` (timed checkboxes from today's daily note), or `habit` (habits with `scheduled_at`). Notes are parsed from today's `## Notes` section. Standalone `tasks`/`habits` arrays dropped — use `/tasks` and `/habits` for those.
@@ -214,7 +214,7 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 - New features → add route to vault-server, then add UI in telegram bot or web app
 
 ### Agent tool risk levels
-- **safe** (read-only): `list_tasks`, `list_habits`, `list_goals`, `get_daily`, `get_tokens`, `search_knowledge`, `get_related`, `read_daily_section`, `list_events`
+- **safe** (read-only): `list_tasks`, `list_habits`, `list_goals`, `get_daily`, `get_tokens`, `search_knowledge`, `read_knowledge`, `get_related`, `read_daily_section`, `list_events`
 - **write** (auto-execute at ≥0.85 confidence): `create_task`, `create_habit`, `create_goal`, `update_task`, `update_habit`, `update_goal`, `save_knowledge`, `attach_to_daily`, `edit_daily_section`, `attach_photo_to_event`, `create_event`, `update_event`, `daily_add_task`, `daily_set_task_state`, `daily_rollover`, `promote_daily_task`
 - **destructive** (auto-execute at ≥0.95 confidence): `complete_task`, `complete_habit`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`
 - Confidence thresholds are per-tool with risk-class defaults: `safe` ungated, `write` ≥0.85, `destructive` ≥0.95.
@@ -296,6 +296,6 @@ curl http://localhost:8000/events/2026-03-05
 - **Rich Messages Plan:** `docs/plans/2026-03-04-rich-messages-plan.md`
 - **Photo Events Pipeline Design:** `docs/plans/2026-03-05-photo-events-pipeline-design.md`
 - **Photo Events Pipeline Plan:** `docs/plans/2026-03-05-photo-events-pipeline-plan.md`
-- **Skill Definitions:** `memory/00-system/mazkir-skills/*.md` — Mazkir sub-agent skill definitions (capture / manager / recall)
+- **Skill Definitions:** `memory/00-system/skills/*.md` — Mazkir sub-agent skill definitions (mazkir / time-management / knowledge-management / motivation-management)
 - **P4 Daily Tier + Media Plan:** `docs/plans/2026-06-04-mazkir-p4-daily-tier-media-plan.md`
 - **P5 Integrations + Latency Plan:** `docs/plans/2026-06-04-mazkir-p5-integrations-latency-plan.md`
