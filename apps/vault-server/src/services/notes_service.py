@@ -1,5 +1,6 @@
 """NotesService — read the daily/weekly note feed for the time-management app."""
 import datetime
+import random
 import re
 from typing import TYPE_CHECKING
 
@@ -147,3 +148,23 @@ class NotesService:
         # write_file preserves frontmatter and stamps 'updated' to today.
         self.vault.write_file(rel, parsed.get("metadata", {}) or {}, new_body)
         return self.read_note(note_id)
+
+    def random_knowledge_note(self) -> dict | None:
+        """One random note from 60-knowledge/notes/, or None if none exist."""
+        kdir = self.vault.vault_path / "60-knowledge" / "notes"
+        if not kdir.exists():
+            return None
+        files = sorted(kdir.glob("*.md"))
+        if not files:
+            return None
+        f = random.choice(files)
+        rel = f"60-knowledge/notes/{f.name}"
+        parsed = self.vault.read_file(rel)
+        meta = parsed.get("metadata", {}) or {}
+        body = parsed.get("content", "")
+        return {
+            "id": f.stem,
+            "title": _title_for(f.stem, meta, body),
+            "markdown": body,
+            "source": rel,
+        }

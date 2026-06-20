@@ -154,3 +154,22 @@ class TestSetCheckbox:
         v = _make_vault(tmp_path)
         with pytest.raises(FileNotFoundError):
             NotesService(v).set_checkbox("2099-01-01", line=1, checked=True)
+
+
+class TestRandomKnowledge:
+    def test_returns_a_knowledge_note(self, tmp_path):
+        v = _make_vault(tmp_path)
+        kdir = v.vault_path / "60-knowledge" / "notes"
+        kdir.mkdir(parents=True)
+        (kdir / "espresso.md").write_text(
+            "---\ntype: knowledge\nname: Espresso\n---\n\n9 bars, 25 seconds.\n"
+        )
+        note = NotesService(v).random_knowledge_note()
+        assert note["id"] == "espresso"
+        assert note["title"] == "Espresso"
+        assert "9 bars" in note["markdown"]
+        assert note["source"] == "60-knowledge/notes/espresso.md"
+
+    def test_returns_none_when_no_knowledge(self, tmp_path):
+        v = _make_vault(tmp_path)
+        assert NotesService(v).random_knowledge_note() is None
