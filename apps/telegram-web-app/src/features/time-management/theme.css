@@ -1,0 +1,25 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..900,0..100&family=Newsreader:opsz,wght,ital@6..72,200..800,0;6..72,200..800,1&family=JetBrains+Mono:wght@300;400&display=swap');
+
+/* Token set — structured so a dark "ink" variant is a later drop-in under
+   [data-theme="dark"]. Ship paper only for now. */
+.tm-root {
+  --paper: #f3ecdf; --paper-deep: #ebe2d0;
+  --ink: #1a1512; --ink-soft: #4d4138; --ink-mute: #8a7a6b;
+  --rule: #d8cab1; --rule-soft: #e3d7bf;
+  --terra: #b04a22; --terra-deep: #8a3814; --moss: #5a6b3a;
+  --shadow-md: 0 8px 24px rgba(26,21,18,0.08);
+  --shadow-lg: 0 24px 60px rgba(26,21,18,0.18);
+  background: var(--paper); color: var(--ink);
+  font-family: 'Newsreader', Georgia, serif;
+  min-height: 100vh; position: relative;
+}
+.tm-root::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none;
+  opacity: 0.4; mix-blend-mode: multiply; z-index: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.2 0 0 0 0 0.15 0 0 0 0 0.1 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.tm-display { font-family: 'Fraunces', Georgia, serif; font-variation-settings: 'opsz' 144, 'SOFT' 40; font-weight: 300; letter-spacing: -0.01em; }
+.tm-mono { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-mute); }
+.tm-content { position: relative; z-index: 2; }
+.tm-wikilink { font-style: italic; color: var(--terra); }
+.tm-img { width: 100%; display: block; }
