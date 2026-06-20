@@ -39,6 +39,7 @@ def derive_sort_key(stem: str) -> str:
 
 
 _PHOTO_RE = re.compile(r"!\[\[[^\]]+\]\]")
+_CHECKBOX_RE = re.compile(r"^(\s*[-*]\s*\[)[ xX](\].*)$")
 _HEADER_RE = re.compile(r"^#{1,6}\s*", re.MULTILINE)
 _MD_TOKENS_RE = re.compile(r"[*_`>#\[\]!]|\!\[\[|\]\]")
 
@@ -124,3 +125,25 @@ class NotesService:
             "frontmatter": parsed.get("metadata", {}) or {},
             "markdown": parsed.get("content", ""),
         }
+
+    def set_checkbox(self, note_id: str, line: int, checked: bool) -> dict:
+        """Flip one checkbox at the given 1-based body line. Returns read_note().
+
+        Raises FileNotFoundError if the note is missing, ValueError if the
+        target line is not a markdown checkbox.
+        """
+        rel = f"10-daily/{note_id}.md"
+        if not (self.vault.vault_path / rel).exists():
+            raise FileNotFoundError(rel)
+        parsed = self.vault.read_file(rel)
+        body = parsed.get("content", "")
+        lines = body.split("\n")
+        idx = line - 1
+        if idx < 0 or idx >= len(lines) or not _CHECKBOX_RE.match(lines[idx]):
+            raise ValueError(f"line {line} is not a checkbox")
+        mark = "x" if checked else " "
+        lines[idx] = _CHECKBOX_RE.sub(rf"\g<1>{mark}\g<2>", lines[idx])
+        new_body = "\n".join(lines)
+        # write_file preserves frontmatter and stamps 'updated' to today.
+        self.vault.write_file(rel, parsed.get("metadata", {}) or {}, new_body)
+        return self.read_note(note_id)

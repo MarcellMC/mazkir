@@ -114,3 +114,43 @@ class TestReadNote:
         v = _make_vault(tmp_path)
         with pytest.raises(FileNotFoundError):
             NotesService(v).read_note("2099-01-01")
+
+
+class TestSetCheckbox:
+    def _vault_with_note(self, tmp_path):
+        v = _make_vault(tmp_path)
+        body = "## Tasks\n- [ ] Pack cooler\n- [ ] Buy charcoal\n"
+        (v.vault_path / "10-daily" / "2026-05-21.md").write_text(
+            "---\ntype: daily\nupdated: '2026-05-21'\n---\n\n" + body
+        )
+        return v
+
+    def test_check_flips_the_right_line(self, tmp_path):
+        v = self._vault_with_note(tmp_path)
+        # body line numbering is 1-based within the markdown body (no frontmatter):
+        # 1: "## Tasks", 2: "- [ ] Pack cooler", 3: "- [ ] Buy charcoal"
+        note = NotesService(v).set_checkbox("2026-05-21", line=3, checked=True)
+        assert "- [x] Buy charcoal" in note["markdown"]
+        assert "- [ ] Pack cooler" in note["markdown"]
+
+    def test_uncheck(self, tmp_path):
+        v = self._vault_with_note(tmp_path)
+        NotesService(v).set_checkbox("2026-05-21", line=2, checked=True)
+        note = NotesService(v).set_checkbox("2026-05-21", line=2, checked=False)
+        assert "- [ ] Pack cooler" in note["markdown"]
+
+    def test_bumps_updated_frontmatter(self, tmp_path):
+        v = self._vault_with_note(tmp_path)
+        note = NotesService(v).set_checkbox("2026-05-21", line=2, checked=True)
+        # VaultService.write_file always stamps 'updated' to today.
+        assert note["frontmatter"]["updated"] != "2026-05-21"
+
+    def test_non_checkbox_line_raises_value_error(self, tmp_path):
+        v = self._vault_with_note(tmp_path)
+        with pytest.raises(ValueError):
+            NotesService(v).set_checkbox("2026-05-21", line=1, checked=True)
+
+    def test_missing_note_raises_filenotfound(self, tmp_path):
+        v = _make_vault(tmp_path)
+        with pytest.raises(FileNotFoundError):
+            NotesService(v).set_checkbox("2099-01-01", line=1, checked=True)
