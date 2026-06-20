@@ -1,6 +1,12 @@
 """NotesService — read the daily/weekly note feed for the time-management app."""
 import datetime
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.services.vault_service import VaultService as VaultServiceLike
+else:
+    VaultServiceLike = object
 
 _DAILY_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 _WEEKLY_RE = re.compile(r"^(\d{4})-W(\d{2})$")
@@ -60,3 +66,47 @@ def extract_snippet(body: str, limit: int = 140) -> str:
             lines.append(line)
     snippet = " ".join(lines)
     return snippet[:limit].strip()
+
+
+def _title_for(stem: str, meta: dict, body: str) -> str:
+    """Prefer an H1 in the body, else a frontmatter title, else the stem."""
+    m = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
+    if m:
+        return m.group(1).strip()
+    for key in ("title", "name"):
+        if meta.get(key):
+            return str(meta[key])
+    return stem
+
+
+class NotesService:
+    """Reads the daily/weekly note feed from the Obsidian vault."""
+
+    def __init__(self, vault: VaultServiceLike):
+        self.vault = vault
+
+    def _daily_dir(self):
+        return self.vault.vault_path / "10-daily"
+
+    def list_notes(self) -> list[dict]:
+        """All notes in 10-daily/, newest-first."""
+        out = []
+        d = self._daily_dir()
+        if not d.exists():
+            return out
+        for f in d.glob("*.md"):
+            stem = f.stem
+            rel = f"10-daily/{f.name}"
+            parsed = self.vault.read_file(rel)
+            body = parsed.get("content", "")
+            meta = parsed.get("metadata", {}) or {}
+            out.append({
+                "id": stem,
+                "sort_key": derive_sort_key(stem),
+                "kind": derive_kind(stem),
+                "title": _title_for(stem, meta, body),
+                "has_photos": has_photo_embed(body),
+                "snippet": extract_snippet(body),
+            })
+        out.sort(key=lambda n: n["sort_key"], reverse=True)
+        return out

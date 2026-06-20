@@ -51,3 +51,45 @@ class TestSnippet:
 
     def test_snippet_empty_body(self):
         assert extract_snippet("") == ""
+
+
+from pathlib import Path
+from src.services.vault_service import VaultService
+from src.services.notes_service import NotesService
+
+
+def _make_vault(tmp_path: Path) -> VaultService:
+    vault = tmp_path / "vault"
+    (vault / "10-daily").mkdir(parents=True)
+    (vault / "AGENTS.md").write_text("# Agents\n")
+    return VaultService(vault)
+
+
+class TestListNotes:
+    def test_orders_newest_first_with_weekly_anchored(self, tmp_path):
+        v = _make_vault(tmp_path)
+        d = v.vault_path / "10-daily"
+        (d / "2026-05-20.md").write_text("---\ntype: daily\n---\n\nolder day\n")
+        (d / "2026-05-21.md").write_text("---\ntype: daily\n---\n\nnewer day\n")
+        # ISO week 20 of 2026 ends Sunday 2026-05-17, so this sorts oldest.
+        (d / "2026-W20.md").write_text("---\ntype: daily\n---\n\nweek note\n")
+
+        notes = NotesService(v).list_notes()
+        ids = [n["id"] for n in notes]
+        assert ids == ["2026-05-21", "2026-05-20", "2026-W20"]
+        assert notes[2]["kind"] == "weekly"
+        assert notes[2]["sort_key"] == "2026-05-17"
+
+    def test_list_item_shape(self, tmp_path):
+        v = _make_vault(tmp_path)
+        (v.vault_path / "10-daily" / "2026-05-21.md").write_text(
+            "---\ntype: daily\n---\n\n## Notes\nBought kebabs\n![[p.jpg]]\n"
+        )
+        note = NotesService(v).list_notes()[0]
+        assert set(note) == {"id", "sort_key", "kind", "title", "has_photos", "snippet"}
+        assert note["has_photos"] is True
+        assert "kebabs" in note["snippet"]
+
+    def test_empty_dir_returns_empty(self, tmp_path):
+        v = _make_vault(tmp_path)
+        assert NotesService(v).list_notes() == []
