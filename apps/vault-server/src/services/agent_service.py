@@ -395,6 +395,32 @@ class AgentService:
                 "risk": "safe",
                 "pre_hooks": [],
             },
+            "read_knowledge": {
+                "schema": {
+                    "name": "read_knowledge",
+                    "description": (
+                        "Read the full body of a knowledge note. Use after search_knowledge "
+                        "(which only returns titles/paths) to actually read a note's contents."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Vault-relative path as returned by search_knowledge.",
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "Note name/title, used when path is unknown.",
+                            },
+                        },
+                        "required": [],
+                    },
+                },
+                "handler": self._tool_read_knowledge,
+                "risk": "safe",
+                "pre_hooks": [],
+            },
             "get_related": {
                 "schema": {
                     "name": "get_related",
@@ -2052,6 +2078,62 @@ class AgentService:
             limit=params.get("limit", 5),
         )
         return ok({"results": results})
+
+    def _tool_read_knowledge(self, params: dict) -> dict:
+        path = params.get("path")
+        name = params.get("name")
+        if not path and not name:
+            return err(
+                ErrorCode.SCHEMA_INVALID,
+                "read_knowledge requires 'path' or 'name'.",
+            )
+
+        if not path:
+            slug = name.lower().strip().replace(" ", "-")
+            target = name.lower().strip()
+            candidates: list[str] = []
+            for subdir in ("60-knowledge/notes", "60-knowledge/insights"):
+                for file_path in self.vault.list_files(subdir):
+                    rel = str(file_path)
+                    stem = file_path.stem.lower() if hasattr(file_path, "stem") else rel.lower()
+                    try:
+                        data = self.vault.read_file(rel)
+                    except FileNotFoundError:
+                        continue
+                    note_name = data["metadata"].get("name", "").lower()
+                    if slug == stem or target == note_name:
+                        candidates.append(rel)
+            candidates = sorted(set(candidates))
+            if not candidates:
+                return err(
+                    ErrorCode.PATH_NOT_FOUND,
+                    f"No knowledge note matching {name!r}.",
+                )
+            if len(candidates) > 1:
+                return err(
+                    ErrorCode.AMBIGUOUS_MATCH,
+                    f"Multiple knowledge notes match {name!r}.",
+                    details={"candidates": candidates},
+                )
+            path = candidates[0]
+
+        try:
+            data = self.vault.read_file(path)
+        except FileNotFoundError:
+            return err(ErrorCode.PATH_NOT_FOUND, f"Knowledge note not found: {path}")
+
+        meta = data["metadata"]
+        return ok(
+            {
+                "path": data["path"],
+                "name": meta.get("name", ""),
+                "tags": meta.get("tags", []),
+                "content": data["content"],
+                "links": meta.get("links", []),
+                "source": meta.get("source", ""),
+            },
+            items=[data["path"]],
+        )
 
     def _tool_get_related(self, params: dict) -> dict:
         results = self.memory.get_related(
