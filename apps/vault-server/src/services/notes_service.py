@@ -110,3 +110,17 @@ class NotesService:
             })
         out.sort(key=lambda n: n["sort_key"], reverse=True)
         return out
+
+    def read_note(self, note_id: str) -> dict:
+        """Raw markdown + frontmatter for one note. Raises FileNotFoundError."""
+        rel = f"10-daily/{note_id}.md"
+        if not (self.vault.vault_path / rel).exists():
+            raise FileNotFoundError(rel)
+        parsed = self.vault.read_file(rel)
+        return {
+            "id": note_id,
+            "kind": derive_kind(note_id),
+            "sort_key": derive_sort_key(note_id),
+            "frontmatter": parsed.get("metadata", {}) or {},
+            "markdown": parsed.get("content", ""),
+        }

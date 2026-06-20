@@ -1,4 +1,5 @@
 """Tests for NotesService."""
+import pytest
 from src.services.notes_service import derive_kind, derive_sort_key
 
 
@@ -93,3 +94,23 @@ class TestListNotes:
     def test_empty_dir_returns_empty(self, tmp_path):
         v = _make_vault(tmp_path)
         assert NotesService(v).list_notes() == []
+
+
+class TestReadNote:
+    def test_read_returns_markdown_and_frontmatter(self, tmp_path):
+        v = _make_vault(tmp_path)
+        (v.vault_path / "10-daily" / "2026-05-21.md").write_text(
+            "---\ntype: daily\nmood: good\n---\n\n## Notes\nhello\n"
+        )
+        note = NotesService(v).read_note("2026-05-21")
+        assert note["id"] == "2026-05-21"
+        assert note["kind"] == "daily"
+        assert note["sort_key"] == "2026-05-21"
+        assert note["frontmatter"]["mood"] == "good"
+        assert "## Notes" in note["markdown"]
+        assert "hello" in note["markdown"]
+
+    def test_read_missing_raises(self, tmp_path):
+        v = _make_vault(tmp_path)
+        with pytest.raises(FileNotFoundError):
+            NotesService(v).read_note("2099-01-01")
