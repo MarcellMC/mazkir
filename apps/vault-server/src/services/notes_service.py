@@ -21,8 +21,11 @@ def derive_sort_key(stem: str) -> str:
     m = _WEEKLY_RE.match(stem)
     if m:
         year, week = int(m.group(1)), int(m.group(2))
-        # ISO weekday 7 = Sunday, the last day of the ISO week.
-        sunday = datetime.date.fromisocalendar(year, week, 7)
+        try:
+            # ISO weekday 7 = Sunday, the last day of the ISO week.
+            sunday = datetime.date.fromisocalendar(year, week, 7)
+        except ValueError:
+            return stem
         return sunday.isoformat()
     if _DAILY_RE.match(stem):
         return stem

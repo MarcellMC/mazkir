@@ -1,6 +1,4 @@
 """Tests for NotesService."""
-import datetime
-import pytest
 from src.services.notes_service import derive_kind, derive_sort_key
 
 
@@ -24,3 +22,7 @@ class TestDerive:
         # Non-matching names sort by themselves, treated as daily
         assert derive_kind("random-note") == "daily"
         assert derive_sort_key("random-note") == "random-note"
+
+    def test_weekly_invalid_week_falls_back_to_stem(self):
+        # 2021 has only 52 ISO weeks; W53 is invalid and must not raise.
+        assert derive_sort_key("2021-W53") == "2021-W53"
