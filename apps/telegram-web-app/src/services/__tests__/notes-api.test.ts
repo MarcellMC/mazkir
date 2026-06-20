@@ -13,7 +13,7 @@ describe('notes api', () => {
   it('lists notes', async () => {
     mockFetch.mockResolvedValueOnce(ok({ notes: [{ id: '2026-05-21' }] }))
     const res = await api.listNotes()
-    expect(res.notes[0].id).toBe('2026-05-21')
+    expect(res.notes[0]?.id).toBe('2026-05-21')
     expect(mockFetch).toHaveBeenCalledWith(expect.stringContaining('/notes'), expect.any(Object))
   })
 
@@ -27,7 +27,7 @@ describe('notes api', () => {
   it('patches a checkbox', async () => {
     mockFetch.mockResolvedValueOnce(ok({ id: '2026-05-21', markdown: '- [x] x' }))
     await api.setNoteCheckbox('2026-05-21', 2, true)
-    const [url, opts] = mockFetch.mock.calls[0]
+    const [url, opts] = mockFetch.mock.calls[0]!
     expect(url).toContain('/notes/2026-05-21/checkbox')
     expect(opts.method).toBe('PATCH')
     expect(JSON.parse(opts.body)).toEqual({ line: 2, checked: true })

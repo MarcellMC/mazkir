@@ -30,7 +30,7 @@ describe('NoteMarkdown', () => {
     // 1: "## Tasks", 2: "- [ ] A", 3: "- [ ] B"
     render(<NoteMarkdown noteId="2026-05-21" markdown={'## Tasks\n- [ ] A\n- [ ] B'} onToggle={onToggle} />)
     const boxes = screen.getAllByRole('checkbox')
-    fireEvent.click(boxes[1]) // second checkbox → source line 3
+    fireEvent.click(boxes[1]!) // second checkbox → source line 3
     expect(onToggle).toHaveBeenCalledWith(3, true)
   })
 
