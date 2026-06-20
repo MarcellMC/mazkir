@@ -1363,3 +1363,76 @@ def test_execute_tool_includes_calendar_in_ctx(mock_services, monkeypatch):
     agent._execute_tool_inner("list_tasks", {}, risk="safe")
     assert "calendar" in captured["ctx"]
     assert captured["ctx"]["calendar"] is calendar
+
+
+class TestReadKnowledge:
+    def test_read_knowledge_registered_safe(self, agent):
+        assert "read_knowledge" in agent.tools
+        assert agent.tools["read_knowledge"]["risk"] == "safe"
+
+    def test_read_knowledge_by_path_returns_body(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.read_file.return_value = {
+            "path": "60-knowledge/notes/ml-basics.md",
+            "metadata": {"name": "ML basics", "tags": ["ml"], "links": ["stats"], "source": "chat"},
+            "content": "Gradient descent is...",
+        }
+        result = agent._tool_read_knowledge({"path": "60-knowledge/notes/ml-basics.md"})
+        assert result["ok"] is True
+        assert result["data"]["content"] == "Gradient descent is..."
+        assert result["data"]["name"] == "ML basics"
+        assert result["data"]["tags"] == ["ml"]
+        assert result["_items"] == ["60-knowledge/notes/ml-basics.md"]
+        vault.read_file.assert_called_once_with("60-knowledge/notes/ml-basics.md")
+
+    def test_read_knowledge_requires_path_or_name(self, agent):
+        result = agent._tool_read_knowledge({})
+        assert result["ok"] is False
+        assert result["error"]["code"] == "SCHEMA_INVALID"
+
+    def test_read_knowledge_path_not_found(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.read_file.side_effect = FileNotFoundError("nope")
+        result = agent._tool_read_knowledge({"path": "60-knowledge/notes/ghost.md"})
+        assert result["ok"] is False
+        assert result["error"]["code"] == "PATH_NOT_FOUND"
+
+    def test_read_knowledge_by_name_resolves(self, agent, mock_services):
+        from pathlib import Path
+        vault = mock_services[1]
+        vault.list_files.side_effect = lambda subdir: (
+            [Path("60-knowledge/notes/ml-basics.md")] if subdir == "60-knowledge/notes" else []
+        )
+        vault.read_file.return_value = {
+            "path": "60-knowledge/notes/ml-basics.md",
+            "metadata": {"name": "ML basics", "tags": [], "links": [], "source": ""},
+            "content": "body",
+        }
+        result = agent._tool_read_knowledge({"name": "ML basics"})
+        assert result["ok"] is True
+        assert result["data"]["path"] == "60-knowledge/notes/ml-basics.md"
+
+    def test_read_knowledge_by_name_not_found(self, agent, mock_services):
+        vault = mock_services[1]
+        vault.list_files.return_value = []
+        result = agent._tool_read_knowledge({"name": "does not exist"})
+        assert result["ok"] is False
+        assert result["error"]["code"] == "PATH_NOT_FOUND"
+
+    def test_read_knowledge_by_name_ambiguous(self, agent, mock_services):
+        from pathlib import Path
+        vault = mock_services[1]
+        vault.list_files.side_effect = lambda subdir: (
+            [Path("60-knowledge/notes/ml-a.md"), Path("60-knowledge/notes/ml-b.md")]
+            if subdir == "60-knowledge/notes" else []
+        )
+        vault.read_file.return_value = {
+            "path": "60-knowledge/notes/ml-a.md",
+            "metadata": {"name": "ML basics", "tags": [], "links": [], "source": ""},
+            "content": "body",
+        }
+        result = agent._tool_read_knowledge({"name": "ML basics"})
+        assert result["ok"] is False
+        assert result["error"]["code"] == "AMBIGUOUS_MATCH"
+        assert "candidates" in result["error"]["details"]
+        assert len(result["error"]["details"]["candidates"]) == 2

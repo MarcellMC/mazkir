@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     # Skills directory
     skills_dir: Path = Path(os.getenv(
         "MAZKIR_SKILLS_DIR",
-        str(Path.home() / "dev" / "mazkir" / "memory" / "00-system" / "mazkir-skills"),
+        str(Path.home() / "dev" / "mazkir" / "memory" / "00-system" / "skills"),
     ))
 
     # Tracing (OTLP/HTTP)

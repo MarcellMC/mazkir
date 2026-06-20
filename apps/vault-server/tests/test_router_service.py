@@ -59,6 +59,13 @@ def test_router_falls_back_when_llm_errors(skills):
     assert "fallback" in decision.reason.lower()
 
 
+def test_default_fallback_is_mazkir():
+    from unittest.mock import Mock
+    from src.services.router_service import RouterService
+    router = RouterService(claude=Mock())
+    assert router.fallback_skill == "mazkir"
+
+
 def test_router_passes_skill_descriptions_to_llm(skills):
     claude = MagicMock()
     claude.create_router_choice.return_value = {"skill": "capture", "reason": "ok"}

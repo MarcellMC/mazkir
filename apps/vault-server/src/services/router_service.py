@@ -23,7 +23,7 @@ class RouterDecision:
 
 
 class RouterService:
-    def __init__(self, claude, fallback_skill: str = "manager"):
+    def __init__(self, claude, fallback_skill: str = "mazkir"):
         self.claude = claude
         self.fallback_skill = fallback_skill
 
