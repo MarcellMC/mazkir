@@ -53,14 +53,13 @@ export default function NoteFeed({ items }: Props) {
       <div ref={parentRef} className="tm-scroll">
         <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
           {virtualizer.getVirtualItems().map((v) => {
-            const item = items[v.index]
+            const item = items[v.index]!
             return (
               <div
                 key={item.id}
-                data-index={v.index}
                 style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${v.start}px)` }}
               >
-                <NoteDayRow item={item} virtualizer={virtualizer} index={v.index} onToggle={checkbox.mutate} />
+                <NoteDayRow item={item} measureElement={virtualizer.measureElement} index={v.index} onToggle={checkbox.mutate} />
               </div>
             )
           })}
@@ -73,9 +72,9 @@ export default function NoteFeed({ items }: Props) {
 }
 
 // Bridges NoteDay's onToggle to the mutation, binding the note id.
-function NoteDayRow({ item, virtualizer, index, onToggle }: {
+function NoteDayRow({ item, measureElement, index, onToggle }: {
   item: NoteListItem
-  virtualizer: ReturnType<typeof useVirtualizer>
+  measureElement: (el: Element | null) => void
   index: number
   onToggle: (v: { id: string; line: number; checked: boolean }) => void
 }) {
@@ -85,7 +84,7 @@ function NoteDayRow({ item, virtualizer, index, onToggle }: {
       onMeasure={(el) => {
         if (el) {
           el.setAttribute('data-index', String(index))
-          virtualizer.measureElement(el)
+          measureElement(el)
         }
       }}
       onToggle={(line, checked) => onToggle({ id: item.id, line, checked })}
