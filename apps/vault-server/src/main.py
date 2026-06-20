@@ -86,7 +86,7 @@ async def lifespan(app: FastAPI):
     # Initialize RouterService (requires claude)
     router_service = None
     if claude:
-        router_service = RouterService(claude=claude, fallback_skill="manager")
+        router_service = RouterService(claude=claude, fallback_skill="mazkir")
         logger.info("Router service initialized")
 
     # Initialize AgentService (requires claude)
