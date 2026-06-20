@@ -32,11 +32,12 @@ timeline: "TimelineService | None" = None
 generation: "GenerationService | None" = None
 imagery: "ImageryService | None" = None
 events: "EventsService | None" = None
+notes: "NotesService | None" = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global vault, claude, calendar, memory, agent, timeline, generation, imagery, events
+    global vault, claude, calendar, memory, agent, timeline, generation, imagery, events, notes
 
     vault = VaultService(settings.vault_path, settings.vault_timezone)
     logger.info(f"Vault service initialized: {settings.vault_path}")
@@ -77,6 +78,11 @@ async def lifespan(app: FastAPI):
     from src.services.events_service import EventsService
     events = EventsService(events_path=settings.events_data_path)
     logger.info(f"Events service initialized: {settings.events_data_path}")
+
+    # Initialize NotesService
+    from src.services.notes_service import NotesService
+    notes = NotesService(vault)
+    logger.info("Notes service initialized")
 
     # Initialize SkillRegistry
     skill_registry = SkillRegistry(skills_dir=settings.skills_dir)
@@ -182,6 +188,10 @@ def get_events():
     return events
 
 
+def get_notes():
+    return notes
+
+
 # Register routers
 from src.api.routes.tasks import router as tasks_router
 from src.api.routes.habits import router as habits_router
@@ -195,6 +205,7 @@ from src.api.routes.generate import router as generate_router
 from src.api.routes.imagery import router as imagery_router
 from src.api.routes.events import router as events_router
 from src.api.routes.media import router as media_router
+from src.api.routes.notes import router as notes_router
 
 app.include_router(tasks_router)
 app.include_router(habits_router)
@@ -208,6 +219,7 @@ app.include_router(generate_router)
 app.include_router(imagery_router)
 app.include_router(events_router)
 app.include_router(media_router)
+app.include_router(notes_router)
 
 
 @app.get("/health")
