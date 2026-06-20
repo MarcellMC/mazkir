@@ -1418,3 +1418,21 @@ class TestReadKnowledge:
         result = agent._tool_read_knowledge({"name": "does not exist"})
         assert result["ok"] is False
         assert result["error"]["code"] == "PATH_NOT_FOUND"
+
+    def test_read_knowledge_by_name_ambiguous(self, agent, mock_services):
+        from pathlib import Path
+        vault = mock_services[1]
+        vault.list_files.side_effect = lambda subdir: (
+            [Path("60-knowledge/notes/ml-a.md"), Path("60-knowledge/notes/ml-b.md")]
+            if subdir == "60-knowledge/notes" else []
+        )
+        vault.read_file.return_value = {
+            "path": "60-knowledge/notes/ml-a.md",
+            "metadata": {"name": "ML basics", "tags": [], "links": [], "source": ""},
+            "content": "body",
+        }
+        result = agent._tool_read_knowledge({"name": "ML basics"})
+        assert result["ok"] is False
+        assert result["error"]["code"] == "AMBIGUOUS_MATCH"
+        assert "candidates" in result["error"]["details"]
+        assert len(result["error"]["details"]["candidates"]) == 2
