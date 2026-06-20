@@ -30,7 +30,8 @@
       "Bash(PHOENIX_PROJECT=mazkir px trace get 752c3a402f3ddea6efcf936b7659e16d --format raw --no-progress)",
       "Bash(PHOENIX_PROJECT=mazkir px trace get 7db47d567cf36d57bc0c677a9bc0d4b6 --format raw --no-progress)",
       "Bash(PHOENIX_PROJECT=mazkir px trace get 351698572ac25a69045eb8376dd98c86 --format raw --no-progress)",
-      "Bash(PHOENIX_PROJECT=mazkir px trace get e661a654c86ebe47794fe4ae3acd7317 --format raw --no-progress)"
+      "Bash(PHOENIX_PROJECT=mazkir px trace get e661a654c86ebe47794fe4ae3acd7317 --format raw --no-progress)",
+      "Bash(./venv/bin/python -c \"import opentelemetry.sdk.trace; print\\('sdk ok'\\)\")"
     ]
   }
 }
