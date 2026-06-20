@@ -2,14 +2,14 @@
 
 A "skill" is a markdown file with YAML frontmatter declaring:
 
-    name: capture
+    name: mazkir
     description: Short, one-line summary used by the router
     when_to_use: |
         Multi-line guidance for the router
     tools: [tool_a, tool_b]
     model: claude-haiku-4-5 | claude-sonnet-4-6 | ...
     max_iterations: 3
-    next_skills: [manager, recall]   # allowed handoff targets
+    next_skills: [time-management, knowledge-management]   # allowed handoff targets
 
 The body of the file becomes the skill's system prompt.
 """

@@ -133,7 +133,7 @@ class ClaudeService:
             "Pick exactly one skill to handle the user's message.\n\n"
             f"Available skills:\n{catalog_lines}\n\n"
             "Respond as a JSON object: {\"skill\": \"<name>\", \"reason\": \"<one short sentence>\"}. "
-            "Pick the single best match. When uncertain, pick 'manager'."
+            "Pick the single best match. When uncertain, pick 'mazkir'."
         )
         msgs = list(recent_messages) + [{"role": "user", "content": user_msg}]
 
