@@ -33,4 +33,11 @@ describe('NoteMarkdown', () => {
     fireEvent.click(boxes[1]) // second checkbox → source line 3
     expect(onToggle).toHaveBeenCalledWith(3, true)
   })
+
+  it('keeps real markdown links as navigable anchors, not wikilink chips', () => {
+    render(<NoteMarkdown noteId="2026-05-21" markdown="[docs](https://example.com)" onToggle={() => {}} />)
+    const link = screen.getByRole('link')
+    expect(link).toHaveAttribute('href', 'https://example.com')
+    expect(link).not.toHaveClass('tm-wikilink')
+  })
 })

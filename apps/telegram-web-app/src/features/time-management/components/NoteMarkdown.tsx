@@ -26,7 +26,8 @@ function preprocess(markdown: string, noteId: string): string {
   let out = markdown.replace(/!\[\[([^\]]+)\]\]/g, (_m, inner: string) => {
     const file = inner.trim()
     if (isImageEmbed(file)) {
-      return `![](${mediaUrlForEmbed(file, noteId)})`
+      // Angle-bracket destination keeps spaces in filenames from truncating the URL.
+      return `![](<${mediaUrlForEmbed(file, noteId)}>)`
     }
     return file
   })
@@ -64,9 +65,14 @@ export default function NoteMarkdown({ noteId, markdown, onToggle }: NoteMarkdow
             const altText = alt && alt.length > 0 ? alt : url ? url.split('/').pop() ?? '' : ''
             return <img className="tm-img" src={url} alt={altText} />
           },
-          // Wikilinks are rendered as inert chips — never navigable.
+          // The sentinel href `#wikilink` is what makes wikilinks non-navigable:
+          // only those links become inert chips; real hrefs pass through as anchors.
           a(props) {
-            return <span className="tm-wikilink">{props.children}</span>
+            const { href, children } = props
+            if (href === WIKILINK_HREF) {
+              return <span className="tm-wikilink">{children}</span>
+            }
+            return <a href={href} target="_blank" rel="noreferrer">{children}</a>
           },
           // Suppress remark-gfm's default (disabled) task-list checkbox; we
           // render our own interactive one inside the `li` override.
