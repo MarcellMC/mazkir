@@ -39,6 +39,14 @@ def derive_sort_key(stem: str) -> str:
     return stem
 
 
+def _require_valid_note_id(note_id: str) -> None:
+    """Reject anything that isn't a daily (YYYY-MM-DD) or weekly (YYYY-Www)
+    note id, so a caller can't probe arbitrary filenames in 10-daily/.
+    Treated as 'not found' rather than a separate error class."""
+    if not (_DAILY_RE.match(note_id) or _WEEKLY_RE.match(note_id)):
+        raise FileNotFoundError(f"invalid note_id: {note_id}")
+
+
 _PHOTO_RE = re.compile(r"!\[\[[^\]]+\]\]")
 _CHECKBOX_RE = re.compile(r"^(\s*[-*]\s*\[)[ xX](\].*)$")
 _HEADER_RE = re.compile(r"^#{1,6}\s*", re.MULTILINE)
@@ -115,6 +123,7 @@ class NotesService:
 
     def read_note(self, note_id: str) -> dict:
         """Raw markdown + frontmatter for one note. Raises FileNotFoundError."""
+        _require_valid_note_id(note_id)
         rel = f"10-daily/{note_id}.md"
         if not (self.vault.vault_path / rel).exists():
             raise FileNotFoundError(rel)
@@ -133,6 +142,7 @@ class NotesService:
         Raises FileNotFoundError if the note is missing, ValueError if the
         target line is not a markdown checkbox.
         """
+        _require_valid_note_id(note_id)
         rel = f"10-daily/{note_id}.md"
         if not (self.vault.vault_path / rel).exists():
             raise FileNotFoundError(rel)

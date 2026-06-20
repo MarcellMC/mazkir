@@ -54,3 +54,9 @@ def test_patch_checkbox_conflict(client):
     # Line 1 is the "## Tasks" header (not a checkbox), so set_checkbox raises ValueError → 409.
     r = client.patch("/notes/2026-05-21/checkbox", json={"line": 1, "checked": True})
     assert r.status_code == 409
+
+
+def test_patch_checkbox_zero_line_is_422(client):
+    # line < 1 is rejected by the CheckboxPatch Field(ge=1) before the service runs.
+    r = client.patch("/notes/2026-05-21/checkbox", json={"line": 0, "checked": True})
+    assert r.status_code == 422

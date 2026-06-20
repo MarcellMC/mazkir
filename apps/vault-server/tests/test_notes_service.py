@@ -173,3 +173,22 @@ class TestRandomKnowledge:
     def test_returns_none_when_no_knowledge(self, tmp_path):
         v = _make_vault(tmp_path)
         assert NotesService(v).random_knowledge_note() is None
+
+
+class TestNoteIdValidation:
+    def test_read_note_rejects_non_date_id(self, tmp_path):
+        v = _make_vault(tmp_path)
+        # Even if such a file existed, a non-date/-week id must not be readable.
+        (v.vault_path / "10-daily" / "secret.md").write_text("---\n---\n\nx\n")
+        with pytest.raises(FileNotFoundError):
+            NotesService(v).read_note("secret")
+
+    def test_set_checkbox_rejects_non_date_id(self, tmp_path):
+        v = _make_vault(tmp_path)
+        with pytest.raises(FileNotFoundError):
+            NotesService(v).set_checkbox("secret", line=1, checked=True)
+
+    def test_weekly_id_is_accepted(self, tmp_path):
+        v = _make_vault(tmp_path)
+        (v.vault_path / "10-daily" / "2026-W20.md").write_text("---\n---\n\nweek\n")
+        assert NotesService(v).read_note("2026-W20")["id"] == "2026-W20"

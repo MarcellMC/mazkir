@@ -1,6 +1,6 @@
 """Notes API routes — feed for the time-management web app."""
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.auth import verify_api_key
 
@@ -8,7 +8,7 @@ router = APIRouter(prefix="/notes", tags=["notes"], dependencies=[Depends(verify
 
 
 class CheckboxPatch(BaseModel):
-    line: int
+    line: int = Field(ge=1)  # 1-based body line; reject <1 as 422
     checked: bool
 
 
