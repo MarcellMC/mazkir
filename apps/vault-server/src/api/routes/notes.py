@@ -14,7 +14,10 @@ class CheckboxPatch(BaseModel):
 
 def _svc():
     from src.main import get_notes
-    return get_notes()
+    svc = get_notes()
+    if svc is None:
+        raise HTTPException(status_code=503, detail="Notes service not initialized")
+    return svc
 
 
 @router.get("")

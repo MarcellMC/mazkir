@@ -16,6 +16,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("VAULT_PATH", str(vault))
     monkeypatch.setenv("API_KEY", "")
     import importlib
+    import sys
+    for mod in list(sys.modules):
+        if "src.config" in mod or "src.main" in mod:
+            del sys.modules[mod]
     import src.config, src.main
     importlib.reload(src.config)
     importlib.reload(src.main)
@@ -47,5 +51,6 @@ def test_patch_checkbox(client):
 
 
 def test_patch_checkbox_conflict(client):
+    # Line 1 is the "## Tasks" header (not a checkbox), so set_checkbox raises ValueError → 409.
     r = client.patch("/notes/2026-05-21/checkbox", json={"line": 1, "checked": True})
     assert r.status_code == 409
