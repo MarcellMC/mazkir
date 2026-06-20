@@ -30,3 +30,33 @@ def derive_sort_key(stem: str) -> str:
     if _DAILY_RE.match(stem):
         return stem
     return stem
+
+
+_PHOTO_RE = re.compile(r"!\[\[[^\]]+\]\]")
+_HEADER_RE = re.compile(r"^#{1,6}\s*", re.MULTILINE)
+_MD_TOKENS_RE = re.compile(r"[*_`>#\[\]!]|\!\[\[|\]\]")
+
+
+def has_photo_embed(body: str) -> bool:
+    """True if the body contains an Obsidian image embed."""
+    return bool(_PHOTO_RE.search(body))
+
+
+def extract_snippet(body: str, limit: int = 140) -> str:
+    """First ~limit chars of human prose: drop frontmatter-free body's
+    headers/list markers/markdown tokens, collapse whitespace."""
+    text = _PHOTO_RE.sub("", body)
+    lines = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if _HEADER_RE.match(line):              # skip header lines entirely
+            continue
+        line = line.lstrip("-* ").strip()       # list markers
+        line = _MD_TOKENS_RE.sub("", line)       # leftover markdown tokens
+        line = re.sub(r"\s+", " ", line).strip()
+        if line:
+            lines.append(line)
+    snippet = " ".join(lines)
+    return snippet[:limit].strip()

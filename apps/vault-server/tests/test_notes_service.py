@@ -26,3 +26,28 @@ class TestDerive:
     def test_weekly_invalid_week_falls_back_to_stem(self):
         # 2021 has only 52 ISO weeks; W53 is invalid and must not raise.
         assert derive_sort_key("2021-W53") == "2021-W53"
+
+
+from src.services.notes_service import extract_snippet, has_photo_embed
+
+
+class TestSnippet:
+    def test_has_photo_embed_true(self):
+        assert has_photo_embed("intro\n![[photo_2026-05-21.jpg]]\n") is True
+
+    def test_has_photo_embed_false(self):
+        assert has_photo_embed("just text, no embeds") is False
+
+    def test_snippet_strips_headers_and_markdown(self):
+        body = "# Title\n\n## Notes\n- Bought **kebabs** for the picnic\n"
+        snip = extract_snippet(body)
+        assert snip.startswith("Bought kebabs for the picnic")
+        assert "#" not in snip
+        assert "*" not in snip
+
+    def test_snippet_truncates_to_140_chars(self):
+        body = "x " * 200
+        assert len(extract_snippet(body)) <= 140
+
+    def test_snippet_empty_body(self):
+        assert extract_snippet("") == ""
