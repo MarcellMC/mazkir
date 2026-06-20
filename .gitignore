@@ -56,3 +56,6 @@ google_credentials.json
 
 # Timeline data (Google Takeout exports)
 data/
+
+# Brainstorming companion scratch
+.superpowers/
