@@ -1,5 +1,6 @@
 import type { MergedEventsResponse, DailyResponse, TokensResponse } from '../models/event'
 import type { GenerateRequest, GenerateResponse, ImageryResult } from '@mazkir/shared-types'
+import type { NoteListItem, NoteDetail, FeaturedNote } from '../models/note'
 
 export type { GenerateRequest, GenerateResponse, ImageryResult }
 
@@ -70,5 +71,24 @@ export const api = {
 
   getMediaUrl(date: string, filename: string): string {
     return `${API_BASE}/media/${date}/${filename}`
+  },
+
+  listNotes(): Promise<{ notes: NoteListItem[] }> {
+    return request('/notes')
+  },
+
+  getNote(id: string): Promise<NoteDetail> {
+    return request(`/notes/${id}`)
+  },
+
+  setNoteCheckbox(id: string, line: number, checked: boolean): Promise<NoteDetail> {
+    return request(`/notes/${id}/checkbox`, {
+      method: 'PATCH',
+      body: JSON.stringify({ line, checked }),
+    })
+  },
+
+  getFeaturedNote(): Promise<FeaturedNote> {
+    return request('/notes/featured')
   },
 }
