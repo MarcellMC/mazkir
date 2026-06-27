@@ -22,7 +22,7 @@
 /* App shell: a phone-width paper column; header pinned, feed scrolls on its own. */
 .tm-content {
   position: relative; isolation: isolate;
-  width: 100%; max-width: 480px;
+  width: 100%; max-width: 960px;
   height: 100vh; height: 100dvh;
   display: flex; flex-direction: column;
   background: var(--paper);
@@ -36,7 +36,7 @@
 }
 .tm-content > * { position: relative; z-index: 1; }
 /* frame the page against the desk once there's room beside it */
-@media (min-width: 481px) {
+@media (min-width: 961px) {
   .tm-content { border-inline: 1px solid var(--rule); box-shadow: var(--shadow-lg); }
 }
 .tm-wikilink { font-style: italic; color: var(--terra); }
