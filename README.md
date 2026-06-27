@@ -51,7 +51,7 @@ User (Telegram)
 - `/calendar` - Today's schedule from Google Calendar
 - `/sync_calendar` - Sync habits/tasks to Google Calendar
 - Natural language: "I completed gym", "Create task: buy milk", "Done with groceries"
-- **Mini App** - Dayplanner with enriched timeline, AI asset generation playground
+- **Mini App** - Time-management feed (continuous daily-note timeline), AI asset generation playground
 
 ## Quick Start
 
@@ -80,6 +80,19 @@ curl http://localhost:8000/goals
 curl http://localhost:8000/daily
 curl http://localhost:8000/tokens
 ```
+
+## Local URLs & Ports
+
+| Service | URL | Port | Notes |
+|---------|-----|------|-------|
+| vault-server (API) | <http://localhost:8000> | 8000 | FastAPI backend; `/health`, `/docs` |
+| telegram-web-app (Mini App) | <http://localhost:5173> | 5173 | Vite dev server (CORS allows `5173` only — pin with `--port 5173 --strictPort` if it drifts) |
+| ↳ Time-management feed | <http://localhost:5173/time-management> | | Daily-note timeline; `/` redirects here |
+| ↳ Playground | <http://localhost:5173/playground> | | AI asset generation |
+
+The Mini App needs vault-server running on `:8000`. In a plain browser you won't get Telegram theming/SDK context, but both views render standalone for local eyeballing. Override the API base with `VITE_API_BASE` (defaults to `http://localhost:8000`).
+
+Observability ports are listed under [Observability](#observability) below.
 
 ## Tech Stack
 
