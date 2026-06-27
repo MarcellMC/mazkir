@@ -4,7 +4,10 @@ import type { NoteListItem, NoteDetail, FeaturedNote } from '../models/note'
 
 export type { GenerateRequest, GenerateResponse, ImageryResult }
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+// Empty = same-origin relative URLs, which the Vite dev server proxies to the
+// backend (see vite.config.ts). This lets a single tunnel serve both the app and
+// the API. Set VITE_API_BASE to hit an absolute backend origin instead.
+const API_BASE = import.meta.env.VITE_API_BASE || ''
 const API_KEY = import.meta.env.VITE_API_KEY || ''
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
