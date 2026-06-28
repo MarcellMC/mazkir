@@ -16,6 +16,8 @@
   background: var(--desk);
   min-height: 100vh; min-height: 100dvh;
   display: flex; justify-content: center;
+  /* stop the page itself from pull-to-refresh / rubber-banding */
+  overscroll-behavior: none;
 }
 .tm-display { font-family: 'Fraunces', Georgia, serif; font-variation-settings: 'opsz' 144, 'SOFT' 40; font-weight: 300; letter-spacing: -0.01em; }
 .tm-mono { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-mute); }
@@ -60,18 +62,32 @@
   flex: none; margin: 14px 18px 0;
   background: var(--paper-deep); border: 1px solid var(--rule);
   padding: 16px 18px 14px; position: relative;
+  /* Cap the card so a long note can't swallow the screen and leave the
+     feed (the only scroll container) too short to scroll. Its body scrolls
+     internally instead. */
+  display: flex; flex-direction: column; max-height: 40vh;
 }
 .tm-featured::before {
   content: ""; position: absolute; top: -1px; left: -1px; right: -1px;
   height: 3px; background: var(--terra);
 }
-.tm-featured-when { font-style: normal; color: var(--terra); margin-bottom: 8px; }
+.tm-featured .tm-note-markdown { overflow-y: auto; min-height: 0; }
+.tm-featured-close {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  border: none; background: none; cursor: pointer;
+  font-family: 'Fraunces', Georgia, serif; font-weight: 300;
+  font-size: 24px; line-height: 1; padding: 2px 8px;
+  color: var(--ink-mute); transition: color 0.15s;
+}
+.tm-featured-close:hover { color: var(--terra); }
+.tm-featured-when { font-style: normal; color: var(--terra); margin-bottom: 8px; padding-right: 24px; }
 .tm-featured-title { font-size: 19px; line-height: 1.25; margin-bottom: 6px; }
 
 /* ---- feed area: the only scroll container (TanStack Virtual mounts here) ---- */
 .tm-feed-wrap { flex: 1 1 auto; min-height: 0; position: relative; }
 .tm-scroll {
   height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
   padding-bottom: 88px;
   /* hide the native scrollbar — the styled scrubber is the scroll indicator */
   scrollbar-width: none;          /* Firefox */
@@ -124,6 +140,9 @@
 .tm-scrub-track {
   position: absolute; right: 14px; top: 0; bottom: 0; width: 2px;
   background: var(--rule); cursor: pointer;
+  /* Claim the touch so a vertical drag scrubs instead of triggering the
+     browser's native scroll / pull-to-refresh (which reloads the page). */
+  touch-action: none;
 }
 .tm-scrub-track::after {
   /* widen the touch target without widening the visible rail */
