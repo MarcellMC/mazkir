@@ -110,4 +110,6 @@ Generic agent frameworks (Pydantic AI, LangChain, LangGraph, CrewAI, Mastra) are
 - Real test coverage in `vault-server`/`telegram-bot` as a gate on how much of Tier 3's promised value is actually reachable (self-verifiable tasks only).
 
 ## 4. Next steps
-Three blocks (A/B/C above) each need their own brainstorming session → spec → plan → implementation cycle. None has been committed to a design yet. Next decision: which block to brainstorm into an actual spec first.
+Three blocks (A/B/C above) each need their own brainstorming session → spec → plan → implementation cycle. None has been committed to a design yet.
+
+**Confirmed brainstorming order:** Coding-Handoff (Block C) first, then Knowledge Management (Block B), then Time Management System (Block A).
