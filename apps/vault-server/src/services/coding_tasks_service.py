@@ -174,3 +174,52 @@ class CodingTasksService:
         task["started_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.save_task(task)
         return task
+
+    def _container_running(self, container_id: str) -> bool:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", container_id],
+            capture_output=True, text=True,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "true"
+
+    def _container_logs(self, container_id: str) -> str:
+        result = subprocess.run(
+            ["docker", "logs", container_id],
+            capture_output=True, text=True,
+        )
+        return result.stdout + result.stderr
+
+    def _container_exit_code(self, container_id: str) -> int:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.ExitCode}}", container_id],
+            capture_output=True, text=True,
+        )
+        try:
+            return int(result.stdout.strip())
+        except ValueError:
+            return 1  # treat an unreadable exit code as a failure, not a silent success
+
+    def check_running_tasks(self) -> list[dict[str, Any]]:
+        """Poll all 'running' tasks; for any whose container has exited, mark
+        done (exit 0) or failed (non-zero), capture a summary from its logs,
+        and notify via Telegram. Returns the tasks that transitioned this
+        call."""
+        transitioned = []
+        for task in self.list_tasks(status="running"):
+            if self._container_running(task["container_id"]):
+                continue
+            logs = self._container_logs(task["container_id"])
+            exit_code = self._container_exit_code(task["container_id"])
+            task["status"] = "done" if exit_code == 0 else "failed"
+            task["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            task["summary"] = logs[-2000:]
+            self.save_task(task)
+            status_label = "finished" if task["status"] == "done" else "FAILED"
+            self.notifier.send_message(
+                task["chat_id"],
+                f"Coding session {status_label}: {task['task_description']}\n\n"
+                f"Branch: {task['branch']}\nWorktree: {task['worktree_path']}\n\n"
+                f"{task['summary'][-500:]}",
+            )
+            transitioned.append(task)
+        return transitioned

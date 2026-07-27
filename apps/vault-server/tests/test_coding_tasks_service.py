@@ -207,3 +207,74 @@ class TestSpawnAndLaunch:
         assert launched["worktree_path"] == str(tmp_path / "worktrees" / "ct_abc123")
         assert launched["started_at"] is not None
         assert service.get_task("ct_abc123")["status"] == "running"
+
+
+class TestCheckRunningTasks:
+    def test_leaves_still_running_containers_alone(self, service):
+        service.save_task({
+            "id": "ct_1", "chat_id": 42, "status": "running",
+            "container_id": "c1", "task_description": "fix it",
+            "branch": "coding-agent/ct_1", "worktree_path": "/tmp/w1",
+        })
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="true\n", returncode=0)
+
+            transitioned = service.check_running_tasks()
+
+        assert transitioned == []
+        assert service.get_task("ct_1")["status"] == "running"
+
+    def test_marks_exited_container_done_when_exit_code_zero(self, service):
+        service.save_task({
+            "id": "ct_1", "chat_id": 42, "status": "running",
+            "container_id": "c1", "task_description": "fix daily_rollover",
+            "branch": "coding-agent/ct_1", "worktree_path": "/tmp/w1",
+        })
+
+        def _fake_run(args, **kwargs):
+            if args[:2] == ["docker", "inspect"] and "State.Running" in args[3]:
+                return MagicMock(stdout="false\n", returncode=0)
+            if args[:2] == ["docker", "inspect"] and "State.ExitCode" in args[3]:
+                return MagicMock(stdout="0\n", returncode=0)
+            if args[:2] == ["docker", "logs"]:
+                return MagicMock(stdout="Fixed the bug. Ran tests: all pass.", stderr="", returncode=0)
+            raise AssertionError(f"unexpected subprocess call: {args}")
+
+        with patch("src.services.coding_tasks_service.subprocess.run", side_effect=_fake_run):
+            with patch.object(service.notifier, "send_message") as mock_notify:
+                transitioned = service.check_running_tasks()
+
+        assert len(transitioned) == 1
+        assert transitioned[0]["status"] == "done"
+        saved = service.get_task("ct_1")
+        assert saved["status"] == "done"
+        assert saved["finished_at"] is not None
+        assert "Fixed the bug" in saved["summary"]
+        mock_notify.assert_called_once()
+        notified_chat_id, notified_text = mock_notify.call_args[0]
+        assert notified_chat_id == 42
+        assert "fix daily_rollover" in notified_text
+        assert "coding-agent/ct_1" in notified_text
+
+    def test_marks_exited_container_failed_when_exit_code_nonzero(self, service):
+        service.save_task({
+            "id": "ct_2", "chat_id": 42, "status": "running",
+            "container_id": "c2", "task_description": "fix daily_rollover",
+            "branch": "coding-agent/ct_2", "worktree_path": "/tmp/w2",
+        })
+
+        def _fake_run(args, **kwargs):
+            if args[:2] == ["docker", "inspect"] and "State.Running" in args[3]:
+                return MagicMock(stdout="false\n", returncode=0)
+            if args[:2] == ["docker", "inspect"] and "State.ExitCode" in args[3]:
+                return MagicMock(stdout="1\n", returncode=0)
+            if args[:2] == ["docker", "logs"]:
+                return MagicMock(stdout="", stderr="Error: could not apply patch", returncode=0)
+            raise AssertionError(f"unexpected subprocess call: {args}")
+
+        with patch("src.services.coding_tasks_service.subprocess.run", side_effect=_fake_run):
+            with patch.object(service.notifier, "send_message"):
+                transitioned = service.check_running_tasks()
+
+        assert transitioned[0]["status"] == "failed"
+        assert service.get_task("ct_2")["status"] == "failed"
