@@ -1436,3 +1436,14 @@ class TestReadKnowledge:
         assert result["error"]["code"] == "AMBIGUOUS_MATCH"
         assert "candidates" in result["error"]["details"]
         assert len(result["error"]["details"]["candidates"]) == 2
+
+
+class TestCodingHandoffTool:
+    def test_propose_coding_session_registered_as_write_with_forced_preview(self, agent):
+        assert "propose_coding_session" in agent.tools
+        entry = agent.tools["propose_coding_session"]
+        assert entry["risk"] == "write"
+        assert entry["preview"] is True
+
+    def test_current_chat_id_set_and_cleared_around_handle_message(self, agent):
+        assert agent._current_chat_id is None

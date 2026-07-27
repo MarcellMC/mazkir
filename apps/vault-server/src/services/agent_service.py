@@ -25,6 +25,10 @@ from src.services.hooks.sync_to_calendar import sync_to_calendar as _sync_to_cal
 from src.services.memory_service import MemoryService
 from src.services.preview import register_preview_fn, render_preview
 from src.services.skill_executor import SkillExecutor
+from src.services.tool_handlers.coding_handoff import (
+    preview_coding_session as _preview_coding_session,
+    propose_coding_session as _propose_coding_session,
+)
 from src.services.tool_response import ErrorCode, err, ok
 from src.services.vault_service import VaultService
 
@@ -76,6 +80,7 @@ def _register_destructive_previews() -> None:
     register_preview_fn("archive_goal", _preview_archive_goal)
     register_preview_fn("complete_task", _preview_complete_task)
     register_preview_fn("complete_habit", _preview_complete_habit)
+    register_preview_fn("propose_coding_session", _preview_coding_session)
 
 CONFIDENCE_THRESHOLD = 0.85
 
@@ -150,6 +155,7 @@ class AgentService:
         calendar: Any = None,
         media_path: Path | None = None,
         events: Any = None,
+        coding_tasks: Any = None,
         *,
         skill_registry: Any = None,
         router: Any = None,
@@ -160,6 +166,8 @@ class AgentService:
         self.calendar = calendar
         self.media_path = media_path or Path.home() / "dev" / "mazkir" / "data" / "media"
         self.events = events
+        self.coding_tasks = coding_tasks
+        self._current_chat_id: int | None = None
         self.skill_registry = skill_registry
         self.router = router
         self.max_iterations = 10
@@ -484,6 +492,33 @@ class AgentService:
                 "handler": self._tool_create_habit,
                 "risk": "write",
                 "pre_hooks": ["validate_schema"],
+            },
+            "propose_coding_session": {
+                "schema": {
+                    "name": "propose_coding_session",
+                    "description": (
+                        "Propose spinning up an isolated, containerized coding session to "
+                        "investigate or fix a bug/small task, using a real Claude Code CLI "
+                        "session with permissions bypassed. Always requires explicit user "
+                        "confirmation before anything is provisioned."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "task_description": {"type": "string", "description": "Distilled description of the bug/task"},
+                            "conversation_excerpt": {"type": "string", "description": "Relevant quoted excerpt from the conversation"},
+                            "likely_area": {"type": "string", "description": "Best-guess file/service path"},
+                            "test_command": {"type": "string", "description": "Test command the session should run before finishing"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["task_description"],
+                    },
+                },
+                "handler": self._tool_propose_coding_session,
+                "risk": "write",
+                "pre_hooks": ["validate_schema"],
+                "preview": True,
             },
             "create_goal": {
                 "schema": {
@@ -958,6 +993,7 @@ class AgentService:
                 that internal reasoning steps are not surfaced to the caller.
         """
         self._stream_callback = stream_callback
+        self._current_chat_id = chat_id
         session_id = str(chat_id)
         user_id = str(chat_id)
         try:
@@ -996,6 +1032,7 @@ class AgentService:
                 return result
         finally:
             self._stream_callback = None
+            self._current_chat_id = None
 
     def _handle_message_inner(
         self,
@@ -2703,6 +2740,9 @@ class AgentService:
             },
             items=[archive_path],
         )
+
+    def _tool_propose_coding_session(self, params: dict) -> dict:
+        return _propose_coding_session(self.coding_tasks, params, self._current_chat_id)
 
     def _tool_complete_habit(self, params: dict) -> dict:
         import datetime as dt
