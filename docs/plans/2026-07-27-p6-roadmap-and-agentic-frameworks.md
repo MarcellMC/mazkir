@@ -46,6 +46,10 @@ Requirements captured so far:
 - **Open question (unresolved):** how and when should Mazkir actually *suggest* the plan, without adding friction. This is the key design question for the eventual brainstorming session.
 - Related prior notes surfaced during research: *Track and Plan* ("track → analyze → plan"), *Habitica-style Tasks*, *Periodic Tasks* (laundry, shopping, hygiene, workout, work-report) — all relevant background for habit tracking / gamification decisions in this block.
 
+**Design written:** `docs/plans/2026-07-27-time-management-system-design.md` — reuses the existing Habit schema for untracked habits; adopts the Todo/Task rename now (pure naming); fixes a real multi-completions-per-day bug found via live testing (`daily_target` field + completion-log-based counting); resolves the "how/when to suggest" question as pull-only (compute on access, no proactive push); formalizes the matrix into a structured config file separate from the original knowledge note.
+
+**New future candidate block (parked, not scheduled):** full Habitica-style reclassification — splitting "Habit" into strict Habits vs. streak-bound Dailies (Habitica's three-way Habits/Dailies/Todos model). Raised during the Time Management brainstorm but deliberately deferred — large, cross-cutting change touching vault schemas, tool names, `CLAUDE.md`, `memory/AGENTS.md`, templates, and terminology already committed in the Knowledge Management design doc. Revisit as its own dedicated brainstorm if it still seems worth it later.
+
 ### Block B — Knowledge Management
 To be brainstormed separately. Scope so far:
 - Better use of tags and links; inline tasks vs. task files; closer compliance with the user's former (pre-Mazkir) Obsidian workflow.
