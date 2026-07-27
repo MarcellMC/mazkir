@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from src.services.telegram_notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_TRACE_WINDOW_MINUTES = 30
 
 
 class CodingTasksService:
@@ -54,3 +57,45 @@ class CodingTasksService:
         if status:
             tasks = [t for t in tasks if t.get("status") == status]
         return tasks
+
+    def find_recent_trace_id(
+        self, around: datetime, window_minutes: int = DEFAULT_TRACE_WINDOW_MINUTES,
+    ) -> str | None:
+        """Best-effort correlate a reported timestamp to a trace_id from the
+        audit log (no chat_id field exists there, so this is time-window
+        only). Prefers the nearest row with ok=False; falls back to the
+        nearest row in time. Returns None if unavailable."""
+        if not self.audit_log_path or not self.audit_log_path.exists():
+            return None
+
+        around_ts = around.timestamp()
+        window_start = around_ts - window_minutes * 60
+        window_end = around_ts + window_minutes * 60
+
+        candidates: list[tuple[float, dict]] = []
+        with self.audit_log_path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = row.get("ts")
+                if not ts:
+                    continue
+                try:
+                    row_ts = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    continue
+                if window_start <= row_ts <= window_end:
+                    candidates.append((abs(row_ts - around_ts), row))
+
+        if not candidates:
+            return None
+
+        errors = [c for c in candidates if not c[1].get("ok", True)]
+        pool = errors if errors else candidates
+        pool.sort(key=lambda c: c[0])
+        return pool[0][1].get("trace_id")
