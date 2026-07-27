@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     coding_agent_docker_image: str = os.getenv("CODING_AGENT_DOCKER_IMAGE", "mazkir-coding-agent:latest")
     coding_agent_poll_interval_seconds: float = float(os.getenv("CODING_AGENT_POLL_INTERVAL_SECONDS", "30"))
     mazkir_repo_path: Path = Path(os.getenv("MAZKIR_REPO_PATH", str(Path.home() / "dev" / "mazkir")))
+    coding_agent_github_token_path: Path | None = (
+        Path(os.environ["CODING_AGENT_GITHUB_TOKEN_PATH"])
+        if os.getenv("CODING_AGENT_GITHUB_TOKEN_PATH")
+        else None
+    )
 
     # Application
     log_level: str = "INFO"

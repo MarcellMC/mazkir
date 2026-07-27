@@ -192,6 +192,47 @@ class TestSpawnAndLaunch:
         assert "--dangerously-skip-permissions" in args
         assert (worktree_path / ".coding-task-prompt.md").read_text() == "do the thing"
 
+    def test_spawn_container_without_token_path_adds_no_git_config_env(self, tmp_path, service):
+        worktree_path = tmp_path / "worktrees" / "ct_no_token"
+        worktree_path.mkdir(parents=True)
+
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="containerid456\n", returncode=0)
+            service.spawn_container("ct_no_token", worktree_path, "do the thing")
+
+        args = mock_run.call_args[0][0]
+        assert "GIT_CONFIG_COUNT=1" not in args
+        assert not any(a.startswith("GIT_CONFIG_KEY_0=") for a in args)
+
+    def test_spawn_container_with_token_path_injects_scoped_git_credential(self, tmp_path):
+        token_path = tmp_path / "github-token"
+        token_path.write_text("ghp_faketoken123\n")
+        service = CodingTasksService(
+            data_path=tmp_path / "coding-tasks",
+            repo_path=tmp_path / "repo",
+            worktrees_path=tmp_path / "worktrees",
+            docker_image="mazkir-coding-agent:test",
+            notifier=TelegramNotifier(bot_token=None),
+            github_token_path=token_path,
+        )
+        worktree_path = tmp_path / "worktrees" / "ct_with_token"
+        worktree_path.mkdir(parents=True)
+
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="containerid789\n", returncode=0)
+            service.spawn_container("ct_with_token", worktree_path, "do the thing")
+
+        args = mock_run.call_args[0][0]
+        assert "GIT_CONFIG_COUNT=1" in args
+        key_flag = next(a for a in args if a.startswith("GIT_CONFIG_KEY_0="))
+        assert key_flag == (
+            "GIT_CONFIG_KEY_0=url.https://x-access-token:ghp_faketoken123@github.com/.insteadOf"
+        )
+        assert "GIT_CONFIG_VALUE_0=git@github.com:" in args
+        e_index = [i for i, a in enumerate(args) if a == "-e"]
+        assert len(e_index) >= 3
+        assert not any("faketoken" in p.read_text() for p in worktree_path.glob("*") if p.is_file())
+
     def test_launch_provisions_worktree_and_container_and_persists(self, tmp_path, git_repo):
         service = CodingTasksService(
             data_path=tmp_path / "coding-tasks",

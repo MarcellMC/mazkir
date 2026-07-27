@@ -30,6 +30,7 @@ class CodingTasksService:
         docker_image: str,
         notifier: TelegramNotifier,
         audit_log_path: Path | None = None,
+        github_token_path: Path | None = None,
     ):
         self.data_path = Path(data_path)
         self.data_path.mkdir(parents=True, exist_ok=True)
@@ -39,6 +40,7 @@ class CodingTasksService:
         self.docker_image = docker_image
         self.notifier = notifier
         self.audit_log_path = Path(audit_log_path) if audit_log_path else None
+        self.github_token_path = Path(github_token_path) if github_token_path else None
 
     def _file_path(self, task_id: str) -> Path:
         return self.data_path / f"{task_id}.json"
@@ -152,6 +154,22 @@ class CodingTasksService:
         )
         return worktree_path
 
+    def _git_credential_env_args(self) -> list[str]:
+        """Build -e flags that scope a GitHub push credential to this one
+        container process via git's env-var config override, without ever
+        writing to the worktree's (shared) .git/config. Returns [] if no
+        token is configured."""
+        if not self.github_token_path or not self.github_token_path.exists():
+            return []
+        token = self.github_token_path.read_text().strip()
+        if not token:
+            return []
+        return [
+            "-e", "GIT_CONFIG_COUNT=1",
+            "-e", f"GIT_CONFIG_KEY_0=url.https://x-access-token:{token}@github.com/.insteadOf",
+            "-e", "GIT_CONFIG_VALUE_0=git@github.com:",
+        ]
+
     def spawn_container(self, task_id: str, worktree_path: Path, prompt: str) -> str:
         prompt_path = worktree_path / ".coding-task-prompt.md"
         prompt_path.write_text(prompt)
@@ -163,6 +181,7 @@ class CodingTasksService:
                 "-v", "mazkir-claude-auth:/home/agent/.claude",
                 "-v", "/home/marcellmc/.claude/plugins:/home/agent/.claude/plugins:ro",
                 "-w", "/workspace",
+                *self._git_credential_env_args(),
                 self.docker_image,
                 "claude", "--dangerously-skip-permissions",
                 "-p", "/workspace/.coding-task-prompt.md",

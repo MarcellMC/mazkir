@@ -28,11 +28,32 @@ expires.
 
 ## 3. Create a scoped GitHub PAT
 
-Create a fine-grained personal access token scoped to the `mazkir` repo
-only, with contents:write (push) permission, no admin/owner scope. Store it
-wherever the container's git config expects it (e.g. baked into a
-`.netrc` mounted alongside the auth volume, or a repo-scoped deploy key —
-pick whichever your existing git credential setup already uses).
+Create a fine-grained personal access token:
+
+1. github.com → Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens → Generate new token
+2. Resource owner: your account. Repository access: "Only select
+   repositories" → `mazkir` only.
+3. Repository permissions → **Contents: Read and write**. Leave everything
+   else (especially **Administration**) at "No access" — this keeps the
+   token unable to touch or bypass the branch protection set up in step 4.
+4. Generate, copy the value immediately (shown once).
+
+Store the token value in a file on your host that is never committed —
+e.g. `~/.config/mazkir/coding-agent-github-token`, `chmod 600` — and point
+`CODING_AGENT_GITHUB_TOKEN_PATH` at it in `vault-server`'s `.env`.
+
+`CodingTasksService.spawn_container` reads this file and passes the token
+into the container via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/
+`GIT_CONFIG_VALUE_0` environment variables (an `insteadOf` rewrite from the
+repo's SSH remote to `https://x-access-token:<token>@github.com/`), scoped
+to that one container process only. This deliberately avoids writing to
+any git config file: the worktree at `/workspace` shares `.git/config`
+with your main checkout (same reason `push.default` is left alone
+elsewhere in this doc), so anything written to a config file inside the
+container would leak back into your host repo. If `CODING_AGENT_GITHUB_TOKEN_PATH`
+is unset, containers spawn without a push credential — they can still
+investigate and commit locally, just not push.
 
 ## 4. Enable branch protection on `master`
 

@@ -110,6 +110,7 @@ async def lifespan(app: FastAPI):
         docker_image=settings.coding_agent_docker_image,
         notifier=notifier,
         audit_log_path=settings.logs_dir / "tool-calls.jsonl",
+        github_token_path=settings.coding_agent_github_token_path,
     )
     logger.info("Coding tasks service initialized: %s", settings.coding_tasks_data_path)
 
