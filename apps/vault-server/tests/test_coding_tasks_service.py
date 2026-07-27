@@ -84,3 +84,35 @@ class TestTraceCorrelation:
         service.audit_log_path = audit_path
 
         assert service.find_recent_trace_id(around, window_minutes=30) == "near"
+
+
+class TestAssembleBrief:
+    def test_includes_all_sections(self, service):
+        brief = service.assemble_brief(
+            task_description="daily_rollover duplicates tasks",
+            conversation_excerpt="rollover ran twice and now I have two tasks",
+            likely_area="apps/vault-server/src/services/tool_handlers/daily.py",
+            branch="coding-agent/ct_abc123",
+            worktree_path=Path("/tmp/worktrees/ct_abc123"),
+            test_command="cd apps/vault-server && python -m pytest tests/",
+            trace_id="deadbeef",
+            reported_at=datetime(2026, 7, 27, 14, 32, tzinfo=timezone.utc),
+        )
+
+        assert "daily_rollover duplicates tasks" in brief
+        assert "rollover ran twice and now I have two tasks" in brief
+        assert "apps/vault-server/src/services/tool_handlers/daily.py" in brief
+        assert "coding-agent/ct_abc123" in brief
+        assert "/tmp/worktrees/ct_abc123" in brief
+        assert "cd apps/vault-server && python -m pytest tests/" in brief
+        assert "deadbeef" in brief
+        assert "Do not push to master/origin" in brief
+        assert "CLAUDE.md" in brief
+
+    def test_missing_trace_id_shows_not_found(self, service):
+        brief = service.assemble_brief(
+            task_description="x", conversation_excerpt="y", likely_area="z",
+            branch="b", worktree_path=Path("/tmp/w"), test_command="t",
+            trace_id=None, reported_at=datetime(2026, 7, 27, 14, 32, tzinfo=timezone.utc),
+        )
+        assert "not found" in brief

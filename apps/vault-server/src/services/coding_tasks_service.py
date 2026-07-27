@@ -99,3 +99,33 @@ class CodingTasksService:
         pool = errors if errors else candidates
         pool.sort(key=lambda c: c[0])
         return pool[0][1].get("trace_id")
+
+    def assemble_brief(
+        self,
+        *,
+        task_description: str,
+        conversation_excerpt: str,
+        likely_area: str,
+        branch: str,
+        worktree_path: Path,
+        test_command: str,
+        trace_id: str | None,
+        reported_at: datetime,
+    ) -> str:
+        trace_line = trace_id if trace_id else "not found"
+        return (
+            "You're picking up a task reported via Mazkir's Telegram bot.\n\n"
+            "## Task\n"
+            f"{task_description}\n\n"
+            "## Context\n"
+            f"- Reported: {reported_at.isoformat(timespec='minutes')}, trace_id: {trace_line}\n"
+            f"- Likely area: {likely_area}\n"
+            "- Conversation excerpt:\n"
+            f"  > {conversation_excerpt}\n\n"
+            "## Working constraints\n"
+            f"- Worktree at {worktree_path}, branch {branch}. Do not touch anything outside it.\n"
+            "- Do not push to master/origin directly.\n"
+            f"- Run `{test_command}` before considering this done.\n"
+            "- Summarize what changed and why in your final message.\n\n"
+            "See CLAUDE.md for architecture map and conventions.\n"
+        )
