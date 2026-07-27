@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -129,3 +130,14 @@ class CodingTasksService:
             "- Summarize what changed and why in your final message.\n\n"
             "See CLAUDE.md for architecture map and conventions.\n"
         )
+
+    def create_worktree(self, task_id: str, branch: str) -> Path:
+        worktree_path = self.worktrees_path / task_id
+        subprocess.run(
+            ["git", "worktree", "add", "-b", branch, str(worktree_path)],
+            cwd=self.repo_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return worktree_path

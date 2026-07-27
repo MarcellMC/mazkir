@@ -1,4 +1,5 @@
 import json
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -116,3 +117,37 @@ class TestAssembleBrief:
             trace_id=None, reported_at=datetime(2026, 7, 27, 14, 32, tzinfo=timezone.utc),
         )
         assert "not found" in brief
+
+
+@pytest.fixture
+def git_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "README.md").write_text("hello")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
+    return repo
+
+
+class TestCreateWorktree:
+    def test_creates_worktree_on_new_branch(self, tmp_path, git_repo):
+        service = CodingTasksService(
+            data_path=tmp_path / "coding-tasks",
+            repo_path=git_repo,
+            worktrees_path=tmp_path / "worktrees",
+            docker_image="mazkir-coding-agent:test",
+            notifier=TelegramNotifier(bot_token=None),
+        )
+
+        worktree_path = service.create_worktree("ct_abc123", "coding-agent/ct_abc123")
+
+        assert worktree_path == tmp_path / "worktrees" / "ct_abc123"
+        assert (worktree_path / "README.md").exists()
+        branches = subprocess.run(
+            ["git", "branch", "--list", "coding-agent/ct_abc123"],
+            cwd=git_repo, capture_output=True, text=True,
+        ).stdout
+        assert "coding-agent/ct_abc123" in branches
