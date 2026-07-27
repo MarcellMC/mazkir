@@ -56,6 +56,8 @@ To be brainstormed separately. Scope so far:
 ### Block C — Coding-Handoff (analyzed in depth this session, see §3)
 Framed by the user as potentially high-impact for dev velocity, but with real risk of large implementation cost without payoff — deliberately treated as risk/payoff analysis first, not an immediate spec.
 
+**v1 design written:** `docs/plans/2026-07-27-coding-handoff-design.md` — a "Tier 1+" hybrid (always-confirm trigger, containerized worktree session via a real `claude --dangerously-skip-permissions` CLI process, supervised via Remote Control rather than custom hook-based checkpoints). Tier 2/3 and multi-agent teams remain future extensions.
+
 ## 3. Coding-Handoff: analysis
 
 ### 3.1 Motivation and pain profile
