@@ -53,6 +53,8 @@ To be brainstormed separately. Scope so far:
 - Action item before brainstorming: search old notes on tags-vs-links, hierarchies, rigidity, to help formalize conventions.
 - Open question: whether a dedicated frontend page (MOC / "command center") is needed for linking data, adding context to tasks/goals, tracking/managing, and pulling relevant info while working with Mazkir.
 
+**Design written:** `docs/plans/2026-07-27-knowledge-management-design.md` — tags-vs-links convention (prompt-only, no retrofit/validation), `daily_rollover` kept as-is, and a new command-center webapp page (v1: live overview + status/metadata CRUD for tasks/goals/notes; linking workbench sketched but deferred to v2).
+
 ### Block C — Coding-Handoff (analyzed in depth this session, see §3)
 Framed by the user as potentially high-impact for dev velocity, but with real risk of large implementation cost without payoff — deliberately treated as risk/payoff analysis first, not an immediate spec.
 
