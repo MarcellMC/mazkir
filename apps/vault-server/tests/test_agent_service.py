@@ -1445,5 +1445,33 @@ class TestCodingHandoffTool:
         assert entry["risk"] == "write"
         assert entry["preview"] is True
 
-    def test_current_chat_id_set_and_cleared_around_handle_message(self, agent):
+    def test_current_chat_id_set_and_cleared_around_handle_message(self, agent, mock_services):
+        claude = mock_services[0]
         assert agent._current_chat_id is None
+
+        captured_chat_id = []
+
+        def _capture_and_respond(*args, **kwargs):
+            # Invoked mid-loop, inside the try block of handle_message — this
+            # proves _current_chat_id is set to the caller's chat_id *during*
+            # the call, not just before/after it.
+            captured_chat_id.append(agent._current_chat_id)
+            mock_response = MagicMock()
+            mock_response.stop_reason = "end_turn"
+            text_block = MagicMock()
+            text_block.type = "text"
+            text_block.text = "Hello! How can I help?"
+            mock_response.content = [text_block]
+            return mock_response
+
+        claude.create.side_effect = _capture_and_respond
+
+        result = agent.handle_message("hello", chat_id=42)
+
+        assert result.response == "Hello! How can I help?"
+        assert captured_chat_id == [42], (
+            "chat_id was not set on agent._current_chat_id during handle_message"
+        )
+        assert agent._current_chat_id is None, (
+            "chat_id was not cleared after handle_message returned"
+        )
