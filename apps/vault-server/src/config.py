@@ -84,6 +84,16 @@ class Settings(BaseSettings):
 
     # Coding-handoff
     telegram_bot_token: str | None = os.getenv("TELEGRAM_BOT_TOKEN")
+    coding_tasks_data_path: Path = Path(os.getenv(
+        "CODING_TASKS_DATA_PATH",
+        str(Path.home() / "dev" / "mazkir" / "data" / "coding-tasks"),
+    ))
+    coding_agent_worktrees_path: Path = Path(os.getenv(
+        "CODING_AGENT_WORKTREES_PATH",
+        str(Path.home() / "dev" / "mazkir" / ".coding-agent-worktrees"),
+    ))
+    coding_agent_docker_image: str = os.getenv("CODING_AGENT_DOCKER_IMAGE", "mazkir-coding-agent:latest")
+    mazkir_repo_path: Path = Path(os.getenv("MAZKIR_REPO_PATH", str(Path.home() / "dev" / "mazkir")))
 
     # Application
     log_level: str = "INFO"
