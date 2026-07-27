@@ -6,7 +6,7 @@ from src.config import settings
 from src.services.agent_service import AgentService
 from src.services.skill_registry import SkillRegistry
 
-EXPECTED = {"mazkir", "time-management", "knowledge-management", "motivation-management"}
+EXPECTED = {"mazkir", "time-management", "knowledge-management", "motivation-management", "engineering"}
 
 
 def _registry() -> SkillRegistry:
@@ -53,3 +53,9 @@ def test_skills_reference_only_known_tools_and_skills():
     registry = _registry()
     warnings = registry.validate(_known_tools(), {s.name for s in registry.list()})
     assert warnings == [], warnings
+
+
+def test_engineering_can_propose_coding_sessions():
+    e = _registry().get("engineering")
+    assert e is not None
+    assert "propose_coding_session" in e.tools
