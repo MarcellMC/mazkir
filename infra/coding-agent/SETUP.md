@@ -8,10 +8,17 @@ end-to-end. None of these are automated by application code — see
 
     docker build -t mazkir-coding-agent:latest infra/coding-agent/
 
+Smoke-test it (the image has no `ENTRYPOINT`, so args after the image name
+are exec'd directly as the container's command):
+
+    docker run --rm mazkir-coding-agent:latest claude --version
+
+Expected: prints a Claude Code CLI version string.
+
 ## 2. Authenticate Claude Code (once, persists on a named volume)
 
     docker volume create mazkir-claude-auth
-    docker run -it --rm -v mazkir-claude-auth:/home/agent/.claude mazkir-coding-agent:latest -c "claude auth login"
+    docker run -it --rm -v mazkir-claude-auth:/home/agent/.claude mazkir-coding-agent:latest claude auth login
 
 Follow the printed OAuth URL, approve from your phone/browser. This must be
 a real claude.ai account login (Pro/Max) — an API key will not work with
@@ -30,7 +37,7 @@ pick whichever your existing git credential setup already uses).
 ## 4. Enable branch protection on `master`
 
     gh api -X PUT repos/MarcellMC/mazkir/branches/master/protection \
-      -f required_pull_request_reviews.required_approving_review_count=0 \
+      -F required_pull_request_reviews.required_approving_review_count=0 \
       -F enforce_admins=true \
       -F restrictions=null \
       -F required_status_checks=null
