@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -141,3 +141,36 @@ class CodingTasksService:
             text=True,
         )
         return worktree_path
+
+    def spawn_container(self, task_id: str, worktree_path: Path, prompt: str) -> str:
+        prompt_path = worktree_path / ".coding-task-prompt.md"
+        prompt_path.write_text(prompt)
+        result = subprocess.run(
+            [
+                "docker", "run", "-d",
+                "--name", f"mazkir-coding-{task_id}",
+                "-v", f"{worktree_path}:/workspace",
+                "-v", "mazkir-claude-auth:/home/agent/.claude",
+                "-v", "/home/marcellmc/.claude/plugins:/home/agent/.claude/plugins:ro",
+                "-w", "/workspace",
+                self.docker_image,
+                "claude", "--dangerously-skip-permissions",
+                "-p", "/workspace/.coding-task-prompt.md",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    def launch(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Provision a worktree + container for a proposed task, persisting
+        its running state. Assumes task already has 'id', 'branch', 'prompt'."""
+        worktree_path = self.create_worktree(task["id"], task["branch"])
+        container_id = self.spawn_container(task["id"], worktree_path, task["prompt"])
+        task["worktree_path"] = str(worktree_path)
+        task["container_id"] = container_id
+        task["status"] = "running"
+        task["started_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self.save_task(task)
+        return task

@@ -2,6 +2,7 @@ import json
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -151,3 +152,58 @@ class TestCreateWorktree:
             cwd=git_repo, capture_output=True, text=True,
         ).stdout
         assert "coding-agent/ct_abc123" in branches
+
+
+class TestSpawnAndLaunch:
+    def test_spawn_container_runs_docker_with_expected_flags(self, tmp_path, service):
+        worktree_path = tmp_path / "worktrees" / "ct_abc123"
+        worktree_path.mkdir(parents=True)
+
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="containerid123\n", returncode=0)
+
+            container_id = service.spawn_container("ct_abc123", worktree_path, "do the thing")
+
+        assert container_id == "containerid123"
+        args = mock_run.call_args[0][0]
+        assert args[:3] == ["docker", "run", "-d"]
+        assert f"{worktree_path}:/workspace" in args
+        assert "mazkir-claude-auth:/home/agent/.claude" in args
+        assert "mazkir-coding-agent:test" in args
+        assert "--dangerously-skip-permissions" in args
+        assert (worktree_path / ".coding-task-prompt.md").read_text() == "do the thing"
+
+    def test_launch_provisions_worktree_and_container_and_persists(self, tmp_path, git_repo):
+        service = CodingTasksService(
+            data_path=tmp_path / "coding-tasks",
+            repo_path=git_repo,
+            worktrees_path=tmp_path / "worktrees",
+            docker_image="mazkir-coding-agent:test",
+            notifier=TelegramNotifier(bot_token=None),
+        )
+        task = {
+            "id": "ct_abc123", "chat_id": 42, "branch": "coding-agent/ct_abc123",
+            "prompt": "fix the bug", "status": "proposed",
+        }
+
+        # Capture the real subprocess.run before patching: coding_tasks_service does
+        # `import subprocess` (whole module), so patching ".run" on it patches the
+        # very same module object this test file imported. Referring to the
+        # (patched) `subprocess.run` name from inside the fallback branch would
+        # recurse into the mock forever instead of reaching the real git call.
+        real_run = subprocess.run
+
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            def _fake_run(args, **kwargs):
+                if args[:2] == ["docker", "run"]:
+                    return MagicMock(stdout="containerid123\n", returncode=0)
+                return real_run(args, **kwargs)
+            mock_run.side_effect = _fake_run
+
+            launched = service.launch(task)
+
+        assert launched["status"] == "running"
+        assert launched["container_id"] == "containerid123"
+        assert launched["worktree_path"] == str(tmp_path / "worktrees" / "ct_abc123")
+        assert launched["started_at"] is not None
+        assert service.get_task("ct_abc123")["status"] == "running"
