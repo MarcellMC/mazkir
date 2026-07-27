@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     # Memory system
     conversation_window_size: int = 20
 
+    # Coding-handoff
+    telegram_bot_token: str | None = os.getenv("TELEGRAM_BOT_TOKEN")
+
     # Application
     log_level: str = "INFO"
     environment: str = "development"
