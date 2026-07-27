@@ -93,6 +93,7 @@ class Settings(BaseSettings):
         str(Path.home() / "dev" / "mazkir" / ".coding-agent-worktrees"),
     ))
     coding_agent_docker_image: str = os.getenv("CODING_AGENT_DOCKER_IMAGE", "mazkir-coding-agent:latest")
+    coding_agent_poll_interval_seconds: float = float(os.getenv("CODING_AGENT_POLL_INTERVAL_SECONDS", "30"))
     mazkir_repo_path: Path = Path(os.getenv("MAZKIR_REPO_PATH", str(Path.home() / "dev" / "mazkir")))
 
     # Application

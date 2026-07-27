@@ -1155,61 +1155,65 @@ class AgentService:
     def _handle_confirmation_inner(
         self, chat_id: int, action_id: str, user_response: str,
     ) -> AgentResponse:
-        pending = self.pending_confirmations.pop(action_id, None)
-        if not pending:
-            return AgentResponse(response="No pending action found.")
+        self._current_chat_id = chat_id
+        try:
+            pending = self.pending_confirmations.pop(action_id, None)
+            if not pending:
+                return AgentResponse(response="No pending action found.")
 
-        if user_response.lower() in ("yes", "y", "ok", "sure", "do it"):
-            tool_results = list(pending.executed_results)
-            pre_tools_audit: list[dict] = []
-            for call in pending.pending_calls:
-                params = dict(call["input"])
-                reasoning = params.get("_reasoning")
-                confidence, _ = self._check_confidence(call["name"], params)
-                result = self._execute_tool(call["name"], params, confidence=confidence, action="auto_execute")
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": call["id"],
-                    "content": json.dumps(result),
+            if user_response.lower() in ("yes", "y", "ok", "sure", "do it"):
+                tool_results = list(pending.executed_results)
+                pre_tools_audit: list[dict] = []
+                for call in pending.pending_calls:
+                    params = dict(call["input"])
+                    reasoning = params.get("_reasoning")
+                    confidence, _ = self._check_confidence(call["name"], params)
+                    result = self._execute_tool(call["name"], params, confidence=confidence, action="auto_execute")
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": call["id"],
+                        "content": json.dumps(result),
+                    })
+                    pre_tools_audit.append({
+                        "name": call["name"],
+                        "params": _sanitize_params(params),
+                        "confidence": confidence,
+                        "reasoning": reasoning,
+                        "result_summary": _summarize_result(result) if isinstance(result, dict) else None,
+                        "confirmed": True,
+                    })
+
+                messages = pending.messages
+                messages.append({"role": "assistant", "content": pending.assistant_response.content})
+                messages.append({"role": "user", "content": tool_results})
+
+                context = self.memory.assemble_context(chat_id)
+                system = self._build_system_prompt(context)
+                return self._run_agent_turn(
+                    chat_id, user_response, messages, system,
+                    tool_schemas=self._tool_schemas(),
+                    max_iterations=self.max_iterations,
+                    pre_tools=pre_tools_audit,
+                    action_id=action_id,
+                    cache_static_prefix=self._build_static_prefix(),
+                )
+            else:
+                messages = pending.messages
+                messages.append({
+                    "role": "user",
+                    "content": f"User responded to confirmation: {user_response}",
                 })
-                pre_tools_audit.append({
-                    "name": call["name"],
-                    "params": _sanitize_params(params),
-                    "confidence": confidence,
-                    "reasoning": reasoning,
-                    "result_summary": _summarize_result(result) if isinstance(result, dict) else None,
-                    "confirmed": True,
-                })
-
-            messages = pending.messages
-            messages.append({"role": "assistant", "content": pending.assistant_response.content})
-            messages.append({"role": "user", "content": tool_results})
-
-            context = self.memory.assemble_context(chat_id)
-            system = self._build_system_prompt(context)
-            return self._run_agent_turn(
-                chat_id, user_response, messages, system,
-                tool_schemas=self._tool_schemas(),
-                max_iterations=self.max_iterations,
-                pre_tools=pre_tools_audit,
-                action_id=action_id,
-                cache_static_prefix=self._build_static_prefix(),
-            )
-        else:
-            messages = pending.messages
-            messages.append({
-                "role": "user",
-                "content": f"User responded to confirmation: {user_response}",
-            })
-            context = self.memory.assemble_context(chat_id)
-            system = self._build_system_prompt(context)
-            return self._run_agent_turn(
-                chat_id, user_response, messages, system,
-                tool_schemas=self._tool_schemas(),
-                max_iterations=self.max_iterations,
-                action_id=action_id,
-                cache_static_prefix=self._build_static_prefix(),
-            )
+                context = self.memory.assemble_context(chat_id)
+                system = self._build_system_prompt(context)
+                return self._run_agent_turn(
+                    chat_id, user_response, messages, system,
+                    tool_schemas=self._tool_schemas(),
+                    max_iterations=self.max_iterations,
+                    action_id=action_id,
+                    cache_static_prefix=self._build_static_prefix(),
+                )
+        finally:
+            self._current_chat_id = None
 
     def _run_loop(
         self,

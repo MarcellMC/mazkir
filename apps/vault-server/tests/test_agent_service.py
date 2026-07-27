@@ -1475,3 +1475,65 @@ class TestCodingHandoffTool:
         assert agent._current_chat_id is None, (
             "chat_id was not cleared after handle_message returned"
         )
+
+    def test_confirmation_flow_sets_chat_id_so_coding_task_persists_it(self, agent):
+        """Regression test for the bug where every coding-handoff task was
+        persisted with chat_id=None.
+
+        propose_coding_session is registered with preview=True, so it NEVER
+        auto-executes inside the initial handle_message call -- it always
+        defers to _handle_confirmation_inner, invoked later from a separate
+        /message/confirm request. handle_message's `finally` block clears
+        self._current_chat_id back to None before that second call happens,
+        so unless _handle_confirmation_inner sets it again itself, the tool
+        handler reads a stale None instead of the confirming user's chat_id.
+        """
+        coding_tasks = MagicMock()
+        coding_tasks.launch.return_value = {
+            "id": "ct_abc123",
+            "branch": "coding-agent/ct_abc123",
+            "worktree_path": "/tmp/worktrees/ct_abc123",
+            "status": "running",
+        }
+        agent.coding_tasks = coding_tasks
+
+        tool_block = MagicMock()
+        tool_block.type = "tool_use"
+        tool_block.name = "propose_coding_session"
+        tool_block.id = "tool_propose"
+        tool_block.input = {
+            "task_description": "fix the rollover bug",
+            "conversation_excerpt": "rollover duplicated tasks",
+            "likely_area": "unknown",
+            "_confidence": 0.99,
+            "_reasoning": "clear, unambiguous request",
+        }
+        first_response = MagicMock()
+        first_response.stop_reason = "tool_use"
+        first_response.content = [tool_block]
+        agent.claude.create.return_value = first_response
+
+        result1 = agent.handle_message("please fix this in a sandboxed session", chat_id=99)
+        assert result1.awaiting_confirmation is True
+        action_id = result1.pending_action_id
+
+        # handle_message's finally block must have already cleared this --
+        # otherwise the test below wouldn't be exercising the bug at all.
+        assert agent._current_chat_id is None
+
+        end_block = MagicMock()
+        end_block.type = "text"
+        end_block.text = "Launched the coding session."
+        end_response = MagicMock()
+        end_response.stop_reason = "end_turn"
+        end_response.content = [end_block]
+        agent.claude.create.return_value = end_response
+
+        agent.handle_confirmation(chat_id=99, action_id=action_id, user_response="yes")
+
+        coding_tasks.save_task.assert_called_once()
+        saved_task = coding_tasks.save_task.call_args[0][0]
+        assert saved_task["chat_id"] == 99, (
+            f"expected the confirming user's chat_id (99) on the persisted "
+            f"task, got {saved_task['chat_id']!r}"
+        )

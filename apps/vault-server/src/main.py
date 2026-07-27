@@ -166,7 +166,9 @@ async def lifespan(app: FastAPI):
     imagery = ImageryService()
     logger.info("Imagery service initialized")
 
-    _coding_tasks_poller_task = asyncio.create_task(_coding_tasks_poll_loop(coding_tasks))
+    _coding_tasks_poller_task = asyncio.create_task(
+        _coding_tasks_poll_loop(coding_tasks, interval_seconds=settings.coding_agent_poll_interval_seconds)
+    )
     logger.info("Coding tasks poller started")
 
     yield

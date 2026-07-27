@@ -47,14 +47,24 @@ class CodingTasksService:
         path = self._file_path(task_id)
         if not path.exists():
             return None
-        return json.loads(path.read_text())
+        try:
+            return json.loads(path.read_text())
+        except Exception as e:
+            logger.error(f"Failed to read coding task {task_id}: {e}")
+            return None
 
     def save_task(self, task: dict[str, Any]) -> None:
         path = self._file_path(task["id"])
         path.write_text(json.dumps(task, indent=2))
 
     def list_tasks(self, status: str | None = None) -> list[dict[str, Any]]:
-        tasks = [json.loads(p.read_text()) for p in sorted(self.data_path.glob("*.json"))]
+        tasks = []
+        for p in sorted(self.data_path.glob("*.json")):
+            try:
+                tasks.append(json.loads(p.read_text()))
+            except Exception as e:
+                logger.error(f"Skipping unreadable coding task file {p}: {e}")
+                continue
         if status:
             tasks = [t for t in tasks if t.get("status") == status]
         return tasks
@@ -165,9 +175,48 @@ class CodingTasksService:
 
     def launch(self, task: dict[str, Any]) -> dict[str, Any]:
         """Provision a worktree + container for a proposed task, persisting
-        its running state. Assumes task already has 'id', 'branch', 'prompt'."""
+        its running state. Assumes task already has 'id', 'branch', 'prompt'.
+
+        If spawn_container fails after the worktree was already created, the
+        worktree is removed (best-effort) and the task is persisted as
+        'failed' + notified, rather than left orphaned in 'proposed' with a
+        dangling worktree/branch that would block a retry. The task dict is
+        still returned (not raised) so callers that build a normal 'ok'
+        response from the return value (e.g. propose_coding_session) don't
+        need special-casing -- they just see status == 'failed'.
+        """
         worktree_path = self.create_worktree(task["id"], task["branch"])
-        container_id = self.spawn_container(task["id"], worktree_path, task["prompt"])
+        try:
+            container_id = self.spawn_container(task["id"], worktree_path, task["prompt"])
+        except Exception as e:
+            logger.error(f"spawn_container failed for task {task['id']}: {e}")
+            try:
+                subprocess.run(
+                    ["git", "worktree", "remove", "--force", str(worktree_path)],
+                    cwd=self.repo_path,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except Exception as cleanup_err:
+                logger.warning(
+                    f"failed to clean up worktree for task {task['id']} "
+                    f"after spawn_container failure: {cleanup_err}"
+                )
+            task["worktree_path"] = str(worktree_path)
+            task["container_id"] = None
+            task["status"] = "failed"
+            task["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            task["summary"] = f"Failed to launch coding session: {e}"
+            self.save_task(task)
+            self.notifier.send_message(
+                task.get("chat_id"),
+                f"Coding session FAILED: {task.get('task_description', '?')}\n\n"
+                f"Branch: {task['branch']}\nWorktree: {task['worktree_path']}\n\n"
+                f"{task['summary'][-500:]}",
+            )
+            return task
+
         task["worktree_path"] = str(worktree_path)
         task["container_id"] = container_id
         task["status"] = "running"

@@ -45,6 +45,25 @@ class TestStorage:
 
         assert len(service.list_tasks()) == 2
 
+    def test_get_task_returns_none_for_corrupt_json_instead_of_raising(self, service):
+        """A crash mid-save_task (non-atomic write) can leave a truncated or
+        otherwise corrupt JSON file behind. get_task must not blow up on it."""
+        (service.data_path / "ct_corrupt.json").write_text('{"id": "ct_corrupt", "status": "run')
+
+        assert service.get_task("ct_corrupt") is None
+
+    def test_list_tasks_skips_corrupt_file_and_still_returns_valid_ones(self, service):
+        """The background poller calls list_tasks(status='running') every
+        30s for ALL tasks -- one corrupt file must not stall polling for
+        every other (valid) task."""
+        service.save_task({"id": "ct_1", "status": "running"})
+        (service.data_path / "ct_corrupt.json").write_text("not json at all {{{")
+        service.save_task({"id": "ct_2", "status": "running"})
+
+        tasks = service.list_tasks(status="running")
+
+        assert {t["id"] for t in tasks} == {"ct_1", "ct_2"}
+
 
 def _write_audit_log(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -207,6 +226,56 @@ class TestSpawnAndLaunch:
         assert launched["worktree_path"] == str(tmp_path / "worktrees" / "ct_abc123")
         assert launched["started_at"] is not None
         assert service.get_task("ct_abc123")["status"] == "running"
+
+    def test_launch_rolls_back_worktree_and_marks_failed_when_spawn_fails(self, tmp_path, git_repo):
+        """If spawn_container fails (docker daemon down, image missing, etc.)
+        after create_worktree already succeeded, the worktree/branch must not
+        be left orphaned, and the task must transition to a terminal 'failed'
+        state (with a notification) instead of staying stuck in 'proposed'
+        forever -- which would also block any retry of the same task_id since
+        create_worktree isn't idempotent."""
+        service = CodingTasksService(
+            data_path=tmp_path / "coding-tasks",
+            repo_path=git_repo,
+            worktrees_path=tmp_path / "worktrees",
+            docker_image="mazkir-coding-agent:test",
+            notifier=TelegramNotifier(bot_token=None),
+        )
+        task = {
+            "id": "ct_fail1", "chat_id": 42, "branch": "coding-agent/ct_fail1",
+            "prompt": "fix the bug", "status": "proposed",
+            "task_description": "fix the bug",
+        }
+        worktree_path = tmp_path / "worktrees" / "ct_fail1"
+
+        real_run = subprocess.run
+
+        def _fake_run(args, **kwargs):
+            if args[:2] == ["docker", "run"]:
+                raise subprocess.CalledProcessError(1, args, output="", stderr="docker: Cannot connect to the Docker daemon")
+            return real_run(args, **kwargs)
+
+        with patch("src.services.coding_tasks_service.subprocess.run", side_effect=_fake_run):
+            with patch.object(service.notifier, "send_message") as mock_notify:
+                launched = service.launch(task)
+
+        assert launched["status"] == "failed"
+        assert launched["container_id"] is None
+        assert launched["finished_at"] is not None
+        assert "Docker daemon" in launched["summary"] or "docker" in launched["summary"].lower()
+
+        # Persisted state matches the failed status returned.
+        saved = service.get_task("ct_fail1")
+        assert saved["status"] == "failed"
+
+        # Worktree directory was cleaned up rather than left orphaned.
+        assert not worktree_path.exists()
+
+        # Notification was sent about the failure.
+        mock_notify.assert_called_once()
+        notified_chat_id, notified_text = mock_notify.call_args[0]
+        assert notified_chat_id == 42
+        assert "FAILED" in notified_text
 
 
 class TestCheckRunningTasks:
