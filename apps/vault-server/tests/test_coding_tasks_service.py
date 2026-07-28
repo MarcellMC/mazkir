@@ -152,6 +152,19 @@ def git_repo(tmp_path):
     return repo
 
 
+@pytest.fixture
+def vault_repo(tmp_path):
+    repo = tmp_path / "vault-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "AGENTS.md").write_text("vault schema notes")
+    subprocess.run(["git", "add", "AGENTS.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
+    return repo
+
+
 class TestCreateWorktree:
     def test_creates_worktree_on_new_branch(self, tmp_path, git_repo):
         service = CodingTasksService(
@@ -169,6 +182,30 @@ class TestCreateWorktree:
         branches = subprocess.run(
             ["git", "branch", "--list", "coding-agent/ct_abc123"],
             cwd=git_repo, capture_output=True, text=True,
+        ).stdout
+        assert "coding-agent/ct_abc123" in branches
+
+    def test_create_vault_worktree_returns_none_without_vault_repo_path(self, tmp_path, service):
+        assert service.create_vault_worktree("ct_abc123", "coding-agent/ct_abc123") is None
+
+    def test_create_vault_worktree_nests_under_the_mazkir_worktree(self, tmp_path, git_repo, vault_repo):
+        service = CodingTasksService(
+            data_path=tmp_path / "coding-tasks",
+            repo_path=git_repo,
+            worktrees_path=tmp_path / "worktrees",
+            docker_image="mazkir-coding-agent:test",
+            notifier=TelegramNotifier(bot_token=None),
+            vault_repo_path=vault_repo,
+        )
+        service.create_worktree("ct_abc123", "coding-agent/ct_abc123")
+
+        vault_worktree_path = service.create_vault_worktree("ct_abc123", "coding-agent/ct_abc123")
+
+        assert vault_worktree_path == tmp_path / "worktrees" / "ct_abc123" / "memory"
+        assert (vault_worktree_path / "AGENTS.md").exists()
+        branches = subprocess.run(
+            ["git", "branch", "--list", "coding-agent/ct_abc123"],
+            cwd=vault_repo, capture_output=True, text=True,
         ).stdout
         assert "coding-agent/ct_abc123" in branches
 
@@ -203,6 +240,32 @@ class TestSpawnAndLaunch:
         args = mock_run.call_args[0][0]
         assert "GIT_CONFIG_COUNT=1" not in args
         assert not any(a.startswith("GIT_CONFIG_KEY_0=") for a in args)
+
+    def test_spawn_container_without_vault_worktree_mounts_no_memory_dir(self, tmp_path, service):
+        worktree_path = tmp_path / "worktrees" / "ct_no_vault"
+        worktree_path.mkdir(parents=True)
+
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="containerid999\n", returncode=0)
+            service.spawn_container("ct_no_vault", worktree_path, "do the thing")
+
+        args = mock_run.call_args[0][0]
+        assert not any(a.endswith(":/workspace/memory") for a in args)
+
+    def test_spawn_container_with_vault_worktree_mounts_it_at_workspace_memory(self, tmp_path, service):
+        worktree_path = tmp_path / "worktrees" / "ct_vault"
+        worktree_path.mkdir(parents=True)
+        vault_worktree_path = tmp_path / "worktrees" / "ct_vault" / "memory"
+
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="containerid888\n", returncode=0)
+            service.spawn_container(
+                "ct_vault", worktree_path, "do the thing",
+                vault_worktree_path=vault_worktree_path,
+            )
+
+        args = mock_run.call_args[0][0]
+        assert f"{vault_worktree_path}:/workspace/memory" in args
 
     def test_spawn_container_with_token_path_injects_scoped_git_credential(self, tmp_path):
         token_path = tmp_path / "github-token"
@@ -317,6 +380,36 @@ class TestSpawnAndLaunch:
         notified_chat_id, notified_text = mock_notify.call_args[0]
         assert notified_chat_id == 42
         assert "FAILED" in notified_text
+
+    def test_launch_also_rolls_back_vault_worktree_when_spawn_fails(self, tmp_path, git_repo, vault_repo):
+        service = CodingTasksService(
+            data_path=tmp_path / "coding-tasks",
+            repo_path=git_repo,
+            worktrees_path=tmp_path / "worktrees",
+            docker_image="mazkir-coding-agent:test",
+            notifier=TelegramNotifier(bot_token=None),
+            vault_repo_path=vault_repo,
+        )
+        task = {
+            "id": "ct_fail2", "chat_id": 42, "branch": "coding-agent/ct_fail2",
+            "prompt": "fix the bug", "status": "proposed",
+            "task_description": "fix the bug",
+        }
+        vault_worktree_path = tmp_path / "worktrees" / "ct_fail2" / "memory"
+
+        real_run = subprocess.run
+
+        def _fake_run(args, **kwargs):
+            if args[:2] == ["docker", "run"]:
+                raise subprocess.CalledProcessError(1, args, output="", stderr="docker: Cannot connect to the Docker daemon")
+            return real_run(args, **kwargs)
+
+        with patch("src.services.coding_tasks_service.subprocess.run", side_effect=_fake_run):
+            with patch.object(service.notifier, "send_message"):
+                launched = service.launch(task)
+
+        assert launched["status"] == "failed"
+        assert not vault_worktree_path.exists()
 
 
 class TestCheckRunningTasks:

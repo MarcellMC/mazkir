@@ -100,6 +100,10 @@ class Settings(BaseSettings):
         if os.getenv("CODING_AGENT_GITHUB_TOKEN_PATH")
         else None
     )
+    mazkir_vault_repo_path: Path = Path(os.getenv(
+        "MAZKIR_VAULT_REPO_PATH",
+        str(Path.home() / "dev" / "mazkir" / "memory"),
+    ))
 
     # Application
     log_level: str = "INFO"

@@ -31,6 +31,7 @@ class CodingTasksService:
         notifier: TelegramNotifier,
         audit_log_path: Path | None = None,
         github_token_path: Path | None = None,
+        vault_repo_path: Path | None = None,
     ):
         self.data_path = Path(data_path)
         self.data_path.mkdir(parents=True, exist_ok=True)
@@ -41,6 +42,7 @@ class CodingTasksService:
         self.notifier = notifier
         self.audit_log_path = Path(audit_log_path) if audit_log_path else None
         self.github_token_path = Path(github_token_path) if github_token_path else None
+        self.vault_repo_path = Path(vault_repo_path) if vault_repo_path else None
 
     def _file_path(self, task_id: str) -> Path:
         return self.data_path / f"{task_id}.json"
@@ -154,6 +156,36 @@ class CodingTasksService:
         )
         return worktree_path
 
+    def create_vault_worktree(self, task_id: str, branch: str) -> Path | None:
+        """Create an isolated worktree of the memory (vault) repo, nested at
+        {worktrees_path}/{task_id}/memory to mirror the real host layout
+        where memory/ sits inside the mazkir checkout — but this is a fully
+        independent worktree of the separate mazkir-memory repo, not nested
+        in the mazkir worktree's own git metadata. Must be called after
+        create_worktree() for the same task_id, so the parent directory
+        already exists. Returns the path, or None if vault_repo_path isn't
+        configured."""
+        if not self.vault_repo_path:
+            return None
+        worktree_path = self.worktrees_path / task_id / "memory"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", branch, str(worktree_path)],
+            cwd=self.vault_repo_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return worktree_path
+
+    def _remove_worktree(self, repo_path: Path, worktree_path: Path) -> None:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(worktree_path)],
+            cwd=repo_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def _git_credential_env_args(self) -> list[str]:
         """Build -e flags that scope a GitHub push credential to this one
         container process via git's env-var config override, without ever
@@ -170,14 +202,25 @@ class CodingTasksService:
             "-e", "GIT_CONFIG_VALUE_0=git@github.com:",
         ]
 
-    def spawn_container(self, task_id: str, worktree_path: Path, prompt: str) -> str:
+    def spawn_container(
+        self,
+        task_id: str,
+        worktree_path: Path,
+        prompt: str,
+        vault_worktree_path: Path | None = None,
+    ) -> str:
         prompt_path = worktree_path / ".coding-task-prompt.md"
         prompt_path.write_text(prompt)
+        vault_mount_args = (
+            ["-v", f"{vault_worktree_path}:/workspace/memory"]
+            if vault_worktree_path else []
+        )
         result = subprocess.run(
             [
                 "docker", "run", "-d",
                 "--name", f"mazkir-coding-{task_id}",
                 "-v", f"{worktree_path}:/workspace",
+                *vault_mount_args,
                 "-v", "mazkir-claude-auth:/home/node/.claude",
                 "-v", "/home/marcellmc/.claude/plugins:/home/node/.claude/plugins:ro",
                 "-w", "/workspace",
@@ -205,24 +248,26 @@ class CodingTasksService:
         need special-casing -- they just see status == 'failed'.
         """
         worktree_path = self.create_worktree(task["id"], task["branch"])
+        vault_worktree_path = self.create_vault_worktree(task["id"], task["branch"])
         try:
-            container_id = self.spawn_container(task["id"], worktree_path, task["prompt"])
+            container_id = self.spawn_container(
+                task["id"], worktree_path, task["prompt"],
+                vault_worktree_path=vault_worktree_path,
+            )
         except Exception as e:
             logger.error(f"spawn_container failed for task {task['id']}: {e}")
-            try:
-                subprocess.run(
-                    ["git", "worktree", "remove", "--force", str(worktree_path)],
-                    cwd=self.repo_path,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-            except Exception as cleanup_err:
-                logger.warning(
-                    f"failed to clean up worktree for task {task['id']} "
-                    f"after spawn_container failure: {cleanup_err}"
-                )
+            for repo, path in ((self.repo_path, worktree_path), (self.vault_repo_path, vault_worktree_path)):
+                if path is None:
+                    continue
+                try:
+                    self._remove_worktree(repo, path)
+                except Exception as cleanup_err:
+                    logger.warning(
+                        f"failed to clean up worktree {path} for task {task['id']} "
+                        f"after spawn_container failure: {cleanup_err}"
+                    )
             task["worktree_path"] = str(worktree_path)
+            task["vault_worktree_path"] = str(vault_worktree_path) if vault_worktree_path else None
             task["container_id"] = None
             task["status"] = "failed"
             task["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -237,6 +282,7 @@ class CodingTasksService:
             return task
 
         task["worktree_path"] = str(worktree_path)
+        task["vault_worktree_path"] = str(vault_worktree_path) if vault_worktree_path else None
         task["container_id"] = container_id
         task["status"] = "running"
         task["started_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
