@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g @anthropic-ai/claude-code
 
 RUN useradd -m -s /bin/bash agent \
-    && mkdir -p /home/agent/.claude \
-    && chown agent:agent /home/agent/.claude
+    && mkdir -p /home/agent/.claude /workspace \
+    && chown agent:agent /home/agent/.claude /workspace
 
 USER agent
 WORKDIR /workspace
