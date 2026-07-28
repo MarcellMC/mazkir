@@ -15,10 +15,22 @@ are exec'd directly as the container's command):
 
 Expected: prints a Claude Code CLI version string.
 
+**Note on the container's user:** the image runs as the base `node:22-slim`
+image's existing `node` user (UID 1000) rather than a freshly created one.
+This matters because bind-mounted worktrees are owned by whatever UID owns
+them on the host — a fresh `useradd` would land on the next free UID
+(1001), which doesn't match a typical single-user host's UID (1000) and
+silently breaks write access to the mounted worktree (confirmed: the
+container could read files but not edit or create any). This assumes your
+host user is UID 1000 (true for a typical single-user Linux setup, verify
+with `id -u`) — if it isn't, the container won't be able to write to
+bind-mounted worktrees either, and the fix is to adjust the Dockerfile's
+user to match your actual host UID.
+
 ## 2. Authenticate Claude Code (once, persists on a named volume)
 
     docker volume create mazkir-claude-auth
-    docker run -it --rm -v mazkir-claude-auth:/home/agent/.claude mazkir-coding-agent:latest claude auth login
+    docker run -it --rm -v mazkir-claude-auth:/home/node/.claude mazkir-coding-agent:latest claude auth login
 
 Follow the printed OAuth URL, approve from your phone/browser. This must be
 a real claude.ai account login (Pro/Max) — an API key will not work with
