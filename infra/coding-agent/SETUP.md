@@ -57,11 +57,27 @@ investigate and commit locally, just not push.
 
 ## 4. Enable branch protection on `master`
 
-    gh api -X PUT repos/MarcellMC/mazkir/branches/master/protection \
-      -F required_pull_request_reviews.required_approving_review_count=0 \
-      -F enforce_admins=true \
-      -F restrictions=null \
-      -F required_status_checks=null
+`gh api`'s dot-notation for nested fields (`-F parent.child=value`) does not
+reliably build the required `required_pull_request_reviews` object for this
+endpoint — it silently drops the field, producing a 422
+("required_pull_request_reviews" wasn't supplied). Pass the full JSON body
+directly instead:
+
+    gh api -X PUT repos/MarcellMC/mazkir/branches/master/protection --input - <<'JSON'
+    {
+      "required_status_checks": null,
+      "enforce_admins": true,
+      "required_pull_request_reviews": {
+        "required_approving_review_count": 0
+      },
+      "restrictions": null
+    }
+    JSON
+
+(`required_approving_review_count: 0` means PRs are required to merge, but
+no one else needs to click "approve" — appropriate for a solo maintainer.
+`enforce_admins: true` means this applies to you too, not just other
+contributors.)
 
 Verify it's active:
 
