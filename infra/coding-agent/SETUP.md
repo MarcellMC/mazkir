@@ -132,9 +132,13 @@ reasonable follow-up if ever revisited.
 ## 5. Confirm the global plugin mount path and vault repo path
 
 `CodingTasksService.spawn_container` mounts `/home/marcellmc/.claude/plugins`
-read-only into the container. If your plugin marketplace lives at a
-different path, update the mount source in
-`apps/vault-server/src/services/coding_tasks_service.py`'s `spawn_container`.
+into the container (read-write — confirmed Claude Code's own plugin system
+needs to write to `plugins/marketplaces/...` when syncing/validating a
+marketplace; a read-only mount here made every plugin show as "disabled"
+and `/plugin` fail with an `EROFS` error trying to `rm` and re-sync it). If
+your plugin marketplace lives at a different path, update the mount source
+in `apps/vault-server/src/services/coding_tasks_service.py`'s
+`spawn_container`.
 
 `MAZKIR_VAULT_REPO_PATH` (defaults to `~/dev/mazkir/memory`) points at the
 `mazkir-memory` repo — `CodingTasksService.create_vault_worktree` uses this

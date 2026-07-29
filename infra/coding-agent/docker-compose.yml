@@ -22,7 +22,7 @@ services:
     volumes:
       - mazkir-claude-auth:/home/node/.claude
       - ${CLAUDE_JSON_PATH}:/home/node/.claude.json
-      - ${CLAUDE_PLUGINS_PATH}:/home/node/.claude/plugins:ro
+      - ${CLAUDE_PLUGINS_PATH}:/home/node/.claude/plugins
       - ${DOTFILES_PATH}:/home/node/dotfiles:ro
       - ${WORKTREE_PATH}:/workspace
       - ${VAULT_WORKTREE_PATH}:/workspace/memory

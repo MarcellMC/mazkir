@@ -238,7 +238,7 @@ class CodingTasksService:
                 "-v", f"{worktree_path}:/workspace",
                 *vault_mount_args,
                 "-v", "mazkir-claude-auth:/home/node/.claude",
-                "-v", "/home/marcellmc/.claude/plugins:/home/node/.claude/plugins:ro",
+                "-v", "/home/marcellmc/.claude/plugins:/home/node/.claude/plugins",
                 "-w", "/workspace",
                 *self._git_credential_env_args(),
                 self.docker_image,
