@@ -38,6 +38,22 @@ Remote Control. Every subsequent spawned container reuses this volume and
 is already authenticated. Re-run this step only if the token is revoked or
 expires.
 
+**Onboarding state (theme, subscription-vs-API choice) needs a second file.**
+It lives in `~/.claude.json` — a file *sibling to* `~/.claude/`, which the
+volume above doesn't cover (confirmed: it resets on every container run
+without this). Named volumes can't target a single file (confirmed:
+Docker refuses with "not a directory"), so this needs a host-side bind
+mount instead:
+
+    mkdir -p ~/.config/mazkir && echo '{}' > ~/.config/mazkir/coding-agent-claude-home.json
+    docker run -it --rm \
+      -v mazkir-claude-auth:/home/node/.claude \
+      -v ~/.config/mazkir/coding-agent-claude-home.json:/home/node/.claude.json \
+      mazkir-coding-agent:latest claude auth login
+
+Go through the theme/billing prompts once here too — they'll persist in
+that file from now on.
+
 ## 3. Create a scoped GitHub PAT
 
 Create a fine-grained personal access token:
@@ -109,9 +125,45 @@ actually matters. If this is revisited later, do it via a per-worktree
 `git config --worktree` setting instead, after enabling
 `extensions.worktreeConfig`.
 
-## 5. Confirm the global plugin mount path
+## 5. Confirm the global plugin mount path and vault repo path
 
 `CodingTasksService.spawn_container` mounts `/home/marcellmc/.claude/plugins`
 read-only into the container. If your plugin marketplace lives at a
 different path, update the mount source in
 `apps/vault-server/src/services/coding_tasks_service.py`'s `spawn_container`.
+
+`MAZKIR_VAULT_REPO_PATH` (defaults to `~/dev/mazkir/memory`) points at the
+`mazkir-memory` repo — `CodingTasksService.create_vault_worktree` uses this
+to provision an isolated worktree of the vault, mounted at
+`/workspace/memory`, alongside the mazkir worktree at `/workspace`. See
+`CONVENTIONS.md` for how the two repos relate inside the container.
+
+## 6. Interactive/manual devcontainer sessions
+
+For working in the container yourself (not via `propose_coding_session`) —
+the same image, with your own dotfiles applied:
+
+    infra/coding-agent/devcontainer.sh <task-name>
+
+This creates worktrees for both repos under `~/dev/mazkir/.claude/worktrees/<task-name>/`
+(mazkir at the root, the vault nested at `memory/`, matching the real host
+layout), applies your dotfiles (`~/dotfiles` by default — see
+`entrypoint.sh` for the exact stow package list; `hypr` is deliberately
+excluded, it's Wayland/GUI-only and meaningless in a container), and starts
+an interactive Remote Control session named after the task. Pass extra
+arguments to run something else instead (e.g.
+`devcontainer.sh my-task bash`).
+
+Override any of `MAZKIR_REPO_PATH`, `VAULT_REPO_PATH`, `WORKTREES_ROOT`,
+`DOTFILES_PATH`, `CLAUDE_JSON_PATH`, `CLAUDE_PLUGINS_PATH`,
+`GITHUB_TOKEN_PATH` as environment variables before calling the script if
+your paths differ from the defaults baked in.
+
+**Known gap:** the `github` dotfiles package (your own vendored `gh` CLI
+config) gets stowed as a symlink into the read-only dotfiles mount. This is
+why the entrypoint does *not* run `gh auth setup-git` — it would fail
+trying to write through that symlink. Git push and `gh pr create` both
+still work (via `GIT_CONFIG_*` and `GH_TOKEN` respectively, neither needs
+`gh auth setup-git` to have run), but any *other* `gh` state that command
+would normally persist won't be. Not expected to matter for this use case;
+worth knowing about if something `gh`-related seems oddly reset.

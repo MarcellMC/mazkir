@@ -1,0 +1,32 @@
+# infra/coding-agent/docker-compose.yml
+#
+# Manual/interactive entry point for the same devcontainer image
+# CodingTasksService.spawn_container uses for automated tasks. Not used by
+# the automated path itself (spawn_container's per-task dynamism — worktree
+# paths, vault mounts, container naming — is simpler to express in Python
+# than in a static compose file). Invoke via ./devcontainer.sh, which sets
+# every variable referenced below (compose does not do shell-style ~
+# expansion, so the wrapper script resolves all paths before calling this).
+services:
+  devcontainer:
+    image: mazkir-coding-agent:latest
+    build: .
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    environment:
+      - GH_TOKEN
+      - "GIT_CONFIG_COUNT=1"
+      - "GIT_CONFIG_KEY_0=url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf"
+      - "GIT_CONFIG_VALUE_0=git@github.com:"
+    volumes:
+      - mazkir-claude-auth:/home/node/.claude
+      - ${CLAUDE_JSON_PATH}:/home/node/.claude.json
+      - ${CLAUDE_PLUGINS_PATH}:/home/node/.claude/plugins:ro
+      - ${DOTFILES_PATH}:/home/node/dotfiles:ro
+      - ${WORKTREE_PATH}:/workspace
+      - ${VAULT_WORKTREE_PATH}:/workspace/memory
+
+volumes:
+  mazkir-claude-auth:
+    external: true
