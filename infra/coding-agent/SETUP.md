@@ -75,13 +75,13 @@ e.g. `~/.config/mazkir/coding-agent-github-token`, `chmod 600` — and point
 into the container via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/
 `GIT_CONFIG_VALUE_0` environment variables (an `insteadOf` rewrite from the
 repo's SSH remote to `https://x-access-token:<token>@github.com/`), scoped
-to that one container process only. This deliberately avoids writing to
-any git config file: the worktree at `/workspace` shares `.git/config`
-with your main checkout (same reason `push.default` is left alone
-elsewhere in this doc), so anything written to a config file inside the
-container would leak back into your host repo. If `CODING_AGENT_GITHUB_TOKEN_PATH`
-is unset, containers spawn without a push credential — they can still
-investigate and commit locally, just not push.
+to that one container process only via env vars rather than a config file
+— though `/workspace` is a self-contained clone with its own independent
+`.git` now (see the note in step 4), not a linked worktree sharing config
+with your main checkout, so this is more a matter of not leaving credential
+material sitting in a file than avoiding cross-contamination. If
+`CODING_AGENT_GITHUB_TOKEN_PATH` is unset, containers spawn without a push
+credential — they can still investigate and commit locally, just not push.
 
 ## 4. Enable branch protection on `master`
 
@@ -115,15 +115,19 @@ This is the authoritative safety backstop — it holds regardless of what a
 spawned coding session's git credentials would otherwise allow.
 
 **Note on the third safety layer from the design doc** ("local git config
-defaulting bare `git push` to the current branch only"): intentionally not
-implemented in code. Setting `push.default` inside a linked worktree
-modifies the *shared* `.git/config` (worktrees don't get their own config
-unless `extensions.worktreeConfig` is enabled repo-wide), which would
-silently change push behavior in your own main working tree too — not
-worth that side effect when branch protection (step 4) is the layer that
-actually matters. If this is revisited later, do it via a per-worktree
-`git config --worktree` setting instead, after enabling
-`extensions.worktreeConfig`.
+defaulting bare `git push` to the current branch only"): still not
+implemented, though the original reasoning for skipping it no longer
+applies. The original concern was that a linked `git worktree` shares
+`.git/config` with the main checkout, so setting `push.default` inside it
+would silently change push behavior on your host too. `/workspace` is now
+a self-contained `git clone` instead of a linked worktree (see the
+`create_worktree`/`_clone_repo` docstring in `coding_tasks_service.py` for
+why — a worktree's `.git` points back to the main repo via an absolute
+host path that doesn't survive being mounted into a container), so it has
+its own independent config with zero shared state — setting `push.default`
+inside it would be perfectly safe now. Not implemented simply because
+branch protection (step 4) already is the layer that actually matters; a
+reasonable follow-up if ever revisited.
 
 ## 5. Confirm the global plugin mount path and vault repo path
 
@@ -134,9 +138,9 @@ different path, update the mount source in
 
 `MAZKIR_VAULT_REPO_PATH` (defaults to `~/dev/mazkir/memory`) points at the
 `mazkir-memory` repo — `CodingTasksService.create_vault_worktree` uses this
-to provision an isolated worktree of the vault, mounted at
-`/workspace/memory`, alongside the mazkir worktree at `/workspace`. See
-`CONVENTIONS.md` for how the two repos relate inside the container.
+to provision an isolated clone of the vault, mounted at `/workspace/memory`,
+alongside the mazkir clone at `/workspace`. See `CONVENTIONS.md` for how
+the two repos relate inside the container.
 
 ## 6. Interactive/manual devcontainer sessions
 
@@ -145,7 +149,7 @@ the same image, with your own dotfiles applied:
 
     infra/coding-agent/devcontainer.sh <task-name>
 
-This creates worktrees for both repos under `~/dev/mazkir/.claude/worktrees/<task-name>/`
+This creates isolated clones of both repos under `~/dev/mazkir/.claude/worktrees/<task-name>/`
 (mazkir at the root, the vault nested at `memory/`, matching the real host
 layout), applies your dotfiles (`~/dotfiles` by default — see
 `entrypoint.sh` for the exact stow package list; `hypr` is deliberately

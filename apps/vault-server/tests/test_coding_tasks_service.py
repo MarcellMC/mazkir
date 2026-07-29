@@ -179,18 +179,45 @@ class TestCreateWorktree:
 
         assert worktree_path == tmp_path / "worktrees" / "ct_abc123"
         assert (worktree_path / "README.md").exists()
+        # The branch lives in the clone itself, not the source repo (see
+        # test_worktree_is_a_self_contained_clone for why this matters).
         branches = subprocess.run(
             ["git", "branch", "--list", "coding-agent/ct_abc123"],
-            cwd=git_repo, capture_output=True, text=True,
+            cwd=worktree_path, capture_output=True, text=True,
         ).stdout
         assert "coding-agent/ct_abc123" in branches
 
+    def test_worktree_is_a_self_contained_clone_not_a_linked_worktree(self, tmp_path, git_repo):
+        """A linked git worktree's .git is a FILE containing `gitdir:
+        /absolute/host/path/...` pointing back at the source repo -- that
+        path is unreachable once only the worktree directory is mounted
+        into a container, so every git command inside it fails with "fatal:
+        not a git repository" (confirmed via a real container run). A
+        clone's .git is a real, self-contained directory with no such
+        dependency -- this is the actual regression test for that bug."""
+        service = CodingTasksService(
+            data_path=tmp_path / "coding-tasks",
+            repo_path=git_repo,
+            worktrees_path=tmp_path / "worktrees",
+            docker_image="mazkir-coding-agent:test",
+            notifier=TelegramNotifier(bot_token=None),
+        )
+
+        worktree_path = service.create_worktree("ct_selfcontained", "coding-agent/ct_selfcontained")
+
+        assert (worktree_path / ".git").is_dir()
+        status = subprocess.run(
+            ["git", "status"], cwd=worktree_path, capture_output=True, text=True,
+        )
+        assert status.returncode == 0
+
     def test_recreates_worktree_when_directory_removed_out_of_band(self, tmp_path, git_repo):
-        """If the worktree directory is deleted without `git worktree
-        remove` (e.g. manual `rm -rf`), the branch survives but a bare
-        `git worktree add -b` would fail with "branch already exists".
-        Re-running create_worktree for the same task_id/branch must recover
-        by reusing the existing branch rather than erroring."""
+        """If the clone directory is deleted (e.g. manual `rm -rf`),
+        re-running create_worktree for the same task_id must recover by
+        cloning fresh rather than erroring -- note any local, unpushed work
+        in the deleted clone is lost (it lived only in that clone's own
+        object database, not the source repo's), an accepted trade for
+        clones actually working inside a container at all."""
         service = CodingTasksService(
             data_path=tmp_path / "coding-tasks",
             repo_path=git_repo,
@@ -199,18 +226,16 @@ class TestCreateWorktree:
             notifier=TelegramNotifier(bot_token=None),
         )
         first_path = service.create_worktree("ct_recover", "coding-agent/ct_recover")
-        (first_path / "new_file.txt").write_text("work in progress")
-        subprocess.run(["rm", "-rf", str(first_path)], check=True)  # out-of-band deletion, not `git worktree remove`
+        subprocess.run(["rm", "-rf", str(first_path)], check=True)
 
         second_path = service.create_worktree("ct_recover", "coding-agent/ct_recover")
 
         assert second_path == first_path
         assert second_path.exists()
         assert (second_path / "README.md").exists()
-        # The branch (and its prior commits, if any were made) is reused, not recreated from scratch.
         branches = subprocess.run(
             ["git", "branch", "--list", "coding-agent/ct_recover"],
-            cwd=git_repo, capture_output=True, text=True,
+            cwd=second_path, capture_output=True, text=True,
         ).stdout
         assert "coding-agent/ct_recover" in branches
 
@@ -232,9 +257,10 @@ class TestCreateWorktree:
 
         assert vault_worktree_path == tmp_path / "worktrees" / "ct_abc123" / "memory"
         assert (vault_worktree_path / "AGENTS.md").exists()
+        assert (vault_worktree_path / ".git").is_dir()
         branches = subprocess.run(
             ["git", "branch", "--list", "coding-agent/ct_abc123"],
-            cwd=vault_repo, capture_output=True, text=True,
+            cwd=vault_worktree_path, capture_output=True, text=True,
         ).stdout
         assert "coding-agent/ct_abc123" in branches
 

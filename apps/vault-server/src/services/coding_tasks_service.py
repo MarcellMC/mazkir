@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -145,58 +146,61 @@ class CodingTasksService:
             "See CLAUDE.md for architecture map and conventions.\n"
         )
 
-    def _add_worktree(self, repo_path: Path, worktree_path: Path, branch: str) -> None:
-        """git worktree add, tolerant of a branch that already exists from a
-        prior run whose worktree directory was since removed out-of-band
-        (e.g. manual `rm -rf` instead of `git worktree remove`). `prune`
-        first clears git's bookkeeping for any such now-missing directory
-        (otherwise `add` can also refuse with "already registered"), then
-        reuses the branch if it exists instead of trying `-b` (which fails
-        with "already exists") -- so re-running with the same task_id/branch
-        recovers instead of erroring."""
+    def _clone_repo(self, repo_path: Path, worktree_path: Path, branch: str) -> None:
+        """Create an isolated, self-contained clone of repo_path at
+        worktree_path, checked out on a new branch. Deliberately a clone,
+        not `git worktree add`: a linked worktree's .git is just a pointer
+        (`gitdir: /absolute/host/path/.git/worktrees/<name>`) back to the
+        main repo's .git directory. That path is unreachable once only the
+        worktree directory is mounted into a container -- confirmed
+        directly: every git command inside such a container fails with
+        "fatal: not a git repository", meaning a container could edit files
+        but never git add/commit/push. A clone has its own fully
+        self-contained .git with no external path dependency, and is fast
+        here since it's a same-filesystem clone (git hardlinks the object
+        database rather than copying it).
+
+        If worktree_path already exists, this is a no-op (idempotent reuse
+        for a retried task_id) -- note this means a task whose directory
+        was deleted out-of-band loses any local, unpushed commits, unlike a
+        linked worktree's shared object database; an acceptable trade for
+        actually working inside a container at all.
+        """
+        if worktree_path.exists():
+            return
         subprocess.run(
-            ["git", "worktree", "prune"],
-            cwd=repo_path, check=True, capture_output=True, text=True,
+            ["git", "clone", str(repo_path), str(worktree_path)],
+            check=True, capture_output=True, text=True,
         )
-        branch_exists = subprocess.run(
-            ["git", "rev-parse", "--verify", "--quiet", branch],
-            cwd=repo_path, capture_output=True, text=True,
-        ).returncode == 0
-        cmd = (
-            ["git", "worktree", "add", str(worktree_path), branch]
-            if branch_exists
-            else ["git", "worktree", "add", "-b", branch, str(worktree_path)]
+        subprocess.run(
+            ["git", "checkout", "-b", branch],
+            cwd=worktree_path, check=True, capture_output=True, text=True,
         )
-        subprocess.run(cmd, cwd=repo_path, check=True, capture_output=True, text=True)
 
     def create_worktree(self, task_id: str, branch: str) -> Path:
         worktree_path = self.worktrees_path / task_id
-        self._add_worktree(self.repo_path, worktree_path, branch)
+        self._clone_repo(self.repo_path, worktree_path, branch)
         return worktree_path
 
     def create_vault_worktree(self, task_id: str, branch: str) -> Path | None:
-        """Create an isolated worktree of the memory (vault) repo, nested at
+        """Create an isolated clone of the memory (vault) repo, nested at
         {worktrees_path}/{task_id}/memory to mirror the real host layout
-        where memory/ sits inside the mazkir checkout — but this is a fully
-        independent worktree of the separate mazkir-memory repo, not nested
-        in the mazkir worktree's own git metadata. Must be called after
-        create_worktree() for the same task_id, so the parent directory
-        already exists. Returns the path, or None if vault_repo_path isn't
-        configured."""
+        where memory/ sits inside the mazkir checkout — a fully independent
+        clone of the separate mazkir-memory repo, unrelated to the mazkir
+        clone's own git history. Must be called after create_worktree() for
+        the same task_id, so the parent directory already exists. Returns
+        the path, or None if vault_repo_path isn't configured."""
         if not self.vault_repo_path:
             return None
         worktree_path = self.worktrees_path / task_id / "memory"
-        self._add_worktree(self.vault_repo_path, worktree_path, branch)
+        self._clone_repo(self.vault_repo_path, worktree_path, branch)
         return worktree_path
 
     def _remove_worktree(self, repo_path: Path, worktree_path: Path) -> None:
-        subprocess.run(
-            ["git", "worktree", "remove", "--force", str(worktree_path)],
-            cwd=repo_path,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        # Not a registered git worktree (see _clone_repo) -- just a plain
+        # directory to remove. repo_path is unused; kept for call-site
+        # symmetry with the (now historical) worktree-based signature.
+        shutil.rmtree(worktree_path, ignore_errors=True)
 
     def _git_credential_env_args(self) -> list[str]:
         """Build -e flags that scope a GitHub push credential to this one

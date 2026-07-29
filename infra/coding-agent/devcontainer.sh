@@ -2,10 +2,20 @@
 # infra/coding-agent/devcontainer.sh
 #
 # Single command to start a fully-configured devcontainer: creates isolated
-# worktrees for both the mazkir and mazkir-memory repos (so /workspace and
+# clones of both the mazkir and mazkir-memory repos (so /workspace and
 # /workspace/memory always exist together — see CONVENTIONS.md), wires up
 # auth/dotfiles/credentials, and starts an interactive Remote Control
 # session — or execs whatever command you pass after the task name instead.
+#
+# Clones, not `git worktree add`: a linked worktree's .git is just a
+# pointer (`gitdir: /absolute/host/path/.git/worktrees/<name>`) back to the
+# main repo's .git directory. That path doesn't exist inside a container
+# that only mounts the worktree directory — confirmed directly: every git
+# command inside such a container fails with "fatal: not a git
+# repository", meaning the container could edit files but never
+# git add/commit/push. A clone is fully self-contained (its own real .git
+# directory) and just as fast here, since it's a same-filesystem clone
+# (git hardlinks the object database rather than copying it).
 #
 # Usage:
 #   ./devcontainer.sh <task-name>                 # interactive Remote Control session
@@ -33,22 +43,21 @@ export GH_TOKEN="${GH_TOKEN:-$(cat "$GITHUB_TOKEN_PATH" 2>/dev/null || true)}"
 WORKTREE_PATH="$WORKTREES_ROOT/$TASK_NAME"
 VAULT_WORKTREE_PATH="$WORKTREE_PATH/memory"
 
-# Tolerant of a worktree directory removed out-of-band (e.g. manual rm -rf
-# instead of `git worktree remove`): the branch survives that, so a bare
-# `worktree add -b` would fail with "already exists" on a re-run with the
-# same task name. `prune` first clears git's bookkeeping for the missing
-# directory (otherwise `add` can also refuse with "already registered"),
-# then the branch is reused if it exists instead of recreated.
+# Idempotent: if worktree_path already exists (a resumed task, or one
+# whose directory survived), reuse it as-is rather than re-cloning. Note
+# that if the directory was deleted out-of-band since the last run, any
+# local unpushed commits in it are gone -- they lived only in that clone's
+# own object database, not the source repo's. Accepted trade for clones
+# actually working inside a container at all.
 add_worktree() {
   local repo_path="$1" worktree_path="$2" branch="$3"
-  git -C "$repo_path" worktree prune
-  if git -C "$repo_path" rev-parse --verify --quiet "$branch" >/dev/null; then
-    echo "devcontainer.sh: reusing existing branch $branch at $worktree_path"
-    git -C "$repo_path" worktree add "$worktree_path" "$branch"
-  else
-    echo "devcontainer.sh: creating worktree at $worktree_path (branch $branch)"
-    git -C "$repo_path" worktree add -b "$branch" "$worktree_path"
+  if [ -d "$worktree_path" ]; then
+    echo "devcontainer.sh: reusing existing clone at $worktree_path"
+    return
   fi
+  echo "devcontainer.sh: cloning $repo_path to $worktree_path (branch $branch)"
+  git clone "$repo_path" "$worktree_path"
+  git -C "$worktree_path" checkout -b "$branch"
 }
 
 if [ ! -d "$WORKTREE_PATH" ]; then
