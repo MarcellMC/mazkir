@@ -279,7 +279,7 @@ class TestSpawnAndLaunch:
         args = mock_run.call_args[0][0]
         assert args[:3] == ["docker", "run", "-d"]
         assert f"{worktree_path}:/workspace" in args
-        assert "mazkir-claude-auth:/home/node/.claude" in args
+        assert "mazkir-claude-auth:/home/marcellmc/.claude" in args
         assert "mazkir-coding-agent:test" in args
         assert "--dangerously-skip-permissions" in args
         assert (worktree_path / ".coding-task-prompt.md").read_text() == "do the thing"

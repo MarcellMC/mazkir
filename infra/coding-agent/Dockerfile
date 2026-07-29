@@ -54,10 +54,24 @@ RUN npm install -g @anthropic-ai/claude-code
 # creating a new one — a fresh useradd would land on the next free UID
 # (1001), which does not match a typical single-user host's UID (1000),
 # breaking write access to bind-mounted worktrees owned by the host user.
-RUN usermod -s /usr/bin/zsh node \
-    && mkdir -p /home/node/.claude /workspace \
-    && touch /home/node/.claude.json \
-    && chown node:node /home/node/.claude /home/node/.claude.json /workspace
+#
+# Home directory moved to /home/marcellmc (matching the actual host user),
+# not left at the default /home/node. Confirmed necessary, not cosmetic:
+# Claude Code's own plugin state (installed_plugins.json,
+# known_marketplaces.json) stores absolute host paths like
+# "/home/marcellmc/.claude/plugins/marketplaces/...". Since these files are
+# bind-mounted (not copied) from the host, mounting them at any other path
+# (e.g. the default /home/node/.claude/plugins) leaves every recorded
+# location pointing at a path that doesn't exist in the container --
+# confirmed as the actual cause of "cache-miss" marketplace-load errors and
+# every plugin showing disabled. Rewriting the JSON to match a different
+# container path was considered and rejected: since the files are shared
+# with the host (not copied), any such rewrite would corrupt the host's
+# real config for its own interactive Claude Code sessions.
+RUN usermod -d /home/marcellmc -m -s /usr/bin/zsh node \
+    && mkdir -p /home/marcellmc/.claude /workspace \
+    && touch /home/marcellmc/.claude.json \
+    && chown node:node /home/marcellmc/.claude /home/marcellmc/.claude.json /workspace
 
 COPY --chown=node:node entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

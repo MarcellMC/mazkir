@@ -17,7 +17,7 @@
 # etc.), and git push already works via the GIT_CONFIG_* insteadOf rewrite.
 set -uo pipefail
 
-DOTFILES_DIR="${DOTFILES_DIR:-/home/node/dotfiles}"
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
 STOW_PACKAGES=(lazyvim zsh tmux git github lazygit tmuxinator .claude)
 
 if [ -d "$DOTFILES_DIR" ]; then

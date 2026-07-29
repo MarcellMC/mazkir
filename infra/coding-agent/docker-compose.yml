@@ -20,10 +20,10 @@ services:
       - "GIT_CONFIG_KEY_0=url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf"
       - "GIT_CONFIG_VALUE_0=git@github.com:"
     volumes:
-      - mazkir-claude-auth:/home/node/.claude
-      - ${CLAUDE_JSON_PATH}:/home/node/.claude.json
-      - ${CLAUDE_PLUGINS_PATH}:/home/node/.claude/plugins
-      - ${DOTFILES_PATH}:/home/node/dotfiles:ro
+      - mazkir-claude-auth:/home/marcellmc/.claude
+      - ${CLAUDE_JSON_PATH}:/home/marcellmc/.claude.json
+      - ${CLAUDE_PLUGINS_PATH}:/home/marcellmc/.claude/plugins
+      - ${DOTFILES_PATH}:/home/marcellmc/dotfiles:ro
       - ${WORKTREE_PATH}:/workspace
       - ${VAULT_WORKTREE_PATH}:/workspace/memory
 

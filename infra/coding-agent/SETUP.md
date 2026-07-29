@@ -27,10 +27,24 @@ with `id -u`) — if it isn't, the container won't be able to write to
 bind-mounted worktrees either, and the fix is to adjust the Dockerfile's
 user to match your actual host UID.
 
+**The container's home directory is also moved to `/home/marcellmc`**
+(matching the actual host user), not left at the default `/home/node`.
+Confirmed necessary, not cosmetic: Claude Code's own plugin state
+(`installed_plugins.json`, `known_marketplaces.json`) records absolute host
+paths like `/home/marcellmc/.claude/plugins/marketplaces/...`. Since these
+files are bind-mounted from the host (not copied), mounting them at any
+other path leaves every recorded location pointing somewhere that doesn't
+exist in the container — this was the actual cause of "cache-miss"
+marketplace-load errors and every plugin showing disabled, even after the
+read-write mount fix below. If your host username/home differs from
+`marcellmc`, update the `usermod -d` target in the Dockerfile and every
+`/home/marcellmc/...` mount target in `docker-compose.yml` and
+`spawn_container` to match.
+
 ## 2. Authenticate Claude Code (once, persists on a named volume)
 
     docker volume create mazkir-claude-auth
-    docker run -it --rm -v mazkir-claude-auth:/home/node/.claude mazkir-coding-agent:latest claude auth login
+    docker run -it --rm -v mazkir-claude-auth:/home/marcellmc/.claude mazkir-coding-agent:latest claude auth login
 
 Follow the printed OAuth URL, approve from your phone/browser. This must be
 a real claude.ai account login (Pro/Max) — an API key will not work with
@@ -47,8 +61,8 @@ mount instead:
 
     mkdir -p ~/.config/mazkir && echo '{}' > ~/.config/mazkir/coding-agent-claude-home.json
     docker run -it --rm \
-      -v mazkir-claude-auth:/home/node/.claude \
-      -v ~/.config/mazkir/coding-agent-claude-home.json:/home/node/.claude.json \
+      -v mazkir-claude-auth:/home/marcellmc/.claude \
+      -v ~/.config/mazkir/coding-agent-claude-home.json:/home/marcellmc/.claude.json \
       mazkir-coding-agent:latest claude auth login
 
 Go through the theme/billing prompts once here too — they'll persist in
