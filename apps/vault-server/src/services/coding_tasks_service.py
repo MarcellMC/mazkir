@@ -145,15 +145,33 @@ class CodingTasksService:
             "See CLAUDE.md for architecture map and conventions.\n"
         )
 
+    def _add_worktree(self, repo_path: Path, worktree_path: Path, branch: str) -> None:
+        """git worktree add, tolerant of a branch that already exists from a
+        prior run whose worktree directory was since removed out-of-band
+        (e.g. manual `rm -rf` instead of `git worktree remove`). `prune`
+        first clears git's bookkeeping for any such now-missing directory
+        (otherwise `add` can also refuse with "already registered"), then
+        reuses the branch if it exists instead of trying `-b` (which fails
+        with "already exists") -- so re-running with the same task_id/branch
+        recovers instead of erroring."""
+        subprocess.run(
+            ["git", "worktree", "prune"],
+            cwd=repo_path, check=True, capture_output=True, text=True,
+        )
+        branch_exists = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", branch],
+            cwd=repo_path, capture_output=True, text=True,
+        ).returncode == 0
+        cmd = (
+            ["git", "worktree", "add", str(worktree_path), branch]
+            if branch_exists
+            else ["git", "worktree", "add", "-b", branch, str(worktree_path)]
+        )
+        subprocess.run(cmd, cwd=repo_path, check=True, capture_output=True, text=True)
+
     def create_worktree(self, task_id: str, branch: str) -> Path:
         worktree_path = self.worktrees_path / task_id
-        subprocess.run(
-            ["git", "worktree", "add", "-b", branch, str(worktree_path)],
-            cwd=self.repo_path,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        self._add_worktree(self.repo_path, worktree_path, branch)
         return worktree_path
 
     def create_vault_worktree(self, task_id: str, branch: str) -> Path | None:
@@ -168,13 +186,7 @@ class CodingTasksService:
         if not self.vault_repo_path:
             return None
         worktree_path = self.worktrees_path / task_id / "memory"
-        subprocess.run(
-            ["git", "worktree", "add", "-b", branch, str(worktree_path)],
-            cwd=self.vault_repo_path,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        self._add_worktree(self.vault_repo_path, worktree_path, branch)
         return worktree_path
 
     def _remove_worktree(self, repo_path: Path, worktree_path: Path) -> None:

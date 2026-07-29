@@ -33,13 +33,29 @@ export GH_TOKEN="${GH_TOKEN:-$(cat "$GITHUB_TOKEN_PATH" 2>/dev/null || true)}"
 WORKTREE_PATH="$WORKTREES_ROOT/$TASK_NAME"
 VAULT_WORKTREE_PATH="$WORKTREE_PATH/memory"
 
+# Tolerant of a worktree directory removed out-of-band (e.g. manual rm -rf
+# instead of `git worktree remove`): the branch survives that, so a bare
+# `worktree add -b` would fail with "already exists" on a re-run with the
+# same task name. `prune` first clears git's bookkeeping for the missing
+# directory (otherwise `add` can also refuse with "already registered"),
+# then the branch is reused if it exists instead of recreated.
+add_worktree() {
+  local repo_path="$1" worktree_path="$2" branch="$3"
+  git -C "$repo_path" worktree prune
+  if git -C "$repo_path" rev-parse --verify --quiet "$branch" >/dev/null; then
+    echo "devcontainer.sh: reusing existing branch $branch at $worktree_path"
+    git -C "$repo_path" worktree add "$worktree_path" "$branch"
+  else
+    echo "devcontainer.sh: creating worktree at $worktree_path (branch $branch)"
+    git -C "$repo_path" worktree add -b "$branch" "$worktree_path"
+  fi
+}
+
 if [ ! -d "$WORKTREE_PATH" ]; then
-  echo "devcontainer.sh: creating worktree at $WORKTREE_PATH (branch $BRANCH)"
-  git -C "$MAZKIR_REPO_PATH" worktree add -b "$BRANCH" "$WORKTREE_PATH"
+  add_worktree "$MAZKIR_REPO_PATH" "$WORKTREE_PATH" "$BRANCH"
 fi
 if [ ! -d "$VAULT_WORKTREE_PATH" ]; then
-  echo "devcontainer.sh: creating vault worktree at $VAULT_WORKTREE_PATH (branch $BRANCH)"
-  git -C "$VAULT_REPO_PATH" worktree add -b "$BRANCH" "$VAULT_WORKTREE_PATH"
+  add_worktree "$VAULT_REPO_PATH" "$VAULT_WORKTREE_PATH" "$BRANCH"
 fi
 
 export WORKTREE_PATH

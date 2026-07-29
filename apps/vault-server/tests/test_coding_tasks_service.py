@@ -185,6 +185,35 @@ class TestCreateWorktree:
         ).stdout
         assert "coding-agent/ct_abc123" in branches
 
+    def test_recreates_worktree_when_directory_removed_out_of_band(self, tmp_path, git_repo):
+        """If the worktree directory is deleted without `git worktree
+        remove` (e.g. manual `rm -rf`), the branch survives but a bare
+        `git worktree add -b` would fail with "branch already exists".
+        Re-running create_worktree for the same task_id/branch must recover
+        by reusing the existing branch rather than erroring."""
+        service = CodingTasksService(
+            data_path=tmp_path / "coding-tasks",
+            repo_path=git_repo,
+            worktrees_path=tmp_path / "worktrees",
+            docker_image="mazkir-coding-agent:test",
+            notifier=TelegramNotifier(bot_token=None),
+        )
+        first_path = service.create_worktree("ct_recover", "coding-agent/ct_recover")
+        (first_path / "new_file.txt").write_text("work in progress")
+        subprocess.run(["rm", "-rf", str(first_path)], check=True)  # out-of-band deletion, not `git worktree remove`
+
+        second_path = service.create_worktree("ct_recover", "coding-agent/ct_recover")
+
+        assert second_path == first_path
+        assert second_path.exists()
+        assert (second_path / "README.md").exists()
+        # The branch (and its prior commits, if any were made) is reused, not recreated from scratch.
+        branches = subprocess.run(
+            ["git", "branch", "--list", "coding-agent/ct_recover"],
+            cwd=git_repo, capture_output=True, text=True,
+        ).stdout
+        assert "coding-agent/ct_recover" in branches
+
     def test_create_vault_worktree_returns_none_without_vault_repo_path(self, tmp_path, service):
         assert service.create_vault_worktree("ct_abc123", "coding-agent/ct_abc123") is None
 
