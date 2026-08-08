@@ -317,14 +317,61 @@ cmd_launch() {
   "${compose_args[@]}"
 }
 
+# The one command a human runs: provision if needed, then launch.
+cmd_start() {
+  local name="$1"; shift
+  [ -n "$name" ] || die "usage: session.sh start <name> [options]"
+
+  local provision_args=() launch_args=()
+  for arg in "$@"; do
+    case "$arg" in
+      --repo=*|--vault-repo=*) provision_args+=("$arg") ;;
+      --root=*) provision_args+=("$arg"); launch_args+=("$arg") ;;
+      *) launch_args+=("$arg") ;;
+    esac
+  done
+
+  cmd_provision "$name" ${provision_args[@]+"${provision_args[@]}"} >/dev/null
+  cmd_launch "$name" ${launch_args[@]+"${launch_args[@]}"}
+}
+
+usage() {
+  cat <<'USAGE'
+session.sh -- containerized coding sessions
+
+  session.sh start <name> [--mode=manual|handoff|autonomous] [--prompt-file=PATH]
+      Provision (if needed) and launch. The command you normally want.
+      manual      interactive Remote Control session, no seed prompt
+      handoff     interactive Remote Control session seeded with a brief
+      autonomous  headless `claude -p`; exits when done
+
+  session.sh provision <name> [--repo=PATH] [--vault-repo=PATH] [--root=PATH]
+  session.sh launch <name> [--mode=MODE] [--prompt-file=PATH] [--dry-run]
+  session.sh list [--root=PATH]
+      One line per session: name, branch, and SAFE or KEEP: <reason>.
+  session.sh clean <name> [--root=PATH] [--force]
+      Remove a session only if nothing in it exists nowhere else.
+
+Interactive sessions appear in Claude Mobile under <name>. There is no
+session URL to copy -- find them by name.
+
+Sessions live in $HOME/dev/agent-sessions by default (AGENT_SESSIONS_ROOT).
+Deliberately not .claude/worktrees/, which belongs to Claude Code's own
+linked worktrees.
+USAGE
+  exit 0
+}
+
 main() {
-  [ "$#" -ge 1 ] || die "usage: session.sh <provision|launch|list|clean> ..."
+  [ "$#" -ge 1 ] || usage
   local cmd="$1"; shift
   case "$cmd" in
     provision) cmd_provision "$@" ;;
     list) cmd_list "$@" ;;
     clean) cmd_clean "$@" ;;
     launch) cmd_launch "$@" ;;
+    start) cmd_start "$@" ;;
+    -h|--help|help) usage ;;
     *) die "unknown command: $cmd" ;;
   esac
 }

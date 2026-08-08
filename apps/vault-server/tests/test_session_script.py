@@ -442,3 +442,31 @@ def test_launch_on_a_missing_session_fails_clearly(tmp_path):
 
     assert result.returncode != 0
     assert "ghost" in (result.stdout + result.stderr)
+
+
+def test_start_provisions_then_launches(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    result = subprocess.run(
+        [str(SESSION_SH), "start", "combined",
+         f"--repo={source_repo}", f"--root={root}", "--dry-run"],
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (root / "combined" / ".git").is_dir()
+    assert "--remote-control" in result.stdout
+
+
+def test_default_root_is_agent_sessions_not_claude_worktrees(tmp_path):
+    """.claude/worktrees/ belongs to Claude Code's native linked worktrees.
+    Mixing clones into it made a 91MB clone invisible to every cleanup."""
+    import os
+
+    result = subprocess.run(
+        [str(SESSION_SH), "list"],
+        capture_output=True, text=True,
+        env={**os.environ, "HOME": str(tmp_path), "AGENT_SESSIONS_ROOT": ""},
+    )
+
+    assert "agent-sessions" in result.stdout
+    assert ".claude/worktrees" not in result.stdout
