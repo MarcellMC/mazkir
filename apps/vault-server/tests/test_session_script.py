@@ -193,3 +193,75 @@ def test_provision_without_env_example_still_succeeds(source_repo, tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert not (root / "noenv" / "apps" / "vault-server" / ".env").exists()
+
+
+def _list(root):
+    return subprocess.run(
+        [str(SESSION_SH), "list", f"--root={root}"],
+        capture_output=True, text=True,
+    )
+
+
+def _push_to_a_bare_upstream(session, tmp_path, name):
+    """Give a session a real upstream so predicates 2 and 3 can pass."""
+    bare = tmp_path / f"{name}.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
+    _git("remote", "set-url", "origin", str(bare), cwd=session)
+    _git("push", "-u", "origin", "HEAD", cwd=session)
+
+
+def test_list_reports_uncommitted_work_as_keep(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("dirty", source_repo, root)
+    (root / "dirty" / "new.txt").write_text("uncommitted")
+
+    out = _list(root).stdout
+
+    assert "dirty" in out
+    assert "KEEP" in out
+    assert "uncommitted" in out
+
+
+def test_list_reports_no_upstream_as_keep(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("noupstream", source_repo, root)
+
+    out = _list(root).stdout
+
+    assert "KEEP" in out
+    assert "no upstream" in out
+
+
+def test_list_reports_a_fully_pushed_session_as_safe(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("pushed", source_repo, root)
+    _push_to_a_bare_upstream(root / "pushed", tmp_path, "pushed")
+
+    out = _list(root).stdout
+
+    assert "SAFE" in out
+
+
+def test_list_reports_unpushed_commits_as_keep(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("ahead", source_repo, root)
+    session = root / "ahead"
+    _push_to_a_bare_upstream(session, tmp_path, "ahead")
+    (session / "later.txt").write_text("after push")
+    _git("add", "later.txt", cwd=session)
+    _git("commit", "-m", "unpushed work", cwd=session)
+
+    out = _list(root).stdout
+
+    assert "KEEP" in out
+    assert "unpushed" in out
+
+
+def test_list_on_an_empty_root_says_so(tmp_path):
+    root = tmp_path / "agent-sessions"
+    root.mkdir()
+
+    result = _list(root)
+
+    assert result.returncode == 0
+    assert "no sessions" in result.stdout.lower()

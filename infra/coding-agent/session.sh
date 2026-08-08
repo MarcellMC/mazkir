@@ -111,11 +111,74 @@ cmd_provision() {
   echo "$dest"
 }
 
+# The retention predicates. A worktree is removable only when a repo holds
+# nothing that exists nowhere else. Deliberately conservative: a clone with
+# no upstream is kept even when it demonstrably holds no work, because the
+# cost of a false positive is destroying commits that exist in exactly one
+# place (a clone is its own object database). There is no time-based
+# deletion.
+#
+# Echoes "" when safe, or a human-readable reason to keep.
+repo_keep_reason() {
+  local repo="$1" label="$2"
+  [ -d "$repo/.git" ] || return 0
+  if [ -n "$(git -C "$repo" status --porcelain 2>/dev/null | grep -v '^?? \.coding-task-prompt\.md$' || true)" ]; then
+    printf '%s has uncommitted changes' "$label"; return 0
+  fi
+  if ! git -C "$repo" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+    printf '%s has no upstream' "$label"; return 0
+  fi
+  if [ -n "$(git -C "$repo" log --oneline '@{u}..HEAD' 2>/dev/null || true)" ]; then
+    printf '%s has unpushed commits' "$label"; return 0
+  fi
+  printf ''
+}
+
+# Evaluate both repos. The vault clone is nested inside the workspace, so
+# removing the parent destroys it -- its push state has to be checked
+# independently. Echoes "" when the whole session is safe to remove.
+session_keep_reason() {
+  local session="$1" reason
+  reason="$(repo_keep_reason "$session" "workspace")"
+  if [ -n "$reason" ]; then printf '%s' "$reason"; return 0; fi
+  if [ -d "$session/memory/.git" ]; then
+    reason="$(repo_keep_reason "$session/memory" "memory")"
+    if [ -n "$reason" ]; then printf '%s' "$reason"; return 0; fi
+  fi
+  printf ''
+}
+
+cmd_list() {
+  local root="$DEFAULT_ROOT"
+  for arg in "$@"; do
+    case "$arg" in
+      --root=*) root="${arg#--root=}" ;;
+      *) die "unknown option: $arg" ;;
+    esac
+  done
+
+  local found=0 session name branch reason
+  for session in "$root"/*/; do
+    [ -d "$session" ] || continue
+    found=1
+    name="$(basename "$session")"
+    branch="$(git -C "$session" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+    reason="$(session_keep_reason "${session%/}")"
+    if [ -z "$reason" ]; then
+      printf '%-28s %-32s SAFE\n' "$name" "$branch"
+    else
+      printf '%-28s %-32s KEEP: %s\n' "$name" "$branch" "$reason"
+    fi
+  done
+  [ "$found" -eq 1 ] || echo "no sessions in $root"
+}
+
 main() {
   [ "$#" -ge 1 ] || die "usage: session.sh <provision|launch|list|clean> ..."
   local cmd="$1"; shift
   case "$cmd" in
     provision) cmd_provision "$@" ;;
+    list) cmd_list "$@" ;;
     *) die "unknown command: $cmd" ;;
   esac
 }
