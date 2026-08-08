@@ -60,6 +60,11 @@ RUN npm install -g @anthropic-ai/claude-code
 # for every user.
 RUN curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
+# Doppler: sessions fetch configuration at runtime rather than carrying a
+# .env of secrets in the clone. The token arrives via the credential
+# env-file at launch, never in argv.
+RUN curl -fsSL https://cli.doppler.com/install.sh | sh
+
 # Use the base image's existing non-root `node` user (UID 1000) rather than
 # creating a new one — a fresh useradd would land on the next free UID
 # (1001), which does not match a typical single-user host's UID (1000),

@@ -127,6 +127,26 @@ If `CODING_AGENT_GITHUB_TOKEN_PATH` is unset, containers spawn without a
 push credential — they can still investigate and commit locally, just not
 push or open a PR.
 
+## 3b. Secrets via Doppler
+
+Sessions fetch configuration at runtime instead of carrying secrets in the
+clone. Export `DOPPLER_TOKEN` before launching and `session.sh` passes it
+through the credential env-file (never argv):
+
+    export DOPPLER_TOKEN=dp.st....
+    ./infra/coding-agent/session.sh start my-task
+
+Inside a session, `doppler run -- <command>` injects the configured values.
+
+**Sessions currently share your real credentials.** A separate test-scoped
+project is deliberately deferred. What still holds: the live vault is never
+mounted (sessions get a clone of `mazkir-memory`, so vault changes need
+push + PR to land), `master` keeps branch protection, and there is no
+`docker.sock`. What is given up: a misbehaving session can spend Anthropic
+quota, send Telegram messages as the bot, and push wherever the PAT
+reaches. All recoverable, none silent. Revisit when sessions run unwatched,
+or more than one runs at a time.
+
 ## 4. Enable branch protection on `master`
 
 `gh api`'s dot-notation for nested fields (`-F parent.child=value`) does not

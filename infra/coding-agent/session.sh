@@ -236,13 +236,18 @@ write_credential_env_file() {
   if [ -n "$token_file" ] && [ -f "$token_file" ]; then
     token="$(tr -d '[:space:]' < "$token_file")"
   fi
+  : > "$out"
   if [ -n "$token" ]; then
     {
       echo "GIT_CONFIG_COUNT=1"
       echo "GIT_CONFIG_KEY_0=url.https://x-access-token:${token}@github.com/.insteadOf"
       echo "GIT_CONFIG_VALUE_0=git@github.com:"
       echo "GH_TOKEN=${token}"
-    } > "$out"
+    } >> "$out"
+  fi
+  # Same reasoning as the GitHub token: through the file, never argv.
+  if [ -n "${DOPPLER_TOKEN:-}" ]; then
+    echo "DOPPLER_TOKEN=${DOPPLER_TOKEN}" >> "$out"
   fi
   printf '%s' "$out"
 }
