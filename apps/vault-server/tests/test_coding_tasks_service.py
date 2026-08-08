@@ -201,7 +201,7 @@ class TestCheckRunningTasks:
         nothing else ever reaps it."""
         service.save_task({
             "id": "ct_1", "chat_id": 42, "status": "running",
-            "container_id": "c1", "task_description": "fix it",
+            "container_id": "c1", "session_mode": "autonomous", "task_description": "fix it",
             "branch": "coding-agent/ct_1", "worktree_path": "/tmp/w1",
         })
         calls = []
@@ -219,7 +219,7 @@ class TestCheckRunningTasks:
     def test_does_not_remove_a_still_running_container(self, service):
         service.save_task({
             "id": "ct_1", "chat_id": 42, "status": "running",
-            "container_id": "c1", "task_description": "fix it",
+            "container_id": "c1", "session_mode": "autonomous", "task_description": "fix it",
             "branch": "coding-agent/ct_1", "worktree_path": "/tmp/w1",
         })
         calls = []
@@ -238,7 +238,7 @@ class TestCheckRunningTasks:
         long_logs = "line\n" * 2000
         service.save_task({
             "id": "ct_1", "chat_id": 42, "status": "running",
-            "container_id": "c1", "task_description": "fix it",
+            "container_id": "c1", "session_mode": "autonomous", "task_description": "fix it",
             "branch": "coding-agent/ct_1", "worktree_path": "/tmp/w1",
         })
         with patch(
@@ -256,7 +256,7 @@ class TestCheckRunningTasks:
     def test_failed_container_removal_does_not_break_the_transition(self, service):
         service.save_task({
             "id": "ct_1", "chat_id": 42, "status": "running",
-            "container_id": "c1", "task_description": "fix it",
+            "container_id": "c1", "session_mode": "autonomous", "task_description": "fix it",
             "branch": "coding-agent/ct_1", "worktree_path": "/tmp/w1",
         })
         fake = self._exited_container()
@@ -276,7 +276,7 @@ class TestCheckRunningTasks:
     def test_leaves_still_running_containers_alone(self, service):
         service.save_task({
             "id": "ct_1", "chat_id": 42, "status": "running",
-            "container_id": "c1", "task_description": "fix it",
+            "container_id": "c1", "session_mode": "autonomous", "task_description": "fix it",
             "branch": "coding-agent/ct_1", "worktree_path": "/tmp/w1",
         })
         with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
@@ -290,7 +290,7 @@ class TestCheckRunningTasks:
     def test_marks_exited_container_done_when_exit_code_zero(self, service):
         service.save_task({
             "id": "ct_1", "chat_id": 42, "status": "running",
-            "container_id": "c1", "task_description": "fix daily_rollover",
+            "container_id": "c1", "session_mode": "autonomous", "task_description": "fix daily_rollover",
             "branch": "coding-agent/ct_1", "worktree_path": "/tmp/w1",
         })
 
@@ -322,7 +322,7 @@ class TestCheckRunningTasks:
     def test_marks_exited_container_failed_when_exit_code_nonzero(self, service):
         service.save_task({
             "id": "ct_2", "chat_id": 42, "status": "running",
-            "container_id": "c2", "task_description": "fix daily_rollover",
+            "container_id": "c2", "session_mode": "autonomous", "task_description": "fix daily_rollover",
             "branch": "coding-agent/ct_2", "worktree_path": "/tmp/w2",
         })
 
@@ -476,3 +476,52 @@ class TestLaunchViaSessionScript:
         assert launched["status"] == "failed"
         assert service.get_task("ct_5")["status"] == "failed"
         mock_notify.assert_called_once()
+
+
+class TestHandoffIsUnmonitored:
+    def test_poller_ignores_handoff_sessions(self, service):
+        """A hand-off session stays alive by design. Polling it would
+        transition it the moment the user closed the container."""
+        service.save_task({
+            "id": "ct_h", "chat_id": 42, "status": "running",
+            "session_mode": "handoff-checkpoints", "container_id": "c1",
+            "task_description": "fix it", "branch": "coding-agent/ct_h",
+            "worktree_path": "/tmp/w",
+        })
+
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            transitioned = service.check_running_tasks()
+
+        assert transitioned == []
+        assert mock_run.call_count == 0, "must not shell out for hand-off sessions"
+        assert service.get_task("ct_h")["status"] == "running"
+
+    def test_poller_still_handles_autonomous_sessions(self, service):
+        service.save_task({
+            "id": "ct_a", "chat_id": 42, "status": "running",
+            "session_mode": "autonomous", "container_id": "c2",
+            "task_description": "fix it", "branch": "coding-agent/ct_a",
+            "worktree_path": "/tmp/w",
+        })
+
+        with patch("src.services.coding_tasks_service.subprocess.run",
+                   side_effect=TestCheckRunningTasks._exited_container()):
+            with patch.object(service.notifier, "send_message"):
+                transitioned = service.check_running_tasks()
+
+        assert len(transitioned) == 1
+        assert service.get_task("ct_a")["status"] == "done"
+
+    def test_a_task_without_a_mode_is_treated_as_handoff(self, service):
+        """Legacy task files predate session_mode. Defaulting them to
+        autonomous would poll and reap sessions nobody asked to monitor."""
+        service.save_task({
+            "id": "ct_legacy", "chat_id": 42, "status": "running",
+            "container_id": "c3", "task_description": "fix it",
+            "branch": "coding-agent/ct_legacy", "worktree_path": "/tmp/w",
+        })
+
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            service.check_running_tasks()
+
+        assert mock_run.call_count == 0

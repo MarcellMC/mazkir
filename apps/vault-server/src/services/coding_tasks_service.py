@@ -325,17 +325,25 @@ class CodingTasksService:
         transitioned this call."""
         transitioned = []
         for task in self.list_tasks(status="running"):
-            if self._container_running(task["container_id"]):
+            # Hand-off and manual sessions stay alive by design: there is no
+            # completion to detect, and polling would transition them the
+            # moment the user closed the container. A task with no
+            # session_mode predates the field, so it defaults to the
+            # unmonitored lane rather than being reaped unexpectedly.
+            if task.get("session_mode", DEFAULT_LANE) != "autonomous":
                 continue
-            logs = self._container_logs(task["container_id"])
-            exit_code = self._container_exit_code(task["container_id"])
+            container_id = task.get("container_id") or f"mazkir-coding-{task['id']}"
+            if self._container_running(container_id):
+                continue
+            logs = self._container_logs(container_id)
+            exit_code = self._container_exit_code(container_id)
             task["status"] = "done" if exit_code == 0 else "failed"
             task["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             task["summary"] = logs[-2000:]
             self._save_logs(task["id"], logs)
             task["log_path"] = str(self._log_file_path(task["id"]))
             self.save_task(task)
-            self._remove_container(task["container_id"])
+            self._remove_container(container_id)
             status_label = "finished" if task["status"] == "done" else "FAILED"
             self.notifier.send_message(
                 task["chat_id"],
