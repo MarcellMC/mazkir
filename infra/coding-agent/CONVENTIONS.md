@@ -1,5 +1,9 @@
 # infra/coding-agent/CONVENTIONS.md
 
+> If you are an agent working inside a session, read this file **before**
+> doing anything. `CLAUDE.md` links here; the task brief points here. Every
+> rule below exists because it was violated once, expensively.
+
 Conventions for any coding agent (Mazkir-spawned or a human-driven
 interactive session) working inside this devcontainer. Read this before
 doing anything destructive or confusing-seeming.
@@ -66,3 +70,12 @@ no login step needed. `master` on the `mazkir` repo has branch protection
 (PRs required, no direct pushes, even for admins) — this is the
 authoritative safety backstop regardless of what runs inside this
 container. Nothing merges without a PR.
+
+For an **autonomous** session, "done" means: commit, `git push -u origin
+<branch>`, and `gh pr create`. The upstream is mandatory — it is what lets
+the host reclaim the worktree, and `session.sh clean` refuses without it.
+
+This is not optional caution. A clone is its own object database, so work
+that is committed here and never pushed exists in exactly one place, and
+this directory is disposable. "Do not push to `master`" means exactly
+that — push your branch.

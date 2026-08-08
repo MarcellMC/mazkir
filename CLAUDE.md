@@ -279,8 +279,32 @@ curl http://localhost:8000/tasks
 curl http://localhost:8000/events/2026-03-05
 ```
 
+## Ending a Coding Session
+
+If you are running inside a containerized session (`/workspace` is a clone,
+not the real checkout), finish like this:
+
+1. Commit everything.
+2. `git push -u origin <branch>` — upstream is mandatory. Do this separately
+   for `/workspace` and `/workspace/memory` if you touched both; they are
+   different repos with independent push states.
+3. Open a PR if the work is meant to land. `master` takes PRs only.
+4. Confirm `git status` is clean and nothing is unpushed, and say so in your
+   final message.
+
+You cannot delete your own worktree — `/workspace` is a bind mount and your
+working directory is inside it. Step 4 is what allows the host to reclaim it
+via `session.sh clean`, which refuses while anything is unpushed.
+
+Read `infra/coding-agent/CONVENTIONS.md` before doing anything else in a
+session: it covers the two-repo layout, why `memory/` may be empty, and why
+you must never guess at absolute host paths.
+
 ## Related Documentation
 
+- **Coding Session Conventions:** `infra/coding-agent/CONVENTIONS.md` — rules for agents working inside a containerized session (two repos, isolated clone, landing changes)
+- **Coding Session Setup:** `infra/coding-agent/SETUP.md` — one-time setup; `session.sh` usage, modes, and cleanup
+- **Agent Sessions Design:** `docs/superpowers/specs/2026-08-08-agent-sessions-design.md` — two-lane design (autonomous vs hand-off)
 - **Vault Schemas:** `memory/AGENTS.md`
 - **Observability:** `docs/observability.md` — structured logs + Loki/Grafana stack + Phoenix distributed tracing
 - **Project Roadmap:** `personal-ai-assistant-roadmap.md`

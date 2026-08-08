@@ -69,7 +69,7 @@ Go through the theme/billing prompts once here too — they'll persist in
 that file from now on.
 
 **Point `vault-server` at the same file.** Both the automated path
-(`spawn_container`) and the interactive one (`devcontainer.sh`) must mount
+(`spawn_container`) and the interactive one (`session.sh`) must mount
 it, or the automated containers fall back to the empty `.claude.json` the
 Dockerfile touches — Claude Code rejects that as corrupt
 ("JSON Parse error: Unexpected EOF") and the session exits within seconds
@@ -190,26 +190,63 @@ to provision an isolated clone of the vault, mounted at `/workspace/memory`,
 alongside the mazkir clone at `/workspace`. See `CONVENTIONS.md` for how
 the two repos relate inside the container.
 
-## 6. Interactive/manual devcontainer sessions
+## 6. Running sessions
 
-For working in the container yourself (not via `propose_coding_session`) —
-the same image, with your own dotfiles applied:
+`session.sh` is the single entry point. Mazkir's `vault-server` shells out
+to the same script, so the automated and manual paths cannot drift — they
+did before, and the divergence broke every automated session on boot.
 
-    infra/coding-agent/devcontainer.sh <task-name>
+    ./infra/coding-agent/session.sh start my-task            # interactive, Remote Control
+    ./infra/coding-agent/session.sh list                     # what exists, and what is safe to remove
+    ./infra/coding-agent/session.sh clean my-task            # remove, if nothing is unpushed
+    ./infra/coding-agent/session.sh --help
 
-This creates isolated clones of both repos under `~/dev/mazkir/.claude/worktrees/<task-name>/`
-(mazkir at the root, the vault nested at `memory/`, matching the real host
-layout), applies your dotfiles (`~/dotfiles` by default — see
-`entrypoint.sh` for the exact stow package list; `hypr` is deliberately
-excluded, it's Wayland/GUI-only and meaningless in a container), and starts
-an interactive Remote Control session named after the task. Pass extra
-arguments to run something else instead (e.g.
-`devcontainer.sh my-task bash`).
+Three modes, differing only in the final command:
 
-Override any of `MAZKIR_REPO_PATH`, `VAULT_REPO_PATH`, `WORKTREES_ROOT`,
-`DOTFILES_PATH`, `CLAUDE_JSON_PATH`, `CLAUDE_PLUGINS_PATH`,
-`GITHUB_TOKEN_PATH` as environment variables before calling the script if
-your paths differ from the defaults baked in.
+| `--mode=` | Command | Appears in Claude Mobile |
+|---|---|---|
+| `manual` (default) | `claude --remote-control <name>` | yes |
+| `handoff` | `claude --remote-control <name> "<brief>"` | yes |
+| `autonomous` | `claude -p "<brief>"` | **no** — `-p` is print mode, and Remote Control only attaches to interactive sessions |
+
+`start` creates isolated clones of both repos (mazkir at the root, the
+vault nested at `memory/`, matching the host layout), rewrites each clone's
+`origin` from the local path it inherits to the real GitHub URL, writes a
+session `.env` with `/workspace` paths, applies your dotfiles (`~/dotfiles`
+by default — see `entrypoint.sh` for the stow package list; `hypr` is
+deliberately excluded, being Wayland/GUI-only), and launches.
+
+Sessions live in `~/dev/agent-sessions/` (override with
+`AGENT_SESSIONS_ROOT`). Deliberately **not** `.claude/worktrees/`, which
+belongs to Claude Code's own linked worktrees — mixing clones into it makes
+them invisible to `git worktree list` and to every cleanup path alike.
+
+Override `MAZKIR_REPO_PATH`, `AGENT_SESSIONS_ROOT`, `DOTFILES_PATH`,
+`CLAUDE_JSON_PATH`, `CLAUDE_PLUGINS_PATH`, or
+`CODING_AGENT_GITHUB_TOKEN_PATH` as environment variables if your paths
+differ from the defaults.
+
+### Cleanup
+
+`session.sh clean` removes a session only when **all four** hold, checked
+independently for the workspace and the nested vault clone:
+
+1. exit code 0 (autonomous sessions only)
+2. the branch has an upstream
+3. nothing committed that isn't on the remote
+4. nothing uncommitted
+
+Otherwise it refuses and names the failing predicate. `--force` overrides.
+There is **no time-based deletion** — a clone is its own object database,
+so anything committed but unpushed exists in exactly one place.
+
+### After changing anything in `infra/coding-agent/`
+
+    ./infra/coding-agent/smoke-test.sh
+
+It boots a real container. The mocked test suite cannot catch image, mount,
+or provisioning defects: 541 tests passed while every spawned session died
+on boot.
 
 **Known gap:** the `github` dotfiles package (your own vendored `gh` CLI
 config) gets stowed as a symlink into the read-only dotfiles mount. This is
