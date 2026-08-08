@@ -29,13 +29,14 @@ _tracer = _otel_trace.get_tracer("mazkir.skill_executor")
 class LoopOutcome(NamedTuple):
     """Normalized shape of what the injected run_loop returns.
 
-    ``pending_action_id`` defaults to None so a collaborator that still
+    The trailing fields default to None so a collaborator that still
     returns the older ``(response_text, stop_reason)`` pair widens cleanly
     via ``LoopOutcome(*result)``.
     """
     response_text: str
     stop_reason: str
     pending_action_id: str | None = None
+    confirmation_choices: list[dict] | None = None
 
 
 @dataclass
@@ -45,6 +46,7 @@ class SkillExecutorResult:
     iterations: int
     visited: list[str]
     pending_action_id: str | None = None
+    confirmation_choices: list[dict] | None = None
 
     @property
     def awaiting_confirmation(self) -> bool:
@@ -97,6 +99,7 @@ class SkillExecutor:
         response_text = ""
         stop_reason = "end_turn"
         pending_action_id: str | None = None
+        confirmation_choices: list[dict] | None = None
         active: Optional[str] = decision.skill
         previous: Optional[str] = None
         reason: str = decision.reason
@@ -149,6 +152,7 @@ class SkillExecutor:
                     response_text = outcome.response_text
                     stop_reason = outcome.stop_reason
                     pending_action_id = outcome.pending_action_id
+                    confirmation_choices = outcome.confirmation_choices
 
                     _skill_output = response_text[:2000]
                     span.set_attribute(SpanAttributes.OUTPUT_VALUE, _skill_output)
@@ -181,6 +185,7 @@ class SkillExecutor:
             iterations=len(visited),
             visited=visited,
             pending_action_id=pending_action_id,
+            confirmation_choices=confirmation_choices,
         )
 
     def _skill_tool_schemas(self, skill: Skill) -> list[dict]:

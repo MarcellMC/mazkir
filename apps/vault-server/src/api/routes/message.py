@@ -126,6 +126,7 @@ async def handle_message(body: MessageRequest, stream: bool = False):
             "response": result.response,
             "awaiting_confirmation": result.awaiting_confirmation,
             "pending_action_id": result.pending_action_id,
+            "confirmation_choices": result.confirmation_choices,
         }
 
     # Streaming path — return Server-Sent Events.
@@ -180,6 +181,7 @@ async def handle_message(body: MessageRequest, stream: bool = False):
             "response": result.response,
             "awaiting_confirmation": result.awaiting_confirmation,
             "pending_action_id": result.pending_action_id,
+            "confirmation_choices": result.confirmation_choices,
         }
         yield f"data: {json.dumps({'done': True, 'response': final_payload})}\n\n"
 
@@ -218,4 +220,5 @@ def handle_confirmation(body: ConfirmationRequest):
         "response": result.response,
         "awaiting_confirmation": result.awaiting_confirmation,
         "pending_action_id": result.pending_action_id,
+        "confirmation_choices": result.confirmation_choices,
     }

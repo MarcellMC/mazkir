@@ -131,6 +131,9 @@ class AgentResponse:
     awaiting_confirmation: bool = False
     pending_action_id: str | None = None
     iterations: int = 0
+    # Options this confirmation offers, as [{"value", "label"}]. None means
+    # a plain free-text yes/no gate -- the client falls back to that.
+    confirmation_choices: list[dict] | None = None
 
 
 @dataclass
@@ -1114,6 +1117,7 @@ class AgentService:
             response=result.response_text,
             awaiting_confirmation=result.awaiting_confirmation,
             pending_action_id=result.pending_action_id,
+            confirmation_choices=result.confirmation_choices,
             iterations=result.iterations,
         )
 
@@ -1257,7 +1261,10 @@ class AgentService:
             model=model,
         )
         if result.awaiting_confirmation:
-            return LoopOutcome(result.response, "needs_confirmation", result.pending_action_id)
+            return LoopOutcome(
+                result.response, "needs_confirmation",
+                result.pending_action_id, result.confirmation_choices,
+            )
         return LoopOutcome(result.response, "end_turn")
 
     def _run_agent_turn(
