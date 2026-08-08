@@ -1053,16 +1053,37 @@ def test_launch_copies_the_brief_into_the_session(source_repo, tmp_path):
 
 def test_launch_never_puts_a_token_in_argv(source_repo, tmp_path):
     """Anything in argv persists in `docker inspect` and is visible in the
-    host process list."""
+    host process list. `docker compose run` has no --env-file for container
+    environment (only -e, which is argv), so the credential arrives through
+    the compose service's env_file key instead."""
     root = tmp_path / "agent-sessions"
     _provision("tok", source_repo, root)
     token_file = tmp_path / "token"
     token_file.write_text("ghp_secrettoken123\n")
 
-    out = _launch("tok", root, f"--github-token-file={token_file}").stdout
+    result = _launch("tok", root, f"--github-token-file={token_file}")
 
-    assert "ghp_secrettoken123" not in out
-    assert "--env-file" in out
+    assert "ghp_secrettoken123" not in result.stdout
+    assert "-e " not in result.stdout
+
+
+def test_launch_writes_the_credential_to_a_private_env_file(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("tok2", source_repo, root)
+    token_file = tmp_path / "token"
+    token_file.write_text("ghp_secrettoken123\n")
+
+    result = _launch(
+        "tok2", root, f"--github-token-file={token_file}", "--keep-env-file"
+    )
+
+    env_path = Path(result.stdout.strip().splitlines()[-1])
+    assert env_path.exists()
+    assert oct(env_path.stat().st_mode)[-3:] == "600"
+    body = env_path.read_text()
+    assert "GH_TOKEN=ghp_secrettoken123" in body
+    assert "GIT_CONFIG_KEY_0=url.https://x-access-token:ghp_secrettoken123@github.com/.insteadOf" in body
+    env_path.unlink()
 
 
 def test_launch_on_a_missing_session_fails_clearly(tmp_path):
@@ -1104,6 +1125,14 @@ services:
     working_dir: /workspace
     stdin_open: true
     tty: true
+    # Container environment comes from a file, never from -e flags: argv is
+    # copied into container metadata where `docker inspect` echoes it back,
+    # and is visible in the host process list. `docker compose run` has no
+    # --env-file of its own (its top-level --env-file only drives variable
+    # substitution), so the service-level env_file key is the mechanism.
+    # session.sh always writes this file, empty when no token is configured.
+    env_file:
+      - ${CREDENTIAL_ENV_FILE}
     volumes:
       - mazkir-claude-auth:/home/marcellmc/.claude
       - ${CLAUDE_JSON_PATH}:/home/marcellmc/.claude.json
@@ -1126,24 +1155,29 @@ Add to `session.sh`, above `main()`:
 # GIT_CONFIG_* drives an insteadOf rewrite so `git push` authenticates;
 # GH_TOKEN authenticates `gh` itself for `gh pr create`, which the session
 # needs because master takes PRs only.
+# Always returns a path: compose's env_file key requires the file to exist,
+# so an unconfigured token yields an empty file rather than no file.
 write_credential_env_file() {
-  local token_file="$1" out token
-  [ -n "$token_file" ] && [ -f "$token_file" ] || return 0
-  token="$(tr -d '[:space:]' < "$token_file")"
-  [ -n "$token" ] || return 0
+  local token_file="$1" out token=""
   out="$(mktemp -t mazkir-session-XXXXXX.env)"
   chmod 600 "$out"
-  {
-    echo "GIT_CONFIG_COUNT=1"
-    echo "GIT_CONFIG_KEY_0=url.https://x-access-token:${token}@github.com/.insteadOf"
-    echo "GIT_CONFIG_VALUE_0=git@github.com:"
-    echo "GH_TOKEN=${token}"
-  } > "$out"
+  if [ -n "$token_file" ] && [ -f "$token_file" ]; then
+    token="$(tr -d '[:space:]' < "$token_file")"
+  fi
+  if [ -n "$token" ]; then
+    {
+      echo "GIT_CONFIG_COUNT=1"
+      echo "GIT_CONFIG_KEY_0=url.https://x-access-token:${token}@github.com/.insteadOf"
+      echo "GIT_CONFIG_VALUE_0=git@github.com:"
+      echo "GH_TOKEN=${token}"
+    } > "$out"
+  fi
   printf '%s' "$out"
 }
 
 cmd_launch() {
   local name="" root="$DEFAULT_ROOT" mode="manual" prompt_file="" dry_run=0
+  local keep_env_file=0
   local token_file="${CODING_AGENT_GITHUB_TOKEN_PATH:-}"
   name="$1"; shift
   [ -n "$name" ] || die "usage: session.sh launch <name> [--mode=MODE] [--prompt-file=PATH]"
@@ -1154,6 +1188,7 @@ cmd_launch() {
       --prompt-file=*) prompt_file="${arg#--prompt-file=}" ;;
       --github-token-file=*) token_file="${arg#--github-token-file=}" ;;
       --dry-run) dry_run=1 ;;
+      --keep-env-file) keep_env_file=1 ;;
       *) die "unknown option: $arg" ;;
     esac
   done
@@ -1164,9 +1199,11 @@ cmd_launch() {
   local brief=""
   if [ -n "$prompt_file" ]; then
     [ -f "$prompt_file" ] || die "no such prompt file: $prompt_file"
+    # Read once: --prompt-file may be a process substitution (a fifo), which
+    # cannot be read a second time to copy it.
     brief="$(cat "$prompt_file")"
     # Kept on disk so a human taking the session over can read the task.
-    cp "$prompt_file" "$session/.coding-task-prompt.md"
+    printf '%s' "$brief" > "$session/.coding-task-prompt.md"
   fi
 
   # `claude -p` takes prompt TEXT; handing it a path makes the path the
@@ -1193,19 +1230,26 @@ cmd_launch() {
   export CLAUDE_PLUGINS_PATH="${CLAUDE_PLUGINS_PATH:-$HOME/.claude/plugins}"
   export DOTFILES_PATH="${DOTFILES_PATH:-$HOME/dotfiles}"
 
+  # The credential reaches the container through compose's env_file key, not
+  # argv. CREDENTIAL_ENV_FILE is substituted into docker-compose.yml.
   local env_file compose_args
   env_file="$(write_credential_env_file "$token_file")"
-  compose_args=(docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm)
-  [ -n "$env_file" ] && compose_args+=(--env-file "$env_file")
-  compose_args+=(devcontainer "${claude_args[@]}")
+  export CREDENTIAL_ENV_FILE="$env_file"
+
+  compose_args=(docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm
+                devcontainer "${claude_args[@]}")
 
   if [ "$dry_run" -eq 1 ]; then
     printf '%s\n' "${compose_args[*]}"
-    [ -n "$env_file" ] && rm -f "$env_file"
+    if [ "$keep_env_file" -eq 1 ]; then
+      printf '%s\n' "$env_file"
+    else
+      rm -f "$env_file"
+    fi
     return 0
   fi
 
-  trap '[ -n "${env_file:-}" ] && rm -f "$env_file"' EXIT
+  trap 'rm -f "$env_file"' EXIT
   "${compose_args[@]}"
 }
 ```
@@ -1411,12 +1455,19 @@ check "session .env has container paths" bash -c \
 
 echo
 echo "== container boots against a real session =="
+# Real files, not process substitution: launch reads the brief and writes it
+# into the session, and a fifo cannot be consumed twice.
+BOOT_PROMPT="$SMOKE_ROOT/boot-prompt.md"
+echo 'Reply with exactly: BOOT OK' > "$BOOT_PROMPT"
+CTX_PROMPT="$SMOKE_ROOT/ctx-prompt.md"
+echo 'Without reading any files, what port does vault-server run on?' > "$CTX_PROMPT"
+
 check "agent answers in the session" bash -c \
   "'$SCRIPT_DIR/session.sh' launch '$SMOKE_NAME' --root='$SMOKE_ROOT' --mode=autonomous \
-     --prompt-file=<(echo 'Reply with exactly: BOOT OK') 2>&1 | grep -q 'BOOT OK'"
+     --prompt-file='$BOOT_PROMPT' 2>&1 | grep -q 'BOOT OK'"
 check "CLAUDE.md is autoloaded" bash -c \
   "'$SCRIPT_DIR/session.sh' launch '$SMOKE_NAME' --root='$SMOKE_ROOT' --mode=autonomous \
-     --prompt-file=<(echo 'Without reading any files, what port does vault-server run on?') 2>&1 | grep -q '8000'"
+     --prompt-file='$CTX_PROMPT' 2>&1 | grep -q '8000'"
 ```
 
 Move the `SCRIPT_DIR` assignment to the top of the file, immediately after `set -uo pipefail`, so it is defined before first use.
