@@ -1537,3 +1537,77 @@ class TestCodingHandoffTool:
             f"expected the confirming user's chat_id (99) on the persisted "
             f"task, got {saved_task['chat_id']!r}"
         )
+
+
+def _pending(agent, action_id, tool_name, params):
+    from src.services.agent_service import PendingAction
+
+    agent.pending_confirmations[action_id] = PendingAction(
+        chat_id=42,
+        messages=[],
+        assistant_response=MagicMock(content=[]),
+        executed_results=[],
+        pending_calls=[{"id": "tu_1", "name": tool_name, "input": params}],
+        parent_span_context=None,
+    )
+
+
+def test_choice_answer_is_injected_as_session_mode(agent, monkeypatch):
+    """The gate's answer IS the lane. Without injection the tool would run
+    with its default no matter which button was pressed."""
+    captured = {}
+
+    def fake_execute(name, params, **kwargs):
+        captured["params"] = params
+        return {"ok": True, "data": {}, "_items": []}
+
+    monkeypatch.setattr(agent, "_execute_tool", fake_execute)
+    monkeypatch.setattr(
+        agent, "_run_agent_turn",
+        lambda *a, **kw: AgentResponse(response="done"),
+    )
+    _pending(agent, "act_1", "propose_coding_session",
+             {"task_description": "fix it", "_confidence": 0.9})
+
+    agent.handle_confirmation(42, "act_1", "autonomous")
+
+    assert captured["params"]["session_mode"] == "autonomous"
+
+
+def test_plain_yes_still_confirms_without_a_mode(agent, monkeypatch):
+    captured = {}
+
+    def fake_execute(name, params, **kwargs):
+        captured["params"] = params
+        return {"ok": True, "data": {}, "_items": []}
+
+    monkeypatch.setattr(agent, "_execute_tool", fake_execute)
+    monkeypatch.setattr(
+        agent, "_run_agent_turn",
+        lambda *a, **kw: AgentResponse(response="done"),
+    )
+    _pending(agent, "act_2", "delete_task",
+             {"name": "old task", "_confidence": 0.99})
+
+    agent.handle_confirmation(42, "act_2", "yes")
+
+    assert "session_mode" not in captured["params"]
+
+
+def test_a_declining_answer_still_cancels(agent, monkeypatch):
+    """A choice value must not make every answer affirmative."""
+    executed = []
+    monkeypatch.setattr(
+        agent, "_execute_tool",
+        lambda name, params, **kwargs: executed.append(name),
+    )
+    monkeypatch.setattr(
+        agent, "_run_agent_turn",
+        lambda *a, **kw: AgentResponse(response="cancelled"),
+    )
+    _pending(agent, "act_3", "propose_coding_session",
+             {"task_description": "fix it", "_confidence": 0.9})
+
+    agent.handle_confirmation(42, "act_3", "no")
+
+    assert executed == []

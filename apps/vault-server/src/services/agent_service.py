@@ -85,6 +85,16 @@ def _register_destructive_previews() -> None:
 
 CONFIDENCE_THRESHOLD = 0.85
 
+_AFFIRMATIVE = ("yes", "y", "ok", "sure", "do it")
+_CHOICE_VALUES = {c["value"] for c in _SESSION_CHOICES}
+
+
+def _choices_for(calls: list[dict]) -> list[dict] | None:
+    """Choices a pending batch offers, or None for a plain yes/no gate."""
+    if any(c["name"] == "propose_coding_session" for c in calls):
+        return _SESSION_CHOICES
+    return None
+
 _RISK_DEFAULT_THRESHOLDS: dict[str, float | None] = {
     "safe": None,
     "write": 0.85,
@@ -1176,11 +1186,17 @@ class AgentService:
             if not pending:
                 return AgentResponse(response="No pending action found.")
 
-            if user_response.lower() in ("yes", "y", "ok", "sure", "do it"):
+            answer = user_response.lower().strip()
+            chosen_mode = answer if answer in _CHOICE_VALUES else None
+            if answer in _AFFIRMATIVE or chosen_mode:
                 tool_results = list(pending.executed_results)
                 pre_tools_audit: list[dict] = []
                 for call in pending.pending_calls:
                     params = dict(call["input"])
+                    # The gate's answer *is* the lane. Without this the tool
+                    # would run with its default whichever button was pressed.
+                    if chosen_mode and call["name"] == "propose_coding_session":
+                        params["session_mode"] = chosen_mode
                     reasoning = params.get("_reasoning")
                     confidence, _ = self._check_confidence(call["name"], params)
                     result = self._execute_tool(call["name"], params, confidence=confidence, action="auto_execute")
@@ -1499,6 +1515,7 @@ class AgentService:
                                 response=description,
                                 awaiting_confirmation=True,
                                 pending_action_id=pending_action_id,
+                                confirmation_choices=_choices_for(needs_confirmation),
                             )
 
                         tool_results = []
