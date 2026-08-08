@@ -47,6 +47,37 @@ provision_clone() {
   git -C "$dest" checkout --quiet -b "$branch"
 }
 
+# config.py's defaults resolve under $HOME/dev/mazkir, which does not exist
+# in a container where the repo is mounted at /workspace -- a real session
+# hit this and reported the resulting five test failures as unrelated
+# environment issues. Copy the tracked .env.example and append
+# container-correct overrides for every path setting, so tests and the
+# server run inside a session without manual fixing. Secrets are
+# deliberately not copied; they arrive via the credential env-file at
+# launch.
+write_session_env() {
+  local dest="$1"
+  local example="$dest/apps/vault-server/.env.example"
+  local target="$dest/apps/vault-server/.env"
+  [ -f "$example" ] || return 0
+
+  cp "$example" "$target"
+  cat >> "$target" <<'ENV'
+
+# --- appended by session.sh: container paths (override .env.example) ---
+VAULT_PATH=/workspace/memory
+MAZKIR_SKILLS_DIR=/workspace/memory/00-system/skills
+MEDIA_PATH=/workspace/memory/00-system/media
+TIMELINE_DATA_PATH=/workspace/data/timeline
+EVENTS_DATA_PATH=/workspace/data/events
+LOGS_DIR=/workspace/data/logs
+CODING_TASKS_DATA_PATH=/workspace/data/coding-tasks
+CODING_AGENT_WORKTREES_PATH=/workspace/.agent-sessions
+MAZKIR_REPO_PATH=/workspace
+MAZKIR_VAULT_REPO_PATH=/workspace/memory
+ENV
+}
+
 cmd_provision() {
   local name="" repo="$DEFAULT_REPO" root="$DEFAULT_ROOT" vault_repo=""
   name="$1"; shift
@@ -75,6 +106,8 @@ cmd_provision() {
       die "vault clone failed; rolled back $dest"
     fi
   fi
+
+  write_session_env "$dest"
   echo "$dest"
 }
 

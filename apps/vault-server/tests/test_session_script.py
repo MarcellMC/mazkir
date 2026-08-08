@@ -141,3 +141,55 @@ def test_provision_rolls_back_the_mazkir_clone_when_the_vault_clone_fails(
 
     assert result.returncode != 0
     assert not (root / "boom").exists()
+
+
+CONTAINER_PATH_VARS = {
+    "VAULT_PATH": "/workspace/memory",
+    "MAZKIR_SKILLS_DIR": "/workspace/memory/00-system/skills",
+    "MEDIA_PATH": "/workspace/memory/00-system/media",
+    "TIMELINE_DATA_PATH": "/workspace/data/timeline",
+    "EVENTS_DATA_PATH": "/workspace/data/events",
+    "LOGS_DIR": "/workspace/data/logs",
+    "CODING_TASKS_DATA_PATH": "/workspace/data/coding-tasks",
+    "CODING_AGENT_WORKTREES_PATH": "/workspace/.agent-sessions",
+    "MAZKIR_REPO_PATH": "/workspace",
+    "MAZKIR_VAULT_REPO_PATH": "/workspace/memory",
+}
+
+
+def _env_map(path):
+    out = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        out[k.strip()] = v.strip()
+    return out
+
+
+def test_provision_writes_a_session_env_with_container_paths(source_repo, tmp_path):
+    """config.py's defaults resolve under ~/dev/mazkir, which does not
+    exist in a container where the repo is mounted at /workspace."""
+    (source_repo / "apps" / "vault-server").mkdir(parents=True)
+    (source_repo / "apps" / "vault-server" / ".env.example").write_text(
+        "API_KEY=\nVAULT_PATH=/home/marcellmc/pkm\nCLAUDE_MODEL=claude-sonnet-4-6\n"
+    )
+    _git("add", "-A", cwd=source_repo)
+    _git("commit", "-m", "add env example", cwd=source_repo)
+
+    root = tmp_path / "agent-sessions"
+    _provision("envtest", source_repo, root)
+
+    env = _env_map(root / "envtest" / "apps" / "vault-server" / ".env")
+    for key, expected in CONTAINER_PATH_VARS.items():
+        assert env.get(key) == expected, f"{key} should be {expected}, got {env.get(key)}"
+    assert env["CLAUDE_MODEL"] == "claude-sonnet-4-6", "non-path values carry over"
+
+
+def test_provision_without_env_example_still_succeeds(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    result = _provision("noenv", source_repo, root)
+
+    assert result.returncode == 0, result.stderr
+    assert not (root / "noenv" / "apps" / "vault-server" / ".env").exists()
