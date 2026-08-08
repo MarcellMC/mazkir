@@ -172,481 +172,12 @@ class TestAssembleBrief:
         assert "not found" in brief
 
 
-@pytest.fixture
-def git_repo(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
-    (repo / "README.md").write_text("hello")
-    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
-    return repo
-
-
-@pytest.fixture
-def vault_repo(tmp_path):
-    repo = tmp_path / "vault-repo"
-    repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
-    (repo / "AGENTS.md").write_text("vault schema notes")
-    subprocess.run(["git", "add", "AGENTS.md"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
-    return repo
-
-
-class TestCreateWorktree:
-    def test_creates_worktree_on_new_branch(self, tmp_path, git_repo):
-        service = CodingTasksService(
-            data_path=tmp_path / "coding-tasks",
-            repo_path=git_repo,
-            worktrees_path=tmp_path / "worktrees",
-            docker_image="mazkir-coding-agent:test",
-            notifier=TelegramNotifier(bot_token=None),
-        )
-
-        worktree_path = service.create_worktree("ct_abc123", "coding-agent/ct_abc123")
-
-        assert worktree_path == tmp_path / "worktrees" / "ct_abc123"
-        assert (worktree_path / "README.md").exists()
-        # The branch lives in the clone itself, not the source repo (see
-        # test_worktree_is_a_self_contained_clone for why this matters).
-        branches = subprocess.run(
-            ["git", "branch", "--list", "coding-agent/ct_abc123"],
-            cwd=worktree_path, capture_output=True, text=True,
-        ).stdout
-        assert "coding-agent/ct_abc123" in branches
-
-    def test_worktree_is_a_self_contained_clone_not_a_linked_worktree(self, tmp_path, git_repo):
-        """A linked git worktree's .git is a FILE containing `gitdir:
-        /absolute/host/path/...` pointing back at the source repo -- that
-        path is unreachable once only the worktree directory is mounted
-        into a container, so every git command inside it fails with "fatal:
-        not a git repository" (confirmed via a real container run). A
-        clone's .git is a real, self-contained directory with no such
-        dependency -- this is the actual regression test for that bug."""
-        service = CodingTasksService(
-            data_path=tmp_path / "coding-tasks",
-            repo_path=git_repo,
-            worktrees_path=tmp_path / "worktrees",
-            docker_image="mazkir-coding-agent:test",
-            notifier=TelegramNotifier(bot_token=None),
-        )
-
-        worktree_path = service.create_worktree("ct_selfcontained", "coding-agent/ct_selfcontained")
-
-        assert (worktree_path / ".git").is_dir()
-        status = subprocess.run(
-            ["git", "status"], cwd=worktree_path, capture_output=True, text=True,
-        )
-        assert status.returncode == 0
-
-    def test_recreates_worktree_when_directory_removed_out_of_band(self, tmp_path, git_repo):
-        """If the clone directory is deleted (e.g. manual `rm -rf`),
-        re-running create_worktree for the same task_id must recover by
-        cloning fresh rather than erroring -- note any local, unpushed work
-        in the deleted clone is lost (it lived only in that clone's own
-        object database, not the source repo's), an accepted trade for
-        clones actually working inside a container at all."""
-        service = CodingTasksService(
-            data_path=tmp_path / "coding-tasks",
-            repo_path=git_repo,
-            worktrees_path=tmp_path / "worktrees",
-            docker_image="mazkir-coding-agent:test",
-            notifier=TelegramNotifier(bot_token=None),
-        )
-        first_path = service.create_worktree("ct_recover", "coding-agent/ct_recover")
-        subprocess.run(["rm", "-rf", str(first_path)], check=True)
-
-        second_path = service.create_worktree("ct_recover", "coding-agent/ct_recover")
-
-        assert second_path == first_path
-        assert second_path.exists()
-        assert (second_path / "README.md").exists()
-        branches = subprocess.run(
-            ["git", "branch", "--list", "coding-agent/ct_recover"],
-            cwd=second_path, capture_output=True, text=True,
-        ).stdout
-        assert "coding-agent/ct_recover" in branches
-
-    def test_create_vault_worktree_returns_none_without_vault_repo_path(self, tmp_path, service):
-        assert service.create_vault_worktree("ct_abc123", "coding-agent/ct_abc123") is None
-
-    def test_create_vault_worktree_nests_under_the_mazkir_worktree(self, tmp_path, git_repo, vault_repo):
-        service = CodingTasksService(
-            data_path=tmp_path / "coding-tasks",
-            repo_path=git_repo,
-            worktrees_path=tmp_path / "worktrees",
-            docker_image="mazkir-coding-agent:test",
-            notifier=TelegramNotifier(bot_token=None),
-            vault_repo_path=vault_repo,
-        )
-        service.create_worktree("ct_abc123", "coding-agent/ct_abc123")
-
-        vault_worktree_path = service.create_vault_worktree("ct_abc123", "coding-agent/ct_abc123")
-
-        assert vault_worktree_path == tmp_path / "worktrees" / "ct_abc123" / "memory"
-        assert (vault_worktree_path / "AGENTS.md").exists()
-        assert (vault_worktree_path / ".git").is_dir()
-        branches = subprocess.run(
-            ["git", "branch", "--list", "coding-agent/ct_abc123"],
-            cwd=vault_worktree_path, capture_output=True, text=True,
-        ).stdout
-        assert "coding-agent/ct_abc123" in branches
-
-
-class TestSpawnAndLaunch:
-    def test_spawn_container_runs_docker_with_expected_flags(self, tmp_path, service):
-        worktree_path = tmp_path / "worktrees" / "ct_abc123"
-        worktree_path.mkdir(parents=True)
-
-        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="containerid123\n", returncode=0)
-
-            container_id = service.spawn_container("ct_abc123", worktree_path, "do the thing")
-
-        assert container_id == "containerid123"
-        args = mock_run.call_args[0][0]
-        assert args[:3] == ["docker", "run", "-d"]
-        assert f"{worktree_path}:/workspace" in args
-        assert "mazkir-claude-auth:/home/marcellmc/.claude" in args
-        assert "mazkir-coding-agent:test" in args
-        assert "--dangerously-skip-permissions" in args
-        assert (worktree_path / ".coding-task-prompt.md").read_text() == "do the thing"
-
-    def test_spawn_container_mounts_claude_json_when_configured(self, tmp_path):
-        """Claude Code keeps onboarding state and per-project trust in
-        ~/.claude.json, a *sibling* of ~/.claude that the named auth volume
-        does not cover. Without it the container boots on the Dockerfile's
-        empty touch-created file and exits on a JSON parse error."""
-        claude_json = tmp_path / "coding-agent-claude-home.json"
-        claude_json.write_text('{"projects": {"/workspace": {"hasTrustDialogAccepted": true}}}')
-        service = CodingTasksService(
-            data_path=tmp_path / "coding-tasks",
-            repo_path=tmp_path / "repo",
-            worktrees_path=tmp_path / "worktrees",
-            docker_image="mazkir-coding-agent:test",
-            notifier=TelegramNotifier(bot_token=None),
-            claude_json_path=claude_json,
-        )
-        worktree_path = tmp_path / "worktrees" / "ct_cj"
-        worktree_path.mkdir(parents=True)
-
-        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="cid\n", returncode=0)
-            service.spawn_container("ct_cj", worktree_path, "do the thing")
-
-        args = mock_run.call_args[0][0]
-        assert f"{claude_json}:/home/marcellmc/.claude.json" in args
-
-    def test_spawn_container_without_claude_json_mounts_none(self, tmp_path, service):
-        worktree_path = tmp_path / "worktrees" / "ct_nocj"
-        worktree_path.mkdir(parents=True)
-
-        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="cid\n", returncode=0)
-            service.spawn_container("ct_nocj", worktree_path, "do the thing")
-
-        args = mock_run.call_args[0][0]
-        assert not any(a.endswith(":/home/marcellmc/.claude.json") for a in args)
-
-    def test_spawn_container_passes_brief_text_as_the_prompt(self, tmp_path, service):
-        """`claude -p` takes prompt text, not a path -- passing the file path
-        makes the literal string "/workspace/.coding-task-prompt.md" the whole
-        prompt the coding agent receives."""
-        worktree_path = tmp_path / "worktrees" / "ct_prompt"
-        worktree_path.mkdir(parents=True)
-
-        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="cid\n", returncode=0)
-            service.spawn_container("ct_prompt", worktree_path, "Fix the /day duplicate habits bug")
-
-        args = mock_run.call_args[0][0]
-        assert args[args.index("-p") + 1] == "Fix the /day duplicate habits bug"
-
-    def test_spawn_container_without_token_path_adds_no_git_config_env(self, tmp_path, service):
-        worktree_path = tmp_path / "worktrees" / "ct_no_token"
-        worktree_path.mkdir(parents=True)
-
-        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="containerid456\n", returncode=0)
-            service.spawn_container("ct_no_token", worktree_path, "do the thing")
-
-        args = mock_run.call_args[0][0]
-        assert "GIT_CONFIG_COUNT=1" not in args
-        assert not any(a.startswith("GIT_CONFIG_KEY_0=") for a in args)
-
-    def test_spawn_container_without_vault_worktree_mounts_no_memory_dir(self, tmp_path, service):
-        worktree_path = tmp_path / "worktrees" / "ct_no_vault"
-        worktree_path.mkdir(parents=True)
-
-        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="containerid999\n", returncode=0)
-            service.spawn_container("ct_no_vault", worktree_path, "do the thing")
-
-        args = mock_run.call_args[0][0]
-        assert not any(a.endswith(":/workspace/memory") for a in args)
-
-    def test_spawn_container_with_vault_worktree_mounts_it_at_workspace_memory(self, tmp_path, service):
-        worktree_path = tmp_path / "worktrees" / "ct_vault"
-        worktree_path.mkdir(parents=True)
-        vault_worktree_path = tmp_path / "worktrees" / "ct_vault" / "memory"
-
-        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="containerid888\n", returncode=0)
-            service.spawn_container(
-                "ct_vault", worktree_path, "do the thing",
-                vault_worktree_path=vault_worktree_path,
-            )
-
-        args = mock_run.call_args[0][0]
-        assert f"{vault_worktree_path}:/workspace/memory" in args
-
-    @staticmethod
-    def _service_with_token(tmp_path, token="ghp_faketoken123"):
-        token_path = tmp_path / "github-token"
-        token_path.write_text(token + "\n")
-        return CodingTasksService(
-            data_path=tmp_path / "coding-tasks",
-            repo_path=tmp_path / "repo",
-            worktrees_path=tmp_path / "worktrees",
-            docker_image="mazkir-coding-agent:test",
-            notifier=TelegramNotifier(bot_token=None),
-            github_token_path=token_path,
-        )
-
-    def test_spawn_container_with_token_path_injects_scoped_git_credential(self, tmp_path):
-        service = self._service_with_token(tmp_path)
-        worktree_path = tmp_path / "worktrees" / "ct_with_token"
-        worktree_path.mkdir(parents=True)
-
-        captured = {}
-        def fake_run(args, **kwargs):
-            env_file = Path(args[args.index("--env-file") + 1])
-            captured["contents"] = env_file.read_text()
-            captured["mode"] = env_file.stat().st_mode & 0o777
-            return MagicMock(stdout="containerid789\n", returncode=0)
-
-        with patch("src.services.coding_tasks_service.subprocess.run", side_effect=fake_run):
-            service.spawn_container("ct_with_token", worktree_path, "do the thing")
-
-        lines = captured["contents"].splitlines()
-        assert "GIT_CONFIG_COUNT=1" in lines
-        assert (
-            "GIT_CONFIG_KEY_0=url.https://x-access-token:ghp_faketoken123@github.com/.insteadOf"
-            in lines
-        )
-        assert "GIT_CONFIG_VALUE_0=git@github.com:" in lines
-        assert captured["mode"] == 0o600
-
-    def test_spawn_container_exports_gh_token_for_pr_creation(self, tmp_path):
-        """master requires PRs, so a session that can push but not run
-        `gh pr create` cannot land anything."""
-        service = self._service_with_token(tmp_path)
-        worktree_path = tmp_path / "worktrees" / "ct_gh"
-        worktree_path.mkdir(parents=True)
-
-        captured = {}
-        def fake_run(args, **kwargs):
-            captured["contents"] = Path(args[args.index("--env-file") + 1]).read_text()
-            return MagicMock(stdout="cid\n", returncode=0)
-
-        with patch("src.services.coding_tasks_service.subprocess.run", side_effect=fake_run):
-            service.spawn_container("ct_gh", worktree_path, "do the thing")
-
-        assert "GH_TOKEN=ghp_faketoken123" in captured["contents"].splitlines()
-
-    def test_spawn_container_never_puts_token_in_docker_argv(self, tmp_path):
-        """Anything in argv lands in `docker inspect` permanently and in the
-        host process list for the duration of the run."""
-        service = self._service_with_token(tmp_path)
-        worktree_path = tmp_path / "worktrees" / "ct_argv"
-        worktree_path.mkdir(parents=True)
-
-        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="cid\n", returncode=0)
-            service.spawn_container("ct_argv", worktree_path, "do the thing")
-
-        args = mock_run.call_args[0][0]
-        assert not any("faketoken" in a for a in args)
-        assert not any("faketoken" in p.read_text() for p in worktree_path.glob("*") if p.is_file())
-
-    def test_spawn_container_removes_env_file_after_run(self, tmp_path):
-        service = self._service_with_token(tmp_path)
-        worktree_path = tmp_path / "worktrees" / "ct_cleanup"
-        worktree_path.mkdir(parents=True)
-
-        seen = {}
-        def fake_run(args, **kwargs):
-            seen["path"] = Path(args[args.index("--env-file") + 1])
-            return MagicMock(stdout="cid\n", returncode=0)
-
-        with patch("src.services.coding_tasks_service.subprocess.run", side_effect=fake_run):
-            service.spawn_container("ct_cleanup", worktree_path, "do the thing")
-
-        assert not seen["path"].exists()
-
-    def test_spawn_container_removes_env_file_when_docker_fails(self, tmp_path):
-        service = self._service_with_token(tmp_path)
-        worktree_path = tmp_path / "worktrees" / "ct_boom"
-        worktree_path.mkdir(parents=True)
-
-        seen = {}
-        def fake_run(args, **kwargs):
-            seen["path"] = Path(args[args.index("--env-file") + 1])
-            raise subprocess.CalledProcessError(1, args)
-
-        with patch("src.services.coding_tasks_service.subprocess.run", side_effect=fake_run):
-            with pytest.raises(subprocess.CalledProcessError):
-                service.spawn_container("ct_boom", worktree_path, "do the thing")
-
-        assert not seen["path"].exists()
-
-    def test_launch_provisions_worktree_and_container_and_persists(self, tmp_path, git_repo):
-        service = CodingTasksService(
-            data_path=tmp_path / "coding-tasks",
-            repo_path=git_repo,
-            worktrees_path=tmp_path / "worktrees",
-            docker_image="mazkir-coding-agent:test",
-            notifier=TelegramNotifier(bot_token=None),
-        )
-        task = {
-            "id": "ct_abc123", "chat_id": 42, "branch": "coding-agent/ct_abc123",
-            "prompt": "fix the bug", "status": "proposed",
-        }
-
-        # Capture the real subprocess.run before patching: coding_tasks_service does
-        # `import subprocess` (whole module), so patching ".run" on it patches the
-        # very same module object this test file imported. Referring to the
-        # (patched) `subprocess.run` name from inside the fallback branch would
-        # recurse into the mock forever instead of reaching the real git call.
-        real_run = subprocess.run
-
-        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
-            def _fake_run(args, **kwargs):
-                if args[:2] == ["docker", "run"]:
-                    return MagicMock(stdout="containerid123\n", returncode=0)
-                return real_run(args, **kwargs)
-            mock_run.side_effect = _fake_run
-
-            launched = service.launch(task)
-
-        assert launched["status"] == "running"
-        assert launched["container_id"] == "containerid123"
-        assert launched["worktree_path"] == str(tmp_path / "worktrees" / "ct_abc123")
-        assert launched["started_at"] is not None
-        assert service.get_task("ct_abc123")["status"] == "running"
-
-    def test_launch_rolls_back_mazkir_clone_when_the_vault_clone_fails(self, tmp_path, git_repo):
-        """create_worktree succeeds, then create_vault_worktree raises. The
-        orphaned mazkir clone would make create_worktree's idempotent-reuse
-        branch silently hand back a stale directory on the next retry of the
-        same task_id."""
-        service = CodingTasksService(
-            data_path=tmp_path / "coding-tasks",
-            repo_path=git_repo,
-            worktrees_path=tmp_path / "worktrees",
-            docker_image="mazkir-coding-agent:test",
-            notifier=TelegramNotifier(bot_token=None),
-            vault_repo_path=tmp_path / "does-not-exist",
-        )
-        task = {
-            "id": "ct_vfail", "chat_id": 42, "branch": "coding-agent/ct_vfail",
-            "prompt": "fix the bug", "status": "proposed",
-            "task_description": "fix the bug",
-        }
-
-        with patch.object(service.notifier, "send_message") as mock_notify:
-            launched = service.launch(task)
-
-        assert launched["status"] == "failed"
-        assert launched["container_id"] is None
-        assert not (tmp_path / "worktrees" / "ct_vfail").exists()
-        assert service.get_task("ct_vfail")["status"] == "failed"
-        mock_notify.assert_called_once()
-
-    def test_launch_rolls_back_worktree_and_marks_failed_when_spawn_fails(self, tmp_path, git_repo):
-        """If spawn_container fails (docker daemon down, image missing, etc.)
-        after create_worktree already succeeded, the worktree/branch must not
-        be left orphaned, and the task must transition to a terminal 'failed'
-        state (with a notification) instead of staying stuck in 'proposed'
-        forever -- which would also block any retry of the same task_id since
-        create_worktree isn't idempotent."""
-        service = CodingTasksService(
-            data_path=tmp_path / "coding-tasks",
-            repo_path=git_repo,
-            worktrees_path=tmp_path / "worktrees",
-            docker_image="mazkir-coding-agent:test",
-            notifier=TelegramNotifier(bot_token=None),
-        )
-        task = {
-            "id": "ct_fail1", "chat_id": 42, "branch": "coding-agent/ct_fail1",
-            "prompt": "fix the bug", "status": "proposed",
-            "task_description": "fix the bug",
-        }
-        worktree_path = tmp_path / "worktrees" / "ct_fail1"
-
-        real_run = subprocess.run
-
-        def _fake_run(args, **kwargs):
-            if args[:2] == ["docker", "run"]:
-                raise subprocess.CalledProcessError(1, args, output="", stderr="docker: Cannot connect to the Docker daemon")
-            return real_run(args, **kwargs)
-
-        with patch("src.services.coding_tasks_service.subprocess.run", side_effect=_fake_run):
-            with patch.object(service.notifier, "send_message") as mock_notify:
-                launched = service.launch(task)
-
-        assert launched["status"] == "failed"
-        assert launched["container_id"] is None
-        assert launched["finished_at"] is not None
-        assert "Docker daemon" in launched["summary"] or "docker" in launched["summary"].lower()
-
-        # Persisted state matches the failed status returned.
-        saved = service.get_task("ct_fail1")
-        assert saved["status"] == "failed"
-
-        # Worktree directory was cleaned up rather than left orphaned.
-        assert not worktree_path.exists()
-
-        # Notification was sent about the failure.
-        mock_notify.assert_called_once()
-        notified_chat_id, notified_text = mock_notify.call_args[0]
-        assert notified_chat_id == 42
-        assert "FAILED" in notified_text
-
-    def test_launch_also_rolls_back_vault_worktree_when_spawn_fails(self, tmp_path, git_repo, vault_repo):
-        service = CodingTasksService(
-            data_path=tmp_path / "coding-tasks",
-            repo_path=git_repo,
-            worktrees_path=tmp_path / "worktrees",
-            docker_image="mazkir-coding-agent:test",
-            notifier=TelegramNotifier(bot_token=None),
-            vault_repo_path=vault_repo,
-        )
-        task = {
-            "id": "ct_fail2", "chat_id": 42, "branch": "coding-agent/ct_fail2",
-            "prompt": "fix the bug", "status": "proposed",
-            "task_description": "fix the bug",
-        }
-        vault_worktree_path = tmp_path / "worktrees" / "ct_fail2" / "memory"
-
-        real_run = subprocess.run
-
-        def _fake_run(args, **kwargs):
-            if args[:2] == ["docker", "run"]:
-                raise subprocess.CalledProcessError(1, args, output="", stderr="docker: Cannot connect to the Docker daemon")
-            return real_run(args, **kwargs)
-
-        with patch("src.services.coding_tasks_service.subprocess.run", side_effect=_fake_run):
-            with patch.object(service.notifier, "send_message"):
-                launched = service.launch(task)
-
-        assert launched["status"] == "failed"
-        assert not vault_worktree_path.exists()
+# The git_repo/vault_repo fixtures and the TestCreateWorktree /
+# TestSpawnAndLaunch classes were removed here. Cloning, remote rewriting,
+# credential handling, and container launching all moved into
+# infra/coding-agent/session.sh, and are covered by
+# tests/test_session_script.py driving the real script. Keeping a second
+# set of assertions here would recreate the drift this change removes.
 
 
 class TestCheckRunningTasks:
@@ -862,3 +393,86 @@ class TestBriefPerLane:
         for mode in ("autonomous", "handoff-checkpoints",
                      "handoff-run-through", "handoff-wait"):
             assert "infra/coding-agent/CONVENTIONS.md" in self._brief(service, mode)
+
+
+class TestLaunchViaSessionScript:
+    def _service(self, tmp_path):
+        return CodingTasksService(
+            data_path=tmp_path / "coding-tasks",
+            repo_path=tmp_path / "repo",
+            worktrees_path=tmp_path / "agent-sessions",
+            docker_image="mazkir-coding-agent:test",
+            notifier=TelegramNotifier(bot_token=None),
+            session_script=tmp_path / "session.sh",
+        )
+
+    def _task(self, task_id, mode):
+        return {
+            "id": task_id, "chat_id": 42, "branch": f"coding-agent/{task_id}",
+            "prompt": "the actual brief text", "status": "proposed",
+            "task_description": "fix it", "session_mode": mode,
+        }
+
+    def test_launch_shells_out_to_session_script(self, tmp_path):
+        """One implementation for automated and manual paths. They drifted
+        before: docker-compose.yml mounted ~/.claude.json and
+        spawn_container did not, so every automated session died on boot."""
+        service = self._service(tmp_path)
+
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            service.launch(self._task("ct_1", "autonomous"))
+
+        args = mock_run.call_args[0][0]
+        assert args[0] == str(tmp_path / "session.sh")
+        assert args[1] == "start"
+        assert "ct_1" in args
+        assert "--mode=autonomous" in args
+        assert f"--root={tmp_path / 'agent-sessions'}" in args
+
+    def test_launch_maps_handoff_variants_to_the_handoff_mode(self, tmp_path):
+        """session.sh knows three modes; the variants differ only in the
+        brief, which is already baked into the prompt file."""
+        service = self._service(tmp_path)
+
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            service.launch(self._task("ct_2", "handoff-run-through"))
+
+        assert "--mode=handoff" in mock_run.call_args[0][0]
+
+    def test_wait_variant_maps_to_manual_with_no_seed_prompt(self, tmp_path):
+        """handoff-wait means the session idles until a human drives it, so
+        it must not be seeded with a prompt that starts work."""
+        service = self._service(tmp_path)
+
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            service.launch(self._task("ct_3", "handoff-wait"))
+
+        args = mock_run.call_args[0][0]
+        assert "--mode=manual" in args
+        assert not any(a.startswith("--prompt-file=") for a in args)
+
+    def test_launch_writes_the_brief_to_the_prompt_file_it_passes(self, tmp_path):
+        service = self._service(tmp_path)
+
+        with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            service.launch(self._task("ct_4", "autonomous"))
+
+        args = mock_run.call_args[0][0]
+        prompt_arg = next(a for a in args if a.startswith("--prompt-file="))
+        assert Path(prompt_arg.split("=", 1)[1]).read_text() == "the actual brief text"
+
+    def test_launch_marks_failed_and_notifies_when_the_script_fails(self, tmp_path):
+        service = self._service(tmp_path)
+
+        with patch("src.services.coding_tasks_service.subprocess.run",
+                   side_effect=subprocess.CalledProcessError(1, "session.sh", stderr="boom")):
+            with patch.object(service.notifier, "send_message") as mock_notify:
+                launched = service.launch(self._task("ct_5", "autonomous"))
+
+        assert launched["status"] == "failed"
+        assert service.get_task("ct_5")["status"] == "failed"
+        mock_notify.assert_called_once()

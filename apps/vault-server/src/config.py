@@ -88,9 +88,19 @@ class Settings(BaseSettings):
         "CODING_TASKS_DATA_PATH",
         str(Path.home() / "dev" / "mazkir" / "data" / "coding-tasks"),
     ))
+    # Sessions live outside the repo. Deliberately not .claude/worktrees/,
+    # which belongs to Claude Code's own linked worktrees -- mixing clones
+    # into it makes them invisible to every cleanup path.
     coding_agent_worktrees_path: Path = Path(os.getenv(
-        "CODING_AGENT_WORKTREES_PATH",
-        str(Path.home() / "dev" / "mazkir" / ".coding-agent-worktrees"),
+        "AGENT_SESSIONS_ROOT",
+        str(Path.home() / "dev" / "agent-sessions"),
+    ))
+    # session.sh owns provisioning, credentials, and launching for every
+    # lane. vault-server shells out to it rather than building a second
+    # docker invocation, which is what let the two paths drift apart.
+    coding_agent_session_script: Path = Path(os.getenv(
+        "CODING_AGENT_SESSION_SCRIPT",
+        str(Path.home() / "dev" / "mazkir" / "infra" / "coding-agent" / "session.sh"),
     ))
     coding_agent_docker_image: str = os.getenv("CODING_AGENT_DOCKER_IMAGE", "mazkir-coding-agent:latest")
     coding_agent_poll_interval_seconds: float = float(os.getenv("CODING_AGENT_POLL_INTERVAL_SECONDS", "30"))

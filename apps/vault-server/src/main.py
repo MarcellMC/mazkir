@@ -121,6 +121,7 @@ async def lifespan(app: FastAPI):
         github_token_path=settings.coding_agent_github_token_path,
         vault_repo_path=settings.mazkir_vault_repo_path,
         claude_json_path=settings.coding_agent_claude_json_path,
+        session_script=settings.coding_agent_session_script,
     )
     logger.info("Coding tasks service initialized: %s", settings.coding_tasks_data_path)
 

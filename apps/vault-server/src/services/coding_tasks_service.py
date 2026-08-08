@@ -1,5 +1,10 @@
-"""CodingTasksService — provisions isolated worktree+container coding
-sessions and tracks their lifecycle in data/coding-tasks/{id}.json.
+"""CodingTasksService — assembles task briefs, launches coding sessions via
+infra/coding-agent/session.sh, and tracks their lifecycle in
+data/coding-tasks/{id}.json.
+
+Provisioning, credentials, and container launching all live in session.sh,
+not here: a second implementation is what let the automated and manual
+paths drift apart, and the divergence broke every automated session.
 
 Mirrors the JSON-per-id storage pattern used by EventsService
 (src/services/events_service.py).
@@ -10,13 +15,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
-import tempfile
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from src.services.telegram_notifier import TelegramNotifier
 
@@ -70,6 +72,7 @@ class CodingTasksService:
         github_token_path: Path | None = None,
         vault_repo_path: Path | None = None,
         claude_json_path: Path | None = None,
+        session_script: Path | None = None,
     ):
         self.data_path = Path(data_path)
         self.data_path.mkdir(parents=True, exist_ok=True)
@@ -82,6 +85,7 @@ class CodingTasksService:
         self.github_token_path = Path(github_token_path) if github_token_path else None
         self.vault_repo_path = Path(vault_repo_path) if vault_repo_path else None
         self.claude_json_path = Path(claude_json_path) if claude_json_path else None
+        self.session_script = Path(session_script) if session_script else None
 
     def _file_path(self, task_id: str) -> Path:
         return self.data_path / f"{task_id}.json"
@@ -200,188 +204,49 @@ class CodingTasksService:
             "absolute host paths. See CLAUDE.md for the architecture map.\n"
         )
 
-    def _clone_repo(self, repo_path: Path, worktree_path: Path, branch: str) -> None:
-        """Create an isolated, self-contained clone of repo_path at
-        worktree_path, checked out on a new branch. Deliberately a clone,
-        not `git worktree add`: a linked worktree's .git is just a pointer
-        (`gitdir: /absolute/host/path/.git/worktrees/<name>`) back to the
-        main repo's .git directory. That path is unreachable once only the
-        worktree directory is mounted into a container -- confirmed
-        directly: every git command inside such a container fails with
-        "fatal: not a git repository", meaning a container could edit files
-        but never git add/commit/push. A clone has its own fully
-        self-contained .git with no external path dependency, and is fast
-        here since it's a same-filesystem clone (git hardlinks the object
-        database rather than copying it).
-
-        If worktree_path already exists, this is a no-op (idempotent reuse
-        for a retried task_id) -- note this means a task whose directory
-        was deleted out-of-band loses any local, unpushed commits, unlike a
-        linked worktree's shared object database; an acceptable trade for
-        actually working inside a container at all.
-        """
-        if worktree_path.exists():
-            return
-        subprocess.run(
-            ["git", "clone", str(repo_path), str(worktree_path)],
-            check=True, capture_output=True, text=True,
-        )
-        subprocess.run(
-            ["git", "checkout", "-b", branch],
-            cwd=worktree_path, check=True, capture_output=True, text=True,
-        )
-
-    def create_worktree(self, task_id: str, branch: str) -> Path:
-        worktree_path = self.worktrees_path / task_id
-        self._clone_repo(self.repo_path, worktree_path, branch)
-        return worktree_path
-
-    def create_vault_worktree(self, task_id: str, branch: str) -> Path | None:
-        """Create an isolated clone of the memory (vault) repo, nested at
-        {worktrees_path}/{task_id}/memory to mirror the real host layout
-        where memory/ sits inside the mazkir checkout — a fully independent
-        clone of the separate mazkir-memory repo, unrelated to the mazkir
-        clone's own git history. Must be called after create_worktree() for
-        the same task_id, so the parent directory already exists. Returns
-        the path, or None if vault_repo_path isn't configured."""
-        if not self.vault_repo_path:
-            return None
-        worktree_path = self.worktrees_path / task_id / "memory"
-        self._clone_repo(self.vault_repo_path, worktree_path, branch)
-        return worktree_path
-
-    def _remove_worktree(self, repo_path: Path, worktree_path: Path) -> None:
-        # Not a registered git worktree (see _clone_repo) -- just a plain
-        # directory to remove. repo_path is unused; kept for call-site
-        # symmetry with the (now historical) worktree-based signature.
-        shutil.rmtree(worktree_path, ignore_errors=True)
-
-    @contextmanager
-    def _git_credential_env_file(self) -> Iterator[list[str]]:
-        """Yield `--env-file` flags scoping a GitHub credential to this one
-        container process, or [] if no token is configured.
-
-        The credential goes through a mode-0600 temp file rather than `-e`
-        flags: anything passed in argv is copied into the container's
-        metadata, where `docker inspect` will echo it back for as long as the
-        container exists, and is visible in the host process list while
-        `docker run` executes. The file is unlinked as soon as docker has
-        read it, so the token is never at rest on disk beyond that.
-
-        GIT_CONFIG_* drives an insteadOf rewrite so `git push` authenticates;
-        GH_TOKEN separately authenticates `gh` itself for `gh pr create`,
-        which the session needs because master takes PRs only.
-        """
-        if not self.github_token_path or not self.github_token_path.exists():
-            yield []
-            return
-        token = self.github_token_path.read_text().strip()
-        if not token:
-            yield []
-            return
-
-        # mkstemp creates with 0600 and O_EXCL, so the token is never briefly
-        # world-readable the way a plain open() under a default umask is.
-        fd, raw_path = tempfile.mkstemp(prefix="mazkir-coding-", suffix=".env")
-        env_path = Path(raw_path)
-        try:
-            with os.fdopen(fd, "w") as f:
-                f.write(
-                    "GIT_CONFIG_COUNT=1\n"
-                    f"GIT_CONFIG_KEY_0=url.https://x-access-token:{token}@github.com/.insteadOf\n"
-                    "GIT_CONFIG_VALUE_0=git@github.com:\n"
-                    f"GH_TOKEN={token}\n"
-                )
-            yield ["--env-file", str(env_path)]
-        finally:
-            env_path.unlink(missing_ok=True)
-
-    def spawn_container(
-        self,
-        task_id: str,
-        worktree_path: Path,
-        prompt: str,
-        vault_worktree_path: Path | None = None,
-    ) -> str:
-        # The brief is also written to disk so a human taking the session over
-        # interactively can read what the agent was asked to do, but the text
-        # itself is what gets passed to `claude -p` -- that flag takes prompt
-        # text, and handing it a path makes the path the entire prompt.
-        prompt_path = worktree_path / ".coding-task-prompt.md"
-        prompt_path.write_text(prompt)
-        vault_mount_args = (
-            ["-v", f"{vault_worktree_path}:/workspace/memory"]
-            if vault_worktree_path else []
-        )
-        # ~/.claude.json is a sibling *file* of ~/.claude, so the named auth
-        # volume below does not cover it -- and Docker cannot target a single
-        # file with a named volume anyway. It holds onboarding state and the
-        # per-project trust flag; without it the container falls back to the
-        # empty file the Dockerfile touches, which Claude Code rejects as
-        # corrupt ("JSON Parse error: Unexpected EOF") and then exits.
-        claude_json_mount_args = (
-            ["-v", f"{self.claude_json_path}:/home/marcellmc/.claude.json"]
-            if self.claude_json_path else []
-        )
-        with self._git_credential_env_file() as credential_args:
-            result = subprocess.run(
-                [
-                    "docker", "run", "-d",
-                    "--name", f"mazkir-coding-{task_id}",
-                    "-v", f"{worktree_path}:/workspace",
-                    *vault_mount_args,
-                    *claude_json_mount_args,
-                    "-v", "mazkir-claude-auth:/home/marcellmc/.claude",
-                    "-v", "/home/marcellmc/.claude/plugins:/home/marcellmc/.claude/plugins",
-                    "-w", "/workspace",
-                    *credential_args,
-                    self.docker_image,
-                    "claude", "--dangerously-skip-permissions",
-                    "-p", prompt,
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        return result.stdout.strip()
+    # session.sh owns provisioning, credentials, and launching for every
+    # lane. Building a second docker invocation here is what let the
+    # automated and manual paths drift apart: docker-compose.yml mounted
+    # ~/.claude.json and spawn_container did not, so every automated session
+    # booted on an empty config and exited within ~14 seconds.
+    #
+    # The four hand-off variants collapse to two session.sh modes: they
+    # differ only in the brief, which is already baked into the prompt file.
+    # handoff-wait maps to manual precisely because it must NOT be seeded --
+    # the session idles until a human drives it.
+    _MODE_MAP = {
+        "autonomous": "autonomous",
+        "handoff-checkpoints": "handoff",
+        "handoff-run-through": "handoff",
+        "handoff-wait": "manual",
+    }
 
     def launch(self, task: dict[str, Any]) -> dict[str, Any]:
-        """Provision a worktree + container for a proposed task, persisting
-        its running state. Assumes task already has 'id', 'branch', 'prompt'.
+        """Provision and start a session via session.sh, persisting state.
 
-        If any provisioning step fails after the mazkir clone was already
-        created -- the vault clone or spawn_container -- every clone made so
-        far is removed (best-effort) and the task is persisted as 'failed' +
-        notified, rather than left orphaned in 'proposed' with a dangling
-        directory. That directory matters: create_worktree reuses an existing
-        path as-is, so an orphan would silently hand back a stale clone on
-        the next retry of the same task_id. The task dict is still returned
-        (not raised) so callers that build a normal 'ok' response from the
-        return value (e.g. propose_coding_session) don't need special-casing
-        -- they just see status == 'failed'.
+        Returns the task rather than raising, so callers that build a normal
+        'ok' response from the return value (propose_coding_session) need no
+        special casing -- they just see status == 'failed'.
         """
-        worktree_path = self.create_worktree(task["id"], task["branch"])
-        vault_worktree_path = None
+        session_mode = task.get("session_mode", DEFAULT_LANE)
+        mode = self._MODE_MAP.get(session_mode, "handoff")
+
+        prompt_path = self.data_path / f"{task['id']}-prompt.md"
+        prompt_path.write_text(task["prompt"])
+
+        cmd = [
+            str(self.session_script), "start", task["id"],
+            f"--mode={mode}",
+            f"--root={self.worktrees_path}",
+        ]
+        if mode != "manual":
+            cmd.append(f"--prompt-file={prompt_path}")
+
         try:
-            vault_worktree_path = self.create_vault_worktree(task["id"], task["branch"])
-            container_id = self.spawn_container(
-                task["id"], worktree_path, task["prompt"],
-                vault_worktree_path=vault_worktree_path,
-            )
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
         except Exception as e:
-            logger.error(f"provisioning failed for task {task['id']}: {e}")
-            for repo, path in ((self.repo_path, worktree_path), (self.vault_repo_path, vault_worktree_path)):
-                if path is None:
-                    continue
-                try:
-                    self._remove_worktree(repo, path)
-                except Exception as cleanup_err:
-                    logger.warning(
-                        f"failed to clean up worktree {path} for task {task['id']} "
-                        f"after provisioning failure: {cleanup_err}"
-                    )
-            task["worktree_path"] = str(worktree_path)
-            task["vault_worktree_path"] = str(vault_worktree_path) if vault_worktree_path else None
+            logger.error(f"session.sh failed for task {task['id']}: {e}")
+            task["worktree_path"] = str(self.worktrees_path / task["id"])
             task["container_id"] = None
             task["status"] = "failed"
             task["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -395,9 +260,7 @@ class CodingTasksService:
             )
             return task
 
-        task["worktree_path"] = str(worktree_path)
-        task["vault_worktree_path"] = str(vault_worktree_path) if vault_worktree_path else None
-        task["container_id"] = container_id
+        task["worktree_path"] = str(self.worktrees_path / task["id"])
         task["status"] = "running"
         task["started_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.save_task(task)
