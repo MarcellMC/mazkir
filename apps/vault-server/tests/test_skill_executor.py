@@ -171,3 +171,78 @@ def test_unknown_next_skill_is_ignored():
     )
     result = executor.run(chat_id=1, user_msg="x", context_messages=[], messages=[])
     assert result.iterations == 1
+
+
+def test_pending_confirmation_is_propagated_to_result():
+    skill = _mk_skill("engineering", ["propose_coding_session"])
+    registry = MagicMock()
+    registry.list.return_value = [skill]
+    registry.get.side_effect = lambda n: skill if n == "engineering" else None
+
+    router = MagicMock()
+    router.pick.return_value = MagicMock(skill="engineering", reason="bug report")
+
+    fake_run_loop = MagicMock(
+        return_value=("Would spin up a session. Should I proceed?", "needs_confirmation", "act_123")
+    )
+    executor = SkillExecutor(
+        skill_registry=registry,
+        router=router,
+        tools={"propose_coding_session": {"schema": {"name": "propose_coding_session"}}},
+        run_loop=fake_run_loop,
+        build_base_system_prompt=lambda context: "base prompt",
+    )
+    result = executor.run(chat_id=1, user_msg="X is broken", context_messages=[], messages=[])
+
+    assert result.awaiting_confirmation is True
+    assert result.pending_action_id == "act_123"
+
+
+def test_pending_confirmation_stops_skill_handoff():
+    engineering = _mk_skill("engineering", [], next_skills=["mazkir"])
+    mazkir = _mk_skill("mazkir", [])
+    registry = MagicMock()
+    registry.list.return_value = [engineering, mazkir]
+    registry.get.side_effect = lambda n: {"engineering": engineering, "mazkir": mazkir}.get(n)
+
+    router = MagicMock()
+    router.pick.return_value = MagicMock(skill="engineering", reason="")
+
+    call_log = []
+    def fake_run_loop(*, system, **kwargs):
+        name = "engineering" if "engineering skill" in system else "mazkir"
+        call_log.append(name)
+        return "Should I proceed? next_skill: mazkir", "needs_confirmation", "act_9"
+
+    executor = SkillExecutor(
+        skill_registry=registry,
+        router=router,
+        tools={},
+        run_loop=fake_run_loop,
+        build_base_system_prompt=lambda context: "base prompt",
+    )
+    result = executor.run(chat_id=1, user_msg="fix it", context_messages=[], messages=[])
+
+    assert call_log == ["engineering"]
+    assert result.pending_action_id == "act_9"
+
+
+def test_run_loop_may_return_legacy_two_tuple():
+    skill = _mk_skill("manager", [])
+    registry = MagicMock()
+    registry.list.return_value = [skill]
+    registry.get.side_effect = lambda n: skill if n == "manager" else None
+    router = MagicMock()
+    router.pick.return_value = MagicMock(skill="manager", reason="")
+
+    executor = SkillExecutor(
+        skill_registry=registry,
+        router=router,
+        tools={},
+        run_loop=MagicMock(return_value=("ok", "end_turn")),
+        build_base_system_prompt=lambda context: "base prompt",
+    )
+    result = executor.run(chat_id=1, user_msg="hi", context_messages=[], messages=[])
+
+    assert result.awaiting_confirmation is False
+    assert result.pending_action_id is None

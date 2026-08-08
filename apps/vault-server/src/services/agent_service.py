@@ -24,7 +24,7 @@ from src.services.hooks.audit_log import audit_log as _audit_log_hook
 from src.services.hooks.sync_to_calendar import sync_to_calendar as _sync_to_calendar_hook
 from src.services.memory_service import MemoryService
 from src.services.preview import register_preview_fn, render_preview
-from src.services.skill_executor import SkillExecutor
+from src.services.skill_executor import LoopOutcome, SkillExecutor
 from src.services.tool_handlers.coding_handoff import (
     preview_coding_session as _preview_coding_session,
     propose_coding_session as _propose_coding_session,
@@ -1110,7 +1110,12 @@ class AgentService:
             messages=messages,
             context=context,
         )
-        return AgentResponse(response=result.response_text, iterations=result.iterations)
+        return AgentResponse(
+            response=result.response_text,
+            awaiting_confirmation=result.awaiting_confirmation,
+            pending_action_id=result.pending_action_id,
+            iterations=result.iterations,
+        )
 
     def handle_confirmation(
         self, chat_id: int, action_id: str, user_response: str,
@@ -1225,12 +1230,16 @@ class AgentService:
         max_iterations: int,
         cache_static_prefix: str | None = None,
         model: str | None = None,
-    ) -> tuple[str, str]:
-        """Parameterized inner Claude tool-use loop. Returns (response_text, stop_reason).
+    ) -> LoopOutcome:
+        """Parameterized inner Claude tool-use loop.
+
+        Returns (response_text, stop_reason, pending_action_id).
 
         Delegates to _run_agent_turn which handles the full iteration logic including
         confidence gating, confirmation flow, memory persistence, and audit emission.
-        When a confirmation is needed, "needs_confirmation" is returned as the stop_reason.
+        When a confirmation is needed, "needs_confirmation" is returned as the stop_reason
+        and pending_action_id identifies the stored PendingAction — callers must carry it
+        out to the client, which needs it to answer via /message/confirm.
 
         Args:
             cache_static_prefix: Static system-prompt prefix to cache via Anthropic
@@ -1248,8 +1257,8 @@ class AgentService:
             model=model,
         )
         if result.awaiting_confirmation:
-            return result.response, "needs_confirmation"
-        return result.response, "end_turn"
+            return LoopOutcome(result.response, "needs_confirmation", result.pending_action_id)
+        return LoopOutcome(result.response, "end_turn")
 
     def _run_agent_turn(
         self,

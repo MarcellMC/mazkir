@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 from openinference.semconv.trace import SpanAttributes
 from opentelemetry import trace as _otel_trace
@@ -26,15 +26,32 @@ MAX_HOPS = 3
 _tracer = _otel_trace.get_tracer("mazkir.skill_executor")
 
 
+class LoopOutcome(NamedTuple):
+    """Normalized shape of what the injected run_loop returns.
+
+    ``pending_action_id`` defaults to None so a collaborator that still
+    returns the older ``(response_text, stop_reason)`` pair widens cleanly
+    via ``LoopOutcome(*result)``.
+    """
+    response_text: str
+    stop_reason: str
+    pending_action_id: str | None = None
+
+
 @dataclass
 class SkillExecutorResult:
     response_text: str
     stop_reason: str
     iterations: int
     visited: list[str]
+    pending_action_id: str | None = None
+
+    @property
+    def awaiting_confirmation(self) -> bool:
+        return self.stop_reason == "needs_confirmation"
 
 
-RunLoopFn = Callable[..., tuple[str, str]]
+RunLoopFn = Callable[..., tuple]
 BuildBaseSystemPromptFn = Callable[[Any], str]
 BuildStaticPrefixFn = Callable[..., str]
 
@@ -79,6 +96,7 @@ class SkillExecutor:
         visited: list[str] = []
         response_text = ""
         stop_reason = "end_turn"
+        pending_action_id: str | None = None
         active: Optional[str] = decision.skill
         previous: Optional[str] = None
         reason: str = decision.reason
@@ -118,7 +136,7 @@ class SkillExecutor:
                 with with_span_status(span):
                     if len(user_msg) > 2000:
                         span.set_attribute("truncated", True)
-                    response_text, stop_reason = self._run_loop(
+                    outcome = LoopOutcome(*self._run_loop(
                         chat_id=chat_id,
                         log_text=user_msg,
                         messages=messages,
@@ -127,16 +145,28 @@ class SkillExecutor:
                         max_iterations=skill.max_iterations,
                         cache_static_prefix=cache_static_prefix,
                         model=skill.model,
-                    )
+                    ))
+                    response_text = outcome.response_text
+                    stop_reason = outcome.stop_reason
+                    pending_action_id = outcome.pending_action_id
 
                     _skill_output = response_text[:2000]
                     span.set_attribute(SpanAttributes.OUTPUT_VALUE, _skill_output)
                     if len(response_text) > 2000:
                         span.set_attribute("truncated", True)
 
-                    next_skill = self._extract_next_skill(response_text, skill.next_skills)
-                    if next_skill:
-                        span.set_attribute("skill.next_skill", next_skill)
+                    # A paused turn owns a PendingAction keyed by
+                    # pending_action_id; hopping to another skill would
+                    # overwrite response_text with the next skill's reply and
+                    # strand that confirmation, so the handoff waits until the
+                    # user answers.
+                    if stop_reason == "needs_confirmation":
+                        next_skill = None
+                        span.set_attribute("skill.awaiting_confirmation", True)
+                    else:
+                        next_skill = self._extract_next_skill(response_text, skill.next_skills)
+                        if next_skill:
+                            span.set_attribute("skill.next_skill", next_skill)
 
             if next_skill:
                 previous = active
@@ -150,6 +180,7 @@ class SkillExecutor:
             stop_reason=stop_reason,
             iterations=len(visited),
             visited=visited,
+            pending_action_id=pending_action_id,
         )
 
     def _skill_tool_schemas(self, skill: Skill) -> list[dict]:
