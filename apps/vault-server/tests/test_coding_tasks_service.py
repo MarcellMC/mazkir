@@ -525,3 +525,68 @@ class TestHandoffIsUnmonitored:
             service.check_running_tasks()
 
         assert mock_run.call_count == 0
+
+
+class TestAutonomousCleanup:
+    def _service(self, tmp_path):
+        return CodingTasksService(
+            data_path=tmp_path / "coding-tasks",
+            repo_path=tmp_path / "repo",
+            worktrees_path=tmp_path / "agent-sessions",
+            docker_image="mazkir-coding-agent:test",
+            notifier=TelegramNotifier(bot_token=None),
+            session_script=tmp_path / "session.sh",
+        )
+
+    def _autonomous_task(self, service, task_id="ct_c"):
+        service.save_task({
+            "id": task_id, "chat_id": 42, "status": "running",
+            "session_mode": "autonomous", "container_id": "c1",
+            "task_description": "fix it", "branch": f"coding-agent/{task_id}",
+            "worktree_path": "/tmp/w",
+        })
+
+    def test_cleanup_calls_session_script_after_a_terminal_transition(self, tmp_path):
+        """One implementation of 'is this safe to delete' -- reimplementing
+        rmtree here would be a second place to be wrong about unpushed work."""
+        service = self._service(tmp_path)
+        self._autonomous_task(service)
+        exited = TestCheckRunningTasks._exited_container()
+        calls = []
+
+        def record(args, **kwargs):
+            calls.append(args)
+            if args and str(args[0]).endswith("session.sh"):
+                return MagicMock(stdout="removed", returncode=0)
+            return exited(args, **kwargs)
+
+        with patch("src.services.coding_tasks_service.subprocess.run", side_effect=record):
+            with patch.object(service.notifier, "send_message"):
+                service.check_running_tasks()
+
+        assert any(
+            str(a[0]).endswith("session.sh") and a[1] == "clean" for a in calls
+        ), "expected a session.sh clean invocation"
+
+    def test_a_refused_cleanup_leaves_the_task_done_and_records_why(self, tmp_path):
+        """clean refuses while work is unpushed. That is the expected
+        outcome for a session that did not push, not a task failure."""
+        service = self._service(tmp_path)
+        self._autonomous_task(service, "ct_keep")
+        exited = TestCheckRunningTasks._exited_container()
+
+        def refuse(args, **kwargs):
+            if args and str(args[0]).endswith("session.sh"):
+                raise subprocess.CalledProcessError(
+                    1, args,
+                    stderr="refusing to remove ct_keep: workspace has unpushed commits",
+                )
+            return exited(args, **kwargs)
+
+        with patch("src.services.coding_tasks_service.subprocess.run", side_effect=refuse):
+            with patch.object(service.notifier, "send_message"):
+                service.check_running_tasks()
+
+        saved = service.get_task("ct_keep")
+        assert saved["status"] == "done"
+        assert "unpushed" in saved.get("cleanup_note", "")

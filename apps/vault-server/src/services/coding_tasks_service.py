@@ -318,6 +318,35 @@ class CodingTasksService:
         except Exception as e:
             logger.warning(f"failed to remove container {container_id}: {e}")
 
+    def _clean_session(self, task_id: str) -> str | None:
+        """Ask session.sh whether this session is safe to remove, and remove
+        it if so.
+
+        The four retention predicates live there and only there -- a second
+        implementation here would be a second place to be wrong about
+        destroying unpushed work, which exists in exactly one place because
+        a clone is its own object database.
+
+        A refusal is the expected outcome for a session that did not push,
+        not a failure. Returns the reason it was kept, or None when removed.
+        """
+        if not self.session_script:
+            return None
+        try:
+            subprocess.run(
+                [str(self.session_script), "clean", task_id,
+                 f"--root={self.worktrees_path}"],
+                check=True, capture_output=True, text=True,
+            )
+            return None
+        except subprocess.CalledProcessError as e:
+            note = (e.stderr or "").strip() or "cleanup refused"
+            logger.info(f"session {task_id} kept: {note}")
+            return note
+        except Exception as e:
+            logger.warning(f"cleanup failed for session {task_id}: {e}")
+            return str(e)
+
     def check_running_tasks(self) -> list[dict[str, Any]]:
         """Poll all 'running' tasks; for any whose container has exited, mark
         done (exit 0) or failed (non-zero), capture a summary from its logs,
@@ -344,6 +373,11 @@ class CodingTasksService:
             task["log_path"] = str(self._log_file_path(task["id"]))
             self.save_task(task)
             self._remove_container(container_id)
+
+            note = self._clean_session(task["id"])
+            if note:
+                task["cleanup_note"] = note
+                self.save_task(task)
             status_label = "finished" if task["status"] == "done" else "FAILED"
             self.notifier.send_message(
                 task["chat_id"],
