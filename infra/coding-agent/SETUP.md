@@ -68,6 +68,27 @@ mount instead:
 Go through the theme/billing prompts once here too — they'll persist in
 that file from now on.
 
+**Point `vault-server` at the same file.** Both the automated path
+(`spawn_container`) and the interactive one (`devcontainer.sh`) must mount
+it, or the automated containers fall back to the empty `.claude.json` the
+Dockerfile touches — Claude Code rejects that as corrupt
+("JSON Parse error: Unexpected EOF") and the session exits within seconds
+having done nothing. Set in `vault-server`'s `.env`:
+
+    CODING_AGENT_CLAUDE_JSON_PATH=~/.config/mazkir/coding-agent-claude-home.json
+
+(This is the default, so it only needs setting if you put the file
+elsewhere.) The same file also carries per-project trust. A container whose
+`/workspace` isn't trusted starts with every `permissions.allow` entry
+ignored, so make sure the JSON contains:
+
+    {"projects": {"/workspace": {"hasTrustDialogAccepted": true}}}
+
+Note both paths mount this file read-write and Claude Code writes to it, so
+concurrent sessions share one state file — fine for a solo maintainer
+running one task at a time, worth revisiting before running tasks in
+parallel.
+
 ## 3. Create a scoped GitHub PAT
 
 Create a fine-grained personal access token:
@@ -86,16 +107,25 @@ e.g. `~/.config/mazkir/coding-agent-github-token`, `chmod 600` — and point
 `CODING_AGENT_GITHUB_TOKEN_PATH` at it in `vault-server`'s `.env`.
 
 `CodingTasksService.spawn_container` reads this file and passes the token
-into the container via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/
-`GIT_CONFIG_VALUE_0` environment variables (an `insteadOf` rewrite from the
-repo's SSH remote to `https://x-access-token:<token>@github.com/`), scoped
-to that one container process only via env vars rather than a config file
-— though `/workspace` is a self-contained clone with its own independent
-`.git` now (see the note in step 4), not a linked worktree sharing config
-with your main checkout, so this is more a matter of not leaving credential
-material sitting in a file than avoiding cross-contamination. If
-`CODING_AGENT_GITHUB_TOKEN_PATH` is unset, containers spawn without a push
-credential — they can still investigate and commit locally, just not push.
+into the container through a **mode-0600 temp file** referenced by
+`docker run --env-file`, which is unlinked as soon as Docker has read it.
+The file sets:
+
+- `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0` — an
+  `insteadOf` rewrite from the repo's SSH remote to
+  `https://x-access-token:<token>@github.com/`, so `git push` authenticates.
+- `GH_TOKEN` — authenticates `gh` itself, which the session needs for
+  `gh pr create`. Since `master` takes PRs only (step 4), a container that
+  can push but can't open a PR has no way to land anything.
+
+Deliberately **not** `-e` flags: anything passed in `docker run`'s argv is
+copied into the container's metadata, where `docker inspect` echoes it back
+for as long as the container exists, and is visible in the host process
+list while the command runs. An `--env-file` keeps the token out of both.
+
+If `CODING_AGENT_GITHUB_TOKEN_PATH` is unset, containers spawn without a
+push credential — they can still investigate and commit locally, just not
+push or open a PR.
 
 ## 4. Enable branch protection on `master`
 

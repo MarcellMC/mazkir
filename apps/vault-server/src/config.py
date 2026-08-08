@@ -104,6 +104,13 @@ class Settings(BaseSettings):
         "MAZKIR_VAULT_REPO_PATH",
         str(Path.home() / "dev" / "mazkir" / "memory"),
     ))
+    # Mirrors CLAUDE_JSON_PATH in infra/coding-agent/devcontainer.sh -- the
+    # automated and interactive paths must share the same onboarding/trust
+    # state file. See SETUP.md step 2.
+    coding_agent_claude_json_path: Path = Path(os.getenv(
+        "CODING_AGENT_CLAUDE_JSON_PATH",
+        str(Path.home() / ".config" / "mazkir" / "coding-agent-claude-home.json"),
+    ))
 
     # Application
     log_level: str = "INFO"

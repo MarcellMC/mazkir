@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from src.services.telegram_notifier import TelegramNotifier
 
@@ -33,6 +36,7 @@ class CodingTasksService:
         audit_log_path: Path | None = None,
         github_token_path: Path | None = None,
         vault_repo_path: Path | None = None,
+        claude_json_path: Path | None = None,
     ):
         self.data_path = Path(data_path)
         self.data_path.mkdir(parents=True, exist_ok=True)
@@ -44,6 +48,7 @@ class CodingTasksService:
         self.audit_log_path = Path(audit_log_path) if audit_log_path else None
         self.github_token_path = Path(github_token_path) if github_token_path else None
         self.vault_repo_path = Path(vault_repo_path) if vault_repo_path else None
+        self.claude_json_path = Path(claude_json_path) if claude_json_path else None
 
     def _file_path(self, task_id: str) -> Path:
         return self.data_path / f"{task_id}.json"
@@ -59,8 +64,20 @@ class CodingTasksService:
             return None
 
     def save_task(self, task: dict[str, Any]) -> None:
+        """Persist a task via write-to-temp + atomic rename.
+
+        The background poller reads these files on its own schedule while
+        request handlers write them, so a plain write_text would let a reader
+        catch a truncated file — and a write that died partway would leave
+        that truncation as the permanent stored state.
+        """
         path = self._file_path(task["id"])
-        path.write_text(json.dumps(task, indent=2))
+        tmp_path = path.with_name(f".{path.name}.tmp")
+        try:
+            tmp_path.write_text(json.dumps(task, indent=2))
+            os.replace(tmp_path, path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     def list_tasks(self, status: str | None = None) -> list[dict[str, Any]]:
         tasks = []
@@ -202,21 +219,45 @@ class CodingTasksService:
         # symmetry with the (now historical) worktree-based signature.
         shutil.rmtree(worktree_path, ignore_errors=True)
 
-    def _git_credential_env_args(self) -> list[str]:
-        """Build -e flags that scope a GitHub push credential to this one
-        container process via git's env-var config override, without ever
-        writing to the worktree's (shared) .git/config. Returns [] if no
-        token is configured."""
+    @contextmanager
+    def _git_credential_env_file(self) -> Iterator[list[str]]:
+        """Yield `--env-file` flags scoping a GitHub credential to this one
+        container process, or [] if no token is configured.
+
+        The credential goes through a mode-0600 temp file rather than `-e`
+        flags: anything passed in argv is copied into the container's
+        metadata, where `docker inspect` will echo it back for as long as the
+        container exists, and is visible in the host process list while
+        `docker run` executes. The file is unlinked as soon as docker has
+        read it, so the token is never at rest on disk beyond that.
+
+        GIT_CONFIG_* drives an insteadOf rewrite so `git push` authenticates;
+        GH_TOKEN separately authenticates `gh` itself for `gh pr create`,
+        which the session needs because master takes PRs only.
+        """
         if not self.github_token_path or not self.github_token_path.exists():
-            return []
+            yield []
+            return
         token = self.github_token_path.read_text().strip()
         if not token:
-            return []
-        return [
-            "-e", "GIT_CONFIG_COUNT=1",
-            "-e", f"GIT_CONFIG_KEY_0=url.https://x-access-token:{token}@github.com/.insteadOf",
-            "-e", "GIT_CONFIG_VALUE_0=git@github.com:",
-        ]
+            yield []
+            return
+
+        # mkstemp creates with 0600 and O_EXCL, so the token is never briefly
+        # world-readable the way a plain open() under a default umask is.
+        fd, raw_path = tempfile.mkstemp(prefix="mazkir-coding-", suffix=".env")
+        env_path = Path(raw_path)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(
+                    "GIT_CONFIG_COUNT=1\n"
+                    f"GIT_CONFIG_KEY_0=url.https://x-access-token:{token}@github.com/.insteadOf\n"
+                    "GIT_CONFIG_VALUE_0=git@github.com:\n"
+                    f"GH_TOKEN={token}\n"
+                )
+            yield ["--env-file", str(env_path)]
+        finally:
+            env_path.unlink(missing_ok=True)
 
     def spawn_container(
         self,
@@ -225,53 +266,73 @@ class CodingTasksService:
         prompt: str,
         vault_worktree_path: Path | None = None,
     ) -> str:
+        # The brief is also written to disk so a human taking the session over
+        # interactively can read what the agent was asked to do, but the text
+        # itself is what gets passed to `claude -p` -- that flag takes prompt
+        # text, and handing it a path makes the path the entire prompt.
         prompt_path = worktree_path / ".coding-task-prompt.md"
         prompt_path.write_text(prompt)
         vault_mount_args = (
             ["-v", f"{vault_worktree_path}:/workspace/memory"]
             if vault_worktree_path else []
         )
-        result = subprocess.run(
-            [
-                "docker", "run", "-d",
-                "--name", f"mazkir-coding-{task_id}",
-                "-v", f"{worktree_path}:/workspace",
-                *vault_mount_args,
-                "-v", "mazkir-claude-auth:/home/marcellmc/.claude",
-                "-v", "/home/marcellmc/.claude/plugins:/home/marcellmc/.claude/plugins",
-                "-w", "/workspace",
-                *self._git_credential_env_args(),
-                self.docker_image,
-                "claude", "--dangerously-skip-permissions",
-                "-p", "/workspace/.coding-task-prompt.md",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
+        # ~/.claude.json is a sibling *file* of ~/.claude, so the named auth
+        # volume below does not cover it -- and Docker cannot target a single
+        # file with a named volume anyway. It holds onboarding state and the
+        # per-project trust flag; without it the container falls back to the
+        # empty file the Dockerfile touches, which Claude Code rejects as
+        # corrupt ("JSON Parse error: Unexpected EOF") and then exits.
+        claude_json_mount_args = (
+            ["-v", f"{self.claude_json_path}:/home/marcellmc/.claude.json"]
+            if self.claude_json_path else []
         )
+        with self._git_credential_env_file() as credential_args:
+            result = subprocess.run(
+                [
+                    "docker", "run", "-d",
+                    "--name", f"mazkir-coding-{task_id}",
+                    "-v", f"{worktree_path}:/workspace",
+                    *vault_mount_args,
+                    *claude_json_mount_args,
+                    "-v", "mazkir-claude-auth:/home/marcellmc/.claude",
+                    "-v", "/home/marcellmc/.claude/plugins:/home/marcellmc/.claude/plugins",
+                    "-w", "/workspace",
+                    *credential_args,
+                    self.docker_image,
+                    "claude", "--dangerously-skip-permissions",
+                    "-p", prompt,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
         return result.stdout.strip()
 
     def launch(self, task: dict[str, Any]) -> dict[str, Any]:
         """Provision a worktree + container for a proposed task, persisting
         its running state. Assumes task already has 'id', 'branch', 'prompt'.
 
-        If spawn_container fails after the worktree was already created, the
-        worktree is removed (best-effort) and the task is persisted as
-        'failed' + notified, rather than left orphaned in 'proposed' with a
-        dangling worktree/branch that would block a retry. The task dict is
-        still returned (not raised) so callers that build a normal 'ok'
-        response from the return value (e.g. propose_coding_session) don't
-        need special-casing -- they just see status == 'failed'.
+        If any provisioning step fails after the mazkir clone was already
+        created -- the vault clone or spawn_container -- every clone made so
+        far is removed (best-effort) and the task is persisted as 'failed' +
+        notified, rather than left orphaned in 'proposed' with a dangling
+        directory. That directory matters: create_worktree reuses an existing
+        path as-is, so an orphan would silently hand back a stale clone on
+        the next retry of the same task_id. The task dict is still returned
+        (not raised) so callers that build a normal 'ok' response from the
+        return value (e.g. propose_coding_session) don't need special-casing
+        -- they just see status == 'failed'.
         """
         worktree_path = self.create_worktree(task["id"], task["branch"])
-        vault_worktree_path = self.create_vault_worktree(task["id"], task["branch"])
+        vault_worktree_path = None
         try:
+            vault_worktree_path = self.create_vault_worktree(task["id"], task["branch"])
             container_id = self.spawn_container(
                 task["id"], worktree_path, task["prompt"],
                 vault_worktree_path=vault_worktree_path,
             )
         except Exception as e:
-            logger.error(f"spawn_container failed for task {task['id']}: {e}")
+            logger.error(f"provisioning failed for task {task['id']}: {e}")
             for repo, path in ((self.repo_path, worktree_path), (self.vault_repo_path, vault_worktree_path)):
                 if path is None:
                     continue
@@ -280,7 +341,7 @@ class CodingTasksService:
                 except Exception as cleanup_err:
                     logger.warning(
                         f"failed to clean up worktree {path} for task {task['id']} "
-                        f"after spawn_container failure: {cleanup_err}"
+                        f"after provisioning failure: {cleanup_err}"
                     )
             task["worktree_path"] = str(worktree_path)
             task["vault_worktree_path"] = str(vault_worktree_path) if vault_worktree_path else None
@@ -329,11 +390,39 @@ class CodingTasksService:
         except ValueError:
             return 1  # treat an unreadable exit code as a failure, not a silent success
 
+    def _log_file_path(self, task_id: str) -> Path:
+        return self.data_path / f"{task_id}.log"
+
+    def _save_logs(self, task_id: str, logs: str) -> None:
+        """Persist the container's full transcript next to its task JSON.
+
+        `summary` only keeps the tail, and the container -- the sole other
+        copy -- is removed right after, so a failed session would otherwise
+        leave nothing to debug from.
+        """
+        try:
+            self._log_file_path(task_id).write_text(logs)
+        except OSError as e:
+            logger.warning(f"failed to persist logs for task {task_id}: {e}")
+
+    def _remove_container(self, container_id: str) -> None:
+        """Reap an exited container. `docker run -d` can't use --rm (the logs
+        have to outlive the process), so removal happens here instead, once
+        the transcript is safely on disk. Best-effort: a container that is
+        already gone is not a reason to fail the transition."""
+        try:
+            subprocess.run(
+                ["docker", "rm", container_id],
+                capture_output=True, text=True, check=False,
+            )
+        except Exception as e:
+            logger.warning(f"failed to remove container {container_id}: {e}")
+
     def check_running_tasks(self) -> list[dict[str, Any]]:
         """Poll all 'running' tasks; for any whose container has exited, mark
         done (exit 0) or failed (non-zero), capture a summary from its logs,
-        and notify via Telegram. Returns the tasks that transitioned this
-        call."""
+        reap the container, and notify via Telegram. Returns the tasks that
+        transitioned this call."""
         transitioned = []
         for task in self.list_tasks(status="running"):
             if self._container_running(task["container_id"]):
@@ -343,7 +432,10 @@ class CodingTasksService:
             task["status"] = "done" if exit_code == 0 else "failed"
             task["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             task["summary"] = logs[-2000:]
+            self._save_logs(task["id"], logs)
+            task["log_path"] = str(self._log_file_path(task["id"]))
             self.save_task(task)
+            self._remove_container(task["container_id"])
             status_label = "finished" if task["status"] == "done" else "FAILED"
             self.notifier.send_message(
                 task["chat_id"],

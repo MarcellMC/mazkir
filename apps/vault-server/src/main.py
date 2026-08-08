@@ -42,10 +42,18 @@ _coding_tasks_poller_task: "asyncio.Task | None" = None
 
 async def _coding_tasks_poll_loop(coding_tasks: "CodingTasksService", interval_seconds: float = 30.0) -> None:
     """Background loop: periodically check running coding-handoff containers
-    and notify on completion. Runs until cancelled by lifespan shutdown."""
+    and notify on completion. Runs until cancelled by lifespan shutdown.
+
+    check_running_tasks is synchronous and shells out to `docker inspect` /
+    `docker logs` once per running task, so it goes to a worker thread —
+    called inline it would stall every request sharing this event loop for
+    however long the Docker daemon takes to answer.
+    """
     while True:
         try:
-            coding_tasks.check_running_tasks()
+            await asyncio.to_thread(coding_tasks.check_running_tasks)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("coding_tasks poll loop iteration failed")
         await asyncio.sleep(interval_seconds)
@@ -112,6 +120,7 @@ async def lifespan(app: FastAPI):
         audit_log_path=settings.logs_dir / "tool-calls.jsonl",
         github_token_path=settings.coding_agent_github_token_path,
         vault_repo_path=settings.mazkir_vault_repo_path,
+        claude_json_path=settings.coding_agent_claude_json_path,
     )
     logger.info("Coding tasks service initialized: %s", settings.coding_tasks_data_path)
 

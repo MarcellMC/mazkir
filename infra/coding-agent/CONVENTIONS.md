@@ -61,7 +61,7 @@ following the same `coding-agent/...` prefix so it's identifiable later.
 
 `git push` and `gh pr create` both already work — a scoped GitHub token is
 wired in via `GH_TOKEN` and the `GIT_CONFIG_*` env vars (see
-`coding_tasks_service.py`'s `_git_credential_env_args` / `docker-compose.yml`),
+`coding_tasks_service.py`'s `_git_credential_env_file` / `docker-compose.yml`),
 no login step needed. `master` on the `mazkir` repo has branch protection
 (PRs required, no direct pushes, even for admins) — this is the
 authoritative safety backstop regardless of what runs inside this
