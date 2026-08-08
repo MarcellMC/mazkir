@@ -21,6 +21,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     ruby \
     ruby-dev \
+    python3 \
+    python3-venv \
+    python3-dev \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && wget -nv -O /etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -49,6 +52,13 @@ RUN LAZYGIT_VERSION=$(curl -fsSL "https://api.github.com/repos/jesseduffield/laz
 RUN gem install tmuxinator
 
 RUN npm install -g @anthropic-ai/claude-code
+
+# uv: the project's Python apps are installed with it, and a session that
+# has to bootstrap its own interpreter wastes minutes and leaves a broken
+# venv behind (observed: a real session shipped an activate-scripts-only
+# venv with no interpreter). Installed to /usr/local/bin so it is on PATH
+# for every user.
+RUN curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Use the base image's existing non-root `node` user (UID 1000) rather than
 # creating a new one — a fresh useradd would land on the next free UID
