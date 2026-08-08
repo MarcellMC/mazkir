@@ -12,6 +12,24 @@ import { markActiveSpanError } from "../tracing-utils.js";
 
 export const callbackHandlers = new Composer();
 
+// Confirmation choice buttons. The action id comes from the callback data
+// rather than module state, so a button on an older message cannot answer
+// a newer confirmation.
+callbackHandlers.callbackQuery(/^confirm:([^:]+):(.+)$/, async (ctx) => {
+  const actionId = ctx.match[1]!;
+  const value = ctx.match[2]!;
+  try {
+    await ctx.answerCallbackQuery();
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    const response = await api.sendConfirmation(chatId, actionId, value);
+    await ctx.reply(response.response, { parse_mode: "HTML" });
+  } catch (err) {
+    markActiveSpanError(err);
+    await ctx.reply("❌ Something went wrong answering that.");
+  }
+});
+
 // Habit completion
 callbackHandlers.callbackQuery(/^habit:complete:(.+)$/, async (ctx) => {
   const name = ctx.match[1]!;

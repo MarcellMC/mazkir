@@ -5,9 +5,34 @@ import { api, streamMessage } from "../api/client.js";
 import { config } from "../config.js";
 import { markActiveSpanError, setActiveSpanOutput } from "../tracing-utils.js";
 import { sendRich } from "../bot-utils/send-rich.js";
+import { buildConfirmationKeyboard } from "../keyboards/confirmation.js";
 
 // Pending confirmations: chatId -> actionId
 const pendingConfirmations = new Map<number, string>();
+
+/** Inline keyboard for a confirmation that names its options, or undefined
+ *  for a plain yes/no gate (which is still answered as free text). The bot
+ *  renders whatever the server names and knows nothing about what the
+ *  pending tool does. */
+function confirmExtra(response: {
+  awaiting_confirmation?: boolean;
+  pending_action_id?: string;
+  confirmation_choices?: { value: string; label: string }[] | null;
+}): { reply_markup: ReturnType<typeof buildConfirmationKeyboard> } | undefined {
+  if (
+    !response.awaiting_confirmation ||
+    !response.pending_action_id ||
+    !response.confirmation_choices?.length
+  ) {
+    return undefined;
+  }
+  return {
+    reply_markup: buildConfirmationKeyboard(
+      response.pending_action_id,
+      response.confirmation_choices,
+    ),
+  };
+}
 
 /**
  * Build the enriched message payload from a Telegram message.
@@ -252,7 +277,7 @@ messageHandler.on(
           setActiveSpanOutput(response.response);
 
           // Finalize as a full rich message (catch-all → plain text on failure).
-          await sendRich(ctx, { markdown: response.response });
+          await sendRich(ctx, { markdown: response.response }, confirmExtra(response));
         } catch {
           // Fall back to non-streaming on any stream error.
           try {
@@ -261,7 +286,7 @@ messageHandler.on(
               pendingConfirmations.set(chatId, response.pending_action_id);
             }
             setActiveSpanOutput(response.response);
-            await sendRich(ctx, { markdown: response.response });
+            await sendRich(ctx, { markdown: response.response }, confirmExtra(response));
           } catch (fallbackErr) {
             markActiveSpanError(fallbackErr);
             await ctx.reply("❌ Something went wrong. Is vault-server running?");
@@ -277,7 +302,7 @@ messageHandler.on(
 
         setActiveSpanOutput(response.response);
         // Agent already emits markdown — send it through as a rich message.
-        await sendRich(ctx, { markdown: response.response });
+        await sendRich(ctx, { markdown: response.response }, confirmExtra(response));
       }
     } catch (err) {
       markActiveSpanError(err);
