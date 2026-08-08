@@ -24,6 +24,39 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TRACE_WINDOW_MINUTES = 30
 
+# The closing instruction is the only thing that differs between lanes.
+#
+# Autonomous exits when done, so "done" has to mean the work is durable: a
+# clone is its own object database, and anything committed but never pushed
+# exists in exactly one disposable place. The previous wording ("do not
+# push to master/origin directly") was read by a real session as
+# do-not-push-at-all -- it committed locally and reported "not pushed
+# anywhere, per the constraints".
+_LANE_INSTRUCTIONS = {
+    "autonomous": (
+        "- When the work is done: commit, `git push -u origin {branch}`, then\n"
+        "  `gh pr create`. The upstream is mandatory. Do this separately for\n"
+        "  /workspace and /workspace/memory if you touched both.\n"
+        "- Do not push to master. It is branch-protected; open a PR.\n"
+    ),
+    "handoff-checkpoints": (
+        "- Work in steps and stop to check in at each natural checkpoint. A\n"
+        "  human will join this session to steer it.\n"
+        "- Do not push to master. Leave landing decisions to the human.\n"
+    ),
+    "handoff-run-through": (
+        "- Run to completion, then report what you did and wait. A human will\n"
+        "  join this session to review.\n"
+        "- Do not push to master. Leave landing decisions to the human.\n"
+    ),
+    "handoff-wait": (
+        "- Do not start yet. Read the task above and wait for instructions; a\n"
+        "  human will join this session and drive it.\n"
+    ),
+}
+
+DEFAULT_LANE = "handoff-checkpoints"
+
 
 class CodingTasksService:
     def __init__(
@@ -144,8 +177,10 @@ class CodingTasksService:
         test_command: str,
         trace_id: str | None,
         reported_at: datetime,
+        session_mode: str = DEFAULT_LANE,
     ) -> str:
         trace_line = trace_id if trace_id else "not found"
+        lane = _LANE_INSTRUCTIONS.get(session_mode, _LANE_INSTRUCTIONS[DEFAULT_LANE])
         return (
             "You're picking up a task reported via Mazkir's Telegram bot.\n\n"
             "## Task\n"
@@ -157,10 +192,12 @@ class CodingTasksService:
             f"  > {conversation_excerpt}\n\n"
             "## Working constraints\n"
             f"- Worktree at {worktree_path}, branch {branch}. Do not touch anything outside it.\n"
-            "- Do not push to master/origin directly.\n"
             f"- Run `{test_command}` before considering this done.\n"
+            f"{lane.format(branch=branch)}"
             "- Summarize what changed and why in your final message.\n\n"
-            "See CLAUDE.md for architecture map and conventions.\n"
+            "Read `infra/coding-agent/CONVENTIONS.md` first — it covers the two-repo\n"
+            "layout, why `memory/` may be empty, and why you must never guess at\n"
+            "absolute host paths. See CLAUDE.md for the architecture map.\n"
         )
 
     def _clone_repo(self, repo_path: Path, worktree_path: Path, branch: str) -> None:

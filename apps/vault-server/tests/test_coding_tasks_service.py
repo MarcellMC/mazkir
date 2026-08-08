@@ -156,7 +156,11 @@ class TestAssembleBrief:
         assert "/tmp/worktrees/ct_abc123" in brief
         assert "cd apps/vault-server && python -m pytest tests/" in brief
         assert "deadbeef" in brief
-        assert "Do not push to master/origin" in brief
+        # Not "do not push to master/origin": a real session read that as
+        # do-not-push-at-all and left its work inside a disposable clone.
+        # The lane instruction now says what to avoid without forbidding the
+        # branch push that makes the work durable.
+        assert "Do not push to master." in brief
         assert "CLAUDE.md" in brief
 
     def test_missing_trace_id_shows_not_found(self, service):
@@ -806,3 +810,55 @@ class TestCheckRunningTasks:
 
         assert transitioned[0]["status"] == "failed"
         assert service.get_task("ct_2")["status"] == "failed"
+
+
+class TestBriefPerLane:
+    def _brief(self, service, mode):
+        return service.assemble_brief(
+            task_description="fix the thing",
+            conversation_excerpt="it is broken",
+            likely_area="apps/vault-server",
+            branch="coding-agent/ct_1",
+            worktree_path=Path("/workspace"),
+            test_command="npx turbo test",
+            trace_id=None,
+            reported_at=datetime(2026, 8, 8, tzinfo=timezone.utc),
+            session_mode=mode,
+        )
+
+    def test_autonomous_brief_mandates_push_and_pr(self, service):
+        """A clone is its own object database: work committed and never
+        pushed exists in exactly one place, and that place is disposable.
+        The old wording made a real session skip pushing entirely."""
+        brief = self._brief(service, "autonomous")
+
+        assert "git push -u origin" in brief
+        assert "gh pr create" in brief
+
+    def test_checkpoints_brief_asks_the_session_to_stop_and_wait(self, service):
+        brief = self._brief(service, "handoff-checkpoints")
+
+        assert "check in" in brief.lower()
+        assert "gh pr create" not in brief
+
+    def test_run_through_brief_asks_for_completion_then_a_report(self, service):
+        brief = self._brief(service, "handoff-run-through")
+
+        assert "run to completion" in brief.lower()
+
+    def test_wait_brief_tells_the_session_to_do_nothing_yet(self, service):
+        brief = self._brief(service, "handoff-wait")
+
+        assert "do not start" in brief.lower()
+
+    def test_unknown_mode_falls_back_to_the_supervised_lane(self, service):
+        brief = self._brief(service, "nonsense")
+
+        assert "check in" in brief.lower()
+
+    def test_every_brief_points_at_the_conventions(self, service):
+        """CONVENTIONS.md ships in every clone but nothing autoloads it,
+        so the two-repo warning was never read by the agents it targets."""
+        for mode in ("autonomous", "handoff-checkpoints",
+                     "handoff-run-through", "handoff-wait"):
+            assert "infra/coding-agent/CONVENTIONS.md" in self._brief(service, mode)

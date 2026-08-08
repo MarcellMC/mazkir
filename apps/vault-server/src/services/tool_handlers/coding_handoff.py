@@ -59,6 +59,7 @@ def propose_coding_session(coding_tasks: Any, params: dict, chat_id: int) -> dic
         test_command=params.get("test_command", "npx turbo test"),
         trace_id=trace_id,
         reported_at=reported_at,
+        session_mode=session_mode,
     )
 
     task = {
