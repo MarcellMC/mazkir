@@ -48,20 +48,34 @@ provision_clone() {
 }
 
 cmd_provision() {
-  local name="" repo="$DEFAULT_REPO" root="$DEFAULT_ROOT"
+  local name="" repo="$DEFAULT_REPO" root="$DEFAULT_ROOT" vault_repo=""
   name="$1"; shift
-  [ -n "$name" ] || die "usage: session.sh provision <name> [--repo=PATH] [--root=PATH]"
+  [ -n "$name" ] || die "usage: session.sh provision <name> [--repo=PATH] [--root=PATH] [--vault-repo=PATH]"
   for arg in "$@"; do
     case "$arg" in
       --repo=*) repo="${arg#--repo=}" ;;
       --root=*) root="${arg#--root=}" ;;
+      --vault-repo=*) vault_repo="${arg#--vault-repo=}" ;;
       *) die "unknown option: $arg" ;;
     esac
   done
 
+  local dest="$root/$name" branch="coding-agent/$name"
   mkdir -p "$root"
-  provision_clone "$repo" "$root/$name" "coding-agent/$name"
-  echo "$root/$name"
+  provision_clone "$repo" "$dest" "$branch"
+
+  # Mazkir spans two repos. The vault is an independent clone of
+  # mazkir-memory nested at <session>/memory, mirroring the host layout.
+  # Roll the mazkir clone back if it fails: an orphan would be reused as-is
+  # by provision_clone's idempotent branch, silently handing a stale clone
+  # to the next attempt at the same name.
+  if [ -n "$vault_repo" ]; then
+    if ! provision_clone "$vault_repo" "$dest/memory" "$branch"; then
+      rm -rf "$dest"
+      die "vault clone failed; rolled back $dest"
+    fi
+  fi
+  echo "$dest"
 }
 
 main() {
