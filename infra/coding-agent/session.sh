@@ -15,6 +15,16 @@ DEFAULT_REPO="${MAZKIR_REPO_PATH:-$HOME/dev/mazkir}"
 
 die() { echo "session.sh: $*" >&2; exit 1; }
 
+# Holds the credential env file so the EXIT trap can find it. Deliberately
+# global: a trap body is expanded when it fires, by which point a `local`
+# inside cmd_launch has gone out of scope and would expand to empty --
+# leaving a file containing the GitHub PAT in TMPDIR after every launch.
+CREDENTIAL_ENV_FILE_TO_CLEAN=""
+cleanup_credential_env_file() {
+  [ -n "$CREDENTIAL_ENV_FILE_TO_CLEAN" ] && rm -f "$CREDENTIAL_ENV_FILE_TO_CLEAN"
+  CREDENTIAL_ENV_FILE_TO_CLEAN=""
+}
+
 # Read the source repo's GitHub URL. A clone would otherwise inherit the
 # local filesystem path as origin: `git push` would write into the user's
 # own checkout, the GIT_CONFIG insteadOf rewrite (which only matches
@@ -299,6 +309,7 @@ cmd_launch() {
   local env_file compose_args
   env_file="$(write_credential_env_file "$token_file")"
   export CREDENTIAL_ENV_FILE="$env_file"
+  CREDENTIAL_ENV_FILE_TO_CLEAN="$env_file"
 
   compose_args=(docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm
                 devcontainer "${claude_args[@]}")
@@ -306,14 +317,16 @@ cmd_launch() {
   if [ "$dry_run" -eq 1 ]; then
     printf '%s\n' "${compose_args[*]}"
     if [ "$keep_env_file" -eq 1 ]; then
+      CREDENTIAL_ENV_FILE_TO_CLEAN=""
       printf '%s\n' "$env_file"
     else
-      rm -f "$env_file"
+      cleanup_credential_env_file
     fi
     return 0
   fi
 
-  trap 'rm -f "$env_file"' EXIT
+  # Fires on normal return, on error under set -e, and on interrupt.
+  trap cleanup_credential_env_file EXIT INT TERM
   "${compose_args[@]}"
 }
 

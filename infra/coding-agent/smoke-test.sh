@@ -29,6 +29,39 @@ check "gh present"       docker run --rm "$IMAGE" gh --version
 check "claude present"   docker run --rm "$IMAGE" claude --version
 
 echo
+echo "== session provisioning =="
+SMOKE_ROOT="$(mktemp -d)"
+SMOKE_NAME="smoke-$$"
+cleanup_smoke() {
+  "$SCRIPT_DIR/session.sh" clean "$SMOKE_NAME" --root="$SMOKE_ROOT" --force >/dev/null 2>&1 || true
+  rm -rf "$SMOKE_ROOT"
+}
+trap cleanup_smoke EXIT
+
+"$SCRIPT_DIR/session.sh" provision "$SMOKE_NAME" --root="$SMOKE_ROOT" >/dev/null
+
+check "clone has a GitHub origin" bash -c \
+  "git -C '$SMOKE_ROOT/$SMOKE_NAME' remote get-url origin | grep -q github.com"
+check "session .env has container paths" bash -c \
+  "grep -q '^VAULT_PATH=/workspace/memory\$' '$SMOKE_ROOT/$SMOKE_NAME/apps/vault-server/.env'"
+
+echo
+echo "== container boots against a real session =="
+# Real files, not process substitution: launch reads the brief and writes
+# it into the session, and a fifo cannot be consumed twice.
+BOOT_PROMPT="$SMOKE_ROOT/boot-prompt.md"
+echo 'Reply with exactly: BOOT OK' > "$BOOT_PROMPT"
+CTX_PROMPT="$SMOKE_ROOT/ctx-prompt.md"
+echo 'Without reading any files, what port does vault-server run on?' > "$CTX_PROMPT"
+
+check "agent answers in the session" bash -c \
+  "'$SCRIPT_DIR/session.sh' launch '$SMOKE_NAME' --root='$SMOKE_ROOT' --mode=autonomous \
+     --prompt-file='$BOOT_PROMPT' 2>&1 | grep -q 'BOOT OK'"
+check "CLAUDE.md is autoloaded" bash -c \
+  "'$SCRIPT_DIR/session.sh' launch '$SMOKE_NAME' --root='$SMOKE_ROOT' --mode=autonomous \
+     --prompt-file='$CTX_PROMPT' 2>&1 | grep -q '8000'"
+
+echo
 if [ "$failures" -ne 0 ]; then
   echo "SMOKE TEST FAILED: $failures check(s) failed"
   exit 1

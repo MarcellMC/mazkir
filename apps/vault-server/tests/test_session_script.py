@@ -470,3 +470,35 @@ def test_default_root_is_agent_sessions_not_claude_worktrees(tmp_path):
 
     assert "agent-sessions" in result.stdout
     assert ".claude/worktrees" not in result.stdout
+
+
+def test_launch_removes_the_credential_env_file_after_running(source_repo, tmp_path):
+    """The env file holds the GitHub PAT. A trap that expands $env_file at
+    EXIT time reads it after cmd_launch's `local` has gone out of scope,
+    leaving the token in TMPDIR after every real launch."""
+    import os
+
+    root = tmp_path / "agent-sessions"
+    _provision("leak", source_repo, root)
+    token_file = tmp_path / "token"
+    token_file.write_text("ghp_secrettoken123\n")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "docker").write_text("#!/bin/sh\nexit 0\n")
+    (fake_bin / "docker").chmod(0o755)
+
+    tmpdir = tmp_path / "tmp"
+    tmpdir.mkdir()
+
+    subprocess.run(
+        [str(SESSION_SH), "launch", "leak", f"--root={root}",
+         f"--github-token-file={token_file}"],
+        capture_output=True, text=True,
+        env={**os.environ,
+             "PATH": f"{fake_bin}:{os.environ['PATH']}",
+             "TMPDIR": str(tmpdir)},
+    )
+
+    leftovers = list(tmpdir.glob("mazkir-session-*.env"))
+    assert leftovers == [], f"credential file left behind: {leftovers}"
