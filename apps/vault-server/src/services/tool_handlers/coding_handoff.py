@@ -14,6 +14,22 @@ from typing import Any
 
 from src.services.tool_response import ok
 
+# Offered at the confirmation gate. Autonomous exits when done and is
+# polled, notified, and auto-cleaned; every hand-off variant stays alive as
+# an interactive Remote Control session, attachable from Claude Mobile, and
+# is never monitored. The variants differ only in the brief's wording --
+# see docs/superpowers/specs/2026-08-08-agent-sessions-design.md §3.1.
+SESSION_CHOICES = [
+    {"value": "autonomous", "label": "Autonomous (runs alone, notifies)"},
+    {"value": "handoff-checkpoints", "label": "Hand-off — checkpoints"},
+    {"value": "handoff-run-through", "label": "Hand-off — run through"},
+    {"value": "handoff-wait", "label": "Hand-off — wait for me"},
+]
+
+# Most tasks reported through Mazkir need the user in the loop, so the
+# supervised lane is the default rather than the unattended one.
+DEFAULT_SESSION_MODE = "handoff-checkpoints"
+
 
 def preview_coding_session(params: dict, ctx: Any) -> str:
     return (
@@ -29,6 +45,7 @@ def propose_coding_session(coding_tasks: Any, params: dict, chat_id: int) -> dic
     task_id = f"ct_{uuid.uuid4().hex[:8]}"
     branch = f"coding-agent/{task_id}"
     reported_at = dt.datetime.now(dt.timezone.utc)
+    session_mode = params.get("session_mode") or DEFAULT_SESSION_MODE
 
     trace_id = coding_tasks.find_recent_trace_id(reported_at)
     worktree_path = coding_tasks.worktrees_path / task_id
@@ -52,6 +69,7 @@ def propose_coding_session(coding_tasks: Any, params: dict, chat_id: int) -> dic
         "conversation_excerpt": params.get("conversation_excerpt", ""),
         "likely_area": params.get("likely_area", "unknown"),
         "branch": branch,
+        "session_mode": session_mode,
         "worktree_path": None,
         "container_id": None,
         "status": "proposed",

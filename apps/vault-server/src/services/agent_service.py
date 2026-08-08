@@ -26,6 +26,7 @@ from src.services.memory_service import MemoryService
 from src.services.preview import register_preview_fn, render_preview
 from src.services.skill_executor import LoopOutcome, SkillExecutor
 from src.services.tool_handlers.coding_handoff import (
+    SESSION_CHOICES as _SESSION_CHOICES,
     preview_coding_session as _preview_coding_session,
     propose_coding_session as _propose_coding_session,
 )
@@ -512,6 +513,11 @@ class AgentService:
                             "conversation_excerpt": {"type": "string", "description": "Relevant quoted excerpt from the conversation"},
                             "likely_area": {"type": "string", "description": "Best-guess file/service path"},
                             "test_command": {"type": "string", "description": "Test command the session should run before finishing"},
+                            "session_mode": {
+                                "type": "string",
+                                "enum": [c["value"] for c in _SESSION_CHOICES],
+                                "description": "Chosen by the user at the confirmation gate — do not set this yourself",
+                            },
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
