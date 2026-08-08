@@ -209,6 +209,114 @@ cmd_clean() {
   echo "removed $session"
 }
 
+# Scope a GitHub credential to this one container via a mode-0600 file.
+# Never -e flags: argv is copied into container metadata, where `docker
+# inspect` echoes it back for as long as the container exists, and is
+# visible in the host process list while the command runs.
+# GIT_CONFIG_* drives an insteadOf rewrite so `git push` authenticates;
+# GH_TOKEN authenticates `gh` itself for `gh pr create`, which a session
+# needs because master takes PRs only.
+#
+# Always returns a path: compose's env_file key requires the file to exist,
+# so an unconfigured token yields an empty file rather than no file.
+write_credential_env_file() {
+  local token_file="$1" out token=""
+  out="$(mktemp -t mazkir-session-XXXXXX.env)"
+  chmod 600 "$out"
+  if [ -n "$token_file" ] && [ -f "$token_file" ]; then
+    token="$(tr -d '[:space:]' < "$token_file")"
+  fi
+  if [ -n "$token" ]; then
+    {
+      echo "GIT_CONFIG_COUNT=1"
+      echo "GIT_CONFIG_KEY_0=url.https://x-access-token:${token}@github.com/.insteadOf"
+      echo "GIT_CONFIG_VALUE_0=git@github.com:"
+      echo "GH_TOKEN=${token}"
+    } > "$out"
+  fi
+  printf '%s' "$out"
+}
+
+cmd_launch() {
+  local name="" root="$DEFAULT_ROOT" mode="manual" prompt_file="" dry_run=0
+  local keep_env_file=0
+  local token_file="${CODING_AGENT_GITHUB_TOKEN_PATH:-}"
+  name="$1"; shift
+  [ -n "$name" ] || die "usage: session.sh launch <name> [--mode=MODE] [--prompt-file=PATH]"
+  for arg in "$@"; do
+    case "$arg" in
+      --root=*) root="${arg#--root=}" ;;
+      --mode=*) mode="${arg#--mode=}" ;;
+      --prompt-file=*) prompt_file="${arg#--prompt-file=}" ;;
+      --github-token-file=*) token_file="${arg#--github-token-file=}" ;;
+      --dry-run) dry_run=1 ;;
+      --keep-env-file) keep_env_file=1 ;;
+      *) die "unknown option: $arg" ;;
+    esac
+  done
+
+  local session="$root/$name"
+  [ -d "$session" ] || die "no such session: $name (looked in $root)"
+
+  local brief=""
+  if [ -n "$prompt_file" ]; then
+    [ -f "$prompt_file" ] || die "no such prompt file: $prompt_file"
+    # Read once: --prompt-file may be a process substitution (a fifo),
+    # which cannot be read a second time to copy it.
+    brief="$(cat "$prompt_file")"
+    # Kept on disk so a human taking the session over can read the task.
+    printf '%s' "$brief" > "$session/.coding-task-prompt.md"
+  fi
+
+  # `claude -p` takes prompt TEXT; handing it a path makes the path the
+  # entire prompt. --remote-control starts an interactive session, which is
+  # the only kind Remote Control can attach to -- and the reason hand-off
+  # and manual sessions appear in Claude Mobile while autonomous ones
+  # never do.
+  local claude_args=(claude --dangerously-skip-permissions)
+  case "$mode" in
+    autonomous)
+      [ -n "$brief" ] || die "autonomous mode requires --prompt-file"
+      claude_args+=(-p "$brief")
+      ;;
+    handoff)
+      [ -n "$brief" ] || die "handoff mode requires --prompt-file"
+      claude_args+=(--remote-control "$name" "$brief")
+      ;;
+    manual)
+      claude_args+=(--remote-control "$name")
+      ;;
+    *) die "unknown mode: $mode (expected autonomous, handoff, or manual)" ;;
+  esac
+
+  export WORKTREE_PATH="$session"
+  export CLAUDE_JSON_PATH="${CLAUDE_JSON_PATH:-$HOME/.config/mazkir/coding-agent-claude-home.json}"
+  export CLAUDE_PLUGINS_PATH="${CLAUDE_PLUGINS_PATH:-$HOME/.claude/plugins}"
+  export DOTFILES_PATH="${DOTFILES_PATH:-$HOME/dotfiles}"
+
+  # The credential reaches the container through compose's env_file key,
+  # not argv. CREDENTIAL_ENV_FILE is substituted into docker-compose.yml.
+  local env_file compose_args
+  env_file="$(write_credential_env_file "$token_file")"
+  export CREDENTIAL_ENV_FILE="$env_file"
+
+  compose_args=(docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm
+                devcontainer "${claude_args[@]}")
+
+  if [ "$dry_run" -eq 1 ]; then
+    printf '%s\n' "${compose_args[*]}"
+    if [ "$keep_env_file" -eq 1 ]; then
+      printf '%s\n' "$env_file"
+    else
+      rm -f "$env_file"
+    fi
+    return 0
+  fi
+
+  trap 'rm -f "$env_file"' EXIT
+  "${compose_args[@]}"
+}
+
 main() {
   [ "$#" -ge 1 ] || die "usage: session.sh <provision|launch|list|clean> ..."
   local cmd="$1"; shift
@@ -216,6 +324,7 @@ main() {
     provision) cmd_provision "$@" ;;
     list) cmd_list "$@" ;;
     clean) cmd_clean "$@" ;;
+    launch) cmd_launch "$@" ;;
     *) die "unknown command: $cmd" ;;
   esac
 }

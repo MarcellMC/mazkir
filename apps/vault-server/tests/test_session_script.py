@@ -338,3 +338,107 @@ def test_clean_on_a_missing_session_fails_clearly(tmp_path):
 
     assert result.returncode != 0
     assert "ghost" in (result.stdout + result.stderr)
+
+
+def _launch(name, root, *extra):
+    return subprocess.run(
+        [str(SESSION_SH), "launch", name, f"--root={root}", "--dry-run", *extra],
+        capture_output=True, text=True,
+    )
+
+
+def test_manual_mode_starts_an_interactive_remote_control_session(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("manual-one", source_repo, root)
+
+    out = _launch("manual-one", root).stdout
+
+    assert "--remote-control" in out
+    assert "manual-one" in out
+    assert " -p " not in out, "manual mode must not be headless"
+
+
+def test_handoff_mode_seeds_the_brief_into_an_interactive_session(source_repo, tmp_path):
+    """--remote-control is what makes a session attachable from Claude
+    Mobile; -p is print mode and cannot be attached to."""
+    root = tmp_path / "agent-sessions"
+    _provision("handoff-one", source_repo, root)
+    brief = tmp_path / "brief.md"
+    brief.write_text("Fix the duplicate habits bug")
+
+    out = _launch("handoff-one", root, "--mode=handoff", f"--prompt-file={brief}").stdout
+
+    assert "--remote-control" in out
+    assert "Fix the duplicate habits bug" in out
+    assert " -p " not in out
+
+
+def test_autonomous_mode_is_headless_and_carries_the_brief_text(source_repo, tmp_path):
+    """`claude -p` takes prompt text, not a path -- passing the path makes
+    the path the entire prompt."""
+    root = tmp_path / "agent-sessions"
+    _provision("auto-one", source_repo, root)
+    brief = tmp_path / "brief.md"
+    brief.write_text("Fix the duplicate habits bug")
+
+    out = _launch("auto-one", root, "--mode=autonomous", f"--prompt-file={brief}").stdout
+
+    assert "-p" in out
+    assert "Fix the duplicate habits bug" in out
+    assert "--remote-control" not in out
+
+
+def test_launch_copies_the_brief_into_the_session(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("brief-one", source_repo, root)
+    brief = tmp_path / "brief.md"
+    brief.write_text("the task")
+
+    _launch("brief-one", root, "--mode=handoff", f"--prompt-file={brief}")
+
+    assert (root / "brief-one" / ".coding-task-prompt.md").read_text() == "the task"
+
+
+def test_launch_never_puts_a_token_in_argv(source_repo, tmp_path):
+    """Anything in argv persists in `docker inspect` and is visible in the
+    host process list. `docker compose run` has no --env-file for container
+    environment (only -e, which is argv), so the credential arrives through
+    the compose service's env_file key instead."""
+    root = tmp_path / "agent-sessions"
+    _provision("tok", source_repo, root)
+    token_file = tmp_path / "token"
+    token_file.write_text("ghp_secrettoken123\n")
+
+    result = _launch("tok", root, f"--github-token-file={token_file}")
+
+    assert "ghp_secrettoken123" not in result.stdout
+    assert "-e " not in result.stdout
+
+
+def test_launch_writes_the_credential_to_a_private_env_file(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("tok2", source_repo, root)
+    token_file = tmp_path / "token"
+    token_file.write_text("ghp_secrettoken123\n")
+
+    result = _launch(
+        "tok2", root, f"--github-token-file={token_file}", "--keep-env-file"
+    )
+
+    env_path = Path(result.stdout.strip().splitlines()[-1])
+    assert env_path.exists()
+    assert oct(env_path.stat().st_mode)[-3:] == "600"
+    body = env_path.read_text()
+    assert "GH_TOKEN=ghp_secrettoken123" in body
+    assert "GIT_CONFIG_KEY_0=url.https://x-access-token:ghp_secrettoken123@github.com/.insteadOf" in body
+    env_path.unlink()
+
+
+def test_launch_on_a_missing_session_fails_clearly(tmp_path):
+    root = tmp_path / "agent-sessions"
+    root.mkdir()
+
+    result = _launch("ghost", root)
+
+    assert result.returncode != 0
+    assert "ghost" in (result.stdout + result.stderr)
