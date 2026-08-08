@@ -120,9 +120,20 @@ cmd_provision() {
 #
 # Echoes "" when safe, or a human-readable reason to keep.
 repo_keep_reason() {
-  local repo="$1" label="$2"
+  local repo="$1" label="$2" dirty
   [ -d "$repo/.git" ] || return 0
-  if [ -n "$(git -C "$repo" status --porcelain 2>/dev/null | grep -v '^?? \.coding-task-prompt\.md$' || true)" ]; then
+  # Ignore two entries that are never workspace content:
+  #   .coding-task-prompt.md  -- scratch written by launch
+  #   memory/                 -- the nested vault clone, a separate repo
+  #                              evaluated on its own below. Without this
+  #                              the parent reports "uncommitted changes"
+  #                              whenever a vault clone exists, masking the
+  #                              real reason. (The real repo gitignores it,
+  #                              but the check must not depend on that.)
+  dirty="$(git -C "$repo" status --porcelain 2>/dev/null \
+    | grep -v '^?? \.coding-task-prompt\.md$' \
+    | grep -v '^?? memory/$' || true)"
+  if [ -n "$dirty" ]; then
     printf '%s has uncommitted changes' "$label"; return 0
   fi
   if ! git -C "$repo" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
@@ -173,12 +184,38 @@ cmd_list() {
   [ "$found" -eq 1 ] || echo "no sessions in $root"
 }
 
+cmd_clean() {
+  local name="" root="$DEFAULT_ROOT" force=0
+  name="$1"; shift
+  [ -n "$name" ] || die "usage: session.sh clean <name> [--root=PATH] [--force]"
+  for arg in "$@"; do
+    case "$arg" in
+      --root=*) root="${arg#--root=}" ;;
+      --force) force=1 ;;
+      *) die "unknown option: $arg" ;;
+    esac
+  done
+
+  local session="$root/$name"
+  [ -d "$session" ] || die "no such session: $name (looked in $root)"
+
+  if [ "$force" -eq 0 ]; then
+    local reason
+    reason="$(session_keep_reason "$session")"
+    [ -z "$reason" ] || die "refusing to remove $name: $reason (use --force to override)"
+  fi
+
+  rm -rf "$session"
+  echo "removed $session"
+}
+
 main() {
   [ "$#" -ge 1 ] || die "usage: session.sh <provision|launch|list|clean> ..."
   local cmd="$1"; shift
   case "$cmd" in
     provision) cmd_provision "$@" ;;
     list) cmd_list "$@" ;;
+    clean) cmd_clean "$@" ;;
     *) die "unknown command: $cmd" ;;
   esac
 }

@@ -265,3 +265,76 @@ def test_list_on_an_empty_root_says_so(tmp_path):
 
     assert result.returncode == 0
     assert "no sessions" in result.stdout.lower()
+
+
+def _clean(name, root, *extra):
+    return subprocess.run(
+        [str(SESSION_SH), "clean", name, f"--root={root}", *extra],
+        capture_output=True, text=True,
+    )
+
+
+def test_clean_removes_a_fully_pushed_session(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("pushed", source_repo, root)
+    _push_to_a_bare_upstream(root / "pushed", tmp_path, "pushed")
+
+    result = _clean("pushed", root)
+
+    assert result.returncode == 0, result.stderr
+    assert not (root / "pushed").exists()
+
+
+def test_clean_refuses_when_work_is_unpushed(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("ahead", source_repo, root)
+    session = root / "ahead"
+    _push_to_a_bare_upstream(session, tmp_path, "ahead")
+    (session / "later.txt").write_text("after push")
+    _git("add", "later.txt", cwd=session)
+    _git("commit", "-m", "unpushed", cwd=session)
+
+    result = _clean("ahead", root)
+
+    assert result.returncode != 0
+    assert "unpushed" in (result.stdout + result.stderr)
+    assert session.exists(), "refusing must not delete anything"
+
+
+def test_clean_refuses_when_only_the_vault_clone_is_dirty(
+    source_repo, vault_repo, tmp_path
+):
+    """The vault is nested inside the workspace, so removing the parent
+    destroys it -- its push state has to be checked independently."""
+    root = tmp_path / "agent-sessions"
+    _provision("twins", source_repo, root, f"--vault-repo={vault_repo}")
+    session = root / "twins"
+    _push_to_a_bare_upstream(session, tmp_path, "twins")
+    (session / "memory" / "note.md").write_text("unsaved vault work")
+
+    result = _clean("twins", root)
+
+    assert result.returncode != 0
+    assert "memory" in (result.stdout + result.stderr)
+    assert session.exists()
+
+
+def test_clean_force_removes_despite_unpushed_work(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("forced", source_repo, root)
+    (root / "forced" / "scratch.txt").write_text("uncommitted")
+
+    result = _clean("forced", root, "--force")
+
+    assert result.returncode == 0, result.stderr
+    assert not (root / "forced").exists()
+
+
+def test_clean_on_a_missing_session_fails_clearly(tmp_path):
+    root = tmp_path / "agent-sessions"
+    root.mkdir()
+
+    result = _clean("ghost", root)
+
+    assert result.returncode != 0
+    assert "ghost" in (result.stdout + result.stderr)
