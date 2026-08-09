@@ -36,9 +36,18 @@ DEFAULT_TRACE_WINDOW_MINUTES = 30
 # anywhere, per the constraints".
 _LANE_INSTRUCTIONS = {
     "autonomous": (
+        "- **You have a single turn.** This is a headless `claude -p` run:\n"
+        "  when you stop producing output the process exits and there is no\n"
+        "  next turn. Never background a command whose result you need, and\n"
+        "  never end your turn waiting for a notification, a background job,\n"
+        "  or an answer from anyone -- nothing will arrive. Run long commands\n"
+        "  in the foreground and wait for them there.\n"
         "- When the work is done: commit, `git push -u origin {branch}`, then\n"
         "  `gh pr create`. The upstream is mandatory. Do this separately for\n"
         "  /workspace and /workspace/memory if you touched both.\n"
+        "- Unpushed work does not count as done: this clone is disposable and\n"
+        "  is the only copy. If you run short on time, commit and push what\n"
+        "  you have rather than finishing nothing.\n"
         "- Do not push to master. It is branch-protected; open a PR.\n"
     ),
     "handoff-checkpoints": (
@@ -371,7 +380,6 @@ class CodingTasksService:
                 continue
             logs = self._container_logs(container_id)
             exit_code = self._container_exit_code(container_id)
-            task["status"] = "done" if exit_code == 0 else "failed"
             task["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             task["summary"] = logs[-2000:]
             self._save_logs(task["id"], logs)
@@ -379,16 +387,39 @@ class CodingTasksService:
             self.save_task(task)
             self._remove_container(container_id)
 
-            note = self._clean_session(task["id"])
-            if note:
+            # Exit code alone is not a completion signal. `claude -p` ends
+            # when the agent yields its turn, so an agent that backgrounds a
+            # slow command and waits for a notification -- or asks a
+            # question, or hits a limit -- exits 0 in the middle of the task.
+            # One real session did exactly that and was reported "finished"
+            # having committed nothing.
+            #
+            # The honest signal is whether the work reached the remote, and
+            # that is precisely what `session.sh clean` already decides:
+            # it removes a session only when everything is committed, has an
+            # upstream, and has nothing unpushed. A refusal therefore means
+            # the work did not land.
+            note = self._clean_session(task["id"]) if exit_code == 0 else "not evaluated"
+            if exit_code != 0:
+                task["status"] = "failed"
+                status_label = "FAILED"
+                detail = ""
+            elif note:
+                task["status"] = "incomplete"
                 task["cleanup_note"] = note
-                self.save_task(task)
-            status_label = "finished" if task["status"] == "done" else "FAILED"
+                status_label = "INCOMPLETE"
+                detail = f"\nIt did not land its work: {note}\n"
+            else:
+                task["status"] = "done"
+                status_label = "finished"
+                detail = ""
+            self.save_task(task)
+
             self.notifier.send_message(
                 task["chat_id"],
                 f"Coding session {status_label}: {task['task_description']}\n\n"
-                f"Branch: {task['branch']}\nWorktree: {task['worktree_path']}\n\n"
-                f"{task['summary'][-500:]}",
+                f"Branch: {task['branch']}\nWorktree: {task['worktree_path']}\n"
+                f"{detail}\n{task['summary'][-500:]}",
             )
             transitioned.append(task)
         return transitioned

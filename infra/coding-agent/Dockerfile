@@ -65,6 +65,42 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 # env-file at launch, never in argv.
 RUN curl -fsSL https://cli.doppler.com/install.sh | sh
 
+# Pre-install the vault-server dependency set. Without this, a session's
+# first `pytest` triggers a multi-minute install -- and one real session
+# backgrounded that install, ended its turn waiting for it, and exited
+# mid-task with everything uncommitted. Removing the wait removes the
+# temptation to background it.
+#
+# Copied from apps/vault-server/pyproject.toml. The list is duplicated
+# rather than COPYed so the build context stays this directory; a session
+# whose branch adds a dependency installs only the delta, which is fast.
+RUN uv pip install --system --break-system-packages \
+    "fastapi>=0.115.0" \
+    "uvicorn[standard]>=0.30.0" \
+    "python-frontmatter>=1.0.0" \
+    "python-dateutil>=2.8.2" \
+    "pytz>=2024.1" \
+    "anthropic>=0.18.0" \
+    "google-api-python-client>=2.100.0" \
+    "google-auth-httplib2>=0.1.0" \
+    "google-auth-oauthlib>=1.0.0" \
+    "httpx>=0.27.0" \
+    "jsonschema>=4.20.0" \
+    "pydantic>=2.5.0" \
+    "pydantic-settings>=2.1.0" \
+    "python-dotenv>=1.0.0" \
+    "replicate>=0.25.0" \
+    "Pillow>=10.0.0" \
+    "python-multipart>=0.0.22" \
+    "rapidfuzz>=3.6.0" \
+    "python-json-logger>=2.0.7" \
+    "opentelemetry-sdk>=1.27.0" \
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0" \
+    "opentelemetry-instrumentation-fastapi>=0.48b0" \
+    "openinference-instrumentation-anthropic>=0.1.14" \
+    "pytest>=8.0.0" \
+    "pytest-asyncio>=0.23.0"
+
 # Use the base image's existing non-root `node` user (UID 1000) rather than
 # creating a new one — a fresh useradd would land on the next free UID
 # (1001), which does not match a typical single-user host's UID (1000),

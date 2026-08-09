@@ -568,9 +568,10 @@ class TestAutonomousCleanup:
             str(a[0]).endswith("session.sh") and a[1] == "clean" for a in calls
         ), "expected a session.sh clean invocation"
 
-    def test_a_refused_cleanup_leaves_the_task_done_and_records_why(self, tmp_path):
-        """clean refuses while work is unpushed. That is the expected
-        outcome for a session that did not push, not a task failure."""
+    def test_a_refused_cleanup_marks_the_task_incomplete_and_records_why(self, tmp_path):
+        """clean refuses while work is unpushed, which means the session
+        did not land what it was asked to. That is neither success nor a
+        crash -- see TestCompletionRequiresLandedWork."""
         service = self._service(tmp_path)
         self._autonomous_task(service, "ct_keep")
         exited = TestCheckRunningTasks._exited_container()
@@ -588,7 +589,7 @@ class TestAutonomousCleanup:
                 service.check_running_tasks()
 
         saved = service.get_task("ct_keep")
-        assert saved["status"] == "done"
+        assert saved["status"] == "incomplete"
         assert "unpushed" in saved.get("cleanup_note", "")
 
 
@@ -619,3 +620,108 @@ class TestLaunchDoesNotBlock:
             assert "--detach" in mock_run.call_args[0][0], (
                 f"{mode} must not block the caller"
             )
+
+
+class TestCompletionRequiresLandedWork:
+    def _service(self, tmp_path):
+        return CodingTasksService(
+            data_path=tmp_path / "coding-tasks",
+            repo_path=tmp_path / "repo",
+            worktrees_path=tmp_path / "agent-sessions",
+            docker_image="mazkir-coding-agent:test",
+            notifier=TelegramNotifier(bot_token=None),
+            session_script=tmp_path / "session.sh",
+        )
+
+    def _running(self, service, task_id):
+        service.save_task({
+            "id": task_id, "chat_id": 42, "status": "running",
+            "session_mode": "autonomous", "container_id": "c1",
+            "task_description": "add goal buttons",
+            "branch": f"coding-agent/{task_id}", "worktree_path": "/tmp/w",
+        })
+
+    def _runner(self, clean_refuses=None, exit_code="0\n"):
+        exited = TestCheckRunningTasks._exited_container(exit_code=exit_code)
+
+        def run(args, **kwargs):
+            if args and str(args[0]).endswith("session.sh"):
+                if clean_refuses:
+                    raise subprocess.CalledProcessError(1, args, stderr=clean_refuses)
+                return MagicMock(stdout="removed", returncode=0)
+            return exited(args, **kwargs)
+        return run
+
+    def test_exit_zero_without_landed_work_is_incomplete_not_done(self, tmp_path):
+        """A headless agent that yields -- waiting on a background job, or
+        asking a question -- exits 0 mid-task. Reading that as success told
+        the user 'finished' about a session that committed nothing."""
+        service = self._service(tmp_path)
+        self._running(service, "ct_yield")
+
+        with patch("src.services.coding_tasks_service.subprocess.run",
+                   side_effect=self._runner(
+                       clean_refuses="refusing to remove ct_yield: workspace has uncommitted changes")):
+            with patch.object(service.notifier, "send_message") as notify:
+                service.check_running_tasks()
+
+        saved = service.get_task("ct_yield")
+        assert saved["status"] == "incomplete"
+        text = notify.call_args[0][1]
+        assert "did not land" in text.lower() or "incomplete" in text.lower()
+        assert "uncommitted" in text
+
+    def test_exit_zero_with_pushed_work_is_done(self, tmp_path):
+        """Cleanup succeeds only when everything is committed, has an
+        upstream, and nothing is unpushed -- i.e. the work is on the remote."""
+        service = self._service(tmp_path)
+        self._running(service, "ct_landed")
+
+        with patch("src.services.coding_tasks_service.subprocess.run",
+                   side_effect=self._runner()):
+            with patch.object(service.notifier, "send_message") as notify:
+                service.check_running_tasks()
+
+        assert service.get_task("ct_landed")["status"] == "done"
+        assert "FAILED" not in notify.call_args[0][1]
+
+    def test_nonzero_exit_is_still_failed_not_incomplete(self, tmp_path):
+        service = self._service(tmp_path)
+        self._running(service, "ct_crash")
+
+        with patch("src.services.coding_tasks_service.subprocess.run",
+                   side_effect=self._runner(exit_code="1\n",
+                                            clean_refuses="refusing: dirty")):
+            with patch.object(service.notifier, "send_message"):
+                service.check_running_tasks()
+
+        assert service.get_task("ct_crash")["status"] == "failed"
+
+
+class TestAutonomousBriefWarnsAboutSingleTurn:
+    def _brief(self, service, mode):
+        return service.assemble_brief(
+            task_description="x", conversation_excerpt="y", likely_area="z",
+            branch="coding-agent/ct_1", worktree_path=Path("/workspace"),
+            test_command="npx turbo test", trace_id=None,
+            reported_at=datetime(2026, 8, 9, tzinfo=timezone.utc),
+            session_mode=mode,
+        )
+
+    def test_autonomous_brief_forbids_backgrounding_and_waiting(self, service):
+        """`claude -p` ends when the agent yields. A real session
+        backgrounded pip, said 'waiting on the background install
+        notification', and the process exited mid-task with 209 lines
+        uncommitted."""
+        brief = self._brief(service, "autonomous")
+
+        lowered = brief.lower()
+        assert "single turn" in lowered or "one turn" in lowered
+        assert "background" in lowered
+        assert "foreground" in lowered
+
+    def test_handoff_briefs_do_not_carry_the_single_turn_warning(self, service):
+        """Interactive sessions do get another turn -- a human supplies it."""
+        brief = self._brief(service, "handoff-checkpoints")
+
+        assert "single turn" not in brief.lower()
