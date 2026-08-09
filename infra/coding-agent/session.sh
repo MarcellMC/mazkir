@@ -254,7 +254,7 @@ write_credential_env_file() {
 
 cmd_launch() {
   local name="" root="$DEFAULT_ROOT" mode="manual" prompt_file="" dry_run=0
-  local keep_env_file=0
+  local keep_env_file=0 detach=0
   local token_file="${CODING_AGENT_GITHUB_TOKEN_PATH:-}"
   name="$1"; shift
   [ -n "$name" ] || die "usage: session.sh launch <name> [--mode=MODE] [--prompt-file=PATH]"
@@ -265,6 +265,7 @@ cmd_launch() {
       --prompt-file=*) prompt_file="${arg#--prompt-file=}" ;;
       --github-token-file=*) token_file="${arg#--github-token-file=}" ;;
       --dry-run) dry_run=1 ;;
+      --detach) detach=1 ;;
       --keep-env-file) keep_env_file=1 ;;
       *) die "unknown option: $arg" ;;
     esac
@@ -316,8 +317,21 @@ cmd_launch() {
   export CREDENTIAL_ENV_FILE="$env_file"
   CREDENTIAL_ENV_FILE_TO_CLEAN="$env_file"
 
-  compose_args=(docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm
-                devcontainer "${claude_args[@]}")
+  # `docker compose run` is foreground by default, which is what a human at
+  # a terminal wants and exactly wrong for a caller that must return: a
+  # server launching a session would block for the session's entire life.
+  #
+  # Detached runs also skip --rm and take an explicit name: the poller reads
+  # `docker logs` AFTER the container exits to build its summary, so
+  # auto-removal would destroy the transcript, and it needs a predictable
+  # name because compose otherwise generates one per run.
+  compose_args=(docker compose -f "$SCRIPT_DIR/docker-compose.yml" run)
+  if [ "$detach" -eq 1 ]; then
+    compose_args+=(-d --name "mazkir-coding-$name")
+  else
+    compose_args+=(--rm)
+  fi
+  compose_args+=(devcontainer "${claude_args[@]}")
 
   if [ "$dry_run" -eq 1 ]; then
     printf '%s\n' "${compose_args[*]}"

@@ -62,6 +62,24 @@ check "CLAUDE.md is autoloaded" bash -c \
      --prompt-file='$CTX_PROMPT' 2>&1 | grep -q '8000'"
 
 echo
+echo "== detached launch returns immediately =="
+# The server calls session.sh and must get control back. `docker compose
+# run` is foreground by default, and a real autonomous launch blocked the
+# request thread for 130s before this check existed.
+DETACH_NAME="smokedetach-$$"
+"$SCRIPT_DIR/session.sh" provision "$DETACH_NAME" --root="$SMOKE_ROOT" >/dev/null
+detach_start=$(date +%s)
+"$SCRIPT_DIR/session.sh" launch "$DETACH_NAME" --root="$SMOKE_ROOT" \
+  --mode=autonomous --prompt-file="$BOOT_PROMPT" --detach >/dev/null 2>&1
+detach_elapsed=$(( $(date +%s) - detach_start ))
+
+check "launch returned in under 20s" test "$detach_elapsed" -lt 20
+check "container is named predictably" \
+  docker inspect "mazkir-coding-$DETACH_NAME"
+docker rm -f "mazkir-coding-$DETACH_NAME" >/dev/null 2>&1 || true
+"$SCRIPT_DIR/session.sh" clean "$DETACH_NAME" --root="$SMOKE_ROOT" --force >/dev/null 2>&1 || true
+
+echo
 if [ "$failures" -ne 0 ]; then
   echo "SMOKE TEST FAILED: $failures check(s) failed"
   exit 1

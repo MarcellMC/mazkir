@@ -590,3 +590,32 @@ class TestAutonomousCleanup:
         saved = service.get_task("ct_keep")
         assert saved["status"] == "done"
         assert "unpushed" in saved.get("cleanup_note", "")
+
+
+class TestLaunchDoesNotBlock:
+    def test_launch_always_detaches(self, tmp_path):
+        """`docker compose run` is foreground by default. Without --detach
+        the request thread blocks for the session's entire life -- a real
+        autonomous launch hung for 130s and the user never got a reply."""
+        service = CodingTasksService(
+            data_path=tmp_path / "coding-tasks",
+            repo_path=tmp_path / "repo",
+            worktrees_path=tmp_path / "agent-sessions",
+            docker_image="mazkir-coding-agent:test",
+            notifier=TelegramNotifier(bot_token=None),
+            session_script=tmp_path / "session.sh",
+        )
+
+        for mode in ("autonomous", "handoff-checkpoints", "handoff-wait"):
+            with patch("src.services.coding_tasks_service.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="", returncode=0)
+                service.launch({
+                    "id": f"ct_{mode}", "chat_id": 42,
+                    "branch": f"coding-agent/ct_{mode}", "prompt": "x",
+                    "status": "proposed", "task_description": "x",
+                    "session_mode": mode,
+                })
+
+            assert "--detach" in mock_run.call_args[0][0], (
+                f"{mode} must not block the caller"
+            )

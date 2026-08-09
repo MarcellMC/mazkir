@@ -502,3 +502,56 @@ def test_launch_removes_the_credential_env_file_after_running(source_repo, tmp_p
 
     leftovers = list(tmpdir.glob("mazkir-session-*.env"))
     assert leftovers == [], f"credential file left behind: {leftovers}"
+
+
+def test_detach_runs_the_container_in_the_background(source_repo, tmp_path):
+    """`docker compose run` is foreground by default, so a caller that is
+    not a human at a terminal blocks for the whole session -- the server
+    hung for 130s on a real autonomous launch."""
+    root = tmp_path / "agent-sessions"
+    _provision("bg", source_repo, root)
+    brief = tmp_path / "brief.md"
+    brief.write_text("do the thing")
+
+    out = _launch("bg", root, "--mode=autonomous", f"--prompt-file={brief}",
+                  "--detach").stdout
+
+    assert " -d " in f" {out} "
+
+
+def test_detach_names_the_container_predictably(source_repo, tmp_path):
+    """The poller looks the container up by name after launch returns."""
+    root = tmp_path / "agent-sessions"
+    _provision("named", source_repo, root)
+    brief = tmp_path / "brief.md"
+    brief.write_text("x")
+
+    out = _launch("named", root, "--mode=autonomous", f"--prompt-file={brief}",
+                  "--detach").stdout
+
+    assert "--name mazkir-coding-named" in out
+
+
+def test_detach_keeps_the_container_so_logs_survive_the_exit(source_repo, tmp_path):
+    """--rm would delete the container the instant it exits, destroying the
+    transcript the poller reads to build its summary."""
+    root = tmp_path / "agent-sessions"
+    _provision("keep", source_repo, root)
+    brief = tmp_path / "brief.md"
+    brief.write_text("x")
+
+    out = _launch("keep", root, "--mode=autonomous", f"--prompt-file={brief}",
+                  "--detach").stdout
+
+    assert "--rm" not in out
+
+
+def test_without_detach_the_run_stays_in_the_foreground(source_repo, tmp_path):
+    """A human running `session.sh start` wants the TTY."""
+    root = tmp_path / "agent-sessions"
+    _provision("fg", source_repo, root)
+
+    out = _launch("fg", root).stdout
+
+    assert " -d " not in f" {out} "
+    assert "--rm" in out

@@ -234,10 +234,15 @@ class CodingTasksService:
         prompt_path = self.data_path / f"{task['id']}-prompt.md"
         prompt_path.write_text(task["prompt"])
 
+        # --detach is mandatory here regardless of lane: `docker compose run`
+        # is foreground by default, so without it this call blocks the
+        # request thread for the session's entire life. An interactive
+        # hand-off session never exits at all, so it would block forever.
         cmd = [
             str(self.session_script), "start", task["id"],
             f"--mode={mode}",
             f"--root={self.worktrees_path}",
+            "--detach",
         ]
         if mode != "manual":
             cmd.append(f"--prompt-file={prompt_path}")
