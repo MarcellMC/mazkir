@@ -97,9 +97,19 @@ Create a fine-grained personal access token:
    Fine-grained tokens → Generate new token
 2. Resource owner: your account. Repository access: "Only select
    repositories" → `mazkir` only.
-3. Repository permissions → **Contents: Read and write**. Leave everything
-   else (especially **Administration**) at "No access" — this keeps the
-   token unable to touch or bypass the branch protection set up in step 4.
+3. Repository permissions → **Contents: Read and write** *and* **Pull
+   requests: Read and write**. Leave everything else (especially
+   **Administration**) at "No access" — that is what keeps the token unable
+   to touch or bypass the branch protection set up in step 4.
+
+   Both are required. Contents alone lets a session push a branch but not
+   open a PR: `gh pr create` fails with
+   `403 Resource not accessible by personal access token`, and since
+   `master` takes PRs only, the work lands nowhere. A real autonomous
+   session hit exactly this — it pushed correctly, then could not open the
+   PR its brief required. Pull requests: write does **not** grant merge
+   ability past branch protection; the protection rule is still what
+   decides.
 4. Generate, copy the value immediately (shown once).
 
 Store the token value in a file on your host that is never committed —
