@@ -9,6 +9,10 @@ import {
 } from "../formatters/telegram.js";
 import { buildTasksKeyboard, buildTaskDetailKeyboard } from "../keyboards/tasks.js";
 import { markActiveSpanError } from "../tracing-utils.js";
+import {
+  setPendingConfirmation,
+  clearPendingConfirmation,
+} from "../state/pending-confirmations.js";
 
 export const callbackHandlers = new Composer();
 
@@ -22,7 +26,16 @@ callbackHandlers.callbackQuery(/^confirm:([^:]+):(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     const chatId = ctx.chat?.id;
     if (!chatId) return;
+    // Clear before sending: the server consumes the PendingAction on this
+    // call, so leaving the entry behind would make the text handler treat
+    // the user's NEXT message as a reply to an action that no longer
+    // exists -- surfacing as "No pending action found" and swallowing
+    // whatever they actually typed.
+    clearPendingConfirmation(chatId);
     const response = await api.sendConfirmation(chatId, actionId, value);
+    if (response.awaiting_confirmation && response.pending_action_id) {
+      setPendingConfirmation(chatId, response.pending_action_id);
+    }
     await ctx.reply(response.response, { parse_mode: "HTML" });
   } catch (err) {
     markActiveSpanError(err);

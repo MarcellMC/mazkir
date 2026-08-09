@@ -6,9 +6,11 @@ import { config } from "../config.js";
 import { markActiveSpanError, setActiveSpanOutput } from "../tracing-utils.js";
 import { sendRich } from "../bot-utils/send-rich.js";
 import { buildConfirmationKeyboard } from "../keyboards/confirmation.js";
-
-// Pending confirmations: chatId -> actionId
-const pendingConfirmations = new Map<number, string>();
+import {
+  getPendingConfirmation,
+  setPendingConfirmation,
+  clearPendingConfirmation,
+} from "../state/pending-confirmations.js";
 
 /** Inline keyboard for a confirmation that names its options, or undefined
  *  for a plain yes/no gate (which is still answered as free text). The bot
@@ -168,16 +170,16 @@ messageHandler.on(
       await ctx.replyWithChatAction("typing");
 
       // Check for pending confirmation (only for plain text replies)
-      const pendingActionId = pendingConfirmations.get(chatId);
+      const pendingActionId = getPendingConfirmation(chatId);
       if (pendingActionId && msg.text && !msg.photo && !msg.location) {
-        pendingConfirmations.delete(chatId);
+        clearPendingConfirmation(chatId);
         const response = await api.sendConfirmation(
           chatId,
           pendingActionId,
           text,
         );
         if (response.awaiting_confirmation && response.pending_action_id) {
-          pendingConfirmations.set(chatId, response.pending_action_id);
+          setPendingConfirmation(chatId, response.pending_action_id);
         }
         setActiveSpanOutput(response.response);
         await ctx.reply(response.response, { parse_mode: "HTML" });
@@ -272,7 +274,7 @@ messageHandler.on(
           });
 
           if (response.awaiting_confirmation && response.pending_action_id) {
-            pendingConfirmations.set(chatId, response.pending_action_id);
+            setPendingConfirmation(chatId, response.pending_action_id);
           }
           setActiveSpanOutput(response.response);
 
@@ -283,7 +285,7 @@ messageHandler.on(
           try {
             const response = await api.sendMessage(payload);
             if (response.awaiting_confirmation && response.pending_action_id) {
-              pendingConfirmations.set(chatId, response.pending_action_id);
+              setPendingConfirmation(chatId, response.pending_action_id);
             }
             setActiveSpanOutput(response.response);
             await sendRich(ctx, { markdown: response.response }, confirmExtra(response));
@@ -297,7 +299,7 @@ messageHandler.on(
         const response = await api.sendMessage(payload);
 
         if (response.awaiting_confirmation && response.pending_action_id) {
-          pendingConfirmations.set(chatId, response.pending_action_id);
+          setPendingConfirmation(chatId, response.pending_action_id);
         }
 
         setActiveSpanOutput(response.response);
