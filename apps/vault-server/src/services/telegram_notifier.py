@@ -19,6 +19,16 @@ class TelegramNotifier:
     def __init__(self, bot_token: str | None, base_url: str = "https://api.telegram.org"):
         self.bot_token = bot_token
         self.base_url = base_url
+        # Warn now rather than only at send time. Without a token every
+        # out-of-band notification is dropped with a single buried log
+        # line -- a coding session finished, pushed its branch, and the
+        # user was never told, which read as the session hanging.
+        if not bot_token:
+            logger.warning(
+                "TelegramNotifier has no bot token: out-of-band notifications "
+                "(coding session completion) will be dropped. Set "
+                "TELEGRAM_BOT_TOKEN in vault-server's .env."
+            )
 
     def send_message(self, chat_id: int, text: str) -> None:
         if not self.bot_token:

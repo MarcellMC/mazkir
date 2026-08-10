@@ -25,3 +25,27 @@ def test_send_message_noop_when_token_missing(caplog):
 
     mock_post.assert_not_called()
     assert "no bot token" in caplog.text.lower()
+
+
+def test_missing_token_warns_at_construction_not_at_send(caplog):
+    """A notifier with no token skips silently at send time, so a coding
+    session's completion notification vanishes with only a line buried in
+    the log. Surfacing it at construction means it is visible at startup,
+    before anything depends on it."""
+    import logging
+    from src.services.telegram_notifier import TelegramNotifier
+
+    with caplog.at_level(logging.WARNING):
+        TelegramNotifier(bot_token=None)
+
+    assert any("token" in r.message.lower() for r in caplog.records)
+
+
+def test_configured_token_warns_about_nothing(caplog):
+    import logging
+    from src.services.telegram_notifier import TelegramNotifier
+
+    with caplog.at_level(logging.WARNING):
+        TelegramNotifier(bot_token="123:abc")
+
+    assert caplog.records == []
