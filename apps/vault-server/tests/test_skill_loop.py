@@ -148,3 +148,96 @@ def test_loop_caps_at_three_hops(mock_services, monkeypatch):
     agent.handle_message(chat_id=1, text="go")
 
     assert len(call_log) <= 3
+
+
+def test_skill_path_surfaces_pending_confirmation(mock_services, monkeypatch):
+    """A skill whose tool call pauses for confirmation must expose the
+    action id, or the caller can never reach /message/confirm."""
+    from src.services.agent_service import AgentService, AgentResponse
+    claude, vault, memory, calendar, events = mock_services
+
+    skill = _mk_skill("engineering", ["propose_coding_session"])
+    skill_registry = MagicMock()
+    skill_registry.list.return_value = [skill]
+    skill_registry.get.side_effect = lambda n: skill if n == "engineering" else None
+
+    router = MagicMock()
+    router.pick.return_value = MagicMock(skill="engineering", reason="bug report")
+
+    agent = AgentService(
+        claude=claude, vault=vault, memory=memory, calendar=calendar, events=events,
+        skill_registry=skill_registry, router=router,
+    )
+    monkeypatch.setattr(
+        agent, "_run_agent_turn",
+        lambda **kwargs: AgentResponse(
+            response="Would spin up a session. Should I proceed?",
+            awaiting_confirmation=True,
+            pending_action_id="act_abc",
+        ),
+    )
+
+    result = agent.handle_message("The /day command is broken", chat_id=42)
+
+    assert result.awaiting_confirmation is True
+    assert result.pending_action_id == "act_abc"
+
+
+def test_agent_response_carries_confirmation_choices(mock_services, monkeypatch):
+    """The server names the options; the bot renders whatever it is given
+    and stays ignorant of coding sessions."""
+    from src.services.agent_service import AgentService, AgentResponse
+    claude, vault, memory, calendar, events = mock_services
+
+    skill = _mk_skill("engineering", ["propose_coding_session"])
+    skill_registry = MagicMock()
+    skill_registry.list.return_value = [skill]
+    skill_registry.get.side_effect = lambda n: skill if n == "engineering" else None
+    router = MagicMock()
+    router.pick.return_value = MagicMock(skill="engineering", reason="bug")
+
+    agent = AgentService(
+        claude=claude, vault=vault, memory=memory, calendar=calendar, events=events,
+        skill_registry=skill_registry, router=router,
+    )
+    choices = [
+        {"value": "autonomous", "label": "Autonomous"},
+        {"value": "handoff-checkpoints", "label": "Hand-off"},
+    ]
+    monkeypatch.setattr(
+        agent, "_run_agent_turn",
+        lambda **kwargs: AgentResponse(
+            response="pick a lane",
+            awaiting_confirmation=True,
+            pending_action_id="act_1",
+            confirmation_choices=choices,
+        ),
+    )
+
+    result = agent.handle_message("the /day command is broken", chat_id=42)
+
+    assert result.confirmation_choices == choices
+
+
+def test_agent_response_defaults_to_no_choices(mock_services, monkeypatch):
+    from src.services.agent_service import AgentService, AgentResponse
+    claude, vault, memory, calendar, events = mock_services
+
+    skill = _mk_skill("mazkir", ["list_tasks"])
+    skill_registry = MagicMock()
+    skill_registry.list.return_value = [skill]
+    skill_registry.get.side_effect = lambda n: skill if n == "mazkir" else None
+    router = MagicMock()
+    router.pick.return_value = MagicMock(skill="mazkir", reason="")
+
+    agent = AgentService(
+        claude=claude, vault=vault, memory=memory, calendar=calendar, events=events,
+        skill_registry=skill_registry, router=router,
+    )
+    monkeypatch.setattr(
+        agent, "_run_agent_turn", lambda **kwargs: AgentResponse(response="hi"),
+    )
+
+    result = agent.handle_message("hello", chat_id=42)
+
+    assert result.confirmation_choices is None

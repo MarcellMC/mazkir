@@ -1,6 +1,7 @@
 import type { Context } from "grammy";
 import type { InputRichMessage } from "@grammyjs/types";
 import { markActiveSpanError } from "../tracing-utils.js";
+import { logger } from "../logger.js";
 
 // Rich content is an extended markup string in InputRichMessage. Send via the
 // grammY context method ctx.replyWithRichMessage. There is no editMessageText on
@@ -31,6 +32,14 @@ export async function sendRich(
     await ctx.replyWithRichMessage(msg, extra as never);
   } catch (err) {
     markActiveSpanError(err);
-    await ctx.reply(richToPlainText(msg));
+    // Log the cause: a silent downgrade made a missing env var
+    // undiagnosable when this last fired.
+    logger.warn(
+      { event_type: "rich_message_fallback", err: String(err) },
+      "rich_message_fallback",
+    );
+    // `extra` carries reply_markup. Dropping it strips an inline keyboard
+    // from the fallback, leaving a prompt the user cannot answer.
+    await ctx.reply(richToPlainText(msg), extra as never);
   }
 }

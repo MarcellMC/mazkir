@@ -24,7 +24,12 @@ from src.services.hooks.audit_log import audit_log as _audit_log_hook
 from src.services.hooks.sync_to_calendar import sync_to_calendar as _sync_to_calendar_hook
 from src.services.memory_service import MemoryService
 from src.services.preview import register_preview_fn, render_preview
-from src.services.skill_executor import SkillExecutor
+from src.services.skill_executor import LoopOutcome, SkillExecutor
+from src.services.tool_handlers.coding_handoff import (
+    SESSION_CHOICES as _SESSION_CHOICES,
+    preview_coding_session as _preview_coding_session,
+    propose_coding_session as _propose_coding_session,
+)
 from src.services.tool_response import ErrorCode, err, ok
 from src.services.vault_service import VaultService
 
@@ -76,8 +81,19 @@ def _register_destructive_previews() -> None:
     register_preview_fn("archive_goal", _preview_archive_goal)
     register_preview_fn("complete_task", _preview_complete_task)
     register_preview_fn("complete_habit", _preview_complete_habit)
+    register_preview_fn("propose_coding_session", _preview_coding_session)
 
 CONFIDENCE_THRESHOLD = 0.85
+
+_AFFIRMATIVE = ("yes", "y", "ok", "sure", "do it")
+_CHOICE_VALUES = {c["value"] for c in _SESSION_CHOICES}
+
+
+def _choices_for(calls: list[dict]) -> list[dict] | None:
+    """Choices a pending batch offers, or None for a plain yes/no gate."""
+    if any(c["name"] == "propose_coding_session" for c in calls):
+        return _SESSION_CHOICES
+    return None
 
 _RISK_DEFAULT_THRESHOLDS: dict[str, float | None] = {
     "safe": None,
@@ -126,6 +142,9 @@ class AgentResponse:
     awaiting_confirmation: bool = False
     pending_action_id: str | None = None
     iterations: int = 0
+    # Options this confirmation offers, as [{"value", "label"}]. None means
+    # a plain free-text yes/no gate -- the client falls back to that.
+    confirmation_choices: list[dict] | None = None
 
 
 @dataclass
@@ -150,6 +169,7 @@ class AgentService:
         calendar: Any = None,
         media_path: Path | None = None,
         events: Any = None,
+        coding_tasks: Any = None,
         *,
         skill_registry: Any = None,
         router: Any = None,
@@ -160,6 +180,8 @@ class AgentService:
         self.calendar = calendar
         self.media_path = media_path or Path.home() / "dev" / "mazkir" / "data" / "media"
         self.events = events
+        self.coding_tasks = coding_tasks
+        self._current_chat_id: int | None = None
         self.skill_registry = skill_registry
         self.router = router
         self.max_iterations = 10
@@ -484,6 +506,38 @@ class AgentService:
                 "handler": self._tool_create_habit,
                 "risk": "write",
                 "pre_hooks": ["validate_schema"],
+            },
+            "propose_coding_session": {
+                "schema": {
+                    "name": "propose_coding_session",
+                    "description": (
+                        "Propose spinning up an isolated, containerized coding session to "
+                        "investigate or fix a bug/small task, using a real Claude Code CLI "
+                        "session with permissions bypassed. Always requires explicit user "
+                        "confirmation before anything is provisioned."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "task_description": {"type": "string", "description": "Distilled description of the bug/task"},
+                            "conversation_excerpt": {"type": "string", "description": "Relevant quoted excerpt from the conversation"},
+                            "likely_area": {"type": "string", "description": "Best-guess file/service path"},
+                            "test_command": {"type": "string", "description": "Test command the session should run before finishing"},
+                            "session_mode": {
+                                "type": "string",
+                                "enum": [c["value"] for c in _SESSION_CHOICES],
+                                "description": "Chosen by the user at the confirmation gate — do not set this yourself",
+                            },
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["task_description"],
+                    },
+                },
+                "handler": self._tool_propose_coding_session,
+                "risk": "write",
+                "pre_hooks": ["validate_schema"],
+                "preview": True,
             },
             "create_goal": {
                 "schema": {
@@ -958,6 +1012,7 @@ class AgentService:
                 that internal reasoning steps are not surfaced to the caller.
         """
         self._stream_callback = stream_callback
+        self._current_chat_id = chat_id
         session_id = str(chat_id)
         user_id = str(chat_id)
         try:
@@ -996,6 +1051,7 @@ class AgentService:
                 return result
         finally:
             self._stream_callback = None
+            self._current_chat_id = None
 
     def _handle_message_inner(
         self,
@@ -1073,7 +1129,13 @@ class AgentService:
             messages=messages,
             context=context,
         )
-        return AgentResponse(response=result.response_text, iterations=result.iterations)
+        return AgentResponse(
+            response=result.response_text,
+            awaiting_confirmation=result.awaiting_confirmation,
+            pending_action_id=result.pending_action_id,
+            confirmation_choices=result.confirmation_choices,
+            iterations=result.iterations,
+        )
 
     def handle_confirmation(
         self, chat_id: int, action_id: str, user_response: str,
@@ -1118,61 +1180,86 @@ class AgentService:
     def _handle_confirmation_inner(
         self, chat_id: int, action_id: str, user_response: str,
     ) -> AgentResponse:
-        pending = self.pending_confirmations.pop(action_id, None)
-        if not pending:
-            return AgentResponse(response="No pending action found.")
+        self._current_chat_id = chat_id
+        try:
+            pending = self.pending_confirmations.pop(action_id, None)
+            if not pending:
+                return AgentResponse(response="No pending action found.")
 
-        if user_response.lower() in ("yes", "y", "ok", "sure", "do it"):
-            tool_results = list(pending.executed_results)
-            pre_tools_audit: list[dict] = []
-            for call in pending.pending_calls:
-                params = dict(call["input"])
-                reasoning = params.get("_reasoning")
-                confidence, _ = self._check_confidence(call["name"], params)
-                result = self._execute_tool(call["name"], params, confidence=confidence, action="auto_execute")
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": call["id"],
-                    "content": json.dumps(result),
+            answer = user_response.lower().strip()
+            chosen_mode = answer if answer in _CHOICE_VALUES else None
+            if answer in _AFFIRMATIVE or chosen_mode:
+                tool_results = list(pending.executed_results)
+                pre_tools_audit: list[dict] = []
+                for call in pending.pending_calls:
+                    params = dict(call["input"])
+                    # The gate's answer *is* the lane. Without this the tool
+                    # would run with its default whichever button was pressed.
+                    if chosen_mode and call["name"] == "propose_coding_session":
+                        params["session_mode"] = chosen_mode
+                    reasoning = params.get("_reasoning")
+                    confidence, _ = self._check_confidence(call["name"], params)
+                    result = self._execute_tool(call["name"], params, confidence=confidence, action="auto_execute")
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": call["id"],
+                        "content": json.dumps(result),
+                    })
+                    pre_tools_audit.append({
+                        "name": call["name"],
+                        "params": _sanitize_params(params),
+                        "confidence": confidence,
+                        "reasoning": reasoning,
+                        "result_summary": _summarize_result(result) if isinstance(result, dict) else None,
+                        "confirmed": True,
+                    })
+
+                messages = pending.messages
+                messages.append({"role": "assistant", "content": pending.assistant_response.content})
+                # State the answer back. Without it the model sees only a
+                # tool result and has no idea the user already picked --
+                # a real session launched as "autonomous" and the follow-up
+                # reply asked which mode to use, which reads to the user as
+                # the button having done nothing.
+                content = list(tool_results)
+                if chosen_mode:
+                    content.append({
+                        "type": "text",
+                        "text": (
+                            f"The user chose '{chosen_mode}'. That choice is already "
+                            f"applied and the action above has already run — do not ask "
+                            f"them to choose again. Confirm briefly what is now underway."
+                        ),
+                    })
+                messages.append({"role": "user", "content": content})
+
+                context = self.memory.assemble_context(chat_id)
+                system = self._build_system_prompt(context)
+                return self._run_agent_turn(
+                    chat_id, user_response, messages, system,
+                    tool_schemas=self._tool_schemas(),
+                    max_iterations=self.max_iterations,
+                    pre_tools=pre_tools_audit,
+                    action_id=action_id,
+                    cache_static_prefix=self._build_static_prefix(),
+                )
+            else:
+                messages = pending.messages
+                messages.append({
+                    "role": "user",
+                    "content": f"User responded to confirmation: {user_response}",
                 })
-                pre_tools_audit.append({
-                    "name": call["name"],
-                    "params": _sanitize_params(params),
-                    "confidence": confidence,
-                    "reasoning": reasoning,
-                    "result_summary": _summarize_result(result) if isinstance(result, dict) else None,
-                    "confirmed": True,
-                })
-
-            messages = pending.messages
-            messages.append({"role": "assistant", "content": pending.assistant_response.content})
-            messages.append({"role": "user", "content": tool_results})
-
-            context = self.memory.assemble_context(chat_id)
-            system = self._build_system_prompt(context)
-            return self._run_agent_turn(
-                chat_id, user_response, messages, system,
-                tool_schemas=self._tool_schemas(),
-                max_iterations=self.max_iterations,
-                pre_tools=pre_tools_audit,
-                action_id=action_id,
-                cache_static_prefix=self._build_static_prefix(),
-            )
-        else:
-            messages = pending.messages
-            messages.append({
-                "role": "user",
-                "content": f"User responded to confirmation: {user_response}",
-            })
-            context = self.memory.assemble_context(chat_id)
-            system = self._build_system_prompt(context)
-            return self._run_agent_turn(
-                chat_id, user_response, messages, system,
-                tool_schemas=self._tool_schemas(),
-                max_iterations=self.max_iterations,
-                action_id=action_id,
-                cache_static_prefix=self._build_static_prefix(),
-            )
+                context = self.memory.assemble_context(chat_id)
+                system = self._build_system_prompt(context)
+                return self._run_agent_turn(
+                    chat_id, user_response, messages, system,
+                    tool_schemas=self._tool_schemas(),
+                    max_iterations=self.max_iterations,
+                    action_id=action_id,
+                    cache_static_prefix=self._build_static_prefix(),
+                )
+        finally:
+            self._current_chat_id = None
 
     def _run_loop(
         self,
@@ -1184,12 +1271,16 @@ class AgentService:
         max_iterations: int,
         cache_static_prefix: str | None = None,
         model: str | None = None,
-    ) -> tuple[str, str]:
-        """Parameterized inner Claude tool-use loop. Returns (response_text, stop_reason).
+    ) -> LoopOutcome:
+        """Parameterized inner Claude tool-use loop.
+
+        Returns (response_text, stop_reason, pending_action_id).
 
         Delegates to _run_agent_turn which handles the full iteration logic including
         confidence gating, confirmation flow, memory persistence, and audit emission.
-        When a confirmation is needed, "needs_confirmation" is returned as the stop_reason.
+        When a confirmation is needed, "needs_confirmation" is returned as the stop_reason
+        and pending_action_id identifies the stored PendingAction — callers must carry it
+        out to the client, which needs it to answer via /message/confirm.
 
         Args:
             cache_static_prefix: Static system-prompt prefix to cache via Anthropic
@@ -1207,8 +1298,11 @@ class AgentService:
             model=model,
         )
         if result.awaiting_confirmation:
-            return result.response, "needs_confirmation"
-        return result.response, "end_turn"
+            return LoopOutcome(
+                result.response, "needs_confirmation",
+                result.pending_action_id, result.confirmation_choices,
+            )
+        return LoopOutcome(result.response, "end_turn")
 
     def _run_agent_turn(
         self,
@@ -1436,6 +1530,7 @@ class AgentService:
                                 response=description,
                                 awaiting_confirmation=True,
                                 pending_action_id=pending_action_id,
+                                confirmation_choices=_choices_for(needs_confirmation),
                             )
 
                         tool_results = []
@@ -2703,6 +2798,9 @@ class AgentService:
             },
             items=[archive_path],
         )
+
+    def _tool_propose_coding_session(self, params: dict) -> dict:
+        return _propose_coding_session(self.coding_tasks, params, self._current_chat_id)
 
     def _tool_complete_habit(self, params: dict) -> dict:
         import datetime as dt

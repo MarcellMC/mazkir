@@ -9,8 +9,43 @@ import {
 } from "../formatters/telegram.js";
 import { buildTasksKeyboard, buildTaskDetailKeyboard } from "../keyboards/tasks.js";
 import { markActiveSpanError } from "../tracing-utils.js";
+import { sendRich } from "../bot-utils/send-rich.js";
+import {
+  setPendingConfirmation,
+  clearPendingConfirmation,
+} from "../state/pending-confirmations.js";
 
 export const callbackHandlers = new Composer();
+
+// Confirmation choice buttons. The action id comes from the callback data
+// rather than module state, so a button on an older message cannot answer
+// a newer confirmation.
+callbackHandlers.callbackQuery(/^confirm:([^:]+):(.+)$/, async (ctx) => {
+  const actionId = ctx.match[1]!;
+  const value = ctx.match[2]!;
+  try {
+    await ctx.answerCallbackQuery();
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+    // Clear before sending: the server consumes the PendingAction on this
+    // call, so leaving the entry behind would make the text handler treat
+    // the user's NEXT message as a reply to an action that no longer
+    // exists -- surfacing as "No pending action found" and swallowing
+    // whatever they actually typed.
+    clearPendingConfirmation(chatId);
+    const response = await api.sendConfirmation(chatId, actionId, value);
+    if (response.awaiting_confirmation && response.pending_action_id) {
+      setPendingConfirmation(chatId, response.pending_action_id);
+    }
+    // The agent emits markdown, so this goes through sendRich like every
+    // other agent reply. Sent as parse_mode HTML it rendered tables and
+    // backticks as raw punctuation.
+    await sendRich(ctx, { markdown: response.response });
+  } catch (err) {
+    markActiveSpanError(err);
+    await ctx.reply("❌ Something went wrong answering that.");
+  }
+});
 
 // Habit completion
 callbackHandlers.callbackQuery(/^habit:complete:(.+)$/, async (ctx) => {

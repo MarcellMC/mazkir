@@ -1,0 +1,34 @@
+# infra/coding-agent/docker-compose.yml
+#
+# THE container definition. Both session.sh (manual/hand-off) and
+# vault-server's spawn_container go through this, so the automated and
+# manual paths cannot drift -- they did before, and the .claude.json mount
+# existed here but not in spawn_container, which broke every automated
+# session on boot. Invoke via session.sh, which resolves every variable
+# below (compose does no shell-style ~ expansion).
+services:
+  devcontainer:
+    image: mazkir-coding-agent:latest
+    build: .
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    # Container environment comes from a file, never from -e flags: argv is
+    # copied into container metadata where `docker inspect` echoes it back
+    # for as long as the container exists, and is visible in the host
+    # process list while the command runs. `docker compose run` has no
+    # --env-file of its own (its top-level --env-file only drives variable
+    # substitution), so the service-level env_file key is the mechanism.
+    # session.sh always writes this file, empty when no token is configured.
+    env_file:
+      - ${CREDENTIAL_ENV_FILE}
+    volumes:
+      - mazkir-claude-auth:/home/marcellmc/.claude
+      - ${CLAUDE_JSON_PATH}:/home/marcellmc/.claude.json
+      - ${CLAUDE_PLUGINS_PATH}:/home/marcellmc/.claude/plugins
+      - ${DOTFILES_PATH}:/home/marcellmc/dotfiles:ro
+      - ${WORKTREE_PATH}:/workspace
+
+volumes:
+  mazkir-claude-auth:
+    external: true
