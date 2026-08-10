@@ -43,6 +43,18 @@ If `/workspace/memory` doesn't exist or is empty, the task didn't request
 vault access — don't go looking for another path to reach it. There isn't
 one mounted, and that's deliberate, not a bug for you to route around.
 
+## The environment is already provisioned
+
+Python, `uv`, Node, `gh`, `doppler` and the **full vault-server dependency
+set** are installed system-wide in this image. From `apps/vault-server`,
+run `python3 -m pytest tests/` directly.
+
+Do **not** run `python3 -m venv`. `CLAUDE.md`'s quick-commands say to
+`source venv/bin/activate`, but those describe a host checkout — a fresh
+virtualenv here starts empty and re-downloads roughly 25 packages. One
+session spent over nine minutes doing exactly that before it could run a
+single test.
+
 ## Never guess at absolute host paths
 
 The only things visible to you are what's explicitly mounted. If a file or

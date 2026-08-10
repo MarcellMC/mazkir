@@ -725,3 +725,30 @@ class TestAutonomousBriefWarnsAboutSingleTurn:
         brief = self._brief(service, "handoff-checkpoints")
 
         assert "single turn" not in brief.lower()
+
+
+class TestBriefPointsAtThePreinstalledEnvironment:
+    def _brief(self, service, mode="autonomous"):
+        return service.assemble_brief(
+            task_description="x", conversation_excerpt="y", likely_area="z",
+            branch="coding-agent/ct_1", worktree_path=Path("/workspace"),
+            test_command="npx turbo test", trace_id=None,
+            reported_at=datetime(2026, 8, 10, tzinfo=timezone.utc),
+            session_mode=mode,
+        )
+
+    def test_brief_tells_the_session_not_to_build_a_virtualenv(self, service):
+        """CLAUDE.md's quick-commands say to `source venv/bin/activate`, so a
+        session follows that, runs `python3 -m venv`, and gets an empty env --
+        a fresh venv does not inherit the image's system site-packages. One
+        real session spent 9+ minutes re-downloading the dependency set that
+        was already installed."""
+        brief = self._brief(service)
+
+        lowered = brief.lower()
+        assert "venv" in lowered
+        assert "already installed" in lowered or "pre-installed" in lowered
+
+    def test_every_lane_gets_the_environment_note(self, service):
+        for mode in ("autonomous", "handoff-checkpoints", "handoff-wait"):
+            assert "venv" in self._brief(service, mode).lower()
