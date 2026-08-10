@@ -32,7 +32,14 @@ cleanup_credential_env_file() {
 # GitHub remote to target.
 source_remote_url() {
   local repo="$1" url
-  url="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+  # `git remote get-url` EXPANDS insteadOf rewrites. Inside a session the
+  # container injects
+  #   url.https://x-access-token:<token>@github.com/.insteadOf = git@github.com:
+  # so get-url would hand back a token-bearing URL, and set-url would then
+  # write that token straight into the new clone's .git/config -- exactly
+  # what routing the credential through an env-file exists to prevent.
+  # Read the configured value instead.
+  url="$(git -C "$repo" config --get remote.origin.url 2>/dev/null || true)"
   [ -n "$url" ] || die "source repo $repo has no origin remote"
   case "$url" in
     /*|.*) die "source repo origin is not a remote URL: $url" ;;

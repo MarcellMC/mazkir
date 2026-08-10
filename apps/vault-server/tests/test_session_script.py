@@ -61,7 +61,7 @@ def test_provision_rewrites_origin_to_the_github_url(source_repo, tmp_path):
     root = tmp_path / "agent-sessions"
     _provision("fix-thing", source_repo, root)
 
-    origin = _git("remote", "get-url", "origin", cwd=root / "fix-thing")
+    origin = _git("config", "--get", "remote.origin.url", cwd=root / "fix-thing")
     assert origin == "git@github.com:Test/source.git"
 
 
@@ -116,7 +116,7 @@ def test_provision_nests_an_independent_vault_clone(source_repo, vault_repo, tmp
     memory = root / "fix-thing" / "memory"
     assert (memory / "AGENTS.md").exists()
     assert (memory / ".git").is_dir(), "vault must be its own clone, not part of the parent"
-    assert _git("remote", "get-url", "origin", cwd=memory) == "git@github.com:Test/vault.git"
+    assert _git("config", "--get", "remote.origin.url", cwd=memory) == "git@github.com:Test/vault.git"
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=memory) == "coding-agent/fix-thing"
 
 
@@ -555,3 +555,53 @@ def test_without_detach_the_run_stays_in_the_foreground(source_repo, tmp_path):
 
     assert " -d " not in f" {out} "
     assert "--rm" in out
+
+
+# The container injects a credential rewrite via GIT_CONFIG_*:
+#   url.https://x-access-token:<token>@github.com/.insteadOf = git@github.com:
+# `git remote get-url` EXPANDS insteadOf, so anything reading a remote that
+# way sees the rewritten, token-bearing URL. Reproduce that here.
+REWRITE_ENV = {
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "url.https://x-access-token:ghp_smoketoken@github.com/.insteadOf",
+    "GIT_CONFIG_VALUE_0": "git@github.com:",
+}
+
+
+def _provision_with_rewrite(name, source_repo, root):
+    import os
+
+    return subprocess.run(
+        [str(SESSION_SH), "provision", name,
+         f"--repo={source_repo}", f"--root={root}"],
+        capture_output=True, text=True,
+        env={**os.environ, **REWRITE_ENV},
+    )
+
+
+def test_provisioning_never_writes_a_token_into_the_clone_config(
+    source_repo, tmp_path
+):
+    """Reading the source remote with `git remote get-url` expands
+    insteadOf, so a session provisioning under the container's credential
+    rewrite would copy the token straight into the new clone's
+    .git/config -- exactly what routing it through an env-file avoids."""
+    root = tmp_path / "agent-sessions"
+    result = _provision_with_rewrite("nested", source_repo, root)
+
+    assert result.returncode == 0, result.stderr
+    config = (root / "nested" / ".git" / "config").read_text()
+    assert "ghp_smoketoken" not in config
+    assert "x-access-token" not in config
+
+
+def test_provisioning_under_the_rewrite_still_sets_the_github_remote(
+    source_repo, tmp_path
+):
+    root = tmp_path / "agent-sessions"
+    _provision_with_rewrite("nested2", source_repo, root)
+
+    configured = _git(
+        "config", "--get", "remote.origin.url", cwd=root / "nested2",
+    )
+    assert configured == "git@github.com:Test/source.git"
