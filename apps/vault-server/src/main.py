@@ -1,4 +1,5 @@
 """Vault server FastAPI application."""
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -13,6 +14,8 @@ from src.services.memory_service import MemoryService
 from src.services.agent_service import AgentService
 from src.services.skill_registry import SkillRegistry
 from src.services.router_service import RouterService
+from src.services.telegram_notifier import TelegramNotifier
+from src.services.coding_tasks_service import CodingTasksService
 
 configure_logging(settings.log_level, settings.logs_dir)
 configure_audit_log(settings.logs_dir)
@@ -33,11 +36,33 @@ generation: "GenerationService | None" = None
 imagery: "ImageryService | None" = None
 events: "EventsService | None" = None
 notes: "NotesService | None" = None
+coding_tasks: "CodingTasksService | None" = None
+_coding_tasks_poller_task: "asyncio.Task | None" = None
+
+
+async def _coding_tasks_poll_loop(coding_tasks: "CodingTasksService", interval_seconds: float = 30.0) -> None:
+    """Background loop: periodically check running coding-handoff containers
+    and notify on completion. Runs until cancelled by lifespan shutdown.
+
+    check_running_tasks is synchronous and shells out to `docker inspect` /
+    `docker logs` once per running task, so it goes to a worker thread —
+    called inline it would stall every request sharing this event loop for
+    however long the Docker daemon takes to answer.
+    """
+    while True:
+        try:
+            await asyncio.to_thread(coding_tasks.check_running_tasks)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("coding_tasks poll loop iteration failed")
+        await asyncio.sleep(interval_seconds)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global vault, claude, calendar, memory, agent, timeline, generation, imagery, events, notes
+    global coding_tasks, _coding_tasks_poller_task
 
     vault = VaultService(settings.vault_path, settings.vault_timezone)
     logger.info(f"Vault service initialized: {settings.vault_path}")
@@ -84,6 +109,22 @@ async def lifespan(app: FastAPI):
     notes = NotesService(vault)
     logger.info("Notes service initialized")
 
+    # Initialize CodingTasksService
+    notifier = TelegramNotifier(bot_token=settings.telegram_bot_token)
+    coding_tasks = CodingTasksService(
+        data_path=settings.coding_tasks_data_path,
+        repo_path=settings.mazkir_repo_path,
+        worktrees_path=settings.coding_agent_worktrees_path,
+        docker_image=settings.coding_agent_docker_image,
+        notifier=notifier,
+        audit_log_path=settings.logs_dir / "tool-calls.jsonl",
+        github_token_path=settings.coding_agent_github_token_path,
+        vault_repo_path=settings.mazkir_vault_repo_path,
+        claude_json_path=settings.coding_agent_claude_json_path,
+        session_script=settings.coding_agent_session_script,
+    )
+    logger.info("Coding tasks service initialized: %s", settings.coding_tasks_data_path)
+
     # Initialize SkillRegistry
     skill_registry = SkillRegistry(skills_dir=settings.skills_dir)
     skill_registry.load()
@@ -106,6 +147,7 @@ async def lifespan(app: FastAPI):
             events=events,
             skill_registry=skill_registry,
             router=router_service,
+            coding_tasks=coding_tasks,
         )
         memory._claude = claude
         logger.info("Agent service initialized")
@@ -136,7 +178,19 @@ async def lifespan(app: FastAPI):
     imagery = ImageryService()
     logger.info("Imagery service initialized")
 
+    _coding_tasks_poller_task = asyncio.create_task(
+        _coding_tasks_poll_loop(coding_tasks, interval_seconds=settings.coding_agent_poll_interval_seconds)
+    )
+    logger.info("Coding tasks poller started")
+
     yield
+
+    if _coding_tasks_poller_task is not None:
+        _coding_tasks_poller_task.cancel()
+        try:
+            await _coding_tasks_poller_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Mazkir Vault Server", version="0.1.0", lifespan=lifespan)

@@ -1436,3 +1436,178 @@ class TestReadKnowledge:
         assert result["error"]["code"] == "AMBIGUOUS_MATCH"
         assert "candidates" in result["error"]["details"]
         assert len(result["error"]["details"]["candidates"]) == 2
+
+
+class TestCodingHandoffTool:
+    def test_propose_coding_session_registered_as_write_with_forced_preview(self, agent):
+        assert "propose_coding_session" in agent.tools
+        entry = agent.tools["propose_coding_session"]
+        assert entry["risk"] == "write"
+        assert entry["preview"] is True
+
+    def test_current_chat_id_set_and_cleared_around_handle_message(self, agent, mock_services):
+        claude = mock_services[0]
+        assert agent._current_chat_id is None
+
+        captured_chat_id = []
+
+        def _capture_and_respond(*args, **kwargs):
+            # Invoked mid-loop, inside the try block of handle_message — this
+            # proves _current_chat_id is set to the caller's chat_id *during*
+            # the call, not just before/after it.
+            captured_chat_id.append(agent._current_chat_id)
+            mock_response = MagicMock()
+            mock_response.stop_reason = "end_turn"
+            text_block = MagicMock()
+            text_block.type = "text"
+            text_block.text = "Hello! How can I help?"
+            mock_response.content = [text_block]
+            return mock_response
+
+        claude.create.side_effect = _capture_and_respond
+
+        result = agent.handle_message("hello", chat_id=42)
+
+        assert result.response == "Hello! How can I help?"
+        assert captured_chat_id == [42], (
+            "chat_id was not set on agent._current_chat_id during handle_message"
+        )
+        assert agent._current_chat_id is None, (
+            "chat_id was not cleared after handle_message returned"
+        )
+
+    def test_confirmation_flow_sets_chat_id_so_coding_task_persists_it(self, agent):
+        """Regression test for the bug where every coding-handoff task was
+        persisted with chat_id=None.
+
+        propose_coding_session is registered with preview=True, so it NEVER
+        auto-executes inside the initial handle_message call -- it always
+        defers to _handle_confirmation_inner, invoked later from a separate
+        /message/confirm request. handle_message's `finally` block clears
+        self._current_chat_id back to None before that second call happens,
+        so unless _handle_confirmation_inner sets it again itself, the tool
+        handler reads a stale None instead of the confirming user's chat_id.
+        """
+        coding_tasks = MagicMock()
+        coding_tasks.launch.return_value = {
+            "id": "ct_abc123",
+            "branch": "coding-agent/ct_abc123",
+            "worktree_path": "/tmp/worktrees/ct_abc123",
+            "status": "running",
+        }
+        agent.coding_tasks = coding_tasks
+
+        tool_block = MagicMock()
+        tool_block.type = "tool_use"
+        tool_block.name = "propose_coding_session"
+        tool_block.id = "tool_propose"
+        tool_block.input = {
+            "task_description": "fix the rollover bug",
+            "conversation_excerpt": "rollover duplicated tasks",
+            "likely_area": "unknown",
+            "_confidence": 0.99,
+            "_reasoning": "clear, unambiguous request",
+        }
+        first_response = MagicMock()
+        first_response.stop_reason = "tool_use"
+        first_response.content = [tool_block]
+        agent.claude.create.return_value = first_response
+
+        result1 = agent.handle_message("please fix this in a sandboxed session", chat_id=99)
+        assert result1.awaiting_confirmation is True
+        action_id = result1.pending_action_id
+
+        # handle_message's finally block must have already cleared this --
+        # otherwise the test below wouldn't be exercising the bug at all.
+        assert agent._current_chat_id is None
+
+        end_block = MagicMock()
+        end_block.type = "text"
+        end_block.text = "Launched the coding session."
+        end_response = MagicMock()
+        end_response.stop_reason = "end_turn"
+        end_response.content = [end_block]
+        agent.claude.create.return_value = end_response
+
+        agent.handle_confirmation(chat_id=99, action_id=action_id, user_response="yes")
+
+        coding_tasks.save_task.assert_called_once()
+        saved_task = coding_tasks.save_task.call_args[0][0]
+        assert saved_task["chat_id"] == 99, (
+            f"expected the confirming user's chat_id (99) on the persisted "
+            f"task, got {saved_task['chat_id']!r}"
+        )
+
+
+def _pending(agent, action_id, tool_name, params):
+    from src.services.agent_service import PendingAction
+
+    agent.pending_confirmations[action_id] = PendingAction(
+        chat_id=42,
+        messages=[],
+        assistant_response=MagicMock(content=[]),
+        executed_results=[],
+        pending_calls=[{"id": "tu_1", "name": tool_name, "input": params}],
+        parent_span_context=None,
+    )
+
+
+def test_choice_answer_is_injected_as_session_mode(agent, monkeypatch):
+    """The gate's answer IS the lane. Without injection the tool would run
+    with its default no matter which button was pressed."""
+    captured = {}
+
+    def fake_execute(name, params, **kwargs):
+        captured["params"] = params
+        return {"ok": True, "data": {}, "_items": []}
+
+    monkeypatch.setattr(agent, "_execute_tool", fake_execute)
+    monkeypatch.setattr(
+        agent, "_run_agent_turn",
+        lambda *a, **kw: AgentResponse(response="done"),
+    )
+    _pending(agent, "act_1", "propose_coding_session",
+             {"task_description": "fix it", "_confidence": 0.9})
+
+    agent.handle_confirmation(42, "act_1", "autonomous")
+
+    assert captured["params"]["session_mode"] == "autonomous"
+
+
+def test_plain_yes_still_confirms_without_a_mode(agent, monkeypatch):
+    captured = {}
+
+    def fake_execute(name, params, **kwargs):
+        captured["params"] = params
+        return {"ok": True, "data": {}, "_items": []}
+
+    monkeypatch.setattr(agent, "_execute_tool", fake_execute)
+    monkeypatch.setattr(
+        agent, "_run_agent_turn",
+        lambda *a, **kw: AgentResponse(response="done"),
+    )
+    _pending(agent, "act_2", "delete_task",
+             {"name": "old task", "_confidence": 0.99})
+
+    agent.handle_confirmation(42, "act_2", "yes")
+
+    assert "session_mode" not in captured["params"]
+
+
+def test_a_declining_answer_still_cancels(agent, monkeypatch):
+    """A choice value must not make every answer affirmative."""
+    executed = []
+    monkeypatch.setattr(
+        agent, "_execute_tool",
+        lambda name, params, **kwargs: executed.append(name),
+    )
+    monkeypatch.setattr(
+        agent, "_run_agent_turn",
+        lambda *a, **kw: AgentResponse(response="cancelled"),
+    )
+    _pending(agent, "act_3", "propose_coding_session",
+             {"task_description": "fix it", "_confidence": 0.9})
+
+    agent.handle_confirmation(42, "act_3", "no")
+
+    assert executed == []

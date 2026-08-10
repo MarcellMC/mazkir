@@ -54,6 +54,9 @@ export interface MessageResponse {
   data?: Record<string, unknown>;
   awaiting_confirmation?: boolean;
   pending_action_id?: string;
+  /** Options this confirmation offers. Absent/empty means a plain
+   *  free-text yes/no gate. */
+  confirmation_choices?: { value: string; label: string }[] | null;
 }
 
 export interface ConfirmationRequest {
