@@ -217,3 +217,47 @@ describe("formatTaskDetail", () => {
     expect(result).not.toContain("<blockquote>");
   });
 });
+
+describe("formatGoalDetail", () => {
+  const detail = {
+    name: "Launch <Mazkir>",
+    slug: "launch-mazkir",
+    status: "in-progress",
+    priority: "high",
+    progress: 40,
+    category: "engineering",
+    target_date: "2026-12-31",
+    milestones: ["Ship P5 & P6", "Production deploy"],
+    created: "2026-01-15",
+    path: "30-goals/2026/launch-mazkir.md",
+    content: "# Launch <Mazkir>\n\n## Vision\nAssistant & vault working end-to-end\n\n## Milestones\n- [ ]\n",
+  };
+
+  it("escapes HTML in name and body", async () => {
+    const { formatGoalDetail } = await import("../../src/formatters/telegram.js");
+    const result = formatGoalDetail(detail as any);
+    expect(result).toContain("Launch &lt;Mazkir&gt;");
+    expect(result).toContain("Assistant &amp; vault working end-to-end");
+    expect(result).not.toContain("<Mazkir>");
+  });
+
+  it("shows frontmatter fields including progress bar, path, and milestones", async () => {
+    const { formatGoalDetail } = await import("../../src/formatters/telegram.js");
+    const result = formatGoalDetail(detail as any);
+    expect(result).toContain("Priority: <b>high</b>");
+    expect(result).toContain("<b>40%</b>");
+    expect(result).toContain("Status: in-progress");
+    expect(result).toContain("Category: engineering");
+    expect(result).toContain("Target: 2026-12-31");
+    expect(result).toContain("<code>30-goals/2026/launch-mazkir.md</code>");
+    expect(result).toContain("Ship P5 &amp; P6");
+    expect(result).toContain("Production deploy");
+  });
+
+  it("drops empty template sections but keeps written content", async () => {
+    const { formatGoalDetail } = await import("../../src/formatters/telegram.js");
+    const result = formatGoalDetail(detail as any);
+    expect(result).toContain("## Vision");
+    expect(result).not.toContain("## Milestones\n- [ ]");
+  });
+});

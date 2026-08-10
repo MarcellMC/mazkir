@@ -1,11 +1,29 @@
 """Goal API routes."""
-from fastapi import APIRouter, Depends
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from src.main import get_vault
 from src.auth import verify_api_key
 from src.api.routes import item_name
 
 router = APIRouter(prefix="/goals", tags=["goals"], dependencies=[Depends(verify_api_key)])
+
+
+def find_goal_by_slug(vault, slug: str) -> dict | None:
+    """Resolve a goal by filename slug — exact stem match, then unique prefix.
+
+    Prefix matching supports slugs truncated to fit Telegram's 64-byte
+    callback_data limit.
+    """
+    goals = vault.list_active_goals()
+    for goal in goals:
+        if Path(goal["path"]).stem == slug:
+            return goal
+    prefixed = [g for g in goals if Path(g["path"]).stem.startswith(slug)]
+    if len(prefixed) == 1:
+        return prefixed[0]
+    return None
 
 
 class GoalCreate(BaseModel):
@@ -31,6 +49,31 @@ async def list_goals():
         }
         for g in goals
     ]
+
+
+@router.get("/{slug}")
+async def get_goal(slug: str):
+    """Full goal detail by filename slug (truncated prefixes accepted)."""
+    vault = get_vault()
+    goal = find_goal_by_slug(vault, slug)
+    if not goal:
+        raise HTTPException(404, f"Goal not found: {slug}")
+
+    meta = goal["metadata"]
+    return {
+        "name": item_name(goal),
+        "slug": Path(goal["path"]).stem,
+        "status": meta.get("status", "unknown"),
+        "priority": meta.get("priority", "medium"),
+        "progress": meta.get("progress", 0),
+        "target_date": meta.get("target_date"),
+        "category": meta.get("category", "personal"),
+        "milestones": meta.get("milestones", []),
+        "created": meta.get("created"),
+        "updated": meta.get("updated"),
+        "path": goal["path"],
+        "content": goal.get("content", ""),
+    }
 
 
 @router.post("", status_code=201)

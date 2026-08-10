@@ -4,6 +4,7 @@ import type {
   TaskDetail,
   Habit,
   Goal,
+  GoalDetail,
   TokensResponse,
   CalendarEvent,
   MessageResponse,
@@ -165,6 +166,36 @@ export function formatGoals(goals: Goal[]): string {
     lines.push(`   ${bar} ${g.progress}%`);
     if (g.target_date) lines.push(`   📅 Target: ${g.target_date}`);
     lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+export function formatGoalDetail(goal: GoalDetail): string {
+  const lines: string[] = [`🎯 <b>${escapeHtml(goal.name)}</b>\n`];
+
+  const emoji =
+    typeof goal.priority === "number" ? priorityEmoji(goal.priority) : "🏷";
+  lines.push(`${emoji} Priority: <b>${escapeHtml(String(goal.priority))}</b>`);
+  lines.push(`📊 Progress: ${progressBar(goal.progress)} <b>${goal.progress}%</b>`);
+  lines.push(`📌 Status: ${escapeHtml(goal.status)}`);
+  if (goal.category) lines.push(`🏷 Category: ${escapeHtml(goal.category)}`);
+  if (goal.target_date) lines.push(`📅 Target: ${escapeHtml(String(goal.target_date))}`);
+  if (goal.created) lines.push(`🕐 Created: ${escapeHtml(String(goal.created))}`);
+  lines.push(`📁 <code>${escapeHtml(goal.path)}</code>`);
+
+  if (goal.milestones && goal.milestones.length > 0) {
+    lines.push("", "🏁 <b>Milestones</b>");
+    for (const m of goal.milestones) lines.push(`  • ${escapeHtml(String(m))}`);
+  }
+
+  // Note body: drop the title heading (duplicates the name) and empty
+  // template sections, keep everything the user actually wrote.
+  const body = stripEmptySections(goal.content);
+  if (body) {
+    const truncated =
+      body.length > DETAIL_BODY_MAX ? body.slice(0, DETAIL_BODY_MAX) + "…" : body;
+    lines.push("", `<blockquote>${escapeHtml(truncated)}</blockquote>`);
   }
 
   return lines.join("\n");
