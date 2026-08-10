@@ -39,4 +39,9 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "ruff>=0.5.0",
+    # tests/test_exif_service.py builds EXIF fixtures with it. Undeclared
+    # until now, so it only worked in venvs where it had been installed by
+    # hand -- a fresh environment failed at collection, taking the whole
+    # suite with it. A containerized coding session hit exactly this.
+    "piexif>=1.1.3",
 ]
