@@ -1216,7 +1216,22 @@ class AgentService:
 
                 messages = pending.messages
                 messages.append({"role": "assistant", "content": pending.assistant_response.content})
-                messages.append({"role": "user", "content": tool_results})
+                # State the answer back. Without it the model sees only a
+                # tool result and has no idea the user already picked --
+                # a real session launched as "autonomous" and the follow-up
+                # reply asked which mode to use, which reads to the user as
+                # the button having done nothing.
+                content = list(tool_results)
+                if chosen_mode:
+                    content.append({
+                        "type": "text",
+                        "text": (
+                            f"The user chose '{chosen_mode}'. That choice is already "
+                            f"applied and the action above has already run — do not ask "
+                            f"them to choose again. Confirm briefly what is now underway."
+                        ),
+                    })
+                messages.append({"role": "user", "content": content})
 
                 context = self.memory.assemble_context(chat_id)
                 system = self._build_system_prompt(context)

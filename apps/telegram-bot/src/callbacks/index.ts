@@ -9,6 +9,7 @@ import {
 } from "../formatters/telegram.js";
 import { buildTasksKeyboard, buildTaskDetailKeyboard } from "../keyboards/tasks.js";
 import { markActiveSpanError } from "../tracing-utils.js";
+import { sendRich } from "../bot-utils/send-rich.js";
 import {
   setPendingConfirmation,
   clearPendingConfirmation,
@@ -36,7 +37,10 @@ callbackHandlers.callbackQuery(/^confirm:([^:]+):(.+)$/, async (ctx) => {
     if (response.awaiting_confirmation && response.pending_action_id) {
       setPendingConfirmation(chatId, response.pending_action_id);
     }
-    await ctx.reply(response.response, { parse_mode: "HTML" });
+    // The agent emits markdown, so this goes through sendRich like every
+    // other agent reply. Sent as parse_mode HTML it rendered tables and
+    // backticks as raw punctuation.
+    await sendRich(ctx, { markdown: response.response });
   } catch (err) {
     markActiveSpanError(err);
     await ctx.reply("❌ Something went wrong answering that.");

@@ -1611,3 +1611,53 @@ def test_a_declining_answer_still_cancels(agent, monkeypatch):
     agent.handle_confirmation(42, "act_3", "no")
 
     assert executed == []
+
+
+def test_the_chosen_option_is_stated_back_to_the_model(agent, monkeypatch):
+    """After a confirmed tool runs, the agent takes another turn -- but it
+    only sees the tool result, never which option the user picked. A real
+    session launched with 'autonomous' and the follow-up reply asked the
+    user to choose a mode all over again, which reads as the button having
+    done nothing."""
+    captured = {}
+    monkeypatch.setattr(
+        agent, "_execute_tool",
+        lambda name, params, **kw: {"ok": True, "data": {"id": "ct_1"}, "_items": []},
+    )
+
+    def fake_turn(chat_id, original_text, messages, system, **kw):
+        captured["messages"] = messages
+        return AgentResponse(response="done")
+
+    monkeypatch.setattr(agent, "_run_agent_turn", fake_turn)
+    _pending(agent, "act_1", "propose_coding_session",
+             {"task_description": "fix it", "_confidence": 0.9})
+
+    agent.handle_confirmation(42, "act_1", "autonomous")
+
+    last = captured["messages"][-1]
+    text_blocks = [b for b in last["content"] if b.get("type") == "text"]
+    assert text_blocks, "the model must be told which option was chosen"
+    note = " ".join(b["text"] for b in text_blocks).lower()
+    assert "autonomous" in note
+    assert "already" in note or "do not ask" in note
+
+
+def test_a_plain_yes_adds_no_choice_note(agent, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        agent, "_execute_tool",
+        lambda name, params, **kw: {"ok": True, "data": {}, "_items": []},
+    )
+
+    def fake_turn(chat_id, original_text, messages, system, **kw):
+        captured["messages"] = messages
+        return AgentResponse(response="done")
+
+    monkeypatch.setattr(agent, "_run_agent_turn", fake_turn)
+    _pending(agent, "act_2", "delete_task", {"name": "old", "_confidence": 0.99})
+
+    agent.handle_confirmation(42, "act_2", "yes")
+
+    last = captured["messages"][-1]
+    assert all(b.get("type") == "tool_result" for b in last["content"])

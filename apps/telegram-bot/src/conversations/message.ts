@@ -182,7 +182,9 @@ messageHandler.on(
           setPendingConfirmation(chatId, response.pending_action_id);
         }
         setActiveSpanOutput(response.response);
-        await ctx.reply(response.response, { parse_mode: "HTML" });
+        // Agent replies are markdown; same rendering path as every other
+        // agent reply, and it carries any follow-on confirmation buttons.
+        await sendRich(ctx, { markdown: response.response }, confirmExtra(response));
         return;
       }
 
