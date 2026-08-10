@@ -1,8 +1,24 @@
+import atexit
 import os
-import pytest
-from pathlib import Path
-from unittest.mock import MagicMock
-from src.services.vault_service import VaultService
+import shutil
+import tempfile
+
+# Redirect the log directory BEFORE anything imports src.
+#
+# src.main calls configure_logging(settings.logs_dir) at module level, and
+# settings.logs_dir is read from the environment at import time -- so a
+# fixture cannot do this, it has to happen here, above the first src
+# import. Without it every run appends fixture noise (pytest tmp paths,
+# deliberately-broken skills, simulated hook failures) into the same
+# data/logs/vault-server.jsonl used to debug the live server.
+_TEST_LOGS_DIR = tempfile.mkdtemp(prefix="mazkir-test-logs-")
+os.environ["LOGS_DIR"] = _TEST_LOGS_DIR
+atexit.register(shutil.rmtree, _TEST_LOGS_DIR, True)
+
+import pytest  # noqa: E402
+from pathlib import Path  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+from src.services.vault_service import VaultService  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
