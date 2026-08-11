@@ -6,8 +6,10 @@ import {
   formatHabits,
   formatCalendar,
   formatGoals,
+  formatGoalDetail,
 } from "../formatters/telegram.js";
 import { buildTasksKeyboard, buildTaskDetailKeyboard } from "../keyboards/tasks.js";
+import { buildGoalsKeyboard, buildGoalDetailKeyboard } from "../keyboards/goals.js";
 import { markActiveSpanError } from "../tracing-utils.js";
 import { sendRich } from "../bot-utils/send-rich.js";
 import {
@@ -79,6 +81,23 @@ callbackHandlers.callbackQuery(/^task:view:(.+)$/, async (ctx) => {
   }
 });
 
+// Goal detail view — tapping a goal in the list shows its full data.
+// Goals have no completion endpoint, so the detail view is read-only.
+callbackHandlers.callbackQuery(/^goal:view:(.+)$/, async (ctx) => {
+  const slug = ctx.match[1]!;
+  try {
+    const detail = await api.getGoal(slug);
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(formatGoalDetail(detail), {
+      parse_mode: "HTML",
+      reply_markup: buildGoalDetailKeyboard(),
+    });
+  } catch (err) {
+    markActiveSpanError(err);
+    await ctx.answerCallbackQuery({ text: "❌ Failed to load goal" });
+  }
+});
+
 // Task completion. `task:done:` carries a slug (from the detail view);
 // legacy `task:complete:` buttons carry a name — the server resolves both.
 callbackHandlers.callbackQuery(/^task:(?:done|complete):(.+)$/, async (ctx) => {
@@ -118,7 +137,10 @@ callbackHandlers.callbackQuery(/^nav:(.+)$/, async (ctx) => {
       }
       case "goals": {
         const goals = await api.listGoals();
-        await ctx.editMessageText(formatGoals(goals), { parse_mode: "HTML" });
+        await ctx.editMessageText(formatGoals(goals), {
+          parse_mode: "HTML",
+          reply_markup: buildGoalsKeyboard(goals),
+        });
         break;
       }
       case "calendar": {
