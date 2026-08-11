@@ -12,6 +12,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ROOT="${AGENT_SESSIONS_ROOT:-$HOME/dev/agent-sessions}"
 DEFAULT_REPO="${MAZKIR_REPO_PATH:-$HOME/dev/mazkir}"
+# A session inherits no model choice from the host -- it gets whatever the
+# image's Claude config defaults to, which is not necessarily a model this
+# account can spend on. One autonomous session exited having done nothing
+# but print "You've hit your monthly spend limit ... keep using Fable 5".
+# Pin it here so every lane, automated and manual, agrees. Set to empty to
+# defer to the container's own default.
+DEFAULT_MODEL="${CODING_AGENT_MODEL-opus}"
 
 die() { echo "session.sh: $*" >&2; exit 1; }
 
@@ -261,7 +268,7 @@ write_credential_env_file() {
 
 cmd_launch() {
   local name="" root="$DEFAULT_ROOT" mode="manual" prompt_file="" dry_run=0
-  local keep_env_file=0 detach=0
+  local keep_env_file=0 detach=0 model="$DEFAULT_MODEL"
   local token_file="${CODING_AGENT_GITHUB_TOKEN_PATH:-}"
   name="$1"; shift
   [ -n "$name" ] || die "usage: session.sh launch <name> [--mode=MODE] [--prompt-file=PATH]"
@@ -270,6 +277,7 @@ cmd_launch() {
       --root=*) root="${arg#--root=}" ;;
       --mode=*) mode="${arg#--mode=}" ;;
       --prompt-file=*) prompt_file="${arg#--prompt-file=}" ;;
+      --model=*) model="${arg#--model=}" ;;
       --github-token-file=*) token_file="${arg#--github-token-file=}" ;;
       --dry-run) dry_run=1 ;;
       --detach) detach=1 ;;
@@ -297,6 +305,13 @@ cmd_launch() {
   # and manual sessions appear in Claude Mobile while autonomous ones
   # never do.
   local claude_args=(claude --dangerously-skip-permissions)
+  # Before the mode flags: -p and --remote-control take the brief as a
+  # positional, so anything appended after them lands inside the prompt.
+  # An `[ -n "$x" ] && ...` one-liner would abort the whole script under
+  # `set -e` whenever the test is false, i.e. exactly in the --model= case.
+  if [ -n "$model" ]; then
+    claude_args+=(--model "$model")
+  fi
   case "$mode" in
     autonomous)
       [ -n "$brief" ] || die "autonomous mode requires --prompt-file"
@@ -385,7 +400,8 @@ session.sh -- containerized coding sessions
       autonomous  headless `claude -p`; exits when done
 
   session.sh provision <name> [--repo=PATH] [--vault-repo=PATH] [--root=PATH]
-  session.sh launch <name> [--mode=MODE] [--prompt-file=PATH] [--dry-run]
+  session.sh launch <name> [--mode=MODE] [--prompt-file=PATH] [--model=NAME]
+                           [--dry-run]
   session.sh list [--root=PATH]
       One line per session: name, branch, and SAFE or KEEP: <reason>.
   session.sh clean <name> [--root=PATH] [--force]
@@ -393,6 +409,11 @@ session.sh -- containerized coding sessions
 
 Interactive sessions appear in Claude Mobile under <name>. There is no
 session URL to copy -- find them by name.
+
+Sessions run on opus by default (CODING_AGENT_MODEL, or --model=NAME per
+launch). A session inherits nothing from the host shell, so without this it
+would use whatever the image's Claude config defaults to. --model= (empty)
+defers to that container default.
 
 Sessions live in $HOME/dev/agent-sessions by default (AGENT_SESSIONS_ROOT).
 Deliberately not .claude/worktrees/, which belongs to Claude Code's own

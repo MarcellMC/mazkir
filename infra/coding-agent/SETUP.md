@@ -251,6 +251,18 @@ Sessions live in `~/dev/agent-sessions/` (override with
 belongs to Claude Code's own linked worktrees — mixing clones into it makes
 them invisible to `git worktree list` and to every cleanup path alike.
 
+### Which model a session runs
+
+Every lane runs `claude --model opus`. A container inherits no model choice
+from the host shell, so without pinning it a session uses whatever the
+image's Claude config happens to default to — and an autonomous session
+once exited immediately, having done nothing but print *"You've hit your
+monthly spend limit … keep using Fable 5"*.
+
+Change it globally with `CODING_AGENT_MODEL=<name>`, or per launch with
+`--model=<name>`. `--model=` (empty) passes no flag and defers to the
+container's own default.
+
 Override `MAZKIR_REPO_PATH`, `AGENT_SESSIONS_ROOT`, `DOTFILES_PATH`,
 `CLAUDE_JSON_PATH`, `CLAUDE_PLUGINS_PATH`, or
 `CODING_AGENT_GITHUB_TOKEN_PATH` as environment variables if your paths
