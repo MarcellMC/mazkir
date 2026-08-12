@@ -4,6 +4,7 @@ import type {
   TaskDetail,
   Habit,
   Goal,
+  GoalDetail,
   TokensResponse,
   CalendarEvent,
   MessageResponse,
@@ -96,6 +97,8 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     // Goals
     listGoals: () => request<Goal[]>("/goals"),
+    getGoal: (slug: string) =>
+      request<GoalDetail>(`/goals/${encodeURIComponent(slug)}`),
     createGoal: (data: Record<string, unknown>) =>
       request<Goal>("/goals", { method: "POST", body: JSON.stringify(data) }),
 

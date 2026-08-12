@@ -4,6 +4,7 @@ import {
   formatTasks,
   formatHabits,
   formatGoals,
+  formatGoalDetail,
   formatTokens,
   formatCalendar,
   formatTime,
@@ -68,6 +69,84 @@ describe("formatGoals", () => {
     const result = formatGoals(goals);
     expect(result).toContain("█");
     expect(result).toContain("70%");
+  });
+
+  it("numbers goals so they line up with the inline keyboard buttons", () => {
+    const result = formatGoals([
+      { name: "Get fit", status: "in-progress", priority: "high", progress: 30 },
+      { name: "Learn Python", status: "not-started", priority: "medium", progress: 0 },
+    ]);
+    expect(result).toContain("1. Get fit");
+    expect(result).toContain("2. Learn Python");
+  });
+
+  it("maps the vault's string priorities onto the emoji scale", () => {
+    const high = formatGoals([{ name: "A", status: "active", priority: "high", progress: 0 }]);
+    const low = formatGoals([{ name: "B", status: "active", priority: "low", progress: 0 }]);
+    expect(high).toContain("🔴");
+    expect(low).toContain("🟢");
+  });
+
+  it("escapes HTML in goal names", () => {
+    const result = formatGoals([
+      { name: "Ship <b>v2</b>", status: "active", priority: "high", progress: 0 },
+    ]);
+    expect(result).toContain("Ship &lt;b&gt;v2&lt;/b&gt;");
+  });
+});
+
+describe("formatGoalDetail", () => {
+  const GOAL = {
+    name: "Get fit",
+    slug: "get-fit",
+    status: "in-progress",
+    priority: "high",
+    progress: 30,
+    start_date: "2026-01-01",
+    target_date: "2026-12-31",
+    category: "health",
+    path: "30-goals/2026/get-fit.md",
+    content: "# Get fit\n\n## Why\nBecause stairs.\n\n## Notes\n",
+  };
+
+  it("renders progress, priority, status and dates", () => {
+    const result = formatGoalDetail(GOAL);
+    expect(result).toContain("Get fit");
+    expect(result).toContain("30%");
+    expect(result).toContain("high");
+    expect(result).toContain("in-progress");
+    expect(result).toContain("health");
+    expect(result).toContain("2026-12-31");
+  });
+
+  it("includes the note body but drops the title and empty sections", () => {
+    const result = formatGoalDetail(GOAL);
+    expect(result).toContain("Because stairs.");
+    expect(result).not.toContain("# Get fit");
+    expect(result).not.toContain("## Notes");
+  });
+
+  it("lists string milestones and ignores richer entries", () => {
+    const result = formatGoalDetail({
+      ...GOAL,
+      milestones: ["Run 5k", { name: "Run 10k" }] as unknown as string[],
+    });
+    expect(result).toContain("• Run 5k");
+    expect(result).not.toContain("object Object");
+  });
+
+  it("omits the milestones block when there are none", () => {
+    expect(formatGoalDetail({ ...GOAL, milestones: [] })).not.toContain("Milestones");
+  });
+
+  it("escapes HTML in the name and body", () => {
+    const result = formatGoalDetail({
+      ...GOAL,
+      name: "Ship <v2>",
+      content: "## Why\n<script>alert(1)</script>",
+    });
+    expect(result).toContain("Ship &lt;v2&gt;");
+    expect(result).not.toContain("<script>");
   });
 });
 

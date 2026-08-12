@@ -4,6 +4,8 @@ import type {
   TaskDetail,
   Habit,
   Goal,
+  GoalDetail,
+  GoalPriority,
   TokensResponse,
   CalendarEvent,
   MessageResponse,
@@ -36,6 +38,14 @@ function priorityEmoji(priority: number): string {
   if (priority >= 4) return "🔴";
   if (priority === 3) return "🟡";
   return "🟢";
+}
+
+/** Goals store priority as "high" | "medium" | "low"; map those onto the
+ * numeric scale before picking an emoji. */
+function goalPriorityEmoji(priority: GoalPriority): string {
+  if (typeof priority === "number") return priorityEmoji(priority);
+  const scale: Record<string, number> = { high: 5, medium: 3, low: 1 };
+  return priorityEmoji(scale[priority.toLowerCase()] ?? 3);
 }
 
 export function formatDay(data: DailyResponse): string {
@@ -158,13 +168,41 @@ export function formatGoals(goals: Goal[]): string {
   if (goals.length === 0) return "🎯 No active goals.";
 
   const lines: string[] = ["🎯 <b>Goals</b>\n"];
-  for (const g of goals) {
-    const emoji = priorityEmoji(g.priority);
+  goals.forEach((g, i) => {
+    const emoji = goalPriorityEmoji(g.priority);
     const bar = progressBar(g.progress);
-    lines.push(`${emoji} <b>${g.name}</b>`);
+    lines.push(`${emoji} <b>${i + 1}. ${escapeHtml(g.name)}</b>`);
     lines.push(`   ${bar} ${g.progress}%`);
-    if (g.target_date) lines.push(`   📅 Target: ${g.target_date}`);
+    if (g.target_date) lines.push(`   📅 Target: ${escapeHtml(g.target_date)}`);
     lines.push("");
+  });
+
+  return lines.join("\n");
+}
+
+export function formatGoalDetail(goal: GoalDetail): string {
+  const lines: string[] = [`🎯 <b>${escapeHtml(goal.name)}</b>\n`];
+
+  lines.push(`${progressBar(goal.progress)} ${goal.progress}%`);
+  lines.push(`${goalPriorityEmoji(goal.priority)} Priority: <b>${escapeHtml(String(goal.priority))}</b>`);
+  lines.push(`📌 Status: ${escapeHtml(goal.status)}`);
+  if (goal.category) lines.push(`🏷 Category: ${escapeHtml(goal.category)}`);
+  if (goal.start_date) lines.push(`🕐 Started: ${escapeHtml(String(goal.start_date))}`);
+  if (goal.target_date) lines.push(`📅 Target: ${escapeHtml(String(goal.target_date))}`);
+
+  // Milestone entries are free-form in the vault; render the plain-string
+  // ones and leave anything richer to the note body below.
+  const milestones = (goal.milestones ?? []).filter((m) => typeof m === "string");
+  if (milestones.length > 0) {
+    lines.push("", "🚩 <b>Milestones</b>");
+    for (const m of milestones) lines.push(`  • ${escapeHtml(m)}`);
+  }
+
+  const body = stripEmptySections(goal.content);
+  if (body) {
+    const truncated =
+      body.length > DETAIL_BODY_MAX ? body.slice(0, DETAIL_BODY_MAX) + "…" : body;
+    lines.push("", `<blockquote>${escapeHtml(truncated)}</blockquote>`);
   }
 
   return lines.join("\n");

@@ -1,23 +1,10 @@
 import { InlineKeyboard } from "grammy";
 import type { Task } from "@mazkir/shared-types";
+import { callbackSlug } from "./slug.js";
 
-/** Telegram hard-limits callback_data to 64 bytes; our prefixes use 10. */
-const SLUG_BUDGET_BYTES = 54;
-
-/**
- * Stable short id for a task: the vault filename stem, truncated to fit
- * Telegram's callback_data limit. The server resolves truncated slugs by
- * prefix match.
- */
+/** Stable short id for a task — the vault filename stem. */
 export function taskSlug(task: Task): string {
-  const stem = task.path
-    ? task.path.split("/").pop()!.replace(/\.md$/, "")
-    : task.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  let slug = stem;
-  while (Buffer.byteLength(slug, "utf8") > SLUG_BUDGET_BYTES) {
-    slug = slug.slice(0, -1);
-  }
-  return slug;
+  return callbackSlug(task);
 }
 
 /** One button per task — tapping shows the task detail view. */
@@ -29,7 +16,10 @@ export function buildTasksKeyboard(tasks: Task[], limit = 8): InlineKeyboard {
     ...tasks.filter((t) => t.priority <= 2),
   ];
   sorted.slice(0, limit).forEach((t, i) => {
-    kb.text(`${i + 1}. ${t.name}`, `task:view:${taskSlug(t)}`).row();
+    // `.row()` before rather than after, so the last button doesn't leave a
+    // trailing blank row behind it.
+    if (i > 0) kb.row();
+    kb.text(`${i + 1}. ${t.name}`, `task:view:${taskSlug(t)}`);
   });
   return kb;
 }
