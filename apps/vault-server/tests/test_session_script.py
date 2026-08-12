@@ -388,6 +388,55 @@ def test_autonomous_mode_is_headless_and_carries_the_brief_text(source_repo, tmp
     assert "--remote-control" not in out
 
 
+def test_launch_pins_the_model_to_opus_by_default(source_repo, tmp_path):
+    """A session inherits no model choice from the host: whatever the image's
+    Claude config defaults to is what it gets. One autonomous session died on
+    boot with "You've hit your monthly spend limit ... keep using Fable 5",
+    having done no work at all, because the default was a model the account
+    could not spend on."""
+    root = tmp_path / "agent-sessions"
+    _provision("model-default", source_repo, root)
+
+    out = _launch("model-default", root).stdout
+
+    assert "--model opus" in out
+
+
+def test_launch_pins_the_model_in_every_mode(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    brief = tmp_path / "brief.md"
+    brief.write_text("do the thing")
+    for mode in ("handoff", "autonomous"):
+        _provision(f"model-{mode}", source_repo, root)
+
+        out = _launch(
+            f"model-{mode}", root, f"--mode={mode}", f"--prompt-file={brief}"
+        ).stdout
+
+        assert "--model opus" in out, mode
+
+
+def test_launch_model_is_overridable(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("model-override", source_repo, root)
+
+    out = _launch("model-override", root, "--model=sonnet").stdout
+
+    assert "--model sonnet" in out
+    assert "opus" not in out
+
+
+def test_launch_with_an_empty_model_defers_to_the_container(source_repo, tmp_path):
+    """The escape hatch: --model= passes no flag at all, so the container's
+    own configured default applies."""
+    root = tmp_path / "agent-sessions"
+    _provision("model-empty", source_repo, root)
+
+    out = _launch("model-empty", root, "--model=").stdout
+
+    assert "--model" not in out
+
+
 def test_launch_copies_the_brief_into_the_session(source_repo, tmp_path):
     root = tmp_path / "agent-sessions"
     _provision("brief-one", source_repo, root)
