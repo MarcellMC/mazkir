@@ -4,7 +4,6 @@ from datetime import datetime
 from fastapi import APIRouter, Depends
 import pytz
 from pydantic import BaseModel
-from src.main import get_vault, get_calendar
 from src.auth import verify_api_key
 from src.config import settings
 from src.services.daily_tasks import parse_tasks_section
@@ -46,8 +45,19 @@ def _extract_section(body: str, name: str) -> str:
     return m.group(1) if m else ""
 
 
+def _habit_scheduled_at(meta: dict) -> str | None:
+    """Time a habit is scheduled for, or None.
+
+    `scheduled_at` is canonical. `scheduled_time` is the legacy key that the
+    habit template used to write; habits created before the rename still
+    carry it, and dropping them would silently empty the schedule.
+    """
+    return meta.get("scheduled_at") or meta.get("scheduled_time") or None
+
+
 @router.get("", response_model=DailyResponse)
 async def get_daily():
+    from src.main import get_vault, get_calendar
     vault = get_vault()
     calendar = get_calendar()
 
@@ -93,7 +103,7 @@ async def get_daily():
     habits = vault.list_active_habits()
     for h in habits:
         meta = h.get("metadata", {})
-        scheduled_at = meta.get("scheduled_at")
+        scheduled_at = _habit_scheduled_at(meta)
         if not scheduled_at:
             continue
         schedule.append(DailyScheduleItem(

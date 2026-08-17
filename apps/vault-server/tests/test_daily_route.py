@@ -163,3 +163,28 @@ class TestDailyResponseModels:
         assert note.photo_path == "/data/photo.jpg"
         assert note.caption == "sunset"
         assert note.text is None
+
+
+class TestHabitScheduledAt:
+    """The canonical key is scheduled_at; scheduled_time is the legacy name."""
+
+    def test_prefers_canonical_key(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        assert _habit_scheduled_at({"scheduled_at": "07:30"}) == "07:30"
+
+    def test_falls_back_to_legacy_key(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        assert _habit_scheduled_at({"scheduled_time": "07:30"}) == "07:30"
+
+    def test_canonical_wins_when_both_present(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        meta = {"scheduled_at": "08:00", "scheduled_time": "07:30"}
+        assert _habit_scheduled_at(meta) == "08:00"
+
+    def test_returns_none_when_unscheduled(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        assert _habit_scheduled_at({"name": "Workout"}) is None
+
+    def test_treats_empty_string_as_unscheduled(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        assert _habit_scheduled_at({"scheduled_at": ""}) is None
