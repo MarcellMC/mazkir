@@ -51,10 +51,10 @@ The ledger extends `data/events/{date}.json` rather than introducing a parallel 
   "source_ids": {}, "photos": [], "assets": null, "location": null,
 
   // repurposed
-  "activity_category": "dev",       // now the activity facet (§2.2)
+  "activity": "dev",                // renamed from activity_category (§2.2)
 
   // new
-  "domain": "personal",             // the domain facet (§2.2)
+  "category": "personal",           // the category facet (§2.2)
   "tags":   ["mazkir"],             // free, optional, never required
   "state":  "approved"              // "suggested" | "approved" (§3.3)
 }
@@ -62,9 +62,14 @@ The ledger extends `data/events/{date}.json` rather than introducing a parallel 
 
 `source` gains `timer` and `manual` alongside the existing `calendar`, `timeline`, `merged`, `habit`.
 
-There is deliberately **no** separate `bucket` field. An earlier draft added one and it duplicated `activity_category`; instead `activity_category` keeps its name and takes on a stricter, user-defined vocabulary. `CATEGORY_KEYWORDS` moves out of `merger_service.py` and into user config (§3.2) — which the shipping goal required anyway.
+There is deliberately **no** separate `bucket` field. An earlier draft added one and it duplicated the existing `activity_category`; instead that column is **renamed to `activity`** and takes on a stricter, user-defined vocabulary. `CATEGORY_KEYWORDS` moves out of `merger_service.py` and into user config (§3.2) — which the shipping goal required anyway.
 
-Consequences to accept: `generation_service.py` builds image prompts from `activity_category`, so prompts shift from `"representing cafe activity"` to `"representing dev activity"` — duller, tolerable. Existing event files carry `gym|walk|cafe|shopping|social` values that are not activity names; they are left alone and simply read as unmatched, since the readout only covers weeks after logging begins.
+Migration and consequences to accept:
+
+- `activity_category` → `activity` is a rename across the events store, `merger_service.py`, `events_service.py`, `generation_service.py`, `api/routes/generate.py` and the webapp's event models. Mechanical, but it touches every consumer.
+- `generation_service.py` builds image prompts from that column, so prompts shift from `"representing cafe activity"` to `"representing dev activity"` — duller, tolerable.
+- Existing event files carry `gym|walk|cafe|shopping|social` values that are not activity names. They are left alone and simply read as unmatched, since the readout only covers weeks after logging begins.
+- **`category` collides with an existing vault field.** Habits, tasks and goals already carry `category` with values `personal`, `health`, `productivity`, `career`, `learning` — a third taxonomy, unrelated to the facets. The resolution is the same one applied to `activity_category`: the existing field *becomes* the category facet, and its old values map onto the two axes rather than being discarded (`health` → `fitness × personal`, `productivity` → `org` × whichever category applies). Note that `personal` is a valid value in both the old and new vocabularies, so an unmigrated file will look correct while meaning something different — the migration must be explicit, not inferred.
 
 ### 2.2 Two facets, not a tree
 
@@ -72,7 +77,7 @@ An activity has two simultaneous truths, and a flat list records only one. A sin
 
 Every block therefore carries two required, independent axes:
 
-| | activity — *what were you doing* | domain — *whose was it* |
+| | activity — *what were you doing* | category — *whose was it* |
 |---|---|---|
 | SWE day job | `dev` | `work` |
 | pet project | `dev` | `personal` |
@@ -84,9 +89,9 @@ Every block therefore carries two required, independent axes:
 
 Each axis is a complete partition, so both sum to 100% of the week independently. Every case above is a re-tag rather than a restructure — music turning professional flips one field.
 
-This also explains why the original hand-drawn matrix does not add up: `dev`, `org` and `music` are activities while `work` and `house` are domains. The sketch mixed both axes into one column.
+This also explains why the original hand-drawn matrix does not add up: `dev`, `org` and `music` are activities while `work` and `house` are categories. The sketch mixed both axes into one column.
 
-**`work` is therefore not an activity at all.** Nobody spends an hour "working" — they spend it on `dev`, `org` or `meetings`, and what makes those hours the day job is the *domain*. The activity axis lists only things you can actually be observed doing; `work` appears solely as a domain. The same reasoning applies to `house`, which is a domain, though `house` also survives as an activity meaning chores specifically.
+**`work` is therefore not an activity at all.** Nobody spends an hour "working" — they spend it on `dev`, `org` or `meetings`, and what makes those hours the day job is the *category*. The activity axis lists only things you can actually be observed doing; `work` appears solely as a category. The same reasoning applies to `house`, which is a category, though `house` also survives as an activity meaning chores specifically.
 
 `tags` is a third, free-form layer that nothing depends on being complete — project names, contexts, `outdoors`. It carries no weight in v1; the query engine that reads it is v2. It exists in v1 purely so the data is there on the day queries are wanted.
 
@@ -102,7 +107,7 @@ version: 2
 
 activities:
   sleep:        { share: 33 }
-  dev:          { share: 17 }   # day job + pet projects, split by domain
+  dev:          { share: 17 }   # day job + pet projects, split by category
   org:          { share:  9 }
   eat:          { share:  7 }
   house:        { share:  7 }
@@ -114,14 +119,14 @@ activities:
   music:        { share:  3 }
   unstructured: { share:  3 }
 
-domains:
+categories:
   personal: { share: 58 }
   work:     { share: 21 }
   house:    { share: 21 }
 
 calendars:                                   # see §3.2
-  "Work":   { activity: work, domain: work }
-  "Mazkir": { activity: dev,  domain: personal }
+  "Work":   { activity: meetings, category: work }
+  "Mazkir": { activity: dev,      category: personal }
 ```
 
 Each axis is **validated on load with a hard error if it does not sum to 100**, making "my table doesn't add up" structurally impossible rather than something to notice later.
@@ -150,7 +155,7 @@ Mazkir may still *suggest* a sleep or meal block from the previous day or the we
 
 Assigning facets to an inferred block, in precedence order:
 
-1. **Explicit on the item** — a habit's own `activity_category` / `domain`, or an inline `#dev` tag on a daily todo, or the user said so in an NL log.
+1. **Explicit on the item** — a habit's own `activity` / `category`, or an inline `#dev` tag on a daily todo, or the user said so in an NL log.
 2. **Calendar name** — the `calendars:` map in §2.3. Highest leverage by far: one rule covers hundreds of events forever, with zero curation, and GCal is already filtered by `GOOGLE_CALENDAR_INCLUDE`.
 3. **Haiku classification** — the existing router model classifies unmatched titles against the user's own vocabulary. Handles titles never seen before.
 4. **Remembered** — the first resolution of a title is stored as a title → facets mapping, so recurring events cost one classification ever and a personal dictionary accumulates by itself.
@@ -260,7 +265,7 @@ Week 33 · Mon–Thu · 96h elapsed
   music           2.9h     0.0h   ░░░░░░░░░░   −2.9
   unstructured    2.9h     6.0h   ▓▓▓▓▓▓▓▓▓▓   +3.1
   ────────────────────────────────────────────────────
-  by domain      target   actual                  vs
+  by category    target   actual                  vs
   personal       55.7h    51.0h   ▓▓▓▓▓▓▓▓▓░   −4.7
   work           20.2h    27.0h   ▓▓▓▓▓▓▓▓▓▓   +6.8
   house          20.2h    14.0h   ▓▓▓▓▓▓▓░░░   −6.2
@@ -308,7 +313,7 @@ Fix:
 - **Tokens** awarded on every completion, as today. No special casing for partial days.
 - **Streak** advances only once `daily_target` is fully met, so one of two dog walks does not advance it. Keeps the streak meaning "I did enough today".
 
-Habits also gain `activity_category`, `domain` and `default_duration_minutes`, so a completion mints a correctly-faceted block. These are explicit rather than classified because there are five habit files and they are authored once.
+Habits also gain `activity` and `default_duration_minutes`, and their existing `category` field is migrated to the category facet (§2.1), so a completion mints a correctly-faceted block. These are explicit rather than classified because there are five habit files and they are authored once.
 
 **This section is gated on the duplicate-calendar-entry fix in §8, and must not ship before it.** An earlier draft called it independent and shippable first; that was wrong. `daily_target: 2` turns multiple same-day completions from an error into the normal case, so a bug that currently fires occasionally would fire every single day, on exactly the habit that motivated the change.
 
@@ -346,9 +351,9 @@ Habits also gain `activity_category`, `domain` and `default_duration_minutes`, s
 | Flagship was the day-schedule allocator | Allocator is v2; v1 is log + measure | Nothing records durations, so the allocator had no input and would be built against a guess |
 | Absolute hours per week | Proportional shares of 168h, sleep included | Absolute hours never balance and need manual rebalancing; shares self-normalize and make the sustainability squeeze visible |
 | Hand-authored `time-matrix.yaml` | Seeded once, then Mazkir proposes revisions from data | The hand-maintained artifact is the one that went inert for two months |
-| One flat category list | Two facets (activity × domain) + free tags | A flat list cannot express "pet project is dev and personal"; a tree would duplicate cross-cutting nodes |
-| New `bucket` field | `activity_category` repurposed + new `domain` | `bucket` duplicated an existing field |
-| `work` listed as a category | `work` is a domain only, never an activity | Nobody spends an hour "working" — they spend it on `dev`, `org` or `meetings` in the work domain |
+| One flat category list | Two facets (activity × category) + free tags | A flat list cannot express "pet project is dev and personal"; a tree would duplicate cross-cutting nodes |
+| New `bucket` field | `activity_category` renamed to `activity`; existing `category` becomes the second facet | `bucket` duplicated a field that already existed; renaming both axes avoids a third taxonomy |
+| `work` listed as a category | `work` is a category only, never an activity | Nobody spends an hour "working" — they spend it on `dev`, `org` or `meetings` in the work category |
 | Time inferred from completed habits/tasks | Explicit block ledger with three write paths | Boolean completions carry no duration |
 | Surfaced in webapp / `/day` / GCal | Telegram + NL in v1; webapp and GCal in v2 | `dayplanner` no longer exists — it was superseded 2026-06-20 by a note feed, so there was no day view to extend |
 | `tm-day-bd` a trivial implementation-time fix | v2, needs investigation | Original intended behaviour is unknown |
