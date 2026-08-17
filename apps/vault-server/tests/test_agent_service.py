@@ -1661,3 +1661,13 @@ def test_a_plain_yes_adds_no_choice_note(agent, monkeypatch):
 
     last = captured["messages"][-1]
     assert all(b.get("type") == "tool_result" for b in last["content"])
+
+
+def test_static_guidelines_forbid_unverified_write_claims():
+    from src.services.agent_service import AgentService
+
+    text = "\n".join(AgentService._static_guidelines())
+
+    assert "## Reporting writes" in text
+    assert "calendar_sync" in text
+    assert "ok: true" in text
