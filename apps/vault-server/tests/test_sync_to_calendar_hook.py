@@ -35,9 +35,10 @@ def test_hook_noop_when_calendar_uninitialized():
 def test_hook_noop_when_output_not_ok():
     calendar = MagicMock(is_initialized=True)
     vault = MagicMock()
+    output = {"ok": False, "error": {"code": "PATH_NOT_FOUND"}, "_items": []}
     sync_to_calendar(
         params={"name": "X"},
-        output={"ok": False, "error": {"code": "PATH_NOT_FOUND"}, "_items": []},
+        output=output,
         ctx={
             "calendar": calendar,
             "vault": vault,
@@ -46,6 +47,9 @@ def test_hook_noop_when_output_not_ok():
     )
     calendar.sync_task.assert_not_called()
     calendar.sync_habit.assert_not_called()
+    # Verify error-shaped output is unchanged (no `data` key added)
+    assert "data" not in output
+    assert "calendar_sync" not in output
 
 
 def test_hook_syncs_task_after_create():

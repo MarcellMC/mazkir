@@ -21,10 +21,12 @@ _COMPLETE_TOOLS = {"complete_task", "complete_habit"}
 
 
 def _record(output: dict, **fields) -> None:
-    """Stamp the calendar-sync outcome onto the tool result.
+    """Stamp the calendar-sync outcome onto a successful tool result.
 
-    The agent is instructed never to claim a sync it cannot see, so every
-    exit path from this hook must leave a verdict here.
+    The agent is instructed never to claim a sync it cannot see. On success,
+    we leave a verdict at `output["data"]["calendar_sync"]`. On failure, the
+    tool result carries `error` (not `data`), and the agent reads the error
+    instead — no stamp is needed.
     """
     data = output.get("data")
     if isinstance(data, dict):
@@ -52,7 +54,6 @@ def sync_to_calendar(params: dict, output: dict, ctx: Any) -> None:
             _record(output, ok=False, reason="calendar_not_configured")
             return
         if not output.get("ok", False):
-            _record(output, ok=False, reason="tool_failed")
             return
 
         tool_name = ctx.get("tool", {}).get("schema", {}).get("name", "")
