@@ -424,3 +424,53 @@ def test_new_events_are_saved_with_activity(tmp_path):
     svc.save_events("2026-08-17", [{"id": "evt_1", "activity": "dev"}])
 
     assert svc.get_events("2026-08-17")[0]["activity"] == "dev"
+
+
+def test_new_fields_are_defaulted_on_save(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.save_events("2026-08-17", [{"id": "evt_1", "name": "Dog walk"}])
+
+    event = svc.get_events("2026-08-17")[0]
+
+    assert event["activity"] is None
+    assert event["category"] is None
+    assert event["tags"] == []
+    assert event["state"] == "suggested"
+
+
+def test_explicit_values_are_preserved(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.save_events("2026-08-17", [{
+        "id": "evt_1",
+        "activity": "dev",
+        "category": "personal",
+        "tags": ["mazkir"],
+        "state": "approved",
+    }])
+
+    event = svc.get_events("2026-08-17")[0]
+
+    assert event["activity"] == "dev"
+    assert event["category"] == "personal"
+    assert event["tags"] == ["mazkir"]
+    assert event["state"] == "approved"
+
+
+def test_legacy_events_default_to_suggested(tmp_path):
+    """Events written before this change must not silently count as logged."""
+    import json
+    from src.services.events_service import EventsService
+
+    events_dir = tmp_path / "events"
+    events_dir.mkdir()
+    (events_dir / "2026-05-01.json").write_text(
+        json.dumps([{"id": "evt_old", "name": "Coffee"}]), encoding="utf-8"
+    )
+
+    svc = EventsService(events_dir)
+
+    assert svc.get_events("2026-05-01")[0]["state"] == "suggested"

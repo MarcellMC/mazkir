@@ -38,6 +38,10 @@ class EventsService:
         """Migrate legacy keys on read. Files stay untouched until next save."""
         if "activity_category" in event and "activity" not in event:
             event["activity"] = event.pop("activity_category")
+        event.setdefault("activity", None)
+        event.setdefault("category", None)
+        event.setdefault("tags", [])
+        event.setdefault("state", "suggested")
         return event
 
     def get_events(self, date: str) -> list[dict[str, Any]]:
@@ -59,6 +63,10 @@ class EventsService:
             event.setdefault("photos", [])
             event.setdefault("assets", None)
             event.setdefault("source_ids", {})
+            event.setdefault("activity", None)
+            event.setdefault("category", None)
+            event.setdefault("tags", [])
+            event.setdefault("state", "suggested")
         path = self._file_path(date)
         payload = json.dumps(events, indent=2)
         with fs_span("write", path, "events") as span:
