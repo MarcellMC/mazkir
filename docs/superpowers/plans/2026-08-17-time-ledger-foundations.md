@@ -500,75 +500,70 @@ git commit -m "feat(agent): forbid reporting writes the tool result does not con
 - Test: `apps/vault-server/tests/test_daily_route.py`
 
 **Interfaces:**
-- Produces: habit frontmatter key `scheduled_at` (`"HH:MM"` or absent). Readers use `meta.get("scheduled_at") or meta.get("scheduled_time")` during the transition.
+- Produces: `daily._habit_scheduled_at(meta: dict) -> str | None` — returns the canonical `scheduled_at`, falling back to the legacy `scheduled_time`, else `None`. The habit-schedule branch of `get_daily` calls it.
+
+> **Testing note:** `tests/test_daily_route.py` deliberately avoids `TestClient` for this route — see its module docstring, "Inline the `_extract_section` helper to avoid circular-import from daily.py". It tests route *logic* through small helpers instead. Follow that convention: patching `src.main.get_vault` would not work here anyway, because `daily.py` does `from src.main import get_vault` at module load and holds its own reference.
 
 - [ ] **Step 1: Write the failing test**
 
 Append to `apps/vault-server/tests/test_daily_route.py`:
 
 ```python
-def test_habit_with_legacy_scheduled_time_still_appears(vault_service, vault_path):
-    """Files written before the rename use scheduled_time; don't drop them."""
-    (vault_path / "20-habits" / "legacy.md").write_text(
-        "---\n"
-        "type: habit\n"
-        "name: Legacy habit\n"
-        "status: active\n"
-        "scheduled_time: '07:30'\n"
-        "---\n\n# Legacy habit\n",
-        encoding="utf-8",
-    )
+class TestHabitScheduledAt:
+    """The canonical key is scheduled_at; scheduled_time is the legacy name."""
 
-    habits = vault_service.list_active_habits()
-    legacy = next(h for h in habits if h["metadata"]["name"] == "Legacy habit")
-    meta = legacy["metadata"]
+    def test_prefers_canonical_key(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        assert _habit_scheduled_at({"scheduled_at": "07:30"}) == "07:30"
 
-    assert (meta.get("scheduled_at") or meta.get("scheduled_time")) == "07:30"
+    def test_falls_back_to_legacy_key(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        assert _habit_scheduled_at({"scheduled_time": "07:30"}) == "07:30"
+
+    def test_canonical_wins_when_both_present(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        meta = {"scheduled_at": "08:00", "scheduled_time": "07:30"}
+        assert _habit_scheduled_at(meta) == "08:00"
+
+    def test_returns_none_when_unscheduled(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        assert _habit_scheduled_at({"name": "Workout"}) is None
+
+    def test_treats_empty_string_as_unscheduled(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        assert _habit_scheduled_at({"scheduled_at": ""}) is None
 ```
 
-- [ ] **Step 2: Run the test to verify it passes trivially, then add the route test**
+- [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_daily_route.py -v -k legacy`
-Expected: PASS (it asserts the fallback expression, not the route). Now add the test that actually fails — append:
+Run: `python -m pytest tests/test_daily_route.py -v -k HabitScheduledAt`
+Expected: 5 FAIL with `ImportError: cannot import name '_habit_scheduled_at'`.
+
+- [ ] **Step 3: Add the helper and call it from the route**
+
+In `apps/vault-server/src/api/routes/daily.py`, add beside `_extract_section`:
 
 ```python
-def test_daily_schedule_includes_legacy_scheduled_time_habits(monkeypatch, vault_path):
-    from fastapi.testclient import TestClient
-    from src.services.vault_service import VaultService
-    import src.main as main
+def _habit_scheduled_at(meta: dict) -> str | None:
+    """Time a habit is scheduled for, or None.
 
-    (vault_path / "20-habits" / "legacy.md").write_text(
-        "---\n"
-        "type: habit\n"
-        "name: Legacy habit\n"
-        "status: active\n"
-        "scheduled_time: '07:30'\n"
-        "---\n\n# Legacy habit\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(main, "get_vault", lambda: VaultService(vault_path))
-    monkeypatch.setattr(main, "get_calendar", lambda: None)
-
-    client = TestClient(main.app)
-    body = client.get("/daily").json()
-
-    titles = [item["title"] for item in body["schedule"]]
-    assert "Legacy habit" in titles
+    `scheduled_at` is canonical. `scheduled_time` is the legacy key that the
+    habit template used to write; habits created before the rename still
+    carry it, and dropping them would silently empty the schedule.
+    """
+    return meta.get("scheduled_at") or meta.get("scheduled_time") or None
 ```
 
-- [ ] **Step 3: Run it to verify it fails**
-
-Run: `python -m pytest tests/test_daily_route.py -v -k legacy_scheduled_time_habits`
-Expected: FAIL — `"Legacy habit"` not in `titles`, because the route reads only `scheduled_at`.
-
-- [ ] **Step 4: Add the fallback in the route**
-
-In `apps/vault-server/src/api/routes/daily.py`, replace line 96:
+Then replace line 96 in the habit loop:
 
 ```python
-        scheduled_at = meta.get("scheduled_at") or meta.get("scheduled_time")
+        scheduled_at = _habit_scheduled_at(meta)
 ```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `python -m pytest tests/test_daily_route.py -v`
+Expected: all passed.
 
 - [ ] **Step 5: Rename the field in both templates**
 
