@@ -1668,6 +1668,12 @@ def test_static_guidelines_forbid_unverified_write_claims():
 
     text = "\n".join(AgentService._static_guidelines())
 
+    # Check that the section exists
     assert "## Reporting writes" in text
     assert "calendar_sync" in text
     assert "ok: true" in text
+
+    # Pin the semantic guidance to prevent inversion
+    assert "Never report an action as done unless the tool result says ok: true" in text
+    assert "quote that, not your requested value" in text
+    assert "tell the user the calendar was NOT updated" in text
