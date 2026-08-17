@@ -27,8 +27,11 @@ Two goals shape everything below:
 | Three write paths + approval gate | GCal push of suggested blocks |
 | Reconciliation via Telegram + NL | Webapp reconciliation + day timeline |
 | Weekly proportional readout | Matrix revision proposals from real data |
-| Habit multi-completion fix (§7) | Tag query engine |
-| `scheduled_at` / `scheduled_time` bug (§8) | `tm-day-bd` bug (§8) |
+| Retrospective NL phrasing (§4.3) | Tag query engine |
+| Write-verification invariant (§3.4) | `tm-day-bd` bug (§8) |
+| Duplicate GCal entries (§8) | |
+| Habit multi-completion fix (§7) | |
+| `scheduled_at` / `scheduled_time` bug (§8) | |
 
 ## 2. Data model
 
@@ -137,6 +140,8 @@ Ground truth for the seed values is the photo at `memory/00-system/media/2026-06
 - **Live** — timer start/stop.
 - **After the fact** — natural-language logging, and habit completions (which mint a block via a post-hook, structurally identical to the existing `sync_to_calendar` hook).
 
+**One completion yields exactly one block, and Google Calendar is written from the block, never independently from the habit.** Today `complete_habit` fires `sync_to_calendar`, which creates its own calendar event; adding a block-minting hook alongside it would produce two artifacts per completion and a third source of the duplication described in §8. The block is the single origin — calendar sync reads from it.
+
 There are **no default or filler blocks**, and no declared baseline for sleep, meals or commute. Those hours are unpredictable and making them predictable is itself a goal, so they must be measured rather than assumed. Auto-filled blocks would also be fiction counted as measurement, which corrupts the one thing v1 exists to produce.
 
 Mazkir may still *suggest* a sleep or meal block from the previous day or the week's pattern. A suggestion is not a log — see §3.3.
@@ -158,6 +163,16 @@ Explicitly rejected: hand-curated keyword match lists. They are exactly the main
 Every block enters as `state: "suggested"` regardless of source — calendar and location-derived blocks included. A calendar event is an *intention*: meetings get cancelled and deep-work blocks get skipped, and counting those as logged hours is the most likely way the readout ends up flattering its reader.
 
 Only user approval promotes `suggested` → `approved`. **Only `approved` blocks count toward the readout.**
+
+### 3.4 Report only what the write confirms
+
+**Mazkir must never report a write it has not verified.** Every tool already returns `{ok, data|error, _items}`; the agent must consult `ok` before narrating an outcome, and a best-effort side effect that did not happen — a calendar sync that failed, a file that was not written — must be reported as not having happened.
+
+This is an invariant, not a bugfix. §3.3 guarantees nothing is logged without approval; this is its mirror, and without it the guarantee is worthless. A ledger that silently diverges from what the user believes it contains poisons every number downstream, and unlike a missed write, the user has no way to notice.
+
+Observed live on 2026-08-16 (`memory/00-system/conversations/2026-08-16/156175834.md`): Mazkir reported *"Dog Walk + Dog Food Pickup moved back to 15:59"* when the write had not landed, and separately implied a calendar sync it had not performed — retracting only when challenged, with *"my previous response overstated what happened."*
+
+Concretely: the agent prompt states the rule; write tools return the persisted state rather than the requested state, so the agent narrates what is on disk; and best-effort hooks surface their failure in the tool result instead of only logging at WARNING.
 
 ## 4. Editing
 
@@ -184,6 +199,21 @@ Several edits, one round-trip, one approval. Nothing is written until the tap.
 A common case, not an edge case. One rule at parse time: **if `end < start`, the end is the next day.** `23:30 → 01:45` wraps; `03:05 → 12:15` does not.
 
 Storage **splits the block at midnight** so each date file owns only its own hours, which keeps weekly aggregation a plain sum over seven files. Display **rejoins** the fragments, showing `23:30–01:45 ⁺¹` as one row. Split for storage, joined for display.
+
+### 4.3 Retrospective phrasing
+
+The examples above are explicit forms, but that is not how logging will actually happen. Real logging is retrospective and anchors the interval implicitly:
+
+| Said | Means |
+|---|---|
+| "just got back from the dog walk" | interval **ends** now; start inferred from the habit's `default_duration_minutes` |
+| "been at this since 2" | starts 14:00, **ends** now |
+| "spent an hour on the accounts" | duration known, anchor implied by tense — ends now unless stated |
+| "walked the dog at 7" | starts 07:00, duration from the habit default |
+
+The distinction that matters is **which end of the interval the utterance anchors**. Getting it backwards is not a rounding error — it shifts the whole block by its own length.
+
+Observed live on 2026-08-16: *"I've just returned home from the dog walk"* was logged as a block **starting** at 16:29 rather than ending there, putting the walk an hour off. When ambiguous, resolve to the reading the tense supports and show the resolved interval in the §4.1 preview, where it costs one tap to correct.
 
 ## 5. Coverage, overlap and unaccounted time
 
@@ -280,9 +310,21 @@ Fix:
 
 Habits also gain `activity_category`, `domain` and `default_duration_minutes`, so a completion mints a correctly-faceted block. These are explicit rather than classified because there are five habit files and they are authored once.
 
-This section depends on nothing else in the design and can ship first.
+**This section is gated on the duplicate-calendar-entry fix in §8, and must not ship before it.** An earlier draft called it independent and shippable first; that was wrong. `daily_target: 2` turns multiple same-day completions from an error into the normal case, so a bug that currently fires occasionally would fire every single day, on exactly the habit that motivated the change.
 
 ## 8. Bugs folded in
+
+- **Duplicate calendar entries per habit completion** (v1, and a prerequisite for §7). Every completion of a habit whose `google_event_id` is unset creates a brand-new Google Calendar event. Root cause:
+
+  ```
+  hooks/sync_to_calendar.py:75   _maybe_await(calendar.sync_habit(item))   ← return value discarded
+  calendar_service.py:677        sync_habit() creates a new event when
+                                 google_event_id is falsy and returns the new id
+                                 ↓
+                                 nothing writes that id back to the vault file
+  ```
+
+  `dog-walk.md` has `google_event_id: null`, so three walks produced three calendar entries, plus a fourth from the agent's separate `create_event`. `workout.md` has an id set, which is why it never duplicated. Fix: persist the id returned by `sync_habit` / `sync_task` back to the vault file, and route habit-derived calendar writes through the block per §3.1. Reported live on 2026-08-16 — *"I now see 3 dog walk habit entries for this day in my calendar and a separate event. This is a mess."*
 
 - **`scheduled_at` vs `scheduled_time`** (v1). `GET /day` reads `habit.metadata["scheduled_at"]` (`api/routes/daily.py:96`) but `memory/00-system/templates/_habit_.md` writes `scheduled_time`. Habits created from the template never appear on the schedule. Pick one name and migrate.
 - **`tm-day-bd`** (v2). A floating caption block that glides over images in the time-management note feed but stops as the timeline scrolls down. Original intent unclear; needs investigation before a fix, so it moves to v2 rather than being assumed small.
