@@ -10,7 +10,7 @@ const LINE_STYLE_DESCRIPTIONS: Record<string, string> = {
 export function buildPrompt(req: {
   type: GenerateRequest['type']
   event_name?: string
-  activity_category?: string
+  activity?: string
   location_name?: string
   style?: GenerateRequest['style']
 }): string {
@@ -19,7 +19,7 @@ export function buildPrompt(req: {
   switch (req.type) {
     case 'micro_icon':
       parts.push(`Minimal vector icon of ${req.event_name || ''}`)
-      if (req.activity_category) parts.push(`representing ${req.activity_category} activity`)
+      if (req.activity) parts.push(`representing ${req.activity} activity`)
       parts.push('simple, clean, flat design, single color')
       break
     case 'route_sketch':

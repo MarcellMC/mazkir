@@ -33,7 +33,7 @@ class TestGenerationService:
         request = GenerationRequest(
             type="micro_icon",
             event_name="Gym workout",
-            activity_category="gym",
+            activity="gym",
             style=StyleConfig(line_style="clean_vector"),
         )
         prompt = gen_service.build_prompt(request)
@@ -44,7 +44,7 @@ class TestGenerationService:
         request = GenerationRequest(
             type="route_sketch",
             event_name="Walk to park",
-            activity_category="walk",
+            activity="walk",
             style=StyleConfig(line_style="loose_ink"),
         )
         prompt = gen_service.build_prompt(request)

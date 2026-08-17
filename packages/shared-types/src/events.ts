@@ -10,7 +10,7 @@ export interface MergedEvent {
   // What
   name: string
   type: 'habit' | 'task' | 'calendar' | 'unplanned_stop' | 'transit' | 'home'
-  activity_category?: string
+  activity?: string
 
   // When
   start_time: string

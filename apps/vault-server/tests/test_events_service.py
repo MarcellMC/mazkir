@@ -396,3 +396,31 @@ class TestFilesystemSpans:
         assert spans[0].name == "fs.write"
         assert spans[0].attributes["fs.store"] == "events"
         assert spans[0].attributes["fs.bytes"] > 0
+
+
+def test_legacy_activity_category_is_read_as_activity(tmp_path):
+    import json
+    from src.services.events_service import EventsService
+
+    events_dir = tmp_path / "events"
+    events_dir.mkdir()
+    (events_dir / "2026-05-01.json").write_text(json.dumps([{
+        "id": "evt_old",
+        "name": "Coffee",
+        "activity_category": "cafe",
+    }]), encoding="utf-8")
+
+    svc = EventsService(events_dir)
+    event = svc.get_events("2026-05-01")[0]
+
+    assert event["activity"] == "cafe"
+    assert "activity_category" not in event
+
+
+def test_new_events_are_saved_with_activity(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.save_events("2026-08-17", [{"id": "evt_1", "activity": "dev"}])
+
+    assert svc.get_events("2026-08-17")[0]["activity"] == "dev"

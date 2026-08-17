@@ -32,7 +32,7 @@ class StyleConfig(BaseModel):
 class GenerationRequest(BaseModel):
     type: str  # 'micro_icon' | 'keyframe_scene' | 'route_sketch' | 'full_day_map'
     event_name: str = ""
-    activity_category: str | None = None
+    activity: str | None = None
     location_name: str | None = None
     style: StyleConfig = StyleConfig()
     approach: str = "ai_raster"
@@ -152,8 +152,8 @@ class GenerationService:
 
         if request.type == "micro_icon":
             parts.append(f"Minimal vector icon of {request.event_name}")
-            if request.activity_category:
-                parts.append(f"representing {request.activity_category} activity")
+            if request.activity:
+                parts.append(f"representing {request.activity} activity")
             parts.append("simple, clean, flat design, single color")
 
         elif request.type == "route_sketch":

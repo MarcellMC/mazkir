@@ -2767,7 +2767,7 @@ class AgentService:
         if "location" in params:
             updates["location"] = params["location"]
         if "category" in params:
-            updates["activity_category"] = params["category"]
+            updates["activity"] = params["category"]
 
         result = self.events.update_event(
             date=date,

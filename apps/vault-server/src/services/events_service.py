@@ -33,13 +33,20 @@ class EventsService:
     def _file_path(self, date: str) -> Path:
         return self.events_path / f"{date}.json"
 
+    @staticmethod
+    def _normalize(event: dict[str, Any]) -> dict[str, Any]:
+        """Migrate legacy keys on read. Files stay untouched until next save."""
+        if "activity_category" in event and "activity" not in event:
+            event["activity"] = event.pop("activity_category")
+        return event
+
     def get_events(self, date: str) -> list[dict[str, Any]]:
         """Read persisted events for a date. Returns [] if no file exists."""
         path = self._file_path(date)
         if not path.exists():
             return []
         try:
-            return json.loads(path.read_text())
+            return [self._normalize(e) for e in json.loads(path.read_text())]
         except Exception as e:
             logger.error(f"Failed to read events for {date}: {e}")
             return []
@@ -103,7 +110,7 @@ class EventsService:
             "end_time": end_time or start_time,
             "duration_minutes": duration,
             "location": location,
-            "activity_category": category,
+            "activity": category,
             "source": "photo" if photo_path else "manual",
             "source_ids": source_ids or {},
             "confidence": "medium",

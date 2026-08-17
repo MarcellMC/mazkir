@@ -145,7 +145,7 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
       const result = await api.generate({
         type: genType,
         event_name: selectedEvent.name,
-        activity_category: selectedEvent.activity_category || undefined,
+        activity: selectedEvent.activity || undefined,
         location_name: selectedEvent.location?.name,
         style,
         approach,
