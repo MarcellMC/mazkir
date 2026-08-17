@@ -2810,6 +2810,11 @@ class AgentService:
 
     def _tool_complete_habit(self, params: dict) -> dict:
         import datetime as dt
+        from src.services.completion_log import (
+            append_completion,
+            count_on,
+            parse_completion_log,
+        )
         from src.services.resolver import resolve_item
 
         resolved = resolve_item("habit", params["habit_name"], self.vault)
@@ -2818,34 +2823,45 @@ class AgentService:
 
         path = resolved["data"]["path"]
         habit = self.vault.read_file(path)
+        meta = habit["metadata"]
+        body = habit.get("content", "")
 
-        today = dt.date.today().isoformat()
-        if habit["metadata"].get("last_completed") == today:
+        now = dt.datetime.now()
+        today = now.date()
+        target = int(meta.get("daily_target") or 1)
+        done_today = count_on(parse_completion_log(body), today)
+
+        if done_today >= target:
             return err(
                 ErrorCode.ALREADY_DONE,
-                f"Habit '{habit['metadata'].get('name', '')}' already completed today",
-                details={"path": path, "streak": habit["metadata"].get("streak", 0)},
+                f"Habit '{meta.get('name', '')}' already completed "
+                f"{done_today}/{target} times today",
+                details={
+                    "path": path,
+                    "streak": meta.get("streak", 0),
+                    "completions_today": done_today,
+                    "daily_target": target,
+                },
             )
 
-        meta = habit["metadata"]
+        new_body = append_completion(body, now)
+        completions_today = done_today + 1
+        target_met = completions_today >= target
+
         old_streak = meta.get("streak", 0)
-        new_streak = old_streak + 1
+        new_streak = old_streak + 1 if target_met else old_streak
         longest = max(meta.get("longest_streak", 0), new_streak)
 
-        self.vault.update_file(path, {
+        self.vault.write_file(path, {
+            **meta,
             "streak": new_streak,
             "longest_streak": longest,
-            "last_completed": today,
-        })
+            "last_completed": today.isoformat(),
+            "updated": today.isoformat(),
+        }, new_body)
 
         tokens = meta.get("tokens_per_completion", 5)
         self.vault.update_tokens(tokens, meta.get("name", "habit"))
-
-        if self.calendar and meta.get("google_event_id"):
-            try:
-                self.calendar.mark_event_complete(meta["google_event_id"])
-            except Exception as e:
-                logger.warning(f"Calendar update failed: {e}")
 
         return ok(
             {
@@ -2854,6 +2870,8 @@ class AgentService:
                 "new_streak": new_streak,
                 "longest_streak": longest,
                 "tokens_earned": tokens,
+                "completions_today": completions_today,
+                "daily_target": target,
             },
             items=[path],
         )

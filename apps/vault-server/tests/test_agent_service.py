@@ -1087,6 +1087,10 @@ def test_complete_task_idempotent_when_already_done(mock_services):
 
 
 def test_complete_habit_idempotent_when_done_today(mock_services):
+    # Idempotency is now sourced from the `## Completion Log` body (Task 6/7),
+    # not the `last_completed` frontmatter field alone. With no `daily_target`
+    # set, the default target is 1, so one logged entry for today is enough
+    # to trigger ALREADY_DONE on a second attempt.
     from datetime import date
     claude, vault, memory, calendar, events = mock_services
     agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
@@ -1100,6 +1104,7 @@ def test_complete_habit_idempotent_when_done_today(mock_services):
     agent.vault.read_file.return_value = {
         "path": "20-habits/workout.md",
         "metadata": {"name": "Workout", "last_completed": today, "streak": 5},
+        "content": f"# Workout\n\n## Completion Log\n- {today}T06:00:00\n",
     }
 
     result = agent._tool_complete_habit({"habit_name": "Workout"})
@@ -1677,3 +1682,95 @@ def test_static_guidelines_forbid_unverified_write_claims():
     assert "Never report an action as done unless the tool result says ok: true" in text
     assert "quote that, not your requested value" in text
     assert "tell the user the calendar was NOT updated" in text
+
+
+def _habit_file(name="Dog Walk", target=2, streak=3, log=""):
+    return {
+        "metadata": {
+            "type": "habit",
+            "name": name,
+            "daily_target": target,
+            "streak": streak,
+            "longest_streak": 5,
+            "last_completed": None,
+            "tokens_per_completion": 5,
+            "google_event_id": None,
+        },
+        "content": f"# {name}\n\n## Completion Log\n{log}\n",
+    }
+
+
+@pytest.fixture
+def _resolve_ok(monkeypatch):
+    """complete_habit resolves the name through resolver.resolve_item."""
+    monkeypatch.setattr(
+        "src.services.resolver.resolve_item",
+        lambda kind, name, vault: {
+            "ok": True, "data": {"path": "20-habits/dog-walk.md"}
+        },
+    )
+
+
+def test_second_completion_of_the_day_is_allowed(agent, mock_services, _resolve_ok):
+    """Regression: dog walking needs two completions a day."""
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+    vault.read_file.return_value = _habit_file(log=f"- {today}T07:12:00\n")
+
+    result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+
+    assert result["ok"] is True
+    assert result["data"]["completions_today"] == 2
+
+
+def test_completion_beyond_the_daily_target_is_rejected(agent, mock_services, _resolve_ok):
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+    vault.read_file.return_value = _habit_file(
+        log=f"- {today}T07:12:00\n- {today}T19:40:00\n"
+    )
+
+    result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "ALREADY_DONE"
+
+
+def test_streak_advances_only_when_the_target_is_met(agent, mock_services, _resolve_ok):
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+
+    vault.read_file.return_value = _habit_file(log="")
+    first = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+    assert first["data"]["new_streak"] == 3  # unchanged: 1 of 2
+
+    vault.read_file.return_value = _habit_file(log=f"- {today}T07:12:00\n")
+    second = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+    assert second["data"]["new_streak"] == 4  # 2 of 2 — target met
+
+
+def test_tokens_are_awarded_on_every_completion(agent, mock_services, _resolve_ok):
+    _, vault, _, _, _ = mock_services
+    vault.read_file.return_value = _habit_file(log="")
+
+    result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+
+    assert result["data"]["tokens_earned"] == 5
+    vault.update_tokens.assert_called_once()
+
+
+def test_habit_without_daily_target_behaves_as_before(agent, mock_services, _resolve_ok):
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+    habit = _habit_file(target=None, log=f"- {today}T07:12:00\n")
+    del habit["metadata"]["daily_target"]
+    vault.read_file.return_value = habit
+
+    result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "ALREADY_DONE"
