@@ -69,9 +69,13 @@ def sync_to_calendar(params: dict, output: dict, ctx: Any) -> None:
             _maybe_await(calendar.mark_event_complete(meta["google_event_id"]))
             return
 
+        event_id = None
         if item_type == "task":
-            _maybe_await(calendar.sync_task(item))
+            event_id = _maybe_await(calendar.sync_task(item))
         elif item_type == "habit":
-            _maybe_await(calendar.sync_habit(item))
+            event_id = _maybe_await(calendar.sync_habit(item))
+
+        if event_id and not meta.get("google_event_id"):
+            vault.update_file(path, {"google_event_id": event_id})
     except Exception as e:
         logger.warning("sync_to_calendar hook failed: %s", e)

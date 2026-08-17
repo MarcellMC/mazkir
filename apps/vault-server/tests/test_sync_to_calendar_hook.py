@@ -142,3 +142,66 @@ def test_hook_noop_on_delete_tools():
     )
     calendar.sync_task.assert_not_called()
     calendar.mark_event_complete.assert_not_called()
+
+
+def _ctx(calendar, vault, tool_name="complete_habit"):
+    return {
+        "calendar": calendar,
+        "vault": vault,
+        "tool": {"schema": {"name": tool_name}},
+    }
+
+
+def _output(path="20-habits/dog-walk.md"):
+    return {"ok": True, "data": {}, "_items": [path]}
+
+
+def test_persists_new_event_id_to_the_habit_file():
+    calendar = MagicMock()
+    calendar.is_initialized = True
+    calendar.sync_habit.return_value = "gcal_evt_1"
+
+    vault = MagicMock()
+    vault.read_file.return_value = {
+        "metadata": {"type": "habit", "name": "Dog Walk", "google_event_id": None}
+    }
+
+    sync_to_calendar({}, _output(), _ctx(calendar, vault))
+
+    vault.update_file.assert_called_once_with(
+        "20-habits/dog-walk.md", {"google_event_id": "gcal_evt_1"}
+    )
+
+
+def test_existing_event_id_is_marked_complete_not_recreated():
+    calendar = MagicMock()
+    calendar.is_initialized = True
+
+    vault = MagicMock()
+    vault.read_file.return_value = {
+        "metadata": {"type": "habit", "name": "Workout", "google_event_id": "gcal_old"}
+    }
+
+    sync_to_calendar({}, _output("20-habits/workout.md"), _ctx(calendar, vault))
+
+    calendar.mark_event_complete.assert_called_once_with("gcal_old")
+    calendar.sync_habit.assert_not_called()
+    vault.update_file.assert_not_called()
+
+
+def test_two_completions_create_only_one_calendar_event():
+    """Regression: three dog walks produced three calendar entries."""
+    calendar = MagicMock()
+    calendar.is_initialized = True
+    calendar.sync_habit.return_value = "gcal_evt_1"
+
+    stored = {"type": "habit", "name": "Dog Walk", "google_event_id": None}
+    vault = MagicMock()
+    vault.read_file.side_effect = lambda p: {"metadata": dict(stored)}
+    vault.update_file.side_effect = lambda p, updates: stored.update(updates)
+
+    sync_to_calendar({}, _output(), _ctx(calendar, vault))
+    sync_to_calendar({}, _output(), _ctx(calendar, vault))
+
+    assert calendar.sync_habit.call_count == 1
+    calendar.mark_event_complete.assert_called_once_with("gcal_evt_1")
