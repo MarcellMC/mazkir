@@ -2831,6 +2831,13 @@ class AgentService:
         target = int(meta.get("daily_target") or 1)
         done_today = count_on(parse_completion_log(body), today)
 
+        # Habits completed before the Completion Log existed carry only
+        # `last_completed`. Treat that as a full day's progress so the
+        # transition day cannot double-count. Self-retiring: once a habit
+        # has log entries, this never fires again.
+        if not done_today and meta.get("last_completed") == today.isoformat():
+            done_today = target
+
         if done_today >= target:
             return err(
                 ErrorCode.ALREADY_DONE,

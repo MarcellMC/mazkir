@@ -1761,6 +1761,18 @@ def test_tokens_are_awarded_on_every_completion(agent, mock_services, _resolve_o
     assert result["data"]["tokens_earned"] == 5
     vault.update_tokens.assert_called_once()
 
+    # Pin what actually gets written: a regression that swapped write_file's
+    # metadata/content args, dropped the `{**meta}` spread, or wrote the
+    # stale `body` instead of the appended `new_body` would leave every
+    # other assertion in this suite green, since `vault` is a MagicMock.
+    vault.write_file.assert_called_once()
+    write_path, metadata, content = vault.write_file.call_args[0]
+    assert write_path == "20-habits/dog-walk.md"
+    assert metadata["type"] == "habit"
+    assert metadata["tokens_per_completion"] == 5  # preserved, never touched
+    assert "## Completion Log" in content
+    assert content.count("- ") >= 1  # the newly appended log line is present
+
 
 def test_habit_without_daily_target_behaves_as_before(agent, mock_services, _resolve_ok):
     import datetime as dt
@@ -1768,6 +1780,29 @@ def test_habit_without_daily_target_behaves_as_before(agent, mock_services, _res
     today = dt.date.today().isoformat()
     habit = _habit_file(target=None, log=f"- {today}T07:12:00\n")
     del habit["metadata"]["daily_target"]
+    vault.read_file.return_value = habit
+
+    result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "ALREADY_DONE"
+
+
+def test_last_completed_backfill_blocks_second_completion_on_transition_day(
+    agent, mock_services, _resolve_ok
+):
+    """Regression: habits completed before the Completion Log existed carry
+    only `last_completed`. Without a backfill, an empty log reads as zero
+    completions today, so a habit already done today would be allowed a
+    second (duplicate) completion — double tokens and streak N -> N+2 in a
+    single day, for every habit already in the live vault on ship day.
+    """
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+    habit = _habit_file(target=2, log="")  # empty log: pre-Task-6 habit
+    habit["metadata"]["last_completed"] = today  # already completed today
+
     vault.read_file.return_value = habit
 
     result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
