@@ -205,3 +205,46 @@ def test_two_completions_create_only_one_calendar_event():
 
     assert calendar.sync_habit.call_count == 1
     calendar.mark_event_complete.assert_called_once_with("gcal_evt_1")
+
+
+def test_reports_when_calendar_is_not_configured():
+    output = _output()
+    sync_to_calendar({}, output, _ctx(None, MagicMock()))
+
+    assert output["data"]["calendar_sync"] == {
+        "ok": False,
+        "reason": "calendar_not_configured",
+    }
+
+
+def test_reports_failure_when_sync_raises():
+    calendar = MagicMock()
+    calendar.is_initialized = True
+    calendar.sync_habit.side_effect = RuntimeError("gcal down")
+
+    vault = MagicMock()
+    vault.read_file.return_value = {
+        "metadata": {"type": "habit", "google_event_id": None}
+    }
+
+    output = _output()
+    sync_to_calendar({}, output, _ctx(calendar, vault))
+
+    assert output["data"]["calendar_sync"]["ok"] is False
+    assert "gcal down" in output["data"]["calendar_sync"]["reason"]
+
+
+def test_reports_success_with_the_event_id():
+    calendar = MagicMock()
+    calendar.is_initialized = True
+    calendar.sync_habit.return_value = "gcal_evt_1"
+
+    vault = MagicMock()
+    vault.read_file.return_value = {
+        "metadata": {"type": "habit", "google_event_id": None}
+    }
+
+    output = _output()
+    sync_to_calendar({}, output, _ctx(calendar, vault))
+
+    assert output["data"]["calendar_sync"] == {"ok": True, "event_id": "gcal_evt_1"}

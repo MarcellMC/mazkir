@@ -20,6 +20,17 @@ _DELETE_TOOLS = {"delete_task", "delete_habit", "archive_task", "archive_goal"}
 _COMPLETE_TOOLS = {"complete_task", "complete_habit"}
 
 
+def _record(output: dict, **fields) -> None:
+    """Stamp the calendar-sync outcome onto the tool result.
+
+    The agent is instructed never to claim a sync it cannot see, so every
+    exit path from this hook must leave a verdict here.
+    """
+    data = output.get("data")
+    if isinstance(data, dict):
+        data["calendar_sync"] = fields
+
+
 def _maybe_await(value):
     """If `value` is a coroutine, run it; otherwise return as-is."""
     if asyncio.iscoroutine(value):
@@ -38,35 +49,40 @@ def sync_to_calendar(params: dict, output: dict, ctx: Any) -> None:
     try:
         calendar = (ctx or {}).get("calendar")
         if calendar is None or not getattr(calendar, "is_initialized", False):
+            _record(output, ok=False, reason="calendar_not_configured")
             return
         if not output.get("ok", False):
+            _record(output, ok=False, reason="tool_failed")
             return
 
         tool_name = ctx.get("tool", {}).get("schema", {}).get("name", "")
 
-        # Delete/archive tools may leave nothing to sync.
         if tool_name in _DELETE_TOOLS:
+            _record(output, ok=False, reason="not_applicable")
             return
 
         items = output.get("_items") or []
         if not items:
+            _record(output, ok=False, reason="no_items")
             return
         path = items[0]
 
         vault = ctx.get("vault")
         if vault is None:
+            _record(output, ok=False, reason="vault_unavailable")
             return
 
         try:
             item = vault.read_file(path)
         except Exception:
+            _record(output, ok=False, reason="path_unreadable")
             return
         meta = item.get("metadata", {})
         item_type = meta.get("type")
 
-        # Complete: if a google_event_id exists, mark it done. Otherwise fall through to sync.
         if tool_name in _COMPLETE_TOOLS and meta.get("google_event_id"):
             _maybe_await(calendar.mark_event_complete(meta["google_event_id"]))
+            _record(output, ok=True, event_id=meta["google_event_id"])
             return
 
         event_id = None
@@ -77,5 +93,11 @@ def sync_to_calendar(params: dict, output: dict, ctx: Any) -> None:
 
         if event_id and not meta.get("google_event_id"):
             vault.update_file(path, {"google_event_id": event_id})
+
+        if event_id:
+            _record(output, ok=True, event_id=event_id)
+        else:
+            _record(output, ok=False, reason="no_event_created")
     except Exception as e:
         logger.warning("sync_to_calendar hook failed: %s", e)
+        _record(output, ok=False, reason=str(e))
