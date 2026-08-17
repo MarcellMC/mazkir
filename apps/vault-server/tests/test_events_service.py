@@ -341,6 +341,34 @@ class TestRefreshMerge:
         assert len(result[0]["photos"]) == 1  # Photo preserved
 
 
+class TestUpdateEventReturnsPersistedEvent:
+    def test_update_event_returns_the_persisted_event(self, events_service):
+        svc = events_service
+        svc.save_events("2026-08-16", [{
+            "id": "evt_1",
+            "name": "Dog walk",
+            "start_time": "2026-08-16T16:29:00",
+            "end_time": "2026-08-16T17:09:00",
+        }])
+
+        result = svc.update_event(
+            "2026-08-16", "evt_1", {"start_time": "2026-08-16T15:59:00"}
+        )
+
+        assert result["updated"] is True
+        assert result["event"]["start_time"] == "2026-08-16T15:59:00"
+        assert result["event"] == svc.get_events("2026-08-16")[0]
+
+    def test_update_event_missing_id_still_returns_error(self, events_service):
+        svc = events_service
+        svc.save_events("2026-08-16", [{"id": "evt_1", "name": "Dog walk"}])
+
+        result = svc.update_event("2026-08-16", "evt_nope", {"name": "x"})
+
+        assert "error" in result
+        assert "event" not in result
+
+
 class TestFilesystemSpans:
     """save_events should emit an fs.write span."""
 

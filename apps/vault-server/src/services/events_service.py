@@ -146,7 +146,7 @@ class EventsService:
 
                 event.update(updates)
                 self.save_events(date, events)
-                return {"updated": True, "event_id": event_id}
+                return {"updated": True, "event": event}
 
         return {"error": f"Event {event_id} not found"}
 
