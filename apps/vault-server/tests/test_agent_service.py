@@ -1809,3 +1809,23 @@ def test_last_completed_backfill_blocks_second_completion_on_transition_day(
 
     assert result["ok"] is False
     assert result["error"]["code"] == "ALREADY_DONE"
+
+
+def test_list_habits_reports_completion_progress(agent, mock_services):
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+    vault.list_active_habits.return_value = [{
+        "path": "20-habits/dog-walk.md",
+        "metadata": {
+            "type": "habit", "name": "Dog Walk",
+            "daily_target": 2, "streak": 3, "frequency": "daily",
+        },
+        "content": f"## Completion Log\n- {today}T07:12:00\n",
+    }]
+
+    result = agent._tool_list_habits({})
+    habit = result["data"]["habits"][0]
+
+    assert habit["completions_today"] == 1
+    assert habit["daily_target"] == 2

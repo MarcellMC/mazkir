@@ -2125,15 +2125,26 @@ class AgentService:
         }, items=[])
 
     def _tool_list_habits(self, params: dict) -> dict:
+        import datetime as dt
+        from src.services.completion_log import count_on, parse_completion_log
+
+        today = dt.date.today()
         habits = self.vault.list_active_habits()
         return ok(
             {
                 "habits": [
-                    {"name": h["metadata"].get("name", ""), "path": h["path"],
-                     "streak": h["metadata"].get("streak", 0),
-                     "frequency": h["metadata"].get("frequency", "daily")}
+                    {
+                        "name": h["metadata"].get("name", ""),
+                        "path": h["path"],
+                        "streak": h["metadata"].get("streak", 0),
+                        "frequency": h["metadata"].get("frequency", "daily"),
+                        "completions_today": count_on(
+                            parse_completion_log(h.get("content", "")), today
+                        ),
+                        "daily_target": int(h["metadata"].get("daily_target") or 1),
+                    }
                     for h in habits
-                ],
+                ]
             },
             items=[h["path"] for h in habits],
         )
