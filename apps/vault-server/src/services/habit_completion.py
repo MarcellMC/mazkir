@@ -11,13 +11,22 @@ This module owns the answer:
 - `daily_target_of` — the target, guarded against hand-edited YAML.
 - `completions_today` — today's count, including the transition-day backfill.
 - `is_complete_today` — whether the day's target has been met.
+- `complete_habit` — record one completion and report what changed.
+
+Calendar sync is deliberately not here: the agent path gets it from the
+`sync_to_calendar` post-hook, the REST route does it inline.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 
-from src.services.completion_log import count_on, parse_completion_log
+from src.services.completion_log import (
+    append_completion,
+    count_on,
+    parse_completion_log,
+)
 
 
 def daily_target_of(meta: dict) -> int:
@@ -62,3 +71,87 @@ def is_complete_today(habit: dict, today: dt.date | None = None) -> bool:
     return completions_today(habit, today) >= daily_target_of(
         habit.get("metadata", {})
     )
+
+
+def complete_habit(vault: Any, path: str, now: dt.datetime | None = None) -> dict:
+    """Record one completion of the habit at `path`.
+
+    Returns a dict describing the outcome — never raises for the
+    already-complete case, which callers report in their own vocabulary:
+
+        {
+          "already_completed": bool,
+          "path", "name", "date", "old_streak", "new_streak",
+          "longest_streak", "tokens_earned", "completions_today",
+          "daily_target", "target_met", "google_event_id", "new_token_total",
+        }
+
+    On `already_completed` the streak fields describe the untouched habit and
+    `tokens_earned` is 0 — nothing is written.
+
+    Tokens are awarded on every completion; the streak advances only on the
+    completion that meets the day's target.
+    """
+    now = now or dt.datetime.now()
+    today = now.date()
+
+    habit = vault.read_file(path)
+    meta = habit["metadata"]
+    body = habit.get("content", "")
+
+    target = daily_target_of(meta)
+    done_today = completions_today(habit, today)
+
+    common = {
+        "path": path,
+        "name": meta.get("name", ""),
+        "date": today.isoformat(),
+        "daily_target": target,
+        "google_event_id": meta.get("google_event_id"),
+    }
+
+    if done_today >= target:
+        return {
+            **common,
+            "already_completed": True,
+            "old_streak": meta.get("streak", 0),
+            "new_streak": meta.get("streak", 0),
+            "longest_streak": meta.get("longest_streak", 0),
+            "tokens_earned": 0,
+            "completions_today": done_today,
+            "target_met": True,
+            "new_token_total": None,
+        }
+
+    new_body = append_completion(body, now)
+    count = done_today + 1
+    target_met = count >= target
+
+    old_streak = meta.get("streak", 0)
+    new_streak = old_streak + 1 if target_met else old_streak
+    longest = max(meta.get("longest_streak", 0), new_streak)
+
+    vault.write_file(path, {
+        **meta,
+        "streak": new_streak,
+        "longest_streak": longest,
+        "last_completed": today.isoformat(),
+        "updated": today.isoformat(),
+    }, new_body)
+
+    tokens = meta.get("tokens_per_completion", 5)
+    token_result = vault.update_tokens(tokens, meta.get("name", "habit"))
+
+    return {
+        **common,
+        "already_completed": False,
+        "old_streak": old_streak,
+        "new_streak": new_streak,
+        "longest_streak": longest,
+        "tokens_earned": tokens,
+        "completions_today": count,
+        "target_met": target_met,
+        "new_token_total": (token_result or {}).get("new_total")
+        if isinstance(token_result, dict)
+        else None,
+    }

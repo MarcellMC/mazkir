@@ -2877,9 +2877,7 @@ class AgentService:
         return _propose_coding_session(self.coding_tasks, params, self._current_chat_id)
 
     def _tool_complete_habit(self, params: dict) -> dict:
-        import datetime as dt
-        from src.services.completion_log import append_completion
-        from src.services.habit_completion import completions_today, daily_target_of
+        from src.services.habit_completion import complete_habit
         from src.services.resolver import resolve_item
 
         resolved = resolve_item("habit", params["habit_name"], self.vault)
@@ -2887,56 +2885,33 @@ class AgentService:
             return resolved
 
         path = resolved["data"]["path"]
-        habit = self.vault.read_file(path)
-        meta = habit["metadata"]
-        body = habit.get("content", "")
+        # Shared with PATCH /habits/{name}: one implementation of what a
+        # completion means, so the tool and the inline keyboard cannot
+        # disagree about the same habit.
+        outcome = complete_habit(self.vault, path)
 
-        now = dt.datetime.now()
-        today = now.date()
-        target = daily_target_of(meta)
-        done_today = completions_today(habit, today)
-
-        if done_today >= target:
+        if outcome["already_completed"]:
             return err(
                 ErrorCode.ALREADY_DONE,
-                f"Habit '{meta.get('name', '')}' already completed "
-                f"{done_today}/{target} times today",
+                f"Habit '{outcome['name']}' already completed "
+                f"{outcome['completions_today']}/{outcome['daily_target']} times today",
                 details={
                     "path": path,
-                    "streak": meta.get("streak", 0),
-                    "completions_today": done_today,
-                    "daily_target": target,
+                    "streak": outcome["new_streak"],
+                    "completions_today": outcome["completions_today"],
+                    "daily_target": outcome["daily_target"],
                 },
             )
 
-        new_body = append_completion(body, now)
-        completions_today = done_today + 1
-        target_met = completions_today >= target
-
-        old_streak = meta.get("streak", 0)
-        new_streak = old_streak + 1 if target_met else old_streak
-        longest = max(meta.get("longest_streak", 0), new_streak)
-
-        self.vault.write_file(path, {
-            **meta,
-            "streak": new_streak,
-            "longest_streak": longest,
-            "last_completed": today.isoformat(),
-            "updated": today.isoformat(),
-        }, new_body)
-
-        tokens = meta.get("tokens_per_completion", 5)
-        self.vault.update_tokens(tokens, meta.get("name", "habit"))
-
         return ok(
             {
-                "habit": meta.get("name", ""),
-                "old_streak": old_streak,
-                "new_streak": new_streak,
-                "longest_streak": longest,
-                "tokens_earned": tokens,
-                "completions_today": completions_today,
-                "daily_target": target,
+                "habit": outcome["name"],
+                "old_streak": outcome["old_streak"],
+                "new_streak": outcome["new_streak"],
+                "longest_streak": outcome["longest_streak"],
+                "tokens_earned": outcome["tokens_earned"],
+                "completions_today": outcome["completions_today"],
+                "daily_target": outcome["daily_target"],
             },
             items=[path],
         )

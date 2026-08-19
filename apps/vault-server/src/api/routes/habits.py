@@ -7,6 +7,7 @@ from src.main import get_vault, get_calendar
 from src.auth import verify_api_key
 from src.config import settings
 from src.api.routes import item_name
+from src.services import habit_completion
 from src.services.habit_completion import (
     completions_today,
     daily_target_of,
@@ -112,42 +113,37 @@ async def complete_habit(name: str, body: HabitComplete):
         available = [h["metadata"].get("name") for h in habits]
         raise HTTPException(404, f"Habit not found: {name}. Available: {available}")
 
-    meta = matched["metadata"]
-    today = datetime.now(tz).strftime("%Y-%m-%d")
+    # One implementation, shared with the agent's complete_habit tool: counts
+    # today's Completion Log entries, honours daily_target, backfills the
+    # transition day, awards tokens on every completion and advances the
+    # streak only when the target is met.
+    result = habit_completion.complete_habit(vault, matched["path"])
 
-    # Check already completed
-    if meta.get("last_completed") == today:
+    if result["already_completed"]:
         return {
             "already_completed": True,
-            "name": meta["name"],
-            "streak": meta.get("streak", 0),
+            "name": result["name"],
+            "streak": result["new_streak"],
+            "completions_today": result["completions_today"],
+            "daily_target": result["daily_target"],
         }
 
-    # Update streak
-    new_streak = meta.get("streak", 0) + 1
-    tokens_per = meta.get("tokens_per_completion", 5)
-
-    vault.update_file(matched["path"], {
-        "streak": new_streak,
-        "last_completed": today,
-        "longest_streak": max(meta.get("longest_streak", 0), new_streak),
-    })
-
-    token_result = vault.update_tokens(tokens_per, f"Completed {meta['name']}")
-
-    # Mark calendar event complete
-    google_event_id = meta.get("google_event_id")
+    # Mark calendar event complete — best effort, as on the agent path.
+    google_event_id = result["google_event_id"]
     if calendar and calendar.is_initialized and google_event_id:
         try:
-            await calendar.mark_event_complete(google_event_id, today)
+            await calendar.mark_event_complete(google_event_id, result["date"])
         except Exception:
             pass
 
     return {
         "already_completed": False,
-        "name": meta["name"],
-        "old_streak": new_streak - 1,
-        "new_streak": new_streak,
-        "tokens_earned": tokens_per,
-        "new_token_total": token_result["new_total"],
+        "name": result["name"],
+        "old_streak": result["old_streak"],
+        "new_streak": result["new_streak"],
+        "tokens_earned": result["tokens_earned"],
+        "new_token_total": result["new_token_total"],
+        "completions_today": result["completions_today"],
+        "daily_target": result["daily_target"],
+        "target_met": result["target_met"],
     }
