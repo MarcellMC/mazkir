@@ -29,6 +29,10 @@ def _isolate_audit_log(tmp_path, monkeypatch):
 
 # --- Template contents (copied from memory/00-system/templates/) ---
 
+# NOTE: HABIT_TEMPLATE below temporarily differs from memory/00-system/templates/_habit_.md
+# because the vault template is migrated separately (vault is a nested git repo with
+# user data, not part of this worktree). The conftest copy represents the target state.
+
 TASK_TEMPLATE = """\
 ---
 type: task
@@ -68,7 +72,9 @@ category: personal
 difficulty: medium
 tokens_per_completion: 5
 google_event_id: null
-scheduled_time: null
+scheduled_at: null
+daily_target: 1
+activity: null
 scheduled_days: []
 tags: [habit]
 created: "{{date}}"

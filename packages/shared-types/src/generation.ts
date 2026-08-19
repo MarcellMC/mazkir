@@ -1,7 +1,7 @@
 export interface GenerateRequest {
   type: 'micro_icon' | 'keyframe_scene' | 'route_sketch' | 'full_day_map';
   event_name?: string;
-  activity_category?: string;
+  activity?: string;
   location_name?: string;
   style?: {
     preset?: string;

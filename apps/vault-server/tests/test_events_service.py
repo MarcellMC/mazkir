@@ -341,6 +341,34 @@ class TestRefreshMerge:
         assert len(result[0]["photos"]) == 1  # Photo preserved
 
 
+class TestUpdateEventReturnsPersistedEvent:
+    def test_update_event_returns_the_persisted_event(self, events_service):
+        svc = events_service
+        svc.save_events("2026-08-16", [{
+            "id": "evt_1",
+            "name": "Dog walk",
+            "start_time": "2026-08-16T16:29:00",
+            "end_time": "2026-08-16T17:09:00",
+        }])
+
+        result = svc.update_event(
+            "2026-08-16", "evt_1", {"start_time": "2026-08-16T15:59:00"}
+        )
+
+        assert result["updated"] is True
+        assert result["event"]["start_time"] == "2026-08-16T15:59:00"
+        assert result["event"] == svc.get_events("2026-08-16")[0]
+
+    def test_update_event_missing_id_still_returns_error(self, events_service):
+        svc = events_service
+        svc.save_events("2026-08-16", [{"id": "evt_1", "name": "Dog walk"}])
+
+        result = svc.update_event("2026-08-16", "evt_nope", {"name": "x"})
+
+        assert "error" in result
+        assert "event" not in result
+
+
 class TestFilesystemSpans:
     """save_events should emit an fs.write span."""
 
@@ -368,3 +396,121 @@ class TestFilesystemSpans:
         assert spans[0].name == "fs.write"
         assert spans[0].attributes["fs.store"] == "events"
         assert spans[0].attributes["fs.bytes"] > 0
+
+
+def test_legacy_activity_category_is_read_as_activity(tmp_path):
+    import json
+    from src.services.events_service import EventsService
+
+    events_dir = tmp_path / "events"
+    events_dir.mkdir()
+    (events_dir / "2026-05-01.json").write_text(json.dumps([{
+        "id": "evt_old",
+        "name": "Coffee",
+        "activity_category": "cafe",
+    }]), encoding="utf-8")
+
+    svc = EventsService(events_dir)
+    event = svc.get_events("2026-05-01")[0]
+
+    assert event["activity"] == "cafe"
+    assert "activity_category" not in event
+
+
+def test_new_events_are_saved_with_activity(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.save_events("2026-08-17", [{"id": "evt_1", "activity": "dev"}])
+
+    assert svc.get_events("2026-08-17")[0]["activity"] == "dev"
+
+
+def test_new_fields_are_defaulted_on_save(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.save_events("2026-08-17", [{"id": "evt_1", "name": "Dog walk"}])
+
+    event = svc.get_events("2026-08-17")[0]
+
+    assert event["activity"] is None
+    assert event["category"] is None
+    assert event["tags"] == []
+    assert event["state"] == "suggested"
+
+
+def test_explicit_values_are_preserved(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.save_events("2026-08-17", [{
+        "id": "evt_1",
+        "activity": "dev",
+        "category": "personal",
+        "tags": ["mazkir"],
+        "state": "approved",
+    }])
+
+    event = svc.get_events("2026-08-17")[0]
+
+    assert event["activity"] == "dev"
+    assert event["category"] == "personal"
+    assert event["tags"] == ["mazkir"]
+    assert event["state"] == "approved"
+
+
+def test_legacy_events_default_to_suggested(tmp_path):
+    """Events written before this change must not silently count as logged."""
+    import json
+    from src.services.events_service import EventsService
+
+    events_dir = tmp_path / "events"
+    events_dir.mkdir()
+    (events_dir / "2026-05-01.json").write_text(
+        json.dumps([{"id": "evt_old", "name": "Coffee"}]), encoding="utf-8"
+    )
+
+    svc = EventsService(events_dir)
+
+    assert svc.get_events("2026-05-01")[0]["state"] == "suggested"
+
+
+def test_create_event_writes_the_activity_kwarg_to_the_activity_field(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.create_event(
+        date="2026-08-17", name="Dog walk", start_time="07:00", activity="walk"
+    )
+
+    event = svc.get_events("2026-08-17")[0]
+    assert event["activity"] == "walk"
+    # The category facet is a separate axis and is not populated from here.
+    assert event["category"] is None
+
+
+def test_create_event_still_accepts_the_deprecated_category_alias(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.create_event(
+        date="2026-08-17", name="Dog walk", start_time="07:00", category="walk"
+    )
+
+    assert svc.get_events("2026-08-17")[0]["activity"] == "walk"
+
+
+def test_activity_wins_when_both_names_are_given(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.create_event(
+        date="2026-08-17",
+        name="Dog walk",
+        start_time="07:00",
+        activity="walk",
+        category="legacy",
+    )
+
+    assert svc.get_events("2026-08-17")[0]["activity"] == "walk"

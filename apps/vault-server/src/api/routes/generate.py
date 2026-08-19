@@ -17,7 +17,7 @@ router = APIRouter(
 class GenerateRequest(BaseModel):
     type: str  # 'micro_icon' | 'keyframe_scene' | 'route_sketch' | 'full_day_map'
     event_name: str = ""
-    activity_category: str | None = None
+    activity: str | None = None
     location_name: str | None = None
     style: dict[str, Any] | None = None
     approach: str = "ai_raster"
@@ -53,7 +53,7 @@ async def generate_image(request: GenerateRequest):
     gen_request = GenerationRequest(
         type=request.type,
         event_name=request.event_name,
-        activity_category=request.activity_category,
+        activity=request.activity,
         location_name=request.location_name,
         style=style,
         approach=request.approach,

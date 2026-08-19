@@ -711,6 +711,144 @@ class TestEventTools:
         assert result["data"]["event_id"] == "evt_new"
         assert "calendar_synced" not in result["data"]
 
+    # --- calendar_sync: same shape as the sync_to_calendar post-hook ---
+
+    def test_create_event_reports_calendar_success(self, agent, mock_services):
+        from unittest.mock import AsyncMock
+        events_mock = mock_services[4]
+        calendar_mock = mock_services[3]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        calendar_mock.create_event = AsyncMock(return_value="gcal_event_123")
+
+        result = agent._tool_create_event({"name": "Lunch", "start_time": "12:30"})
+
+        assert result["data"]["calendar_sync"] == {
+            "ok": True,
+            "attempted": True,
+            "event_id": "gcal_event_123",
+        }
+
+    def test_create_event_reports_calendar_failure(self, agent, mock_services):
+        """A silent failure here was a hole in the never-report-an-unconfirmed-
+        write guarantee: create_event emitted nothing at all when GCal blew up,
+        under a key the reporting rule does not name."""
+        events_mock = mock_services[4]
+        calendar_mock = mock_services[3]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        calendar_mock.create_event = MagicMock(side_effect=Exception("GCal error"))
+
+        result = agent._tool_create_event({"name": "Dinner", "start_time": "19:00"})
+
+        sync = result["data"]["calendar_sync"]
+        assert sync["ok"] is False
+        assert sync["attempted"] is True
+        assert "GCal error" in sync["reason"]
+
+    def test_create_event_reports_when_gcal_returns_no_id(self, agent, mock_services):
+        from unittest.mock import AsyncMock
+        events_mock = mock_services[4]
+        calendar_mock = mock_services[3]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        calendar_mock.create_event = AsyncMock(return_value=None)
+
+        result = agent._tool_create_event({"name": "Walk", "start_time": "10:00"})
+
+        sync = result["data"]["calendar_sync"]
+        assert sync["ok"] is False
+        assert sync["attempted"] is True
+        assert sync["reason"] == "no_event_created"
+
+    def test_create_event_without_calendar_is_not_a_failure(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        agent.calendar = None
+
+        result = agent._tool_create_event({"name": "Walk", "start_time": "10:00"})
+
+        assert result["data"]["calendar_sync"] == {
+            "ok": False,
+            "attempted": False,
+            "reason": "calendar_not_configured",
+        }
+
+    def test_create_event_for_a_photo_is_not_a_calendar_failure(self, agent, mock_services):
+        events_mock = mock_services[4]
+        calendar_mock = mock_services[3]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+
+        result = agent._tool_create_event({
+            "name": "Sunset",
+            "start_time": "20:00",
+            "photo_path": "media/2026-08-17/sunset.jpg",
+        })
+
+        assert result["data"]["calendar_sync"]["attempted"] is False
+        assert result["data"]["calendar_sync"]["reason"] == "not_applicable"
+        calendar_mock.create_event.assert_not_called()
+
+    # --- activity vs category: two axes, one tool parameter ---
+
+    def test_create_event_passes_activity_through(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        agent.calendar = None
+
+        agent._tool_create_event({
+            "name": "Dog walk", "start_time": "07:00", "activity": "walk",
+        })
+
+        assert events_mock.create_event.call_args.kwargs["activity"] == "walk"
+
+    def test_create_event_accepts_the_deprecated_category_alias(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        agent.calendar = None
+
+        agent._tool_create_event({
+            "name": "Dog walk", "start_time": "07:00", "category": "walk",
+        })
+
+        assert events_mock.create_event.call_args.kwargs["activity"] == "walk"
+
+    def test_create_event_prefers_activity_over_the_alias(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        agent.calendar = None
+
+        agent._tool_create_event({
+            "name": "Dog walk", "start_time": "07:00",
+            "activity": "walk", "category": "legacy",
+        })
+
+        assert events_mock.create_event.call_args.kwargs["activity"] == "walk"
+
+    def test_update_event_passes_activity_through(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.update_event.return_value = {"updated": True, "event": {}}
+
+        agent._tool_update_event({"event_id": "evt_1", "activity": "walk"})
+
+        assert events_mock.update_event.call_args.kwargs["updates"]["activity"] == "walk"
+
+    def test_update_event_prefers_activity_over_the_alias(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.update_event.return_value = {"updated": True, "event": {}}
+
+        agent._tool_update_event({
+            "event_id": "evt_1", "activity": "walk", "category": "legacy",
+        })
+
+        assert events_mock.update_event.call_args.kwargs["updates"]["activity"] == "walk"
+
+    def test_event_schemas_name_the_field_they_actually_write(self, agent):
+        """The parameter was called `category` while writing `activity`. Now
+        that an event carries both as separate axes, the old name pointed the
+        model at the wrong facet and left the real one unreachable."""
+        for tool in ("create_event", "update_event"):
+            props = agent.tools[tool]["schema"]["input_schema"]["properties"]
+            assert "activity" in props, tool
+            assert "category" not in props, tool
+
     def test_create_event_with_explicit_date(self, agent, mock_services):
         events_mock = mock_services[4]
         events_mock.create_event.return_value = {"id": "evt_new", "path": "data/events/2026-03-20.json"}
@@ -1087,6 +1225,10 @@ def test_complete_task_idempotent_when_already_done(mock_services):
 
 
 def test_complete_habit_idempotent_when_done_today(mock_services):
+    # Idempotency is now sourced from the `## Completion Log` body (Task 6/7),
+    # not the `last_completed` frontmatter field alone. With no `daily_target`
+    # set, the default target is 1, so one logged entry for today is enough
+    # to trigger ALREADY_DONE on a second attempt.
     from datetime import date
     claude, vault, memory, calendar, events = mock_services
     agent = AgentService(claude=claude, vault=vault, memory=memory, calendar=calendar, events=events)
@@ -1100,6 +1242,7 @@ def test_complete_habit_idempotent_when_done_today(mock_services):
     agent.vault.read_file.return_value = {
         "path": "20-habits/workout.md",
         "metadata": {"name": "Workout", "last_completed": today, "streak": 5},
+        "content": f"# Workout\n\n## Completion Log\n- {today}T06:00:00\n",
     }
 
     result = agent._tool_complete_habit({"habit_name": "Workout"})
@@ -1661,3 +1804,222 @@ def test_a_plain_yes_adds_no_choice_note(agent, monkeypatch):
 
     last = captured["messages"][-1]
     assert all(b.get("type") == "tool_result" for b in last["content"])
+
+
+def test_static_guidelines_forbid_unverified_write_claims():
+    from src.services.agent_service import AgentService
+
+    text = "\n".join(AgentService._static_guidelines())
+
+    # Check that the section exists
+    assert "## Reporting writes" in text
+    assert "calendar_sync" in text
+    assert "ok: true" in text
+
+    # Pin the semantic guidance to prevent inversion
+    assert "Never report an action as done unless the tool result says ok: true" in text
+    assert "quote that, not your requested value" in text
+    assert "tell the user the calendar was NOT updated" in text
+
+    # A calendar failure is only reported when a sync was actually attempted:
+    # "no calendar configured" / "a delete" / "a task with no due date" are
+    # normal, not failures, and must not be announced as calendar problems.
+    assert "ok: false AND attempted: true" in text
+    assert "attempted: false means there was nothing to sync" in text
+    assert "That is not a failure" in text
+
+
+def _habit_file(name="Dog Walk", target=2, streak=3, log=""):
+    return {
+        "metadata": {
+            "type": "habit",
+            "name": name,
+            "daily_target": target,
+            "streak": streak,
+            "longest_streak": 5,
+            "last_completed": None,
+            "tokens_per_completion": 5,
+            "google_event_id": None,
+        },
+        "content": f"# {name}\n\n## Completion Log\n{log}\n",
+    }
+
+
+@pytest.fixture
+def _resolve_ok(monkeypatch):
+    """complete_habit resolves the name through resolver.resolve_item."""
+    monkeypatch.setattr(
+        "src.services.resolver.resolve_item",
+        lambda kind, name, vault: {
+            "ok": True, "data": {"path": "20-habits/dog-walk.md"}
+        },
+    )
+
+
+def test_second_completion_of_the_day_is_allowed(agent, mock_services, _resolve_ok):
+    """Regression: dog walking needs two completions a day."""
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+    vault.read_file.return_value = _habit_file(log=f"- {today}T07:12:00\n")
+
+    result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+
+    assert result["ok"] is True
+    assert result["data"]["completions_today"] == 2
+
+
+def test_completion_beyond_the_daily_target_is_rejected(agent, mock_services, _resolve_ok):
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+    vault.read_file.return_value = _habit_file(
+        log=f"- {today}T07:12:00\n- {today}T19:40:00\n"
+    )
+
+    result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "ALREADY_DONE"
+
+
+def test_streak_advances_only_when_the_target_is_met(agent, mock_services, _resolve_ok):
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+
+    vault.read_file.return_value = _habit_file(log="")
+    first = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+    assert first["data"]["new_streak"] == 3  # unchanged: 1 of 2
+
+    vault.read_file.return_value = _habit_file(log=f"- {today}T07:12:00\n")
+    second = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+    assert second["data"]["new_streak"] == 4  # 2 of 2 — target met
+
+
+def test_tokens_are_awarded_on_every_completion(agent, mock_services, _resolve_ok):
+    _, vault, _, _, _ = mock_services
+    vault.read_file.return_value = _habit_file(log="")
+
+    result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+
+    assert result["data"]["tokens_earned"] == 5
+    vault.update_tokens.assert_called_once()
+
+    # Pin what actually gets written: a regression that swapped write_file's
+    # metadata/content args, dropped the `{**meta}` spread, or wrote the
+    # stale `body` instead of the appended `new_body` would leave every
+    # other assertion in this suite green, since `vault` is a MagicMock.
+    vault.write_file.assert_called_once()
+    write_path, metadata, content = vault.write_file.call_args[0]
+    assert write_path == "20-habits/dog-walk.md"
+    assert metadata["type"] == "habit"
+    assert metadata["tokens_per_completion"] == 5  # preserved, never touched
+    assert "## Completion Log" in content
+    assert content.count("- ") >= 1  # the newly appended log line is present
+
+
+def test_habit_without_daily_target_behaves_as_before(agent, mock_services, _resolve_ok):
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+    habit = _habit_file(target=None, log=f"- {today}T07:12:00\n")
+    del habit["metadata"]["daily_target"]
+    vault.read_file.return_value = habit
+
+    result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "ALREADY_DONE"
+
+
+def test_last_completed_backfill_blocks_second_completion_on_transition_day(
+    agent, mock_services, _resolve_ok
+):
+    """Regression: habits completed before the Completion Log existed carry
+    only `last_completed`. Without a backfill, an empty log reads as zero
+    completions today, so a habit already done today would be allowed a
+    second (duplicate) completion — double tokens and streak N -> N+2 in a
+    single day, for every habit already in the live vault on ship day.
+    """
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+    habit = _habit_file(target=2, log="")  # empty log: pre-Task-6 habit
+    habit["metadata"]["last_completed"] = today  # already completed today
+
+    vault.read_file.return_value = habit
+
+    result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "ALREADY_DONE"
+
+
+def test_a_broken_daily_target_does_not_lock_the_habit(agent, mock_services, _resolve_ok):
+    """`daily_target` is hand-edited YAML. A typo'd -1 made the habit
+    permanently uncompletable (0 >= -1); `two` raised ValueError."""
+    _, vault, _, _, _ = mock_services
+
+    for broken in (-1, 0, "two"):
+        habit = _habit_file(target=broken, log="")
+        vault.read_file.return_value = habit
+
+        result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+
+        assert result["ok"] is True, broken
+        assert result["data"]["daily_target"] == 1, broken
+        assert result["data"]["completions_today"] == 1, broken
+
+
+def test_list_habits_guards_a_broken_daily_target(agent, mock_services):
+    _, vault, _, _, _ = mock_services
+    vault.list_active_habits.return_value = [{
+        "path": "20-habits/dog-walk.md",
+        "metadata": {"type": "habit", "name": "Dog Walk", "daily_target": -1},
+        "content": "",
+    }]
+
+    habit = agent._tool_list_habits({})["data"]["habits"][0]
+
+    assert habit["daily_target"] == 1
+
+
+def test_list_habits_applies_the_transition_day_backfill(agent, mock_services):
+    """list_habits must agree with complete_habit about the same habit: a
+    pre-log habit already done today is done, not 0 of 1."""
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+    vault.list_active_habits.return_value = [{
+        "path": "20-habits/dog-walk.md",
+        "metadata": {
+            "type": "habit", "name": "Dog Walk",
+            "daily_target": 2, "last_completed": today,
+        },
+        "content": "# Dog Walk\n",
+    }]
+
+    habit = agent._tool_list_habits({})["data"]["habits"][0]
+
+    assert habit["completions_today"] == 2
+
+
+def test_list_habits_reports_completion_progress(agent, mock_services):
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+    vault.list_active_habits.return_value = [{
+        "path": "20-habits/dog-walk.md",
+        "metadata": {
+            "type": "habit", "name": "Dog Walk",
+            "daily_target": 2, "streak": 3, "frequency": "daily",
+        },
+        "content": f"## Completion Log\n- {today}T07:12:00\n",
+    }]
+
+    result = agent._tool_list_habits({})
+    habit = result["data"]["habits"][0]
+
+    assert habit["completions_today"] == 1
+    assert habit["daily_target"] == 2

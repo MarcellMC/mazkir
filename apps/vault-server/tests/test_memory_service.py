@@ -382,3 +382,28 @@ def test_vault_snapshot_is_summary_line(memory_service):
     assert "- " not in snapshot
     assert "P1" not in snapshot
     assert "streak" not in snapshot
+
+
+def test_vault_snapshot_counts_a_habit_done_only_when_its_target_is_met(tmp_path):
+    """Same defect as the REST surfaces: `last_completed` is stamped on
+    partial completions, so one of two walks counted as a done habit."""
+    import datetime as dt
+    from unittest.mock import MagicMock
+
+    from src.services.memory_service import MemoryService
+
+    today = dt.date.today().isoformat()
+    vault = MagicMock()
+    vault.list_active_tasks.return_value = []
+    vault.list_active_goals.return_value = []
+    vault.read_token_ledger.return_value = {"metadata": {}}
+    vault.list_active_habits.return_value = [{
+        "path": "20-habits/dog-walk.md",
+        "metadata": {"name": "Dog Walk", "daily_target": 2, "last_completed": today},
+        "content": f"## Completion Log\n- {today}T07:12:00\n",
+    }]
+
+    memory = MemoryService(vault=vault, vault_path=tmp_path)
+    snapshot = memory._build_vault_snapshot()
+
+    assert "1 habits (0 done today)" in snapshot

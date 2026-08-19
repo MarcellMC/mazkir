@@ -50,6 +50,18 @@ def _fmt_priority(value: Any) -> str:
         return str(value)
 
 
+def _event_activity(params: dict) -> str | None:
+    """The event's activity, accepting the pre-rename `category` spelling.
+
+    `category` used to be the only tool parameter for this field and wrote
+    straight through to `activity`. An event now carries `activity` and
+    `category` as two separate axes, so the old name is misleading; it is kept
+    as a deprecated alias for one release. `activity` wins when both are sent.
+    """
+    activity = params.get("activity")
+    return activity if activity is not None else params.get("category")
+
+
 def _register_destructive_previews() -> None:
     """Register human-readable preview functions for all destructive tools.
 
@@ -895,7 +907,13 @@ class AgentService:
                                 "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}, "name": {"type": "string"}},
                                 "description": "Location (optional)",
                             },
-                            "category": {"type": "string", "description": "Activity category (optional)"},
+                            "activity": {
+                                "type": "string",
+                                "description": (
+                                    "What the time is spent doing, e.g. walk, work, commute, meal (optional). "
+                                    "This is the activity axis of the event, not its life category."
+                                ),
+                            },
                             "photo_path": {"type": "string", "description": "Path to photo (optional)"},
                             "caption": {"type": "string", "description": "Photo caption (optional)"},
                             "wikilinks": {"type": "array", "items": {"type": "string"}, "description": "Wikilinks (optional)"},
@@ -913,7 +931,7 @@ class AgentService:
                 "schema": {
                     "name": "update_event",
                     "description": (
-                        "Update an existing event's fields (name, start_time, end_time, location, category). "
+                        "Update an existing event's fields (name, start_time, end_time, location, activity). "
                         "Use list_events first to find the event ID."
                     ),
                     "input_schema": {
@@ -929,7 +947,13 @@ class AgentService:
                                 "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}, "name": {"type": "string"}},
                                 "description": "New location",
                             },
-                            "category": {"type": "string", "description": "New activity category"},
+                            "activity": {
+                                "type": "string",
+                                "description": (
+                                    "New activity — what the time is spent doing, e.g. walk, work, commute. "
+                                    "Not the event's life category."
+                                ),
+                            },
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
@@ -1784,6 +1808,13 @@ class AgentService:
             "  - AUTH_REQUIRED: a permission step the user hasn't completed. Surface to the user.",
             "  - CANCELLED_BY_USER: confirmation flow returned no. Move on; do not retry the same action.",
             "",
+            "## Reporting writes",
+            "- Never report an action as done unless the tool result says ok: true.",
+            "- Describe the state the tool returned, not the state you asked for. update_event returns data.event as persisted — quote that, not your requested value.",
+            "- Tool results may carry data.calendar_sync. If it is ok: false AND attempted: true, tell the user the calendar was NOT updated and give the reason. Never claim a sync you cannot see in the result.",
+            "- calendar_sync with attempted: false means there was nothing to sync (no calendar configured, a delete, a task with no due date). That is not a failure — say nothing about the calendar.",
+            "- If a tool result is missing a field you expected, say so rather than filling it in from your own request.",
+            "",
             "## Guidelines",
             "- Be concise and friendly",
             "- Use Telegram markdown: *bold*, _italic_, `monospace`",
@@ -2119,15 +2150,24 @@ class AgentService:
         }, items=[])
 
     def _tool_list_habits(self, params: dict) -> dict:
+        import datetime as dt
+        from src.services.habit_completion import completions_today, daily_target_of
+
+        today = dt.date.today()
         habits = self.vault.list_active_habits()
         return ok(
             {
                 "habits": [
-                    {"name": h["metadata"].get("name", ""), "path": h["path"],
-                     "streak": h["metadata"].get("streak", 0),
-                     "frequency": h["metadata"].get("frequency", "daily")}
+                    {
+                        "name": h["metadata"].get("name", ""),
+                        "path": h["path"],
+                        "streak": h["metadata"].get("streak", 0),
+                        "frequency": h["metadata"].get("frequency", "daily"),
+                        "completions_today": completions_today(h, today),
+                        "daily_target": daily_target_of(h["metadata"]),
+                    }
                     for h in habits
-                ],
+                ]
             },
             items=[h["path"] for h in habits],
         )
@@ -2638,10 +2678,31 @@ class AgentService:
                 return iso_time.split("T")[1][:5]
             return iso_time[:5]
 
-        # Sync to Google Calendar if available
+        # Sync to Google Calendar if available.
+        #
+        # The outcome is reported as `calendar_sync` — the same
+        # {ok, attempted, reason?, event_id?} shape the sync_to_calendar
+        # post-hook stamps on task/habit writes, and the shape the agent's
+        # reporting rule reads. Both branches emit it: silence on failure
+        # would let the agent claim a sync the result never confirmed.
         source_ids: dict | None = None
         calendar_synced = False
-        if self.calendar and not params.get("photo_path"):
+        calendar_sync: dict
+        if params.get("photo_path"):
+            # Photo events are deliberately never pushed to the calendar.
+            calendar_sync = {"ok": False, "attempted": False, "reason": "not_applicable"}
+        elif not self.calendar:
+            calendar_sync = {
+                "ok": False,
+                "attempted": False,
+                "reason": "calendar_not_configured",
+            }
+        else:
+            calendar_sync = {
+                "ok": False,
+                "attempted": True,
+                "reason": "no_event_created",
+            }
             try:
                 import asyncio
                 coro = self.calendar.create_event(
@@ -2668,8 +2729,14 @@ class AgentService:
                 if gcal_id:
                     source_ids = {"calendar_id": gcal_id}
                     calendar_synced = True
+                    calendar_sync = {
+                        "ok": True,
+                        "attempted": True,
+                        "event_id": gcal_id,
+                    }
             except Exception as e:
                 logger.warning(f"Failed to sync event to Google Calendar: {e}")
+                calendar_sync = {"ok": False, "attempted": True, "reason": str(e)}
 
         result = self.events.create_event(
             date=date,
@@ -2677,7 +2744,7 @@ class AgentService:
             start_time=start_time,
             end_time=end_time,
             location=params.get("location"),
-            category=params.get("category"),
+            activity=_event_activity(params),
             photo_path=params.get("photo_path"),
             caption=params.get("caption"),
             wikilinks=params.get("wikilinks"),
@@ -2685,7 +2752,10 @@ class AgentService:
         )
         result["event_id"] = result.pop("id")
         items = [result["path"]]
+        result["calendar_sync"] = calendar_sync
         if calendar_synced:
+            # Legacy key, kept for the existing tests that read it. New
+            # readers should use `calendar_sync`, which also reports failure.
             result["calendar_synced"] = True
 
         # Unified record: also log the event in the daily note's ## Schedule section.
@@ -2749,8 +2819,12 @@ class AgentService:
             updates["end_time"] = _normalize_time(params["end_time"])
         if "location" in params:
             updates["location"] = params["location"]
-        if "category" in params:
-            updates["activity_category"] = params["category"]
+        # `category` is the pre-rename name for this field; accept it for one
+        # release, with `activity` winning when both are supplied.
+        if "activity" in params:
+            updates["activity"] = params["activity"]
+        elif "category" in params:
+            updates["activity"] = params["category"]
 
         result = self.events.update_event(
             date=date,
@@ -2803,7 +2877,7 @@ class AgentService:
         return _propose_coding_session(self.coding_tasks, params, self._current_chat_id)
 
     def _tool_complete_habit(self, params: dict) -> dict:
-        import datetime as dt
+        from src.services.habit_completion import complete_habit
         from src.services.resolver import resolve_item
 
         resolved = resolve_item("habit", params["habit_name"], self.vault)
@@ -2811,43 +2885,33 @@ class AgentService:
             return resolved
 
         path = resolved["data"]["path"]
-        habit = self.vault.read_file(path)
+        # Shared with PATCH /habits/{name}: one implementation of what a
+        # completion means, so the tool and the inline keyboard cannot
+        # disagree about the same habit.
+        outcome = complete_habit(self.vault, path)
 
-        today = dt.date.today().isoformat()
-        if habit["metadata"].get("last_completed") == today:
+        if outcome["already_completed"]:
             return err(
                 ErrorCode.ALREADY_DONE,
-                f"Habit '{habit['metadata'].get('name', '')}' already completed today",
-                details={"path": path, "streak": habit["metadata"].get("streak", 0)},
+                f"Habit '{outcome['name']}' already completed "
+                f"{outcome['completions_today']}/{outcome['daily_target']} times today",
+                details={
+                    "path": path,
+                    "streak": outcome["new_streak"],
+                    "completions_today": outcome["completions_today"],
+                    "daily_target": outcome["daily_target"],
+                },
             )
-
-        meta = habit["metadata"]
-        old_streak = meta.get("streak", 0)
-        new_streak = old_streak + 1
-        longest = max(meta.get("longest_streak", 0), new_streak)
-
-        self.vault.update_file(path, {
-            "streak": new_streak,
-            "longest_streak": longest,
-            "last_completed": today,
-        })
-
-        tokens = meta.get("tokens_per_completion", 5)
-        self.vault.update_tokens(tokens, meta.get("name", "habit"))
-
-        if self.calendar and meta.get("google_event_id"):
-            try:
-                self.calendar.mark_event_complete(meta["google_event_id"])
-            except Exception as e:
-                logger.warning(f"Calendar update failed: {e}")
 
         return ok(
             {
-                "habit": meta.get("name", ""),
-                "old_streak": old_streak,
-                "new_streak": new_streak,
-                "longest_streak": longest,
-                "tokens_earned": tokens,
+                "habit": outcome["name"],
+                "old_streak": outcome["old_streak"],
+                "new_streak": outcome["new_streak"],
+                "longest_streak": outcome["longest_streak"],
+                "tokens_earned": outcome["tokens_earned"],
+                "completions_today": outcome["completions_today"],
+                "daily_target": outcome["daily_target"],
             },
             items=[path],
         )

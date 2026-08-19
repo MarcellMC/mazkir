@@ -33,13 +33,24 @@ class EventsService:
     def _file_path(self, date: str) -> Path:
         return self.events_path / f"{date}.json"
 
+    @staticmethod
+    def _normalize(event: dict[str, Any]) -> dict[str, Any]:
+        """Migrate legacy keys on read. Files stay untouched until next save."""
+        if "activity_category" in event and "activity" not in event:
+            event["activity"] = event.pop("activity_category")
+        event.setdefault("activity", None)
+        event.setdefault("category", None)
+        event.setdefault("tags", [])
+        event.setdefault("state", "suggested")
+        return event
+
     def get_events(self, date: str) -> list[dict[str, Any]]:
         """Read persisted events for a date. Returns [] if no file exists."""
         path = self._file_path(date)
         if not path.exists():
             return []
         try:
-            return json.loads(path.read_text())
+            return [self._normalize(e) for e in json.loads(path.read_text())]
         except Exception as e:
             logger.error(f"Failed to read events for {date}: {e}")
             return []
@@ -52,6 +63,10 @@ class EventsService:
             event.setdefault("photos", [])
             event.setdefault("assets", None)
             event.setdefault("source_ids", {})
+            event.setdefault("activity", None)
+            event.setdefault("category", None)
+            event.setdefault("tags", [])
+            event.setdefault("state", "suggested")
         path = self._file_path(date)
         payload = json.dumps(events, indent=2)
         with fs_span("write", path, "events") as span:
@@ -65,14 +80,23 @@ class EventsService:
         start_time: str,
         end_time: str | None = None,
         location: dict | None = None,
-        category: str | None = None,
+        activity: str | None = None,
         photo_path: str | None = None,
         caption: str | None = None,
         wikilinks: list[str] | None = None,
         event_type: str | None = None,
         source_ids: dict | None = None,
+        category: str | None = None,
     ) -> dict:
-        """Create a new event and persist it."""
+        """Create a new event and persist it.
+
+        `activity` is what the time was spent doing (walk, work, commute).
+        `category` is a deprecated alias for it, kept for one release: it used
+        to be the only name for this field, but an event now carries `activity`
+        and `category` as two separate axes of the time matrix. `activity`
+        wins when both are given. Populating the `category` facet is a
+        separate job — this kwarg does not do it.
+        """
         from datetime import datetime as _dt
 
         events = self.get_events(date)
@@ -103,7 +127,7 @@ class EventsService:
             "end_time": end_time or start_time,
             "duration_minutes": duration,
             "location": location,
-            "activity_category": category,
+            "activity": activity if activity is not None else category,
             "source": "photo" if photo_path else "manual",
             "source_ids": source_ids or {},
             "confidence": "medium",
@@ -146,7 +170,7 @@ class EventsService:
 
                 event.update(updates)
                 self.save_events(date, events)
-                return {"updated": True, "event_id": event_id}
+                return {"updated": True, "event": event}
 
         return {"error": f"Event {event_id} not found"}
 

@@ -99,7 +99,7 @@ export default function GenerationPanel({
       buildPrompt({
         type: genType,
         event_name: selectedEvent?.name,
-        activity_category: selectedEvent?.activity_category || undefined,
+        activity: selectedEvent?.activity || undefined,
         location_name: selectedEvent?.location?.name,
         style,
       }),

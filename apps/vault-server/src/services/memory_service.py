@@ -393,9 +393,11 @@ class MemoryService:
 
         habits_done_today = 0
         try:
+            # "Done" means the day's target is met — `last_completed` is set
+            # on partial completions as well.
+            from src.services.habit_completion import is_complete_today
             habits_done_today = sum(
-                1 for h in habits
-                if h["metadata"].get("last_completed") == today_str
+                1 for h in habits if is_complete_today(h, date.today())
             )
         except Exception:
             pass

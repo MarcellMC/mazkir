@@ -15,7 +15,7 @@ class MergedEvent(BaseModel):
     # What
     name: str
     type: str  # 'habit' | 'task' | 'calendar' | 'unplanned_stop' | 'transit' | 'home'
-    activity_category: str | None = None
+    activity: str | None = None
 
     # When
     start_time: str  # ISO format
@@ -150,7 +150,7 @@ class MergerService:
         return MergedEvent(
             name=name,
             type=self._infer_type(cal),
-            activity_category=self._infer_category(name),
+            activity=self._infer_category(name),
             start_time=cal.get("start", visit["start_time"]),
             end_time=cal.get("end", visit["end_time"]),
             duration_minutes=visit.get("duration_minutes", 0),
@@ -169,7 +169,7 @@ class MergerService:
         return MergedEvent(
             name=name,
             type=self._infer_type(cal),
-            activity_category=self._infer_category(name),
+            activity=self._infer_category(name),
             start_time=cal.get("start", ""),
             end_time=cal.get("end", ""),
             duration_minutes=self._calc_duration(cal.get("start", ""), cal.get("end", "")),
@@ -181,7 +181,7 @@ class MergerService:
         return MergedEvent(
             name=visit["name"],
             type="unplanned_stop",
-            activity_category=self._infer_category(visit["name"]),
+            activity=self._infer_category(visit["name"]),
             start_time=visit["start_time"],
             end_time=visit["end_time"],
             duration_minutes=visit.get("duration_minutes", 0),

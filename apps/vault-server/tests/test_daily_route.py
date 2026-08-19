@@ -163,3 +163,99 @@ class TestDailyResponseModels:
         assert note.photo_path == "/data/photo.jpg"
         assert note.caption == "sunset"
         assert note.text is None
+
+
+class TestHabitScheduledAt:
+    """The canonical key is scheduled_at; scheduled_time is the legacy name."""
+
+    def test_prefers_canonical_key(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        assert _habit_scheduled_at({"scheduled_at": "07:30"}) == "07:30"
+
+    def test_falls_back_to_legacy_key(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        assert _habit_scheduled_at({"scheduled_time": "07:30"}) == "07:30"
+
+    def test_canonical_wins_when_both_present(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        meta = {"scheduled_at": "08:00", "scheduled_time": "07:30"}
+        assert _habit_scheduled_at(meta) == "08:00"
+
+    def test_returns_none_when_unscheduled(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        assert _habit_scheduled_at({"name": "Workout"}) is None
+
+    def test_treats_empty_string_as_unscheduled(self):
+        from src.api.routes.daily import _habit_scheduled_at
+        assert _habit_scheduled_at({"scheduled_at": ""}) is None
+
+
+class TestScheduledHabitCompletion:
+    """A scheduled habit's `completed` flag means the day's target is met.
+
+    Regression: the route compared `last_completed` to today, and Task 7 sets
+    `last_completed` on partial completions — so the first of two dog walks
+    marked the whole schedule item done.
+    """
+
+    @staticmethod
+    def _today():
+        import datetime as dt
+        import pytz
+        from src.config import settings
+        return dt.datetime.now(pytz.timezone(settings.vault_timezone)).date()
+
+    def _habit(self, *, target=2, log_times=(), last_completed=None):
+        today = self._today().isoformat()
+        log = "".join(f"- {today}T{t}\n" for t in log_times)
+        return {
+            "path": "20-habits/dog-walk.md",
+            "metadata": {
+                "type": "habit",
+                "name": "Dog Walk",
+                "status": "active",
+                "scheduled_at": "07:00",
+                "daily_target": target,
+                "last_completed": last_completed,
+            },
+            "content": f"# Dog Walk\n\n## Completion Log\n{log}",
+        }
+
+    def _schedule(self, habit):
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        vault = MagicMock()
+        vault.read_daily_note.return_value = {"content": "", "path": "10-daily/x.md"}
+        vault.list_active_habits.return_value = [habit]
+        vault.read_token_ledger.return_value = {"metadata": {}}
+
+        with patch("src.main.get_vault", return_value=vault), \
+                patch("src.main.get_calendar", return_value=None):
+            resp = TestClient(app).get("/daily")
+        assert resp.status_code == 200
+        items = [s for s in resp.json()["schedule"] if s["source"] == "habit"]
+        assert len(items) == 1
+        return items[0]
+
+    def test_partial_completion_is_not_complete(self):
+        # One of two walks: the completion stamped `last_completed` with
+        # today's date, which is exactly what the old check read.
+        item = self._schedule(self._habit(
+            target=2,
+            log_times=["07:12:00"],
+            last_completed=self._today().isoformat(),
+        ))
+        assert item["completed"] is False
+
+    def test_target_met_is_complete(self):
+        item = self._schedule(
+            self._habit(target=2, log_times=["07:12:00", "19:40:00"])
+        )
+        assert item["completed"] is True
+
+    def test_pre_log_habit_completed_today_is_complete(self):
+        item = self._schedule(
+            self._habit(target=2, last_completed=self._today().isoformat())
+        )
+        assert item["completed"] is True
