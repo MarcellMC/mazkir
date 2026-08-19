@@ -5,6 +5,7 @@ from datetime import date as date_type
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from src.services.habit_completion import is_complete_today
 from src.services.merger_service import MergerService
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -44,12 +45,13 @@ async def _merge_from_sources(date: date_type) -> list[dict]:
     habits = []
     try:
         raw_habits = vault.list_active_habits()
-        date_str = date.isoformat()
         for h in raw_habits:
             meta = h["metadata"]
             habits.append({
                 "name": meta.get("name", ""),
-                "completed_today": meta.get("last_completed") == date_str,
+                # Target met on `date`, not merely touched: `last_completed`
+                # is stamped on partial completions too.
+                "completed_today": is_complete_today(h, date),
                 "streak": meta.get("streak", 0),
                 "tokens_per_completion": meta.get("tokens_per_completion", 5),
             })

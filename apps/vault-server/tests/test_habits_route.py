@@ -221,3 +221,25 @@ def test_both_completion_paths_share_one_implementation():
         assert "last_completed" not in src
         assert "append_completion" not in src
         assert "+ 1" not in src
+
+
+def test_events_route_habit_completion_honours_the_target():
+    """GET /events reported a habit done from `last_completed` alone."""
+    import datetime as dt
+
+    import src.main  # noqa: F401 — break circular import
+    from src.services.habit_completion import is_complete_today
+
+    today = dt.date.today()
+    partial = {
+        "metadata": {"name": "Dog Walk", "daily_target": 2,
+                     "last_completed": today.isoformat()},
+        "content": f"## Completion Log\n- {today.isoformat()}T07:12:00\n",
+    }
+    from src.api.routes import events as events_route
+    import inspect
+    src = inspect.getsource(events_route._merge_from_sources)
+
+    assert "is_complete_today(h, date)" in src
+    assert 'meta.get("last_completed")' not in src
+    assert is_complete_today(partial, today) is False
