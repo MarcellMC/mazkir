@@ -7,6 +7,11 @@ from src.main import get_vault, get_calendar
 from src.auth import verify_api_key
 from src.config import settings
 from src.api.routes import item_name
+from src.services.habit_completion import (
+    completions_today,
+    daily_target_of,
+    is_complete_today,
+)
 
 router = APIRouter(prefix="/habits", tags=["habits"], dependencies=[Depends(verify_api_key)])
 
@@ -30,8 +35,11 @@ async def list_habits():
     vault = get_vault()
     habits = vault.list_active_habits()
 
-    today = datetime.now(tz).strftime("%Y-%m-%d")
+    today = datetime.now(tz).date()
 
+    # `completed_today` means the day's target is met, not "touched today":
+    # `last_completed` is stamped on partial completions too, so a habit with
+    # daily_target: 2 would otherwise read as done after one of two.
     return [
         {
             "name": item_name(h),
@@ -39,7 +47,9 @@ async def list_habits():
             "streak": h["metadata"].get("streak", 0),
             "longest_streak": h["metadata"].get("longest_streak", 0),
             "last_completed": h["metadata"].get("last_completed"),
-            "completed_today": h["metadata"].get("last_completed") == today,
+            "completed_today": is_complete_today(h, today),
+            "completions_today": completions_today(h, today),
+            "daily_target": daily_target_of(h["metadata"]),
             "tokens_per_completion": h["metadata"].get("tokens_per_completion", 5),
             "path": h["path"],
         }

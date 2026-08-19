@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from src.auth import verify_api_key
 from src.config import settings
 from src.services.daily_tasks import parse_tasks_section
+from src.services.habit_completion import is_complete_today
 
 router = APIRouter(prefix="/daily", tags=["daily"], dependencies=[Depends(verify_api_key)])
 
@@ -110,7 +111,9 @@ async def get_daily():
             start=scheduled_at,
             title=meta.get("name", ""),
             source="habit",
-            completed=meta.get("last_completed") == today,
+            # Target met, not merely touched today — `last_completed` is set
+            # on partial completions as well.
+            completed=is_complete_today(h, datetime.now(tz).date()),
         ))
 
     # Sort schedule by start time

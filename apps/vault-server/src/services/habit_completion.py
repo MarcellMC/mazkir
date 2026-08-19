@@ -10,6 +10,7 @@ This module owns the answer:
 
 - `daily_target_of` — the target, guarded against hand-edited YAML.
 - `completions_today` — today's count, including the transition-day backfill.
+- `is_complete_today` — whether the day's target has been met.
 """
 
 from __future__ import annotations
@@ -49,3 +50,15 @@ def completions_today(habit: dict, today: dt.date | None = None) -> int:
     if not done and meta.get("last_completed") == today.isoformat():
         return daily_target_of(meta)
     return done
+
+
+def is_complete_today(habit: dict, today: dt.date | None = None) -> bool:
+    """Has this habit met its target for `today`?
+
+    Not the same question as "was it touched today". `last_completed` is set
+    on every completion, including partial ones, so a habit with
+    `daily_target: 2` carries today's date after the first of two walks.
+    """
+    return completions_today(habit, today) >= daily_target_of(
+        habit.get("metadata", {})
+    )
