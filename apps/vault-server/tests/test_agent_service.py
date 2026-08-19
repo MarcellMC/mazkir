@@ -1683,6 +1683,13 @@ def test_static_guidelines_forbid_unverified_write_claims():
     assert "quote that, not your requested value" in text
     assert "tell the user the calendar was NOT updated" in text
 
+    # A calendar failure is only reported when a sync was actually attempted:
+    # "no calendar configured" / "a delete" / "a task with no due date" are
+    # normal, not failures, and must not be announced as calendar problems.
+    assert "ok: false AND attempted: true" in text
+    assert "attempted: false means there was nothing to sync" in text
+    assert "That is not a failure" in text
+
 
 def _habit_file(name="Dog Walk", target=2, streak=3, log=""):
     return {

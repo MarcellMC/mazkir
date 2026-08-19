@@ -27,6 +27,15 @@ def _record(output: dict, **fields) -> None:
     we leave a verdict at `output["data"]["calendar_sync"]`. On failure, the
     tool result carries `error` (not `data`), and the agent reads the error
     instead — no stamp is needed.
+
+    Every stamp carries `attempted`, which separates the two kinds of
+    `ok: false`:
+
+      - `attempted: True`  — a sync was expected to happen and did not.
+        The user should be told the calendar was NOT updated.
+      - `attempted: False` — there was nothing to sync (no calendar
+        configured, a delete, a task with no due date). Not a failure;
+        the agent stays quiet about the calendar.
     """
     data = output.get("data")
     if isinstance(data, dict):
@@ -51,7 +60,9 @@ def sync_to_calendar(params: dict, output: dict, ctx: Any) -> None:
     try:
         calendar = (ctx or {}).get("calendar")
         if calendar is None or not getattr(calendar, "is_initialized", False):
-            _record(output, ok=False, reason="calendar_not_configured")
+            _record(
+                output, ok=False, attempted=False, reason="calendar_not_configured"
+            )
             return
         if not output.get("ok", False):
             return
@@ -59,24 +70,24 @@ def sync_to_calendar(params: dict, output: dict, ctx: Any) -> None:
         tool_name = ctx.get("tool", {}).get("schema", {}).get("name", "")
 
         if tool_name in _DELETE_TOOLS:
-            _record(output, ok=False, reason="not_applicable")
+            _record(output, ok=False, attempted=False, reason="not_applicable")
             return
 
         items = output.get("_items") or []
         if not items:
-            _record(output, ok=False, reason="no_items")
+            _record(output, ok=False, attempted=True, reason="no_items")
             return
         path = items[0]
 
         vault = ctx.get("vault")
         if vault is None:
-            _record(output, ok=False, reason="vault_unavailable")
+            _record(output, ok=False, attempted=True, reason="vault_unavailable")
             return
 
         try:
             item = vault.read_file(path)
         except Exception:
-            _record(output, ok=False, reason="path_unreadable")
+            _record(output, ok=False, attempted=True, reason="path_unreadable")
             return
         meta = item.get("metadata", {})
         item_type = meta.get("type")
@@ -89,29 +100,39 @@ def sync_to_calendar(params: dict, output: dict, ctx: Any) -> None:
             # here would be exactly the lie §3.4 forbids.
             marked = _maybe_await(calendar.mark_event_complete(google_event_id))
             if marked:
-                _record(output, ok=True, event_id=google_event_id)
+                _record(output, ok=True, attempted=True, event_id=google_event_id)
             else:
                 _record(
                     output,
                     ok=False,
+                    attempted=True,
                     reason="mark_complete_failed",
                     event_id=google_event_id,
                 )
             return
 
-        event_id = None
+        # sync_task returns None both for "this task has no due date, there is
+        # nothing to put on a calendar" and for "the API call failed". Screen
+        # the first case here so the second one can be reported honestly.
+        if item_type == "task" and not meta.get("due_date"):
+            _record(output, ok=False, attempted=False, reason="no_due_date")
+            return
+        if item_type not in ("task", "habit"):
+            _record(output, ok=False, attempted=False, reason="not_syncable")
+            return
+
         if item_type == "task":
             event_id = _maybe_await(calendar.sync_task(item))
-        elif item_type == "habit":
+        else:
             event_id = _maybe_await(calendar.sync_habit(item))
 
         if event_id and not meta.get("google_event_id"):
             vault.update_file(path, {"google_event_id": event_id})
 
         if event_id:
-            _record(output, ok=True, event_id=event_id)
+            _record(output, ok=True, attempted=True, event_id=event_id)
         else:
-            _record(output, ok=False, reason="no_event_created")
+            _record(output, ok=False, attempted=True, reason="no_event_created")
     except Exception as e:
         logger.warning("sync_to_calendar hook failed: %s", e)
-        _record(output, ok=False, reason=str(e))
+        _record(output, ok=False, attempted=True, reason=str(e))

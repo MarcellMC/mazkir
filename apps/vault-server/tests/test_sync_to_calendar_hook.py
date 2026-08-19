@@ -116,7 +116,7 @@ def test_hook_failure_logs_but_does_not_raise():
     calendar.sync_task.side_effect = RuntimeError("GCal down")
     vault = MagicMock()
     vault.read_file.return_value = {
-        "metadata": {"type": "task", "name": "X"},
+        "metadata": {"type": "task", "name": "X", "due_date": "2026-06-10"},
         "content": "",
     }
     # MUST NOT raise
@@ -217,6 +217,7 @@ def test_reports_when_calendar_is_not_configured():
 
     assert output["data"]["calendar_sync"] == {
         "ok": False,
+        "attempted": False,
         "reason": "calendar_not_configured",
     }
 
@@ -251,7 +252,11 @@ def test_reports_success_with_the_event_id():
     output = _output()
     sync_to_calendar({}, output, _ctx(calendar, vault))
 
-    assert output["data"]["calendar_sync"] == {"ok": True, "event_id": "gcal_evt_1"}
+    assert output["data"]["calendar_sync"] == {
+        "ok": True,
+        "attempted": True,
+        "event_id": "gcal_evt_1",
+    }
 
 
 def test_reports_failure_when_mark_complete_returns_false():
@@ -312,3 +317,111 @@ def test_awaits_the_async_mark_complete_return_value():
 
     assert output["data"]["calendar_sync"]["ok"] is False
     assert output["data"]["calendar_sync"]["reason"] == "mark_complete_failed"
+
+
+# --- `attempted`: "we tried and it failed" vs "there was nothing to do" ---
+
+
+def test_task_without_a_due_date_is_not_a_calendar_failure():
+    """sync_task returns None for any task without a due date — the common
+    case. Stamping that as an unqualified ok: false made the agent announce a
+    calendar failure every time an ordinary task was created."""
+    calendar = MagicMock()
+    calendar.is_initialized = True
+    calendar.sync_task.return_value = None
+
+    vault = MagicMock()
+    vault.read_file.return_value = {
+        "metadata": {"type": "task", "name": "Buy milk"},
+        "content": "",
+    }
+
+    output = _output("40-tasks/active/buy-milk.md")
+    sync_to_calendar({}, output, _ctx(calendar, vault, "create_task"))
+
+    sync = output["data"]["calendar_sync"]
+    assert sync["ok"] is False
+    assert sync["attempted"] is False
+    assert sync["reason"] == "no_due_date"
+    calendar.sync_task.assert_not_called()
+
+
+def test_task_with_a_due_date_that_yields_no_event_is_a_real_failure():
+    calendar = MagicMock()
+    calendar.is_initialized = True
+    calendar.sync_task.return_value = None
+
+    vault = MagicMock()
+    vault.read_file.return_value = {
+        "metadata": {"type": "task", "name": "Pay rent", "due_date": "2026-09-01"},
+        "content": "",
+    }
+
+    output = _output("40-tasks/active/pay-rent.md")
+    sync_to_calendar({}, output, _ctx(calendar, vault, "create_task"))
+
+    sync = output["data"]["calendar_sync"]
+    assert sync["ok"] is False
+    assert sync["attempted"] is True
+    assert sync["reason"] == "no_event_created"
+
+
+def test_delete_is_not_a_calendar_failure():
+    calendar = MagicMock()
+    calendar.is_initialized = True
+
+    output = _output("40-tasks/active/x.md")
+    sync_to_calendar({}, output, _ctx(calendar, MagicMock(), "delete_task"))
+
+    sync = output["data"]["calendar_sync"]
+    assert sync["ok"] is False
+    assert sync["attempted"] is False
+    assert sync["reason"] == "not_applicable"
+
+
+def test_a_raised_sync_error_is_an_attempted_failure():
+    calendar = MagicMock()
+    calendar.is_initialized = True
+    calendar.sync_habit.side_effect = RuntimeError("gcal down")
+
+    vault = MagicMock()
+    vault.read_file.return_value = {
+        "metadata": {"type": "habit", "google_event_id": None}
+    }
+
+    output = _output()
+    sync_to_calendar({}, output, _ctx(calendar, vault))
+
+    assert output["data"]["calendar_sync"]["attempted"] is True
+
+
+def test_mark_complete_failure_is_an_attempted_failure():
+    calendar = MagicMock()
+    calendar.is_initialized = True
+    calendar.mark_event_complete.return_value = False
+
+    vault = MagicMock()
+    vault.read_file.return_value = {
+        "metadata": {"type": "habit", "google_event_id": "gcal_stale"}
+    }
+
+    output = _output()
+    sync_to_calendar({}, output, _ctx(calendar, vault))
+
+    assert output["data"]["calendar_sync"]["attempted"] is True
+
+
+def test_every_stamp_carries_attempted():
+    """The prompt rule keys on `attempted`; a stamp without it would make the
+    agent fall back to guessing."""
+    cases = [
+        # (calendar, vault metadata, tool name)
+        (None, {"type": "habit"}, "complete_habit"),
+        (MagicMock(is_initialized=True), {"type": "habit"}, "delete_habit"),
+    ]
+    for calendar, meta, tool in cases:
+        vault = MagicMock()
+        vault.read_file.return_value = {"metadata": meta}
+        output = _output()
+        sync_to_calendar({}, output, _ctx(calendar, vault, tool))
+        assert "attempted" in output["data"]["calendar_sync"]
