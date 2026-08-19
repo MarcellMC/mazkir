@@ -1956,6 +1956,55 @@ def test_last_completed_backfill_blocks_second_completion_on_transition_day(
     assert result["error"]["code"] == "ALREADY_DONE"
 
 
+def test_a_broken_daily_target_does_not_lock_the_habit(agent, mock_services, _resolve_ok):
+    """`daily_target` is hand-edited YAML. A typo'd -1 made the habit
+    permanently uncompletable (0 >= -1); `two` raised ValueError."""
+    _, vault, _, _, _ = mock_services
+
+    for broken in (-1, 0, "two"):
+        habit = _habit_file(target=broken, log="")
+        vault.read_file.return_value = habit
+
+        result = agent._tool_complete_habit({"habit_name": "Dog Walk"})
+
+        assert result["ok"] is True, broken
+        assert result["data"]["daily_target"] == 1, broken
+        assert result["data"]["completions_today"] == 1, broken
+
+
+def test_list_habits_guards_a_broken_daily_target(agent, mock_services):
+    _, vault, _, _, _ = mock_services
+    vault.list_active_habits.return_value = [{
+        "path": "20-habits/dog-walk.md",
+        "metadata": {"type": "habit", "name": "Dog Walk", "daily_target": -1},
+        "content": "",
+    }]
+
+    habit = agent._tool_list_habits({})["data"]["habits"][0]
+
+    assert habit["daily_target"] == 1
+
+
+def test_list_habits_applies_the_transition_day_backfill(agent, mock_services):
+    """list_habits must agree with complete_habit about the same habit: a
+    pre-log habit already done today is done, not 0 of 1."""
+    import datetime as dt
+    _, vault, _, _, _ = mock_services
+    today = dt.date.today().isoformat()
+    vault.list_active_habits.return_value = [{
+        "path": "20-habits/dog-walk.md",
+        "metadata": {
+            "type": "habit", "name": "Dog Walk",
+            "daily_target": 2, "last_completed": today,
+        },
+        "content": "# Dog Walk\n",
+    }]
+
+    habit = agent._tool_list_habits({})["data"]["habits"][0]
+
+    assert habit["completions_today"] == 2
+
+
 def test_list_habits_reports_completion_progress(agent, mock_services):
     import datetime as dt
     _, vault, _, _, _ = mock_services

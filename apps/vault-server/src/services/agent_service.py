@@ -2151,7 +2151,7 @@ class AgentService:
 
     def _tool_list_habits(self, params: dict) -> dict:
         import datetime as dt
-        from src.services.completion_log import count_on, parse_completion_log
+        from src.services.habit_completion import completions_today, daily_target_of
 
         today = dt.date.today()
         habits = self.vault.list_active_habits()
@@ -2163,10 +2163,8 @@ class AgentService:
                         "path": h["path"],
                         "streak": h["metadata"].get("streak", 0),
                         "frequency": h["metadata"].get("frequency", "daily"),
-                        "completions_today": count_on(
-                            parse_completion_log(h.get("content", "")), today
-                        ),
-                        "daily_target": int(h["metadata"].get("daily_target") or 1),
+                        "completions_today": completions_today(h, today),
+                        "daily_target": daily_target_of(h["metadata"]),
                     }
                     for h in habits
                 ]
@@ -2880,11 +2878,8 @@ class AgentService:
 
     def _tool_complete_habit(self, params: dict) -> dict:
         import datetime as dt
-        from src.services.completion_log import (
-            append_completion,
-            count_on,
-            parse_completion_log,
-        )
+        from src.services.completion_log import append_completion
+        from src.services.habit_completion import completions_today, daily_target_of
         from src.services.resolver import resolve_item
 
         resolved = resolve_item("habit", params["habit_name"], self.vault)
@@ -2898,15 +2893,8 @@ class AgentService:
 
         now = dt.datetime.now()
         today = now.date()
-        target = int(meta.get("daily_target") or 1)
-        done_today = count_on(parse_completion_log(body), today)
-
-        # Habits completed before the Completion Log existed carry only
-        # `last_completed`. Treat that as a full day's progress so the
-        # transition day cannot double-count. Self-retiring: once a habit
-        # has log entries, this never fires again.
-        if not done_today and meta.get("last_completed") == today.isoformat():
-            done_today = target
+        target = daily_target_of(meta)
+        done_today = completions_today(habit, today)
 
         if done_today >= target:
             return err(
