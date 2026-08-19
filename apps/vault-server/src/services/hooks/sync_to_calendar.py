@@ -82,8 +82,21 @@ def sync_to_calendar(params: dict, output: dict, ctx: Any) -> None:
         item_type = meta.get("type")
 
         if tool_name in _COMPLETE_TOOLS and meta.get("google_event_id"):
-            _maybe_await(calendar.mark_event_complete(meta["google_event_id"]))
-            _record(output, ok=True, event_id=meta["google_event_id"])
+            google_event_id = meta["google_event_id"]
+            # mark_event_complete swallows HttpError and returns False — a stale
+            # event id (404), a revoked token (401) or a quota trip (403) all
+            # come back as a falsy return, never an exception. Reporting success
+            # here would be exactly the lie §3.4 forbids.
+            marked = _maybe_await(calendar.mark_event_complete(google_event_id))
+            if marked:
+                _record(output, ok=True, event_id=google_event_id)
+            else:
+                _record(
+                    output,
+                    ok=False,
+                    reason="mark_complete_failed",
+                    event_id=google_event_id,
+                )
             return
 
         event_id = None

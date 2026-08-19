@@ -252,3 +252,63 @@ def test_reports_success_with_the_event_id():
     sync_to_calendar({}, output, _ctx(calendar, vault))
 
     assert output["data"]["calendar_sync"] == {"ok": True, "event_id": "gcal_evt_1"}
+
+
+def test_reports_failure_when_mark_complete_returns_false():
+    """Regression: CalendarService.mark_event_complete catches HttpError and
+    returns False. The hook discarded that return and stamped ok: True, so a
+    stale event id / revoked token / quota trip was reported to the agent as a
+    successful sync — the exact lie the reporting rule exists to prevent."""
+    calendar = MagicMock()
+    calendar.is_initialized = True
+    calendar.mark_event_complete.return_value = False
+
+    vault = MagicMock()
+    vault.read_file.return_value = {
+        "metadata": {"type": "habit", "google_event_id": "gcal_stale"}
+    }
+
+    output = _output()
+    sync_to_calendar({}, output, _ctx(calendar, vault))
+
+    calendar.mark_event_complete.assert_called_once_with("gcal_stale")
+    assert output["data"]["calendar_sync"]["ok"] is False
+    assert output["data"]["calendar_sync"]["reason"] == "mark_complete_failed"
+
+
+def test_reports_success_when_mark_complete_returns_true():
+    calendar = MagicMock()
+    calendar.is_initialized = True
+    calendar.mark_event_complete.return_value = True
+
+    vault = MagicMock()
+    vault.read_file.return_value = {
+        "metadata": {"type": "habit", "google_event_id": "gcal_live"}
+    }
+
+    output = _output()
+    sync_to_calendar({}, output, _ctx(calendar, vault))
+
+    assert output["data"]["calendar_sync"]["ok"] is True
+    assert output["data"]["calendar_sync"]["event_id"] == "gcal_live"
+
+
+def test_awaits_the_async_mark_complete_return_value():
+    """mark_event_complete is async in production — the falsy return arrives
+    through a coroutine, not directly."""
+    from unittest.mock import AsyncMock
+
+    calendar = MagicMock()
+    calendar.is_initialized = True
+    calendar.mark_event_complete = AsyncMock(return_value=False)
+
+    vault = MagicMock()
+    vault.read_file.return_value = {
+        "metadata": {"type": "habit", "google_event_id": "gcal_stale"}
+    }
+
+    output = _output()
+    sync_to_calendar({}, output, _ctx(calendar, vault))
+
+    assert output["data"]["calendar_sync"]["ok"] is False
+    assert output["data"]["calendar_sync"]["reason"] == "mark_complete_failed"
