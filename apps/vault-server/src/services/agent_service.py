@@ -50,6 +50,18 @@ def _fmt_priority(value: Any) -> str:
         return str(value)
 
 
+def _event_activity(params: dict) -> str | None:
+    """The event's activity, accepting the pre-rename `category` spelling.
+
+    `category` used to be the only tool parameter for this field and wrote
+    straight through to `activity`. An event now carries `activity` and
+    `category` as two separate axes, so the old name is misleading; it is kept
+    as a deprecated alias for one release. `activity` wins when both are sent.
+    """
+    activity = params.get("activity")
+    return activity if activity is not None else params.get("category")
+
+
 def _register_destructive_previews() -> None:
     """Register human-readable preview functions for all destructive tools.
 
@@ -895,7 +907,13 @@ class AgentService:
                                 "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}, "name": {"type": "string"}},
                                 "description": "Location (optional)",
                             },
-                            "category": {"type": "string", "description": "Activity category (optional)"},
+                            "activity": {
+                                "type": "string",
+                                "description": (
+                                    "What the time is spent doing, e.g. walk, work, commute, meal (optional). "
+                                    "This is the activity axis of the event, not its life category."
+                                ),
+                            },
                             "photo_path": {"type": "string", "description": "Path to photo (optional)"},
                             "caption": {"type": "string", "description": "Photo caption (optional)"},
                             "wikilinks": {"type": "array", "items": {"type": "string"}, "description": "Wikilinks (optional)"},
@@ -913,7 +931,7 @@ class AgentService:
                 "schema": {
                     "name": "update_event",
                     "description": (
-                        "Update an existing event's fields (name, start_time, end_time, location, category). "
+                        "Update an existing event's fields (name, start_time, end_time, location, activity). "
                         "Use list_events first to find the event ID."
                     ),
                     "input_schema": {
@@ -929,7 +947,13 @@ class AgentService:
                                 "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}, "name": {"type": "string"}},
                                 "description": "New location",
                             },
-                            "category": {"type": "string", "description": "New activity category"},
+                            "activity": {
+                                "type": "string",
+                                "description": (
+                                    "New activity — what the time is spent doing, e.g. walk, work, commute. "
+                                    "Not the event's life category."
+                                ),
+                            },
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
@@ -2722,7 +2746,7 @@ class AgentService:
             start_time=start_time,
             end_time=end_time,
             location=params.get("location"),
-            category=params.get("category"),
+            activity=_event_activity(params),
             photo_path=params.get("photo_path"),
             caption=params.get("caption"),
             wikilinks=params.get("wikilinks"),
@@ -2797,7 +2821,11 @@ class AgentService:
             updates["end_time"] = _normalize_time(params["end_time"])
         if "location" in params:
             updates["location"] = params["location"]
-        if "category" in params:
+        # `category` is the pre-rename name for this field; accept it for one
+        # release, with `activity` winning when both are supplied.
+        if "activity" in params:
+            updates["activity"] = params["activity"]
+        elif "category" in params:
             updates["activity"] = params["category"]
 
         result = self.events.update_event(

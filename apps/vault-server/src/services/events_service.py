@@ -80,14 +80,23 @@ class EventsService:
         start_time: str,
         end_time: str | None = None,
         location: dict | None = None,
-        category: str | None = None,
+        activity: str | None = None,
         photo_path: str | None = None,
         caption: str | None = None,
         wikilinks: list[str] | None = None,
         event_type: str | None = None,
         source_ids: dict | None = None,
+        category: str | None = None,
     ) -> dict:
-        """Create a new event and persist it."""
+        """Create a new event and persist it.
+
+        `activity` is what the time was spent doing (walk, work, commute).
+        `category` is a deprecated alias for it, kept for one release: it used
+        to be the only name for this field, but an event now carries `activity`
+        and `category` as two separate axes of the time matrix. `activity`
+        wins when both are given. Populating the `category` facet is a
+        separate job — this kwarg does not do it.
+        """
         from datetime import datetime as _dt
 
         events = self.get_events(date)
@@ -118,7 +127,7 @@ class EventsService:
             "end_time": end_time or start_time,
             "duration_minutes": duration,
             "location": location,
-            "activity": category,
+            "activity": activity if activity is not None else category,
             "source": "photo" if photo_path else "manual",
             "source_ids": source_ids or {},
             "confidence": "medium",

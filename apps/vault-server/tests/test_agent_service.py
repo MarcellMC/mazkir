@@ -786,6 +786,69 @@ class TestEventTools:
         assert result["data"]["calendar_sync"]["reason"] == "not_applicable"
         calendar_mock.create_event.assert_not_called()
 
+    # --- activity vs category: two axes, one tool parameter ---
+
+    def test_create_event_passes_activity_through(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        agent.calendar = None
+
+        agent._tool_create_event({
+            "name": "Dog walk", "start_time": "07:00", "activity": "walk",
+        })
+
+        assert events_mock.create_event.call_args.kwargs["activity"] == "walk"
+
+    def test_create_event_accepts_the_deprecated_category_alias(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        agent.calendar = None
+
+        agent._tool_create_event({
+            "name": "Dog walk", "start_time": "07:00", "category": "walk",
+        })
+
+        assert events_mock.create_event.call_args.kwargs["activity"] == "walk"
+
+    def test_create_event_prefers_activity_over_the_alias(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        agent.calendar = None
+
+        agent._tool_create_event({
+            "name": "Dog walk", "start_time": "07:00",
+            "activity": "walk", "category": "legacy",
+        })
+
+        assert events_mock.create_event.call_args.kwargs["activity"] == "walk"
+
+    def test_update_event_passes_activity_through(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.update_event.return_value = {"updated": True, "event": {}}
+
+        agent._tool_update_event({"event_id": "evt_1", "activity": "walk"})
+
+        assert events_mock.update_event.call_args.kwargs["updates"]["activity"] == "walk"
+
+    def test_update_event_prefers_activity_over_the_alias(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.update_event.return_value = {"updated": True, "event": {}}
+
+        agent._tool_update_event({
+            "event_id": "evt_1", "activity": "walk", "category": "legacy",
+        })
+
+        assert events_mock.update_event.call_args.kwargs["updates"]["activity"] == "walk"
+
+    def test_event_schemas_name_the_field_they_actually_write(self, agent):
+        """The parameter was called `category` while writing `activity`. Now
+        that an event carries both as separate axes, the old name pointed the
+        model at the wrong facet and left the real one unreachable."""
+        for tool in ("create_event", "update_event"):
+            props = agent.tools[tool]["schema"]["input_schema"]["properties"]
+            assert "activity" in props, tool
+            assert "category" not in props, tool
+
     def test_create_event_with_explicit_date(self, agent, mock_services):
         events_mock = mock_services[4]
         events_mock.create_event.return_value = {"id": "evt_new", "path": "data/events/2026-03-20.json"}

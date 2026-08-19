@@ -474,3 +474,43 @@ def test_legacy_events_default_to_suggested(tmp_path):
     svc = EventsService(events_dir)
 
     assert svc.get_events("2026-05-01")[0]["state"] == "suggested"
+
+
+def test_create_event_writes_the_activity_kwarg_to_the_activity_field(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.create_event(
+        date="2026-08-17", name="Dog walk", start_time="07:00", activity="walk"
+    )
+
+    event = svc.get_events("2026-08-17")[0]
+    assert event["activity"] == "walk"
+    # The category facet is a separate axis and is not populated from here.
+    assert event["category"] is None
+
+
+def test_create_event_still_accepts_the_deprecated_category_alias(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.create_event(
+        date="2026-08-17", name="Dog walk", start_time="07:00", category="walk"
+    )
+
+    assert svc.get_events("2026-08-17")[0]["activity"] == "walk"
+
+
+def test_activity_wins_when_both_names_are_given(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.create_event(
+        date="2026-08-17",
+        name="Dog walk",
+        start_time="07:00",
+        activity="walk",
+        category="legacy",
+    )
+
+    assert svc.get_events("2026-08-17")[0]["activity"] == "walk"
