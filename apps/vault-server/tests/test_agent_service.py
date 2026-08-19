@@ -711,6 +711,81 @@ class TestEventTools:
         assert result["data"]["event_id"] == "evt_new"
         assert "calendar_synced" not in result["data"]
 
+    # --- calendar_sync: same shape as the sync_to_calendar post-hook ---
+
+    def test_create_event_reports_calendar_success(self, agent, mock_services):
+        from unittest.mock import AsyncMock
+        events_mock = mock_services[4]
+        calendar_mock = mock_services[3]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        calendar_mock.create_event = AsyncMock(return_value="gcal_event_123")
+
+        result = agent._tool_create_event({"name": "Lunch", "start_time": "12:30"})
+
+        assert result["data"]["calendar_sync"] == {
+            "ok": True,
+            "attempted": True,
+            "event_id": "gcal_event_123",
+        }
+
+    def test_create_event_reports_calendar_failure(self, agent, mock_services):
+        """A silent failure here was a hole in the never-report-an-unconfirmed-
+        write guarantee: create_event emitted nothing at all when GCal blew up,
+        under a key the reporting rule does not name."""
+        events_mock = mock_services[4]
+        calendar_mock = mock_services[3]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        calendar_mock.create_event = MagicMock(side_effect=Exception("GCal error"))
+
+        result = agent._tool_create_event({"name": "Dinner", "start_time": "19:00"})
+
+        sync = result["data"]["calendar_sync"]
+        assert sync["ok"] is False
+        assert sync["attempted"] is True
+        assert "GCal error" in sync["reason"]
+
+    def test_create_event_reports_when_gcal_returns_no_id(self, agent, mock_services):
+        from unittest.mock import AsyncMock
+        events_mock = mock_services[4]
+        calendar_mock = mock_services[3]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        calendar_mock.create_event = AsyncMock(return_value=None)
+
+        result = agent._tool_create_event({"name": "Walk", "start_time": "10:00"})
+
+        sync = result["data"]["calendar_sync"]
+        assert sync["ok"] is False
+        assert sync["attempted"] is True
+        assert sync["reason"] == "no_event_created"
+
+    def test_create_event_without_calendar_is_not_a_failure(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+        agent.calendar = None
+
+        result = agent._tool_create_event({"name": "Walk", "start_time": "10:00"})
+
+        assert result["data"]["calendar_sync"] == {
+            "ok": False,
+            "attempted": False,
+            "reason": "calendar_not_configured",
+        }
+
+    def test_create_event_for_a_photo_is_not_a_calendar_failure(self, agent, mock_services):
+        events_mock = mock_services[4]
+        calendar_mock = mock_services[3]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
+
+        result = agent._tool_create_event({
+            "name": "Sunset",
+            "start_time": "20:00",
+            "photo_path": "media/2026-08-17/sunset.jpg",
+        })
+
+        assert result["data"]["calendar_sync"]["attempted"] is False
+        assert result["data"]["calendar_sync"]["reason"] == "not_applicable"
+        calendar_mock.create_event.assert_not_called()
+
     def test_create_event_with_explicit_date(self, agent, mock_services):
         events_mock = mock_services[4]
         events_mock.create_event.return_value = {"id": "evt_new", "path": "data/events/2026-03-20.json"}

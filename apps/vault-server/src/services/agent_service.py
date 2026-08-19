@@ -2656,10 +2656,31 @@ class AgentService:
                 return iso_time.split("T")[1][:5]
             return iso_time[:5]
 
-        # Sync to Google Calendar if available
+        # Sync to Google Calendar if available.
+        #
+        # The outcome is reported as `calendar_sync` — the same
+        # {ok, attempted, reason?, event_id?} shape the sync_to_calendar
+        # post-hook stamps on task/habit writes, and the shape the agent's
+        # reporting rule reads. Both branches emit it: silence on failure
+        # would let the agent claim a sync the result never confirmed.
         source_ids: dict | None = None
         calendar_synced = False
-        if self.calendar and not params.get("photo_path"):
+        calendar_sync: dict
+        if params.get("photo_path"):
+            # Photo events are deliberately never pushed to the calendar.
+            calendar_sync = {"ok": False, "attempted": False, "reason": "not_applicable"}
+        elif not self.calendar:
+            calendar_sync = {
+                "ok": False,
+                "attempted": False,
+                "reason": "calendar_not_configured",
+            }
+        else:
+            calendar_sync = {
+                "ok": False,
+                "attempted": True,
+                "reason": "no_event_created",
+            }
             try:
                 import asyncio
                 coro = self.calendar.create_event(
@@ -2686,8 +2707,14 @@ class AgentService:
                 if gcal_id:
                     source_ids = {"calendar_id": gcal_id}
                     calendar_synced = True
+                    calendar_sync = {
+                        "ok": True,
+                        "attempted": True,
+                        "event_id": gcal_id,
+                    }
             except Exception as e:
                 logger.warning(f"Failed to sync event to Google Calendar: {e}")
+                calendar_sync = {"ok": False, "attempted": True, "reason": str(e)}
 
         result = self.events.create_event(
             date=date,
@@ -2703,7 +2730,10 @@ class AgentService:
         )
         result["event_id"] = result.pop("id")
         items = [result["path"]]
+        result["calendar_sync"] = calendar_sync
         if calendar_synced:
+            # Legacy key, kept for the existing tests that read it. New
+            # readers should use `calendar_sync`, which also reports failure.
             result["calendar_synced"] = True
 
         # Unified record: also log the event in the daily note's ## Schedule section.
