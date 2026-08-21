@@ -48,6 +48,86 @@ _LINE_RE = re.compile(
 _TIME_RE = re.compile(r"^(?P<time>\d{1,2}:\d{2})\s+—\s+(?P<text>.*)$")
 _DURATION_RE = re.compile(r"\s*\((?P<n>\d+)m\)\s*$")
 _STRIKE_RE = re.compile(r"^~~(?P<text>.*?)~~(?:\s+—\s+(?P<ann>.*))?$")
+_HEADING_RE = re.compile(r"^##\s+(?P<name>.+?)\s*$")
+
+
+def _parse_todo_line(line: str) -> dict | None:
+    """Parse one checkbox line. Returns None for anything that isn't one.
+
+    Shares the module's regexes with `parse_tasks_section` so the two
+    cannot drift apart on what a checkbox looks like.
+    """
+    lm = _LINE_RE.match(line)
+    if not lm or lm.group("box") is None:
+        return None
+
+    text = lm.group("rest")
+    state: TaskState = "checked" if lm.group("box") == "x" else "unchecked"
+    scheduled_at = None
+    duration = None
+
+    sm = _STRIKE_RE.match(text)
+    if sm:
+        state = "moved"
+        text = sm.group("text")
+
+    tm = _TIME_RE.match(text)
+    if tm:
+        scheduled_at = tm.group("time")
+        text = tm.group("text")
+
+    dm = _DURATION_RE.search(text)
+    if dm:
+        duration = int(dm.group("n"))
+        text = _DURATION_RE.sub("", text).rstrip()
+
+    return {
+        "text": text.strip(),
+        "state": state,
+        "scheduled_at": scheduled_at,
+        "duration_minutes": duration,
+    }
+
+
+def is_todo_line(line: str) -> bool:
+    """True when `line` is a checkbox. Public so other modules can filter
+    checkboxes out of prose without importing a private helper."""
+    return _parse_todo_line(line) is not None
+
+
+@dataclass(frozen=True)
+class Todo:
+    """A checkbox anywhere in a daily note.
+
+    Distinct from `DailyTask`, which models the nested `## Tasks` tree the
+    write tools edit. A Todo is flat and carries the section it came from.
+    """
+    text: str
+    state: TaskState
+    section: str
+    scheduled_at: str | None = None
+    duration_minutes: int | None = None
+
+
+def parse_all_todos(body: str) -> list[Todo]:
+    """Every outstanding checkbox in the note, in document order.
+
+    Section-agnostic: a checkbox under `## Notes` is as much a todo as one
+    under `## Tasks`. `moved` items are excluded — they have been rolled to
+    another day and are no longer outstanding.
+    """
+    todos: list[Todo] = []
+    section = ""
+    for line in body.splitlines():
+        hm = _HEADING_RE.match(line)
+        if hm:
+            section = hm.group("name")
+            continue
+        fields = _parse_todo_line(line)
+        if fields is None or fields["state"] == "moved":
+            continue
+        todos.append(Todo(section=section, **fields))
+    return todos
 
 
 def parse_tasks_section(body: str) -> list[DailyTask]:

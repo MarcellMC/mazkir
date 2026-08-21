@@ -6,6 +6,8 @@ from src.services.daily_tasks import (
     DailyTask,
     parse_tasks_section,
     render_tasks_section,
+    parse_all_todos,
+    is_todo_line,
 )
 
 
@@ -133,3 +135,73 @@ def test_render_nested_children():
     assert "- [ ] Parent" in rendered
     assert "  - [ ] Sub-task" in rendered
     assert "  - just a note" in rendered
+
+
+WHOLE_NOTE = """\
+- [ ] Stray above any heading
+
+## Tasks
+- [ ] 14:00 — Visit dentist (60m)
+- [x] Walk dog
+- [ ] ~~Order phone~~ — moved to [[2026-06-05#Tasks]]
+
+## Notes
+- Bought dog food
+- [ ] Order dog food (30m)
+
+## Schedule
+09:00–10:00 Standup
+"""
+
+
+def test_collects_checkboxes_from_every_section():
+    todos = parse_all_todos(WHOLE_NOTE)
+    assert [t.text for t in todos] == [
+        "Stray above any heading",
+        "Visit dentist",
+        "Walk dog",
+        "Order dog food",
+    ]
+
+
+def test_records_the_enclosing_section():
+    todos = {t.text: t.section for t in parse_all_todos(WHOLE_NOTE)}
+    assert todos["Stray above any heading"] == ""
+    assert todos["Visit dentist"] == "Tasks"
+    assert todos["Order dog food"] == "Notes"
+
+
+def test_moved_todos_are_excluded():
+    assert "Order phone" not in [t.text for t in parse_all_todos(WHOLE_NOTE)]
+
+
+def test_preserves_time_duration_and_state():
+    by_text = {t.text: t for t in parse_all_todos(WHOLE_NOTE)}
+    assert by_text["Visit dentist"].scheduled_at == "14:00"
+    assert by_text["Visit dentist"].duration_minutes == 60
+    assert by_text["Visit dentist"].state == "unchecked"
+    assert by_text["Walk dog"].state == "checked"
+    assert by_text["Order dog food"].duration_minutes == 30
+
+
+def test_plain_bullets_are_not_todos():
+    assert "Bought dog food" not in [t.text for t in parse_all_todos(WHOLE_NOTE)]
+
+
+def test_note_with_no_checkboxes_returns_empty():
+    assert parse_all_todos("## Notes\n- just a thought\n") == []
+
+
+def test_is_todo_line_identifies_checkboxes():
+    assert is_todo_line("- [ ] Order dog food") is True
+    assert is_todo_line("- [x] Walk dog") is True
+    assert is_todo_line("- Bought dog food") is False
+    assert is_todo_line("## Notes") is False
+    assert is_todo_line("") is False
+
+
+def test_parse_tasks_section_still_scoped_to_tasks():
+    """The existing write-path parser must not start seeing Notes checkboxes."""
+    texts = [t.text for t in parse_tasks_section(WHOLE_NOTE)]
+    assert "Order dog food" not in texts
+    assert "Visit dentist" in texts
