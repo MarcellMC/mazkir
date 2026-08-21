@@ -259,3 +259,52 @@ class TestScheduledHabitCompletion:
             self._habit(target=2, last_completed=self._today().isoformat())
         )
         assert item["completed"] is True
+
+
+class TestDayTodos:
+    """Bug A: a checkbox with no time was parsed and then silently dropped."""
+
+    NOTE = (
+        "## Tasks\n"
+        "- [ ] Order dog food (30m)\n"
+        "- [ ] 14:00 — Visit dentist (60m)\n"
+        "\n"
+        "## Notes\n"
+        "- Bought dog food today\n"
+        "- [ ] Bring the bicycle to repair shop (60m)\n"
+    )
+
+    def test_untimed_todos_are_returned(self):
+        from src.api.routes.daily import _build_todos
+        texts = [t.text for t in _build_todos(self.NOTE)]
+        assert "Order dog food" in texts
+        assert "Bring the bicycle to repair shop" in texts
+
+    def test_timed_todos_are_also_returned(self):
+        from src.api.routes.daily import _build_todos
+        by_text = {t.text: t for t in _build_todos(self.NOTE)}
+        assert by_text["Visit dentist"].scheduled_at == "14:00"
+
+    def test_duration_survives(self):
+        from src.api.routes.daily import _build_todos
+        by_text = {t.text: t for t in _build_todos(self.NOTE)}
+        assert by_text["Order dog food"].duration_minutes == 30
+
+    def test_section_is_reported(self):
+        from src.api.routes.daily import _build_todos
+        by_text = {t.text: t for t in _build_todos(self.NOTE)}
+        assert by_text["Order dog food"].section == "Tasks"
+        assert by_text["Bring the bicycle to repair shop"].section == "Notes"
+
+    def test_checkbox_in_notes_is_not_also_a_note(self):
+        """Otherwise it renders twice — once as a todo, once as '[ ] …' prose."""
+        from src.api.routes.daily import _build_notes
+        texts = [n.text for n in _build_notes(self.NOTE) if n.text]
+        assert texts == ["Bought dog food today"]
+
+    def test_done_flag_reflects_the_box(self):
+        from src.api.routes.daily import _build_todos
+        note = "## Tasks\n- [x] Walk dog\n- [ ] Order dog food\n"
+        by_text = {t.text: t.done for t in _build_todos(note)}
+        assert by_text["Walk dog"] is True
+        assert by_text["Order dog food"] is False
