@@ -361,6 +361,16 @@ Habits also gain `activity` and `default_duration_minutes`, and their existing `
 
 ## 11. Open questions
 
+> **Phase 2 update (2026-08-21).** Several of these are resolved in
+> `docs/plans/2026-08-21-time-management-phase2-capture-design.md`, which owns
+> the capture *interaction* design (this doc owns the data model):
+> **retention of `suggested` blocks** — dissolved; suggestions are ephemeral and
+> regenerated on every open, so no retention policy is needed.
+> **Timer UX** and **token economics** — still open, deferred to Ships 8 and 9.
+> **Todo/Task rename** — still unresolved, still recommended out of this work.
+> That doc also records two live bugs found on 2026-08-20 and the resulting
+> value-ordered ship sequence.
+
 - **Todo/Task rename.** Recommended out of this block and handled separately if wanted at all. Needs an explicit call.
 - **Timer UX.** The live start/stop path is agreed in principle; the actual interaction (`/start dev`, an inline keyboard, an NL phrase) is unspecified.
 - **Token economics for logging.** Logging should earn tokens, but the rate — per block, per approved day, per streak — is undecided, and it interacts with the existing `tokens_per_completion` on habits.
