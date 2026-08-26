@@ -283,3 +283,42 @@ def test_em_dash_in_task_prose_is_not_an_annotation():
 def test_render_round_trips_unmoved_forms(line):
     body = f"## Tasks\n{line}\n"
     assert render_tasks_section(parse_tasks_section(body)) == body
+
+
+def test_struck_task_with_a_hand_written_comment_is_moved():
+    """Users strike lines in Obsidian with their own trailing note, not only
+    the machine-written move link. Such a line is done, not outstanding."""
+    body = "## Tasks\n- [ ] ~~Order phone~~ — cancelled, bought in store\n"
+    task = parse_tasks_section(body)[0]
+    assert task.state == "moved"
+    assert task.text == "Order phone"
+    assert task.annotation == "cancelled, bought in store"
+    assert parse_all_todos(body) == []
+
+
+def test_comment_split_takes_the_last_em_dash():
+    """A dash inside the struck text belongs to the text."""
+    task = parse_tasks_section("## Tasks\n- [ ] ~~a — b~~ — c\n")[0]
+    assert task.text == "a — b"
+    assert task.annotation == "c"
+
+
+@pytest.mark.parametrize("line", [
+    "- [ ] ~~Order phone~~ — cancelled, bought in store",
+    "- [ ] ~~Order phone~~ (30m) — cancelled",
+    "- [ ] ~~a — b~~ — c",
+])
+def test_render_round_trips_hand_written_struck_comments(line):
+    body = f"## Tasks\n{line}\n"
+    assert render_tasks_section(parse_tasks_section(body)) == body
+
+
+def test_decorations_inside_the_wrapper_are_normalised_out():
+    """`~~text (30m)~~` is hand-authored; the canonical form puts the
+    duration outside. Parsing extracts it, so the next render rewrites the
+    line — deliberately not a round-trip."""
+    body = "## Tasks\n- [ ] ~~Order dog food (30m)~~\n"
+    task = parse_tasks_section(body)[0]
+    assert task.duration_minutes == 30
+    assert task.text == "Order dog food"
+    assert render_tasks_section([task]) == "## Tasks\n- [ ] ~~Order dog food~~ (30m)\n"

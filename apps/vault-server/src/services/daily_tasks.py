@@ -52,6 +52,10 @@ _STRIKE_RE = re.compile(r"^~~(?P<text>.*)~~$")
 # that shape specifically keeps an em dash in ordinary task prose
 # ("Buy milk — the good kind") from being torn off as an annotation.
 _ANNOTATION_RE = re.compile(r"\s+—\s+(?P<ann>moved (?:to|from) \[\[[^\]]+\]\])\s*$")
+# Struck lines only: a hand-written trailing comment ("~~Order phone~~ —
+# cancelled, bought in store") is an annotation too. Anchored on the LAST
+# em dash so a dash inside the struck text stays with the text.
+_COMMENT_RE = re.compile(r"\s+—\s+(?P<ann>[^—]*)$")
 _HEADING_RE = re.compile(r"^##\s+(?P<name>.+?)\s*$")
 
 
@@ -75,6 +79,11 @@ def _parse_task_content(rest: str, box: str) -> dict:
     if am:
         annotation = am.group("ann")
         text = text[: am.start()]
+    elif text.startswith("~~"):
+        cm = _COMMENT_RE.search(text)
+        if cm:
+            annotation = cm.group("ann")
+            text = text[: cm.start()]
 
     dm = _DURATION_RE.search(text)
     if dm:
@@ -90,13 +99,20 @@ def _parse_task_content(rest: str, box: str) -> dict:
     if sm:
         state = "moved"
         text = sm.group("text")
+        # Hand-authored `~~14:00 — text (30m)~~`, where the decorations sit
+        # inside the wrapper rather than around it. Extracting them here
+        # normalises the line to the canonical outer form on the next
+        # render; that is a deliberate rewrite, not a round-trip.
         if scheduled_at is None:
-            # Hand-authored `~~14:00 — text~~`, where the time sits inside
-            # the wrapper rather than before it.
             tm = _TIME_RE.match(text)
             if tm:
                 scheduled_at = tm.group("time")
                 text = tm.group("text")
+        if duration is None:
+            dm = _DURATION_RE.search(text)
+            if dm:
+                duration = int(dm.group("n"))
+                text = _DURATION_RE.sub("", text).rstrip()
 
     return {
         "text": text.strip(),
@@ -143,11 +159,13 @@ class Todo:
 
 
 def parse_all_todos(body: str) -> list[Todo]:
-    """Every outstanding checkbox in the note, in document order.
+    """Every checkbox in the note that has not been moved away, in
+    document order — checked ones included, so callers can show what is
+    already done.
 
     Section-agnostic: a checkbox under `## Notes` is as much a todo as one
     under `## Tasks`. `moved` items are excluded — they have been rolled to
-    another day and are no longer outstanding.
+    another day and are no longer this day's business.
     """
     todos: list[Todo] = []
     section = ""
