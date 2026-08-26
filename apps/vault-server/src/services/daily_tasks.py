@@ -56,6 +56,9 @@ _ANNOTATION_RE = re.compile(r"\s+—\s+(?P<ann>moved (?:to|from) \[\[[^\]]+\]\])
 # cancelled, bought in store") is an annotation too. Anchored on the LAST
 # em dash so a dash inside the struck text stays with the text.
 _COMMENT_RE = re.compile(r"\s+—\s+(?P<ann>[^—]*)$")
+# Guards _COMMENT_RE: the comment must start *after* a closed `~~…~~`
+# wrapper, otherwise the split lands inside the struck text itself.
+_CLOSED_STRIKE_RE = re.compile(r"^~~.*~~")
 _HEADING_RE = re.compile(r"^##\s+(?P<name>.+?)\s*$")
 
 
@@ -81,7 +84,7 @@ def _parse_task_content(rest: str, box: str) -> dict:
         text = text[: am.start()]
     elif text.startswith("~~"):
         cm = _COMMENT_RE.search(text)
-        if cm:
+        if cm and _CLOSED_STRIKE_RE.match(text[: cm.start()]):
             annotation = cm.group("ann")
             text = text[: cm.start()]
 

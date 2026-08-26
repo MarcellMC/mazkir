@@ -322,3 +322,15 @@ def test_decorations_inside_the_wrapper_are_normalised_out():
     assert task.duration_minutes == 30
     assert task.text == "Order dog food"
     assert render_tasks_section([task]) == "## Tasks\n- [ ] ~~Order dog food~~ (30m)\n"
+
+
+def test_fully_struck_line_with_an_internal_em_dash():
+    """`~~Buy milk — the good kind~~` has no trailing comment — the only em
+    dash is inside the wrapper, so nothing may be split off as an annotation."""
+    body = "## Tasks\n- [ ] ~~Buy milk — the good kind~~\n"
+    task = parse_tasks_section(body)[0]
+    assert task.state == "moved"
+    assert task.text == "Buy milk — the good kind"
+    assert task.annotation is None
+    assert render_tasks_section([task]) == body
+    assert parse_all_todos(body) == []
