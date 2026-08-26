@@ -205,3 +205,81 @@ def test_parse_tasks_section_still_scoped_to_tasks():
     texts = [t.text for t in parse_tasks_section(WHOLE_NOTE)]
     assert "Order dog food" not in texts
     assert "Visit dentist" in texts
+
+
+# --- _STRIKE_RE round-trip: duration between the strike and the annotation ---
+
+
+def test_parse_moved_task_with_duration():
+    """render_tasks_section emits `~~text~~ (30m) — moved to [[...]]`, so the
+    parser must read that form back as moved."""
+    body = "## Tasks\n- [ ] ~~Order dog food~~ (30m) — moved to [[2026-08-23#Tasks]]\n"
+    task = parse_tasks_section(body)[0]
+    assert task.state == "moved"
+    assert task.text == "Order dog food"
+    assert task.duration_minutes == 30
+    assert task.annotation == "moved to [[2026-08-23#Tasks]]"
+
+
+def test_parse_moved_task_with_time_and_duration():
+    body = "## Tasks\n- [ ] 14:00 — ~~Visit dentist~~ (60m) — moved to [[2026-08-23#Tasks]]\n"
+    task = parse_tasks_section(body)[0]
+    assert task.state == "moved"
+    assert task.text == "Visit dentist"
+    assert task.scheduled_at == "14:00"
+    assert task.duration_minutes == 60
+    assert task.annotation == "moved to [[2026-08-23#Tasks]]"
+
+
+def test_parse_moved_task_with_hand_written_time_inside_strike():
+    """Obsidian-authored `~~14:00 — text~~` still yields the time."""
+    body = "## Tasks\n- [ ] ~~14:00 — Visit dentist~~ — moved to [[2026-08-23#Tasks]]\n"
+    task = parse_tasks_section(body)[0]
+    assert task.state == "moved"
+    assert task.text == "Visit dentist"
+    assert task.scheduled_at == "14:00"
+
+
+@pytest.mark.parametrize("line", [
+    "- [ ] ~~Order dog food~~ (30m) — moved to [[2026-08-23#Tasks]]",
+    "- [ ] ~~Order phone~~ — moved to [[2026-08-23#Tasks]]",
+    "- [ ] 14:00 — ~~Visit dentist~~ (60m) — moved to [[2026-08-23#Tasks]]",
+    "- [ ] ~~Bare strike no annotation~~",
+])
+def test_render_round_trips_every_moved_form(line):
+    body = f"## Tasks\n{line}\n"
+    assert render_tasks_section(parse_tasks_section(body)) == body
+
+
+def test_moved_todo_with_duration_excluded_from_parse_all_todos():
+    body = "## Tasks\n- [ ] ~~Order dog food~~ (30m) — moved to [[2026-08-23#Tasks]]\n"
+    assert parse_all_todos(body) == []
+
+
+def test_parse_annotation_on_an_unchecked_task():
+    """The move chain lives on unchecked lines — that is where daily_rollover
+    reads it from. It must parse there, not only inside a strike wrapper."""
+    body = "## Tasks\n- [ ] Order dog food (30m) — moved from [[2026-08-20#Tasks]]\n"
+    task = parse_tasks_section(body)[0]
+    assert task.state == "unchecked"
+    assert task.text == "Order dog food"
+    assert task.duration_minutes == 30
+    assert task.annotation == "moved from [[2026-08-20#Tasks]]"
+
+
+def test_em_dash_in_task_prose_is_not_an_annotation():
+    """Only the move-chain shape counts, so ordinary prose keeps its dash."""
+    body = "## Tasks\n- [ ] Buy milk — the good kind\n"
+    task = parse_tasks_section(body)[0]
+    assert task.text == "Buy milk — the good kind"
+    assert task.annotation is None
+
+
+@pytest.mark.parametrize("line", [
+    "- [ ] Order dog food (30m) — moved from [[2026-08-20#Tasks]]",
+    "- [ ] Buy milk — the good kind",
+    "- [x] 09:00 — Standup (15m)",
+])
+def test_render_round_trips_unmoved_forms(line):
+    body = f"## Tasks\n{line}\n"
+    assert render_tasks_section(parse_tasks_section(body)) == body

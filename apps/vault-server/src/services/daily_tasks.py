@@ -47,46 +47,79 @@ _LINE_RE = re.compile(
 )
 _TIME_RE = re.compile(r"^(?P<time>\d{1,2}:\d{2})\s+—\s+(?P<text>.*)$")
 _DURATION_RE = re.compile(r"\s*\((?P<n>\d+)m\)\s*$")
-_STRIKE_RE = re.compile(r"^~~(?P<text>.*?)~~(?:\s+—\s+(?P<ann>.*))?$")
+_STRIKE_RE = re.compile(r"^~~(?P<text>.*)~~$")
+# The only annotation the writers ever emit is a move-chain link. Matching
+# that shape specifically keeps an em dash in ordinary task prose
+# ("Buy milk — the good kind") from being torn off as an annotation.
+_ANNOTATION_RE = re.compile(r"\s+—\s+(?P<ann>moved (?:to|from) \[\[[^\]]+\]\])\s*$")
 _HEADING_RE = re.compile(r"^##\s+(?P<name>.+?)\s*$")
 
 
-def _parse_todo_line(line: str) -> dict | None:
-    """Parse one checkbox line. Returns None for anything that isn't one.
+def _parse_task_content(rest: str, box: str) -> dict:
+    """Parse the content of one checkbox line into its fields.
 
-    Shares the module's regexes with `parse_tasks_section` so the two
-    cannot drift apart on what a checkbox looks like.
+    The exact inverse of how `render_tasks_section` assembles content.
+    That function wraps the text in `~~`, prefixes the time, then appends
+    the duration and the annotation — so all four decorations must be
+    peeled off in the opposite order. Peeling in any other order strands
+    markup inside `text`: it survives a round-trip unchanged, which is
+    why such bugs stay invisible until something reads a field.
     """
-    lm = _LINE_RE.match(line)
-    if not lm or lm.group("box") is None:
-        return None
-
-    text = lm.group("rest")
-    state: TaskState = "checked" if lm.group("box") == "x" else "unchecked"
+    text = rest
+    state: TaskState = "checked" if box == "x" else "unchecked"
     scheduled_at = None
     duration = None
+    annotation = None
 
-    sm = _STRIKE_RE.match(text)
-    if sm:
-        state = "moved"
-        text = sm.group("text")
-
-    tm = _TIME_RE.match(text)
-    if tm:
-        scheduled_at = tm.group("time")
-        text = tm.group("text")
+    am = _ANNOTATION_RE.search(text)
+    if am:
+        annotation = am.group("ann")
+        text = text[: am.start()]
 
     dm = _DURATION_RE.search(text)
     if dm:
         duration = int(dm.group("n"))
         text = _DURATION_RE.sub("", text).rstrip()
 
+    tm = _TIME_RE.match(text)
+    if tm:
+        scheduled_at = tm.group("time")
+        text = tm.group("text")
+
+    sm = _STRIKE_RE.match(text)
+    if sm:
+        state = "moved"
+        text = sm.group("text")
+        if scheduled_at is None:
+            # Hand-authored `~~14:00 — text~~`, where the time sits inside
+            # the wrapper rather than before it.
+            tm = _TIME_RE.match(text)
+            if tm:
+                scheduled_at = tm.group("time")
+                text = tm.group("text")
+
     return {
         "text": text.strip(),
         "state": state,
         "scheduled_at": scheduled_at,
         "duration_minutes": duration,
+        "annotation": annotation,
     }
+
+
+def _parse_todo_line(line: str) -> dict | None:
+    """Parse one checkbox line. Returns None for anything that isn't one.
+
+    Shares `_parse_task_content` with `parse_tasks_section`, so the two
+    cannot drift apart on what a checkbox looks like. Drops `annotation`,
+    which `Todo` does not carry.
+    """
+    lm = _LINE_RE.match(line)
+    if not lm or lm.group("box") is None:
+        return None
+    fields = _parse_task_content(lm.group("rest"), lm.group("box"))
+    fields.pop("annotation")
+    return fields
 
 
 def is_todo_line(line: str) -> bool:
@@ -148,36 +181,7 @@ def parse_tasks_section(body: str) -> list[DailyTask]:
         box = lm.group("box")
 
         if box is not None:
-            text = rest
-            scheduled_at = None
-            duration = None
-            annotation = None
-            state: TaskState = "checked" if box == "x" else "unchecked"
-
-            sm = _STRIKE_RE.match(text)
-            if sm:
-                state = "moved"
-                text = sm.group("text")
-                annotation = sm.group("ann")
-
-            tm = _TIME_RE.match(text)
-            if tm:
-                scheduled_at = tm.group("time")
-                text = tm.group("text")
-
-            dm = _DURATION_RE.search(text)
-            if dm:
-                duration = int(dm.group("n"))
-                text = _DURATION_RE.sub("", text).rstrip()
-
-            parsed.append((indent, {
-                "text": text.strip(),
-                "state": state,
-                "scheduled_at": scheduled_at,
-                "duration_minutes": duration,
-                "annotation": annotation,
-                "children": [],
-            }))
+            parsed.append((indent, {**_parse_task_content(rest, box), "children": []}))
         else:
             # plain bullet / numbered note line (no checkbox)
             note_text = rest.lstrip("- ").lstrip()
