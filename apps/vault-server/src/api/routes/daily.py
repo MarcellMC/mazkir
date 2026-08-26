@@ -66,7 +66,8 @@ def _habit_scheduled_at(meta: dict) -> str | None:
 
 
 def _build_todos(content: str) -> list[DailyTodo]:
-    """Every outstanding checkbox in the note, wherever it lives.
+    """Every checkbox in the note that has not been moved away, wherever it
+    lives. Checked ones are included too, carrying `done=True`.
 
     `schedule[]` only carries checkboxes that have a time, so without this
     an untimed todo is parsed and then silently dropped.

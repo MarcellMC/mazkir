@@ -296,17 +296,32 @@ def test_struck_task_with_a_hand_written_comment_is_moved():
     assert parse_all_todos(body) == []
 
 
-def test_comment_split_takes_the_last_em_dash():
-    """A dash inside the struck text belongs to the text."""
-    task = parse_tasks_section("## Tasks\n- [ ] ~~a — b~~ — c\n")[0]
-    assert task.text == "a — b"
-    assert task.annotation == "c"
+@pytest.mark.parametrize("line,text,ann", [
+    # The boundary is the closing `~~`, not any particular em dash. Dashes
+    # inside the struck text and dashes inside the comment both stay put.
+    ("- [ ] ~~a — b~~ — c", "a — b", "c"),
+    ("- [ ] ~~Order phone — model X~~ — cancelled, bought in store",
+     "Order phone — model X", "cancelled, bought in store"),
+    ("- [ ] ~~Order phone~~ — cancelled — refunded already",
+     "Order phone", "cancelled — refunded already"),
+])
+def test_comment_boundary_is_the_closing_wrapper(line, text, ann):
+    body = f"## Tasks\n{line}\n"
+    task = parse_tasks_section(body)[0]
+    assert task.state == "moved"
+    assert task.text == text
+    assert task.annotation == ann
+    assert render_tasks_section([task]) == body
+    assert parse_all_todos(body) == []
 
 
 @pytest.mark.parametrize("line", [
     "- [ ] ~~Order phone~~ — cancelled, bought in store",
     "- [ ] ~~Order phone~~ (30m) — cancelled",
     "- [ ] ~~a — b~~ — c",
+    "- [ ] ~~Order phone — model X~~ — cancelled, bought in store",
+    "- [ ] ~~Order phone~~ — cancelled — refunded already",
+    "- [ ] ~~Order phone~~",
 ])
 def test_render_round_trips_hand_written_struck_comments(line):
     body = f"## Tasks\n{line}\n"

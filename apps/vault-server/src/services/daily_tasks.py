@@ -53,12 +53,13 @@ _STRIKE_RE = re.compile(r"^~~(?P<text>.*)~~$")
 # ("Buy milk — the good kind") from being torn off as an annotation.
 _ANNOTATION_RE = re.compile(r"\s+—\s+(?P<ann>moved (?:to|from) \[\[[^\]]+\]\])\s*$")
 # Struck lines only: a hand-written trailing comment ("~~Order phone~~ —
-# cancelled, bought in store") is an annotation too. Anchored on the LAST
-# em dash so a dash inside the struck text stays with the text.
-_COMMENT_RE = re.compile(r"\s+—\s+(?P<ann>[^—]*)$")
-# Guards _COMMENT_RE: the comment must start *after* a closed `~~…~~`
-# wrapper, otherwise the split lands inside the struck text itself.
-_CLOSED_STRIKE_RE = re.compile(r"^~~.*~~")
+# cancelled, bought in store") is an annotation too. The boundary is the
+# first em dash *after the closing* `~~` — `.*~~` runs greedy to find that
+# closing wrapper, `.*?` then stops at the first dash beyond it. Anchoring
+# on the wrapper rather than on a dash is what keeps dashes inside the
+# struck text ("~~a — b~~ — c") and dashes inside the comment
+# ("~~Order phone~~ — cancelled — refunded already") on their own sides.
+_STRUCK_COMMENT_RE = re.compile(r"^(?P<head>~~.*~~.*?)\s+—\s+(?P<ann>.*)$")
 _HEADING_RE = re.compile(r"^##\s+(?P<name>.+?)\s*$")
 
 
@@ -82,11 +83,11 @@ def _parse_task_content(rest: str, box: str) -> dict:
     if am:
         annotation = am.group("ann")
         text = text[: am.start()]
-    elif text.startswith("~~"):
-        cm = _COMMENT_RE.search(text)
-        if cm and _CLOSED_STRIKE_RE.match(text[: cm.start()]):
+    else:
+        cm = _STRUCK_COMMENT_RE.match(text)
+        if cm:
             annotation = cm.group("ann")
-            text = text[: cm.start()]
+            text = cm.group("head")
 
     dm = _DURATION_RE.search(text)
     if dm:
