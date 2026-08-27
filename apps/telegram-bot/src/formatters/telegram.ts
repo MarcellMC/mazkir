@@ -48,6 +48,10 @@ function goalPriorityEmoji(priority: GoalPriority): string {
   return priorityEmoji(scale[priority.toLowerCase()] ?? 3);
 }
 
+/** Every interpolated value here is free text from the user's Obsidian
+ * note, and the digest is sent with HTML parse_mode. One unescaped `<`
+ * makes Telegram reject the whole message, and /day's catch reports it
+ * as the server being down — so escape at every interpolation. */
 export function formatDay(data: DailyResponse): string {
   const lines: string[] = [];
   lines.push(`📅 <b>Daily Note — ${data.date}</b>`);
@@ -59,8 +63,11 @@ export function formatDay(data: DailyResponse): string {
     for (const item of data.schedule) {
       const icon = item.completed ? "✅" : item.source === "habit" ? "🔁" : "⏳";
       const time = item.start.includes("T") ? formatTime(item.start) : item.start;
-      const cal = item.calendar_name && item.calendar_name !== "Mazkir" ? ` (${item.calendar_name})` : "";
-      lines.push(`  ${icon} ${time} — ${item.title}${cal}`);
+      const cal =
+        item.calendar_name && item.calendar_name !== "Mazkir"
+          ? ` (${escapeHtml(item.calendar_name)})`
+          : "";
+      lines.push(`  ${icon} ${time} — ${escapeHtml(item.title)}${cal}`);
     }
   }
 
@@ -70,8 +77,8 @@ export function formatDay(data: DailyResponse): string {
     lines.push("☑️ <b>Todos</b>");
     for (const t of untimed) {
       const box = t.done ? "☑️" : "☐";
-      const dur = t.duration_minutes ? ` <i>(${t.duration_minutes}m)</i>` : "";
-      lines.push(`  ${box} ${t.text}${dur}`);
+      const dur = t.duration_minutes != null ? ` <i>(${t.duration_minutes}m)</i>` : "";
+      lines.push(`  ${box} ${escapeHtml(t.text)}${dur}`);
     }
   }
 
@@ -80,7 +87,7 @@ export function formatDay(data: DailyResponse): string {
     lines.push("📝 <b>Notes</b>");
     for (const n of data.notes) {
       const text = n.text ?? (n.caption ? `📷 ${n.caption}` : "📷");
-      lines.push(`  ${text}`);
+      lines.push(`  ${escapeHtml(text)}`);
     }
   }
 
