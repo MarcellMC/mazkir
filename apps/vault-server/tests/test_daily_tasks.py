@@ -8,6 +8,7 @@ from src.services.daily_tasks import (
     render_tasks_section,
     parse_all_todos,
     is_todo_line,
+    replace_or_append_section,
 )
 
 
@@ -349,3 +350,46 @@ def test_fully_struck_line_with_an_internal_em_dash():
     assert task.annotation is None
     assert render_tasks_section([task]) == body
     assert parse_all_todos(body) == []
+
+
+def test_struck_comment_survives_a_time_prefix():
+    """`14:00 — ~~x~~ — cancelled` does not start with `~~`, so the comment
+    split can only run once the time prefix is off."""
+    body = "## Tasks\n- [ ] 14:00 — ~~Visit dentist~~ (60m) — cancelled\n"
+    task = parse_tasks_section(body)[0]
+    assert task.state == "moved"
+    assert task.text == "Visit dentist"
+    assert task.scheduled_at == "14:00"
+    assert task.duration_minutes == 60
+    assert task.annotation == "cancelled"
+    assert render_tasks_section([task]) == body
+    assert parse_all_todos(body) == []
+
+
+@pytest.mark.parametrize("line,state,text", [
+    ("- [X] Walk dog", "checked", "Walk dog"),      # Obsidian writes uppercase
+    ("* [ ] Order milk", "unchecked", "Order milk"),  # asterisk bullets are valid
+    ("* [X] Order milk", "checked", "Order milk"),
+])
+def test_obsidian_checkbox_variants_are_todos(line, state, text):
+    body = f"## Tasks\n{line}\n"
+    task = parse_tasks_section(body)[0]
+    assert task.state == state
+    assert task.text == text
+    assert is_todo_line(line)
+    assert [t.text for t in parse_all_todos(body)] == [text]
+
+
+def test_rewriting_a_section_does_not_eat_the_next_subheading():
+    """`_SECTION_RE` stops at `###` but `replace_or_append_section` used to run
+    past it, so adding one task deleted the subheading and everything under
+    it from the user's vault."""
+    body = "## Tasks\n- [ ] A\n\n### Later today\n- [ ] B\n\n## Notes\n- hi\n"
+    tasks = parse_tasks_section(body)
+    assert [t.text for t in tasks] == ["A"]
+    tasks.append(DailyTask(text="C"))
+    out = replace_or_append_section(body, "Tasks", render_tasks_section(tasks))
+    assert "### Later today" in out
+    assert "- [ ] B" in out
+    assert "## Notes" in out
+    assert "- [ ] C" in out

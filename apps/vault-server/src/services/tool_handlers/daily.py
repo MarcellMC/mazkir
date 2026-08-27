@@ -20,7 +20,6 @@ from src.services.daily_tasks import (
 )
 from src.services.tool_response import ErrorCode, err, ok
 
-_MOVED_RE = re.compile(r"moved from\s+\[\[(\d{4}-\d{2}-\d{2})#Tasks\]\]")
 
 
 def _flatten(tasks):

@@ -26,6 +26,8 @@ export interface DailyResponse {
   tokens_today: number;
   tokens_total: number;
   schedule: DailyScheduleItem[];
-  todos: DailyTodo[];
+  /** Absent when talking to a vault-server from before Ship 1; the bot
+   * falls back to an empty list rather than throwing. */
+  todos?: DailyTodo[];
   notes: DailyNote[];
 }

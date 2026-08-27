@@ -89,54 +89,31 @@ class TestDailyScheduleBuilding:
 
 
 class TestDailyResponseModels:
-    """Verify the new Pydantic response models by constructing equivalent models locally.
+    """Assert on the real response models.
 
-    We cannot import directly from src.api.routes.daily because it imports get_vault/get_calendar
-    from src.main, which creates a circular import during pytest collection.  Instead we mirror
-    the model definitions here and assert on their field names — any drift would cause type errors
-    in production.
+    An earlier version of this class mirrored the model definitions locally,
+    claiming a circular import made the real ones unimportable. That is not
+    true — `TestDayTodos` below imports the module fine — and a mirror can
+    only ever assert that the copy matches itself. It went stale immediately:
+    it still described a five-field response after `todos` was added.
     """
 
-    def test_response_model_has_correct_fields(self):
-        from pydantic import BaseModel
+    def test_response_model_fields(self):
+        from src.api.routes.daily import DailyResponse
 
-        class _DailyScheduleItem(BaseModel):
-            start: str
-            end: str | None = None
-            title: str
-            source: str
-            completed: bool = False
-            calendar_name: str | None = None
+        assert set(DailyResponse.model_fields) == {
+            "date", "tokens_today", "tokens_total", "schedule", "todos", "notes",
+        }
 
-        class _DailyNote(BaseModel):
-            text: str | None = None
-            photo_path: str | None = None
-            caption: str | None = None
+    def test_todo_model_fields(self):
+        from src.api.routes.daily import DailyTodo
 
-        class _DailyResponse(BaseModel):
-            date: str
-            tokens_today: int
-            tokens_total: int
-            schedule: list[_DailyScheduleItem]
-            notes: list[_DailyNote]
-
-        item = _DailyScheduleItem(start="09:00", title="Test", source="habit", completed=False)
-        note = _DailyNote(text="hello")
-        resp = _DailyResponse(
-            date="2026-06-04",
-            tokens_today=5,
-            tokens_total=50,
-            schedule=[item],
-            notes=[note],
-        )
-        d = resp.model_dump()
-        assert "schedule" in d
-        assert "notes" in d
-        assert "habits" not in d
-        assert "calendar_events" not in d
-        assert "tokens_today" in d
-        assert "tokens_earned" not in d
-        assert "day_of_week" not in d
+        assert set(DailyTodo.model_fields) == {
+            "text", "done", "section", "scheduled_at", "duration_minutes",
+        }
+        t = DailyTodo(text="Order dog food")
+        assert t.done is False and t.section == ""
+        assert t.scheduled_at is None and t.duration_minutes is None
 
     def test_schedule_item_source_values(self):
         from pydantic import BaseModel
@@ -308,3 +285,33 @@ class TestDayTodos:
         by_text = {t.text: t.done for t in _build_todos(note)}
         assert by_text["Walk dog"] is True
         assert by_text["Order dog food"] is False
+
+
+class TestTimedTodosReachTheSchedule:
+    """A timed checkbox must land in schedule[] no matter where it lives.
+
+    The bot drops any todo carrying a time from its Todos block, on the
+    grounds that the schedule already shows it. When the schedule was built
+    only from top-level `## Tasks`, a timed checkbox anywhere else was absent
+    from schedule[], excluded from notes[] for being a checkbox, and then
+    dropped by the bot for having a time — it appeared nowhere at all.
+    """
+
+    def test_timed_checkbox_under_notes(self):
+        from src.api.routes.daily import _build_todos
+        from src.services.daily_tasks import parse_all_todos
+
+        body = "## Notes\n- [ ] 14:00 — Call plumber (30m)\n"
+        assert [t.scheduled_at for t in parse_all_todos(body)] == ["14:00"]
+        assert [t.text for t in _build_todos(body)] == ["Call plumber"]
+
+    def test_timed_nested_child(self):
+        from src.services.daily_tasks import parse_all_todos
+
+        body = (
+            "## Tasks\n"
+            "- [ ] Visit dentist\n"
+            "  - [ ] 09:00 — bring insurance card (10m)\n"
+        )
+        timed = [(t.text, t.scheduled_at) for t in parse_all_todos(body) if t.scheduled_at]
+        assert timed == [("bring insurance card", "09:00")]

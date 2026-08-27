@@ -6,7 +6,7 @@ import pytz
 from pydantic import BaseModel
 from src.auth import verify_api_key
 from src.config import settings
-from src.services.daily_tasks import parse_tasks_section, parse_all_todos, is_todo_line
+from src.services.daily_tasks import parse_all_todos, is_todo_line
 from src.services.habit_completion import is_complete_today
 
 router = APIRouter(prefix="/daily", tags=["daily"], dependencies=[Depends(verify_api_key)])
@@ -48,7 +48,7 @@ class DailyResponse(BaseModel):
 
 def _extract_section(body: str, name: str) -> str:
     pat = re.compile(
-        rf"##\s+{re.escape(name)}\s*\n(.*?)(?=^##\s|\Z)",
+        rf"##\s+{re.escape(name)}\s*\n(.*?)(?=^#{{2,}}\s|\Z)",
         re.DOTALL | re.MULTILINE | re.IGNORECASE,
     )
     m = pat.search(body)
@@ -136,11 +136,15 @@ async def get_daily():
         except Exception:
             pass
 
-    # Timed daily checkboxes from ## Tasks section
+    # Every timed checkbox in the note, from any section and at any nesting
+    # depth. Scoping this to top-level `## Tasks` used to hide a timed
+    # checkbox written under `## Notes` or nested under a parent task: it was
+    # absent from schedule[], excluded from notes[] as a checkbox, and then
+    # dropped from the bot's Todos block for having a time. It appeared
+    # nowhere at all.
     content = daily.get("content", "")
-    daily_tasks = parse_tasks_section(content)
-    for t in daily_tasks:
-        if t.scheduled_at and t.state in ("unchecked", "checked"):
+    for t in parse_all_todos(content):
+        if t.scheduled_at:
             schedule.append(DailyScheduleItem(
                 start=t.scheduled_at,
                 title=t.text,

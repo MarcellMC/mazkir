@@ -42,7 +42,7 @@ _SECTION_RE = re.compile(
 )
 _LINE_RE = re.compile(
     r"^(?P<indent>\s*)"
-    r"(?:-\s+\[(?P<box>[ x])\]\s+)?"
+    r"(?:[-*]\s+\[(?P<box>[ xX])\]\s+)?"
     r"(?P<rest>.*)$"
 )
 _TIME_RE = re.compile(r"^(?P<time>\d{1,2}:\d{2})\s+—\s+(?P<text>.*)$")
@@ -74,10 +74,19 @@ def _parse_task_content(rest: str, box: str) -> dict:
     why such bugs stay invisible until something reads a field.
     """
     text = rest
-    state: TaskState = "checked" if box == "x" else "unchecked"
+    state: TaskState = "checked" if box.lower() == "x" else "unchecked"
     scheduled_at = None
     duration = None
     annotation = None
+
+    # The time prefix comes off first even though the renderer applies it
+    # second-to-innermost: it is the only decoration anchored at the front,
+    # and leaving it in place keeps the strike wrapper away from position 0,
+    # where every pattern below expects to find it.
+    tm = _TIME_RE.match(text)
+    if tm:
+        scheduled_at = tm.group("time")
+        text = tm.group("text")
 
     am = _ANNOTATION_RE.search(text)
     if am:
@@ -93,11 +102,6 @@ def _parse_task_content(rest: str, box: str) -> dict:
     if dm:
         duration = int(dm.group("n"))
         text = _DURATION_RE.sub("", text).rstrip()
-
-    tm = _TIME_RE.match(text)
-    if tm:
-        scheduled_at = tm.group("time")
-        text = tm.group("text")
 
     sm = _STRIKE_RE.match(text)
     if sm:
@@ -206,7 +210,7 @@ def parse_tasks_section(body: str) -> list[DailyTask]:
             parsed.append((indent, {**_parse_task_content(rest, box), "children": []}))
         else:
             # plain bullet / numbered note line (no checkbox)
-            note_text = rest.lstrip("- ").lstrip()
+            note_text = rest.lstrip("-* ").lstrip()
             note_text = re.sub(r"^\d+\.\s+", "", note_text)
             if not note_text:
                 continue
@@ -266,8 +270,11 @@ def replace_or_append_section(body: str, section_name: str, new_section: str) ->
     If the section doesn't exist, append new_section at the end.
     `new_section` must already start with `## <name>`.
     """
+    # `#{2,}` — not `##` — so this stops where `_SECTION_RE` stops. When the
+    # two disagreed, `## Tasks` rewrites silently deleted a following
+    # `### Sub` heading and every line under it from the user's vault.
     pattern = re.compile(
-        rf"##\s+{re.escape(section_name)}\s*\n.*?(?=\n##\s|\Z)",
+        rf"##\s+{re.escape(section_name)}\s*\n.*?(?=\n#{{2,}}\s|\Z)",
         re.DOTALL | re.IGNORECASE,
     )
     if pattern.search(body):
