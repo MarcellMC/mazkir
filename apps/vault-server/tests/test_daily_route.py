@@ -1,4 +1,5 @@
 """Tests for the /daily route — new schedule + notes shape."""
+from datetime import date
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -253,23 +254,23 @@ class TestDayTodos:
 
     def test_untimed_todos_are_returned(self):
         from src.api.routes.daily import _build_todos
-        texts = [t.text for t in _build_todos(self.NOTE)]
+        texts = [t.text for t in _build_todos(self.NOTE, [], date.today())]
         assert "Order dog food" in texts
         assert "Bring the bicycle to repair shop" in texts
 
     def test_timed_todos_are_also_returned(self):
         from src.api.routes.daily import _build_todos
-        by_text = {t.text: t for t in _build_todos(self.NOTE)}
+        by_text = {t.text: t for t in _build_todos(self.NOTE, [], date.today())}
         assert by_text["Visit dentist"].scheduled_at == "14:00"
 
     def test_duration_survives(self):
         from src.api.routes.daily import _build_todos
-        by_text = {t.text: t for t in _build_todos(self.NOTE)}
+        by_text = {t.text: t for t in _build_todos(self.NOTE, [], date.today())}
         assert by_text["Order dog food"].duration_minutes == 30
 
     def test_section_is_reported(self):
         from src.api.routes.daily import _build_todos
-        by_text = {t.text: t for t in _build_todos(self.NOTE)}
+        by_text = {t.text: t for t in _build_todos(self.NOTE, [], date.today())}
         assert by_text["Order dog food"].section == "Tasks"
         assert by_text["Bring the bicycle to repair shop"].section == "Notes"
 
@@ -282,7 +283,7 @@ class TestDayTodos:
     def test_done_flag_reflects_the_box(self):
         from src.api.routes.daily import _build_todos
         note = "## Tasks\n- [x] Walk dog\n- [ ] Order dog food\n"
-        by_text = {t.text: t.done for t in _build_todos(note)}
+        by_text = {t.text: t.done for t in _build_todos(note, [], date.today())}
         assert by_text["Walk dog"] is True
         assert by_text["Order dog food"] is False
 
@@ -303,7 +304,7 @@ class TestTimedTodosReachTheSchedule:
 
         body = "## Notes\n- [ ] 14:00 — Call plumber (30m)\n"
         assert [t.scheduled_at for t in parse_all_todos(body)] == ["14:00"]
-        assert [t.text for t in _build_todos(body)] == ["Call plumber"]
+        assert [t.text for t in _build_todos(body, [], date.today())] == ["Call plumber"]
 
     def test_timed_nested_child(self):
         from src.services.daily_tasks import parse_all_todos
@@ -315,3 +316,63 @@ class TestTimedTodosReachTheSchedule:
         )
         timed = [(t.text, t.scheduled_at) for t in parse_all_todos(body) if t.scheduled_at]
         assert timed == [("bring insurance card", "09:00")]
+
+
+class TestHabitCheckboxesReflectRealState:
+    """The daily template ships `## Daily Habits` checkboxes that nothing ever
+    ticks — `complete_habit` writes the habit file, not the note. So a box is
+    ticked from the habit's real state, and an incomplete habit is hidden
+    rather than nagging from /day every morning.
+
+    Matched by habit name, not by section name, so it holds wherever in the
+    note the checkbox lives.
+    """
+
+    @staticmethod
+    def _habit(name, last_completed=None):
+        return {"metadata": {"name": name, "frequency": "daily",
+                             "last_completed": last_completed}}
+
+    def test_completed_habit_shows_ticked_even_though_the_note_box_is_empty(self):
+        from src.api.routes.daily import _build_todos
+
+        body = "## Daily Habits\n- [ ] Review Email\n"
+        habits = [self._habit("Review Email", date.today().isoformat())]
+        todos = _build_todos(body, habits, date.today())
+        assert [(t.text, t.done) for t in todos] == [("Review Email", True)]
+
+    def test_incomplete_habit_is_hidden(self):
+        from src.api.routes.daily import _build_todos
+
+        body = "## Daily Habits\n- [ ] Review Browser Tabs\n"
+        habits = [self._habit("Review Browser Tabs", "2020-01-01")]
+        assert _build_todos(body, habits, date.today()) == []
+
+    def test_ordinary_todos_are_untouched(self):
+        from src.api.routes.daily import _build_todos
+
+        body = "## Tasks\n- [ ] Order dog food (30m)\n- [x] Walk dog\n"
+        habits = [self._habit("Review Email", date.today().isoformat())]
+        todos = _build_todos(body, habits, date.today())
+        assert [(t.text, t.done) for t in todos] == [
+            ("Order dog food", False), ("Walk dog", True),
+        ]
+
+    def test_match_ignores_case_and_surrounding_space(self):
+        from src.api.routes.daily import _build_todos
+
+        body = "## Daily Habits\n- [ ]   review EMAIL  \n"
+        habits = [self._habit("Review Email", date.today().isoformat())]
+        assert [t.done for t in _build_todos(body, habits, date.today())] == [True]
+
+    def test_the_real_template_yields_no_todos_on_a_fresh_day(self):
+        """The exact regression: a brand-new note showed two permanent,
+        unclearable todos."""
+        from src.api.routes.daily import _build_todos
+
+        body = (
+            "## Daily Habits\n- [ ] Review Email\n- [ ] Review Browser Tabs\n\n"
+            "## Tasks\n- [ ]\n\n## Notes\n"
+        )
+        habits = [self._habit("Review Email"), self._habit("Review Browser Tabs")]
+        assert _build_todos(body, habits, date.today()) == []
