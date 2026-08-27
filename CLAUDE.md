@@ -93,7 +93,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 │       │   ├── services/api.ts        # vault-server API client
 │       │   ├── components/            # Shared components (DateNav)
 │       │   └── features/
-│       │       ├── dayplanner/        # Enriched daily timeline view
+│       │       ├── time-management/   # Daily/weekly note feed with date scrubber
 │       │       └── playground/        # Asset generation playground
 │       ├── package.json
 │       ├── vite.config.ts
@@ -142,7 +142,7 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 ## Current Capabilities
 
 ### Telegram Bot Commands
-- `/day` - Time-based feed: `GET /day` returns `{date, tokens_today, tokens_total, schedule[], notes[]}`. Schedule items sorted by start time, sourced from `calendar` (filtered by `GOOGLE_CALENDAR_INCLUDE`), `daily-task` (timed checkboxes from today's daily note), or `habit` (habits with `scheduled_at`). Notes parsed from `## Notes` section. Standalone tasks/habits arrays dropped — use `/tasks` and `/habits`.
+- `/day` - Time-based feed: `GET /day` returns `{date, tokens_today, tokens_total, schedule[], todos[], notes[]}`. Schedule items sorted by start time, sourced from `calendar` (filtered by `GOOGLE_CALENDAR_INCLUDE`), `daily-task` (timed checkboxes from today's daily note), or `habit` (habits with `scheduled_at`). `todos[]` carries every checkbox in the note that has not been moved away, from any section; the bot renders the untimed ones under a Todos block, since timed ones already appear in the schedule. Notes parsed from `## Notes` section, checkbox lines excluded. Standalone tasks/habits arrays dropped — use `/tasks` and `/habits`.
 - `/tasks` - Active tasks by priority
 - `/habits` - Habit tracker with streaks
 - `/goals` - Goals with progress bars
@@ -162,13 +162,13 @@ Mazkir is a personal AI assistant system with a Claude tool-use agent loop backe
 - **Unified timed-event capture:** `create_event` is the canonical "timed thing" action — it writes the events store, syncs Google Calendar (best-effort), AND appends a line to the daily note's `## Schedule` section (`services/daily_schedule.py`), skipped for `photo_path` events. The `capture` skill now includes `create_event` and a prompt rule routing time-anchored content there instead of `save_knowledge`.
 
 ### Telegram Mini App (Web)
-- **Dayplanner** - Enriched timeline with date navigation, merging calendar events, Google Takeout location history, habits, and daily notes
+- **Time-management** - Continuous virtualized feed of daily and weekly notes with a date scrubber, rendered faithfully (sections, photos, wikilinks)
 - **Playground** - AI asset generation with date navigation (micro icons, route sketches, keyframe scenes, full day maps) using Replicate + Wikimedia Commons imagery
 
 ### vault-server API Endpoints
 - `POST /message` - Agent loop: `{text, chat_id, attachments?, reply_to?, forwarded_from?}` → multi-turn tool-use with confidence gate + Claude vision
 - `POST /message/confirm` - Confirmation for low-confidence actions: `{chat_id, action_id, response}`
-- `GET /day` - Time-based feed: `{date, tokens_today, tokens_total, schedule[], notes[]}` — schedule sorted by start time, sources: calendar (filtered by `GOOGLE_CALENDAR_INCLUDE`, default `Mazkir` only), daily-task (timed checkboxes), habit (habits with `scheduled_at`)
+- `GET /day` - Time-based feed: `{date, tokens_today, tokens_total, schedule[], todos[], notes[]}` — schedule sorted by start time, sources: calendar (filtered by `GOOGLE_CALENDAR_INCLUDE`, default `Mazkir` only), daily-task (timed checkboxes), habit (habits with `scheduled_at`); `todos[]` is every non-moved checkbox in the note, any section
 - `GET /timeline/{date}` - Google Takeout location history for a date
 - `POST /generate` - AI image generation via Replicate (SDXL)
 - `GET /events/{date}` - Auto-merges calendar+timeline+habits+daily notes, reconciles with persisted data (preserving photos/assets/manual events), returns enriched events
@@ -202,7 +202,9 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 - **Skill loop:** `AgentService.handle_message` dispatches via `RouterService` (Haiku LLM classifier) to one of five domain skills loaded from `memory/00-system/skills/` (`mazkir`, `time-management`, `knowledge-management`, `motivation-management`, `engineering`). `mazkir` is the conversational router fallback: it converses, answers general questions, reads vault data (incl. `read_knowledge` for note bodies), and owns the daily journal, handing off writes to a domain skill via a `next_skill: <name>` token. The loop caps at 3 hops with cycle detection. Each skill has its own model, tool subset, and system prompt. When `skill_registry`/`router` aren't configured, `AgentService` falls back to a single-loop legacy path with all tools loaded.
 - **Skill executor module (P3):** Skill loop extracted to `services/skill_executor.py`. `AgentService` constructs a `SkillExecutor` when both `skill_registry` and `router` are present and delegates the per-turn loop to it.
 - **Two-tier tasks (P4):** Default capture is a `- [ ]` line in the daily note's `## Tasks` section. Multi-day items promote to `40-tasks/active/{slug}.md` files via `promote_daily_task`. Daily-tier tools: `daily_add_task`, `daily_set_task_state` (check/uncheck/move), `daily_rollover` (yesterday's unfinished → today, anchored to first-original date via the `moved from [[...]]` chain), `promote_daily_task`. The `## Tasks` section is parsed/rendered by `DailyTasksService` (`services/daily_tasks.py`).
-- **`/day` as time-based feed (P4):** `GET /day` returns `{date, tokens_today, tokens_total, schedule[], notes[]}`. Schedule items have `{start, end?, title, source, completed, calendar_name?}` sorted by start time. Source is `calendar` (filtered by `GOOGLE_CALENDAR_INCLUDE`, defaults to `Mazkir` only — drops holidays/subscribed calendars), `daily-task` (timed checkboxes from today's daily note), or `habit` (habits with `scheduled_at`). Notes are parsed from today's `## Notes` section. Standalone `tasks`/`habits` arrays dropped — use `/tasks` and `/habits` for those.
+- **`/day` as time-based feed (P4, todos added in Ship 1):** `GET /day` returns `{date, tokens_today, tokens_total, schedule[], todos[], notes[]}`. Schedule items have `{start, end?, title, source, completed, calendar_name?}` sorted by start time. Source is `calendar` (filtered by `GOOGLE_CALENDAR_INCLUDE`, defaults to `Mazkir` only — drops holidays/subscribed calendars), `daily-task` (timed checkboxes from today's daily note), or `habit` (habits with `scheduled_at`). Notes are parsed from today's `## Notes` section, with checkbox lines excluded so they do not render twice. Standalone `tasks`/`habits` arrays dropped — use `/tasks` and `/habits` for those.
+- **Todos are section-agnostic (Ship 1):** any `- [ ]` line anywhere in the daily note is a todo, not only ones under `## Tasks`. `parse_all_todos` (`services/daily_tasks.py`) walks the whole note, records the enclosing `## Heading` on each todo, and excludes `moved` items. `/day` returns them as `todos[]` and the bot renders the untimed ones under a Todos block.
+- **Daily-note line parsing (Ship 1):** `_parse_task_content` is the single rule shared by `parse_tasks_section` and `parse_all_todos`. It peels decorations in the exact inverse of `render_tasks_section` — annotation, duration, time, strike — because peeling in any other order strands markup inside `text`. Such bugs survive a round-trip unchanged and stay invisible until something reads a field, so assert on fields, not on re-rendered output. The struck-comment boundary is the closing `~~`, never a particular em dash.
 - **Media in vault (P4):** Default `MEDIA_PATH` is `~/dev/mazkir/memory/00-system/media/{YYYY-MM-DD}/`. Daily-note photo embeds are Obsidian wikilinks (`![[photo.jpg]]`). The folder is gitignored in the nested vault repo (binaries don't bloat git). The `/media/{date}/{file}` route falls back to vault-wide filename search when the date URL doesn't match storage location. Migration script at `apps/vault-server/scripts/migrate_media_to_vault.py` moved 16 date dirs + rewrote 10 daily-note embeds.
 - **`list_tasks` returns grouped object (P4):** `{daily_pending, daily_done_today, file_tier_by_priority (dict keyed by int priority), overdue (file-tier tasks past due_date with status=active)}`. Replaces the flat list.
 - **Tool registry + executor extracted (P4):** `services/tool_registry.py` owns risk-class threshold defaults + pre/post hook stamps + preview flag. `services/tool_executor.py` owns the per-call execution path (pre-hooks → handler → post-hooks → status propagation → error code override). `AgentService` delegates both.
