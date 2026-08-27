@@ -64,8 +64,19 @@ export function formatDay(data: DailyResponse): string {
     }
   }
 
-  if (data.notes && data.notes.length > 0) {
+  const untimed = (data.todos ?? []).filter((t) => !t.scheduled_at);
+  if (untimed.length > 0) {
     if (data.schedule.length > 0) lines.push("");
+    lines.push("☑️ <b>Todos</b>");
+    for (const t of untimed) {
+      const box = t.done ? "☑️" : "☐";
+      const dur = t.duration_minutes ? ` <i>(${t.duration_minutes}m)</i>` : "";
+      lines.push(`  ${box} ${t.text}${dur}`);
+    }
+  }
+
+  if (data.notes && data.notes.length > 0) {
+    if (data.schedule.length > 0 || untimed.length > 0) lines.push("");
     lines.push("📝 <b>Notes</b>");
     for (const n of data.notes) {
       const text = n.text ?? (n.caption ? `📷 ${n.caption}` : "📷");

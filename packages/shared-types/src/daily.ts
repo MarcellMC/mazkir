@@ -13,10 +13,19 @@ export interface DailyNote {
   caption?: string;
 }
 
+export interface DailyTodo {
+  text: string;
+  done: boolean;
+  section: string;
+  scheduled_at: string | null;
+  duration_minutes: number | null;
+}
+
 export interface DailyResponse {
   date: string;
   tokens_today: number;
   tokens_total: number;
   schedule: DailyScheduleItem[];
+  todos: DailyTodo[];
   notes: DailyNote[];
 }

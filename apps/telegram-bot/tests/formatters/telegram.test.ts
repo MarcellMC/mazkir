@@ -296,3 +296,54 @@ describe("formatTaskDetail", () => {
     expect(result).not.toContain("<blockquote>");
   });
 });
+
+describe("formatDay todos", () => {
+  const base = {
+    date: "2026-08-20",
+    tokens_today: 0,
+    tokens_total: 0,
+    schedule: [],
+    notes: [],
+  };
+
+  it("lists untimed todos", () => {
+    const out = formatDay({
+      ...base,
+      todos: [
+        { text: "Order dog food", done: false, section: "Tasks",
+          scheduled_at: null, duration_minutes: 30 },
+      ],
+    } as never);
+    expect(out).toContain("Order dog food");
+    expect(out).toContain("30m");
+  });
+
+  it("marks done todos", () => {
+    const out = formatDay({
+      ...base,
+      todos: [
+        { text: "Walk dog", done: true, section: "Tasks",
+          scheduled_at: null, duration_minutes: null },
+      ],
+    } as never);
+    expect(out).toContain("☑️ Walk dog");
+  });
+
+  it("omits timed todos, which the schedule already shows", () => {
+    const out = formatDay({
+      ...base,
+      schedule: [{ start: "14:00", title: "Visit dentist",
+                   source: "daily-task", completed: false }],
+      todos: [
+        { text: "Visit dentist", done: false, section: "Tasks",
+          scheduled_at: "14:00", duration_minutes: 60 },
+      ],
+    } as never);
+    expect(out.match(/Visit dentist/g)).toHaveLength(1);
+  });
+
+  it("renders no todo block when there are none", () => {
+    const out = formatDay({ ...base, todos: [] } as never);
+    expect(out).not.toContain("Todos");
+  });
+});
