@@ -296,3 +296,105 @@ describe("formatTaskDetail", () => {
     expect(result).not.toContain("<blockquote>");
   });
 });
+
+describe("formatDay todos", () => {
+  const base = {
+    date: "2026-08-20",
+    tokens_today: 0,
+    tokens_total: 0,
+    schedule: [],
+    notes: [],
+  };
+
+  it("lists untimed todos", () => {
+    const out = formatDay({
+      ...base,
+      todos: [
+        { text: "Order dog food", done: false, section: "Tasks",
+          scheduled_at: null, duration_minutes: 30 },
+      ],
+    } as never);
+    expect(out).toContain("Order dog food");
+    expect(out).toContain("30m");
+  });
+
+  it("marks done todos", () => {
+    const out = formatDay({
+      ...base,
+      todos: [
+        { text: "Walk dog", done: true, section: "Tasks",
+          scheduled_at: null, duration_minutes: null },
+      ],
+    } as never);
+    expect(out).toContain("☑️ Walk dog");
+  });
+
+  it("omits timed todos, which the schedule already shows", () => {
+    const out = formatDay({
+      ...base,
+      schedule: [{ start: "14:00", title: "Visit dentist",
+                   source: "daily-task", completed: false }],
+      todos: [
+        { text: "Visit dentist", done: false, section: "Tasks",
+          scheduled_at: "14:00", duration_minutes: 60 },
+      ],
+    } as never);
+    expect(out.match(/Visit dentist/g)).toHaveLength(1);
+  });
+
+  it("renders no todo block when there are none", () => {
+    const out = formatDay({ ...base, todos: [] } as never);
+    expect(out).not.toContain("Todos");
+    // Not just the header — an item rendered without one would still be wrong.
+    expect(out).not.toContain("\u2610");
+  });
+
+  it("separates notes from todos when there is no schedule", () => {
+    const out = formatDay({
+      ...base,
+      todos: [
+        { text: "Order dog food", done: false, section: "Tasks",
+          scheduled_at: null, duration_minutes: null },
+      ],
+      notes: [{ text: "Slept badly" }],
+    } as never);
+    expect(out).toContain("Order dog food\n\n\uD83D\uDCDD <b>Notes</b>");
+  });
+
+  it("escapes HTML in todo text", () => {
+    // Telegram rejects the whole message on a stray tag, and /day's catch
+    // misreports that as the server being down.
+    const out = formatDay({
+      ...base,
+      todos: [
+        { text: "Email <boss> about the R&D budget", done: false,
+          section: "Tasks", scheduled_at: null, duration_minutes: null },
+      ],
+    } as never);
+    expect(out).toContain("Email &lt;boss&gt; about the R&amp;D budget");
+    expect(out).not.toContain("<boss>");
+  });
+
+  it("escapes HTML in schedule titles and note text", () => {
+    const out = formatDay({
+      ...base,
+      schedule: [{ start: "09:00", title: "Standup <eng>",
+                   source: "calendar", completed: false }],
+      notes: [{ text: "spend < 500 & rising" }],
+      todos: [],
+    } as never);
+    expect(out).toContain("Standup &lt;eng&gt;");
+    expect(out).toContain("spend &lt; 500 &amp; rising");
+  });
+
+  it("renders a zero-minute duration rather than dropping it", () => {
+    const out = formatDay({
+      ...base,
+      todos: [
+        { text: "Quick win", done: false, section: "Tasks",
+          scheduled_at: null, duration_minutes: 0 },
+      ],
+    } as never);
+    expect(out).toContain("(0m)");
+  });
+});

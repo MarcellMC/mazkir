@@ -1,12 +1,12 @@
 """Daily note API routes."""
 import re
-from datetime import datetime
+from datetime import date as dt_date, datetime
 from fastapi import APIRouter, Depends
 import pytz
 from pydantic import BaseModel
 from src.auth import verify_api_key
 from src.config import settings
-from src.services.daily_tasks import parse_tasks_section
+from src.services.daily_tasks import parse_all_todos, is_todo_line
 from src.services.habit_completion import is_complete_today
 
 router = APIRouter(prefix="/daily", tags=["daily"], dependencies=[Depends(verify_api_key)])
@@ -29,17 +29,26 @@ class DailyNote(BaseModel):
     caption: str | None = None
 
 
+class DailyTodo(BaseModel):
+    text: str
+    done: bool = False
+    section: str = ""
+    scheduled_at: str | None = None
+    duration_minutes: int | None = None
+
+
 class DailyResponse(BaseModel):
     date: str
     tokens_today: int
     tokens_total: int
     schedule: list[DailyScheduleItem]
+    todos: list[DailyTodo]
     notes: list[DailyNote]
 
 
 def _extract_section(body: str, name: str) -> str:
     pat = re.compile(
-        rf"##\s+{re.escape(name)}\s*\n(.*?)(?=^##\s|\Z)",
+        rf"##\s+{re.escape(name)}\s*\n(.*?)(?=^#{{2,}}\s|\Z)",
         re.DOTALL | re.MULTILINE | re.IGNORECASE,
     )
     m = pat.search(body)
@@ -54,6 +63,67 @@ def _habit_scheduled_at(meta: dict) -> str | None:
     carry it, and dropping them would silently empty the schedule.
     """
     return meta.get("scheduled_at") or meta.get("scheduled_time") or None
+
+
+def _build_todos(content: str, habits: list[dict], today: dt_date) -> list[DailyTodo]:
+    """Every checkbox in the note that has not been moved away, wherever it
+    lives. Checked ones are included too, carrying `done=True`.
+
+    `schedule[]` only carries checkboxes that have a time, so without this
+    an untimed todo is parsed and then silently dropped.
+
+    A checkbox naming an active habit is reconciled against that habit's
+    real state rather than trusted: `complete_habit` writes the habit file
+    and never ticks the note, so the daily template's `## Daily Habits`
+    boxes would otherwise sit unticked forever. Completed today shows as
+    done; not yet completed is omitted, since /habits is where outstanding
+    habits belong and /day should not reopen them every morning.
+
+    Matched on habit name, not on section name, so it holds wherever the
+    checkbox was written.
+    """
+    habit_state = {
+        (h.get("metadata", {}).get("name") or "").strip().casefold():
+            is_complete_today(h, today)
+        for h in habits
+    }
+
+    todos: list[DailyTodo] = []
+    for t in parse_all_todos(content):
+        done = t.state == "checked"
+        habit_done = habit_state.get(t.text.strip().casefold())
+        if habit_done is not None:
+            if not habit_done:
+                continue
+            done = True
+        todos.append(DailyTodo(
+            text=t.text,
+            done=done,
+            section=t.section,
+            scheduled_at=t.scheduled_at,
+            duration_minutes=t.duration_minutes,
+        ))
+    return todos
+
+
+def _build_notes(content: str) -> list[DailyNote]:
+    """Prose and photos from `## Notes` — checkboxes there are todos, not notes."""
+    notes: list[DailyNote] = []
+    for line in _extract_section(content, "Notes").splitlines():
+        if is_todo_line(line):
+            continue
+        stripped = line.strip().lstrip("- ").strip()
+        if not stripped:
+            continue
+        img_match = re.match(r"!\[([^\]]*)\]\(([^)]*)\)", stripped)
+        if img_match:
+            notes.append(DailyNote(
+                caption=img_match.group(1) or None,
+                photo_path=img_match.group(2) or None,
+            ))
+        else:
+            notes.append(DailyNote(text=stripped))
+    return notes
 
 
 @router.get("", response_model=DailyResponse)
@@ -88,11 +158,15 @@ async def get_daily():
         except Exception:
             pass
 
-    # Timed daily checkboxes from ## Tasks section
+    # Every timed checkbox in the note, from any section and at any nesting
+    # depth. Scoping this to top-level `## Tasks` used to hide a timed
+    # checkbox written under `## Notes` or nested under a parent task: it was
+    # absent from schedule[], excluded from notes[] as a checkbox, and then
+    # dropped from the bot's Todos block for having a time. It appeared
+    # nowhere at all.
     content = daily.get("content", "")
-    daily_tasks = parse_tasks_section(content)
-    for t in daily_tasks:
-        if t.scheduled_at and t.state in ("unchecked", "checked"):
+    for t in parse_all_todos(content):
+        if t.scheduled_at:
             schedule.append(DailyScheduleItem(
                 start=t.scheduled_at,
                 title=t.text,
@@ -119,21 +193,11 @@ async def get_daily():
     # Sort schedule by start time
     schedule.sort(key=lambda s: s.start)
 
+    # Todos parsed from all sections, habit boxes reconciled against real state
+    todos = _build_todos(content, habits, datetime.now(tz).date())
+
     # Notes parsed from ## Notes section
-    notes: list[DailyNote] = []
-    notes_text = _extract_section(content, "Notes")
-    for line in notes_text.splitlines():
-        stripped = line.strip().lstrip("- ").strip()
-        if not stripped:
-            continue
-        # Detect markdown image links: ![caption](path)
-        img_match = re.match(r"!\[([^\]]*)\]\(([^)]*)\)", stripped)
-        if img_match:
-            caption = img_match.group(1) or None
-            photo_path = img_match.group(2) or None
-            notes.append(DailyNote(caption=caption, photo_path=photo_path))
-        else:
-            notes.append(DailyNote(text=stripped))
+    notes = _build_notes(content)
 
     # Token ledger
     try:
@@ -149,5 +213,6 @@ async def get_daily():
         tokens_today=tokens_today,
         tokens_total=tokens_total,
         schedule=schedule,
+        todos=todos,
         notes=notes,
     )

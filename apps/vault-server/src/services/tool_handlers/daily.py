@@ -20,7 +20,6 @@ from src.services.daily_tasks import (
 )
 from src.services.tool_response import ErrorCode, err, ok
 
-_MOVED_RE = re.compile(r"moved from\s+\[\[(\d{4}-\d{2}-\d{2})#Tasks\]\]")
 
 
 def _flatten(tasks):
@@ -161,11 +160,9 @@ def promote_daily_task(vault: Any, params: dict) -> dict:
 
     q = params["text"].lower()
 
-    def _task_bare_text(t):
-        """Return task text with any trailing ' — moved from ...' annotation stripped."""
-        return re.sub(r"\s+—\s+moved from\s+\[\[.*?\]\]", "", t.text).strip()
-
-    matches = [t for t in tasks if q in _task_bare_text(t).lower() and t.state == "unchecked"]
+    # `text` no longer carries the move-chain annotation — the parser splits
+    # it into `annotation` — so it can be matched on directly.
+    matches = [t for t in tasks if q in t.text.lower() and t.state == "unchecked"]
     if not matches:
         return err(
             ErrorCode.PATH_NOT_FOUND,
@@ -175,14 +172,13 @@ def promote_daily_task(vault: Any, params: dict) -> dict:
         return err(
             ErrorCode.AMBIGUOUS_MATCH,
             f"Multiple unchecked daily tasks match '{params['text']}'",
-            details={"candidates": [_task_bare_text(t) for t in matches]},
+            details={"candidates": [t.text for t in matches]},
         )
     target = matches[0]
-    bare_text = _task_bare_text(target)
+    bare_text = target.text
 
     # Walk moved_from chain to find first-original date
-    search_in = (target.annotation or "") + " " + target.text
-    m = moved_re.search(search_in)
+    m = moved_re.search(target.annotation or "")
     first_original = m.group(1) if m else date_str
 
     # Create file-tier task

@@ -163,8 +163,13 @@ def test_daily_rollover_chain_anchor_walks_back_to_first_original():
     })
     assert result["ok"] is True
     written = {call.args[0]: call.args[1] for call in vault.write_daily_note.call_args_list}
-    # Today's annotation points to the original 2026-05-21, not yesterday
-    assert "moved from [[2026-05-21#Tasks]]" in written["2026-06-04"]
+    # Today's annotation points to the original 2026-05-21, not yesterday.
+    # Assert the whole line: a substring check passes even when the anchor
+    # survives only because it was stranded inside the task text.
+    assert written["2026-06-04"] == (
+        "## Tasks\n- [ ] Plan picnic — moved from [[2026-05-21#Tasks]]\n"
+    )
+    assert "moved from [[2026-06-03#Tasks]]" not in written["2026-06-04"]
 
 
 def test_daily_rollover_idempotent_skips_already_rolled():
@@ -289,3 +294,24 @@ def test_daily_set_state_still_no_match():
     result = agent._tool_daily_set_task_state({"text": "ghost", "state": "checked"})
     assert result["ok"] is False
     assert result["error"]["code"] == "PATH_NOT_FOUND"
+
+
+def test_daily_rollover_idempotent_when_the_rolled_item_has_a_duration():
+    """Regression: a moved line carrying a duration (`~~text~~ (30m) — moved to`)
+    is the form daily_add_task produces by default. It must not roll twice."""
+    agent, vault = _agent_with_two_daily_bodies(
+        yesterday_body=(
+            "## Tasks\n"
+            "- [ ] ~~Order dog food~~ (30m) — moved to [[2026-06-04#Tasks]]\n"
+        ),
+        today_body=(
+            "## Tasks\n"
+            "- [ ] Order dog food (30m) — moved from [[2026-06-03#Tasks]]\n"
+        ),
+    )
+    result = agent._tool_daily_rollover({
+        "from_date": "2026-06-03",
+        "to_date": "2026-06-04",
+    })
+    assert result["ok"] is True
+    assert vault.write_daily_note.call_count == 0

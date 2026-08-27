@@ -42,12 +42,151 @@ _SECTION_RE = re.compile(
 )
 _LINE_RE = re.compile(
     r"^(?P<indent>\s*)"
-    r"(?:-\s+\[(?P<box>[ x])\]\s+)?"
+    r"(?:[-*]\s+\[(?P<box>[ xX])\]\s+)?"
     r"(?P<rest>.*)$"
 )
 _TIME_RE = re.compile(r"^(?P<time>\d{1,2}:\d{2})\s+—\s+(?P<text>.*)$")
 _DURATION_RE = re.compile(r"\s*\((?P<n>\d+)m\)\s*$")
-_STRIKE_RE = re.compile(r"^~~(?P<text>.*?)~~(?:\s+—\s+(?P<ann>.*))?$")
+_STRIKE_RE = re.compile(r"^~~(?P<text>.*)~~$")
+# The only annotation the writers ever emit is a move-chain link. Matching
+# that shape specifically keeps an em dash in ordinary task prose
+# ("Buy milk — the good kind") from being torn off as an annotation.
+_ANNOTATION_RE = re.compile(r"\s+—\s+(?P<ann>moved (?:to|from) \[\[[^\]]+\]\])\s*$")
+# Struck lines only: a hand-written trailing comment ("~~Order phone~~ —
+# cancelled, bought in store") is an annotation too. The boundary is the
+# first em dash *after the closing* `~~` — `.*~~` runs greedy to find that
+# closing wrapper, `.*?` then stops at the first dash beyond it. Anchoring
+# on the wrapper rather than on a dash is what keeps dashes inside the
+# struck text ("~~a — b~~ — c") and dashes inside the comment
+# ("~~Order phone~~ — cancelled — refunded already") on their own sides.
+_STRUCK_COMMENT_RE = re.compile(r"^(?P<head>~~.*~~.*?)\s+—\s+(?P<ann>.*)$")
+_HEADING_RE = re.compile(r"^##\s+(?P<name>.+?)\s*$")
+
+
+def _parse_task_content(rest: str, box: str) -> dict:
+    """Parse the content of one checkbox line into its fields.
+
+    The exact inverse of how `render_tasks_section` assembles content.
+    That function wraps the text in `~~`, prefixes the time, then appends
+    the duration and the annotation — so all four decorations must be
+    peeled off in the opposite order. Peeling in any other order strands
+    markup inside `text`: it survives a round-trip unchanged, which is
+    why such bugs stay invisible until something reads a field.
+    """
+    text = rest
+    state: TaskState = "checked" if box.lower() == "x" else "unchecked"
+    scheduled_at = None
+    duration = None
+    annotation = None
+
+    # The time prefix comes off first even though the renderer applies it
+    # second-to-innermost: it is the only decoration anchored at the front,
+    # and leaving it in place keeps the strike wrapper away from position 0,
+    # where every pattern below expects to find it.
+    tm = _TIME_RE.match(text)
+    if tm:
+        scheduled_at = tm.group("time")
+        text = tm.group("text")
+
+    am = _ANNOTATION_RE.search(text)
+    if am:
+        annotation = am.group("ann")
+        text = text[: am.start()]
+    else:
+        cm = _STRUCK_COMMENT_RE.match(text)
+        if cm:
+            annotation = cm.group("ann")
+            text = cm.group("head")
+
+    dm = _DURATION_RE.search(text)
+    if dm:
+        duration = int(dm.group("n"))
+        text = _DURATION_RE.sub("", text).rstrip()
+
+    sm = _STRIKE_RE.match(text)
+    if sm:
+        state = "moved"
+        text = sm.group("text")
+        # Hand-authored `~~14:00 — text (30m)~~`, where the decorations sit
+        # inside the wrapper rather than around it. Extracting them here
+        # normalises the line to the canonical outer form on the next
+        # render; that is a deliberate rewrite, not a round-trip.
+        if scheduled_at is None:
+            tm = _TIME_RE.match(text)
+            if tm:
+                scheduled_at = tm.group("time")
+                text = tm.group("text")
+        if duration is None:
+            dm = _DURATION_RE.search(text)
+            if dm:
+                duration = int(dm.group("n"))
+                text = _DURATION_RE.sub("", text).rstrip()
+
+    return {
+        "text": text.strip(),
+        "state": state,
+        "scheduled_at": scheduled_at,
+        "duration_minutes": duration,
+        "annotation": annotation,
+    }
+
+
+def _parse_todo_line(line: str) -> dict | None:
+    """Parse one checkbox line. Returns None for anything that isn't one.
+
+    Shares `_parse_task_content` with `parse_tasks_section`, so the two
+    cannot drift apart on what a checkbox looks like. Drops `annotation`,
+    which `Todo` does not carry.
+    """
+    lm = _LINE_RE.match(line)
+    if not lm or lm.group("box") is None:
+        return None
+    fields = _parse_task_content(lm.group("rest"), lm.group("box"))
+    fields.pop("annotation")
+    return fields
+
+
+def is_todo_line(line: str) -> bool:
+    """True when `line` is a checkbox. Public so other modules can filter
+    checkboxes out of prose without importing a private helper."""
+    return _parse_todo_line(line) is not None
+
+
+@dataclass(frozen=True)
+class Todo:
+    """A checkbox anywhere in a daily note.
+
+    Distinct from `DailyTask`, which models the nested `## Tasks` tree the
+    write tools edit. A Todo is flat and carries the section it came from.
+    """
+    text: str
+    state: TaskState
+    section: str
+    scheduled_at: str | None = None
+    duration_minutes: int | None = None
+
+
+def parse_all_todos(body: str) -> list[Todo]:
+    """Every checkbox in the note that has not been moved away, in
+    document order — checked ones included, so callers can show what is
+    already done.
+
+    Section-agnostic: a checkbox under `## Notes` is as much a todo as one
+    under `## Tasks`. `moved` items are excluded — they have been rolled to
+    another day and are no longer this day's business.
+    """
+    todos: list[Todo] = []
+    section = ""
+    for line in body.splitlines():
+        hm = _HEADING_RE.match(line)
+        if hm:
+            section = hm.group("name")
+            continue
+        fields = _parse_todo_line(line)
+        if fields is None or fields["state"] == "moved":
+            continue
+        todos.append(Todo(section=section, **fields))
+    return todos
 
 
 def parse_tasks_section(body: str) -> list[DailyTask]:
@@ -68,39 +207,10 @@ def parse_tasks_section(body: str) -> list[DailyTask]:
         box = lm.group("box")
 
         if box is not None:
-            text = rest
-            scheduled_at = None
-            duration = None
-            annotation = None
-            state: TaskState = "checked" if box == "x" else "unchecked"
-
-            sm = _STRIKE_RE.match(text)
-            if sm:
-                state = "moved"
-                text = sm.group("text")
-                annotation = sm.group("ann")
-
-            tm = _TIME_RE.match(text)
-            if tm:
-                scheduled_at = tm.group("time")
-                text = tm.group("text")
-
-            dm = _DURATION_RE.search(text)
-            if dm:
-                duration = int(dm.group("n"))
-                text = _DURATION_RE.sub("", text).rstrip()
-
-            parsed.append((indent, {
-                "text": text.strip(),
-                "state": state,
-                "scheduled_at": scheduled_at,
-                "duration_minutes": duration,
-                "annotation": annotation,
-                "children": [],
-            }))
+            parsed.append((indent, {**_parse_task_content(rest, box), "children": []}))
         else:
             # plain bullet / numbered note line (no checkbox)
-            note_text = rest.lstrip("- ").lstrip()
+            note_text = rest.lstrip("-* ").lstrip()
             note_text = re.sub(r"^\d+\.\s+", "", note_text)
             if not note_text:
                 continue
@@ -160,8 +270,11 @@ def replace_or_append_section(body: str, section_name: str, new_section: str) ->
     If the section doesn't exist, append new_section at the end.
     `new_section` must already start with `## <name>`.
     """
+    # `#{2,}` — not `##` — so this stops where `_SECTION_RE` stops. When the
+    # two disagreed, `## Tasks` rewrites silently deleted a following
+    # `### Sub` heading and every line under it from the user's vault.
     pattern = re.compile(
-        rf"##\s+{re.escape(section_name)}\s*\n.*?(?=\n##\s|\Z)",
+        rf"##\s+{re.escape(section_name)}\s*\n.*?(?=\n#{{2,}}\s|\Z)",
         re.DOTALL | re.IGNORECASE,
     )
     if pattern.search(body):
