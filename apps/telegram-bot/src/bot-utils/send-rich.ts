@@ -45,10 +45,32 @@ export async function sendRich(
   }
 }
 
+/** True when a Telegram API rejection is the harmless "message is not
+ *  modified" error — the edit asked for exactly the content already on
+ *  screen (e.g. re-tapping the highlighted day in the week bar, or `today`
+ *  while already viewing today). `GrammyError` carries this in
+ *  `description`; fall back to `message` for anything else that merely
+ *  looks like one, since `Error`'s own message text embeds the same
+ *  description grammY reports. */
+function isNotModifiedError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const text = (err as { description?: unknown }).description;
+  const haystack = typeof text === "string" ? text : err.message;
+  return /message is not modified/i.test(haystack);
+}
+
 /** Edit a message in place with rich content, falling back to plain text if
  *  the payload is rejected. The sibling of sendRich: navigation re-renders
  *  the same message, so a rejected payload must degrade rather than leave
- *  the user staring at a stale day. */
+ *  the user staring at a stale day.
+ *
+ *  One rejection is not a bad payload, though: re-tapping the day already
+ *  on screen sends byte-identical content, and Telegram answers that with
+ *  "message is not modified". Routing that through the fallback would
+ *  succeed (the plain text differs from the rich HTML) and silently strip
+ *  the in-body `<tg-button-row>` navigation — the message's only way to
+ *  navigate, since it isn't in `reply_markup`. The message already shows
+ *  what we wanted; treat it as a no-op, not a failure. */
 export async function editRich(
   ctx: Context,
   msg: InputRichMessage<InputFile>,
@@ -56,6 +78,7 @@ export async function editRich(
   try {
     await ctx.editMessageText(msg);
   } catch (err) {
+    if (isNotModifiedError(err)) return;
     markActiveSpanError(err);
     logger.warn(
       { event_type: "rich_edit_fallback", err: String(err) },

@@ -13,6 +13,7 @@ import { buildGoalsKeyboard, buildGoalDetailKeyboard } from "../keyboards/goals.
 import { markActiveSpanError } from "../tracing-utils.js";
 import { sendRich, editRich } from "../bot-utils/send-rich.js";
 import { buildDayRich } from "../formatters/day-rich.js";
+import { logger } from "../logger.js";
 import {
   setPendingConfirmation,
   clearPendingConfirmation,
@@ -129,7 +130,19 @@ callbackHandlers.callbackQuery(/^day:(.+)$/, async (ctx) => {
     await editRich(ctx, buildDayRich(data));
   } catch (err) {
     markActiveSpanError(err);
-    await ctx.editMessageText("❌ Failed to load the day.");
+    // The error report is itself an edit and can itself be rejected (e.g.
+    // chained from the same "not modified" condition, or a second identical
+    // failure). There is no bot.catch() registered, so an unhandled
+    // rejection here would escape the middleware. Log and give up quietly —
+    // the user still has the previous message on screen.
+    try {
+      await ctx.editMessageText("❌ Failed to load the day.");
+    } catch (reportErr) {
+      logger.warn(
+        { event_type: "day_error_report_failed", err: String(reportErr) },
+        "day_error_report_failed",
+      );
+    }
   }
 });
 

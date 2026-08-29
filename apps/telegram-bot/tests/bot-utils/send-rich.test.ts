@@ -77,4 +77,30 @@ describe("editRich", () => {
     await editRich(ctx, { html: "<p>hi &amp; bye</p>" });
     expect(editMessageText).toHaveBeenLastCalledWith("hi & bye");
   });
+
+  it("treats an unchanged message as success, not a failed payload", async () => {
+    // Re-tapping the highlighted day sends identical content. Telegram rejects
+    // that, and routing it through the fallback would replace the rich message
+    // with plain text — permanently removing the in-body navigation buttons.
+    const err = Object.assign(new Error("Bad Request: message is not modified"), {
+      description: "Bad Request: message is not modified",
+    });
+    const editMessageText = vi.fn().mockRejectedValueOnce(err);
+    const ctx = { editMessageText } as never;
+    const { editRich } = await import("../../src/bot-utils/send-rich.js");
+    await editRich(ctx, { html: "<p>same</p>" });
+    expect(editMessageText).toHaveBeenCalledTimes(1);  // no fallback attempt
+  });
+
+  it("still degrades to plain text on a genuine rejection", async () => {
+    const editMessageText = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("Bad Request: can't parse entities"), {
+        description: "Bad Request: can't parse entities",
+      }))
+      .mockResolvedValue(true);
+    const ctx = { editMessageText } as never;
+    const { editRich } = await import("../../src/bot-utils/send-rich.js");
+    await editRich(ctx, { html: "<p>hi &amp; bye</p>" });
+    expect(editMessageText).toHaveBeenLastCalledWith("hi & bye");
+  });
 });
