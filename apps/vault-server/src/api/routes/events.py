@@ -18,13 +18,23 @@ class PatchEventBody(BaseModel):
     location: dict | None = None
 
 
-async def _merge_from_sources(date: date_type) -> list[dict]:
-    """Run MergerService against all sources and return fresh event dicts."""
+async def _merge_from_sources(date: date_type) -> tuple[list[dict], set[str]]:
+    """Run MergerService against all sources and return fresh event dicts.
+
+    Also returns which source systems actually answered this call —
+    `refresh_events` needs that to tell "the calendar has nothing today"
+    apart from "the calendar failed to answer", since only the former means
+    an unmatched persisted event was genuinely deleted upstream. An
+    uninitialized calendar (no OAuth token yet) is not an available source
+    either — that's the exact condition that caused the original data loss.
+    """
     from src.main import get_vault, get_calendar, get_timeline
 
     vault = get_vault()
     calendar = get_calendar()
     timeline = get_timeline()
+
+    available_sources: set[str] = set()
 
     calendar_events = []
     if calendar and calendar.is_initialized:
@@ -32,6 +42,7 @@ async def _merge_from_sources(date: date_type) -> list[dict]:
             calendar_events = await calendar.get_todays_events(
                 all_calendars=True, target_date=date,
             )
+            available_sources.add("calendar")
         except Exception:
             pass
 
@@ -39,6 +50,7 @@ async def _merge_from_sources(date: date_type) -> list[dict]:
     if timeline:
         try:
             timeline_data = timeline.get_day(date)
+            available_sources.add("timeline")
         except Exception:
             pass
 
@@ -59,6 +71,7 @@ async def _merge_from_sources(date: date_type) -> list[dict]:
                 "completions_today": completions_today(h, date),
                 "daily_target": daily_target_of(meta),
             })
+        available_sources.add("habit")
     except Exception:
         pass
 
@@ -68,6 +81,7 @@ async def _merge_from_sources(date: date_type) -> list[dict]:
         raw_daily = vault.read_daily_note(date)
         daily = raw_daily.get("metadata", {})
         daily_body = raw_daily.get("content", "")
+        available_sources.add("daily-note")
     except Exception:
         pass
 
@@ -80,7 +94,7 @@ async def _merge_from_sources(date: date_type) -> list[dict]:
         daily_body=daily_body,
         date=date.isoformat(),
     )
-    return [e.model_dump() for e in events]
+    return [e.model_dump() for e in events], available_sources
 
 
 @router.get("/{date}")
@@ -91,8 +105,8 @@ async def get_events(date: date_type):
     if not events_svc:
         raise HTTPException(503, "Events service not initialized")
 
-    fresh = await _merge_from_sources(date)
-    result = events_svc.auto_refresh(date.isoformat(), fresh)
+    fresh, available_sources = await _merge_from_sources(date)
+    result = events_svc.auto_refresh(date.isoformat(), fresh, available_sources)
 
     return {
         "date": date.isoformat(),

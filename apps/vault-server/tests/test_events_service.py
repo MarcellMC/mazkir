@@ -514,3 +514,61 @@ def test_activity_wins_when_both_names_are_given(tmp_path):
     )
 
     assert svc.get_events("2026-08-17")[0]["activity"] == "walk"
+
+
+def _persisted(**kw):
+    e = {"id": "evt_1", "name": "Visit Alex", "type": "calendar",
+         "start_time": "2026-08-30T00:00", "end_time": "2026-08-30T01:00",
+         "source": "calendar", "source_ids": {"calendar_id": "cal1"},
+         "state": "approved", "photos": []}
+    e.update(kw)
+    return e
+
+
+def test_an_unavailable_source_does_not_delete_its_events(tmp_path):
+    """The bug this fixes: a failed calendar fetch looked identical to an
+    empty calendar, so every persisted calendar event was deleted. With
+    /daily calling this on every navigation tap, browsing a week with an
+    expired token would have wiped seven days."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted()])
+    result = svc.refresh_events("2026-08-30", [], available_sources=set())
+    assert [e["name"] for e in result] == ["Visit Alex"]
+    assert result[0]["state"] == "approved"
+
+
+def test_an_available_source_still_deletes_events_it_no_longer_returns(tmp_path):
+    """The feature must survive the fix: deleting a calendar event really
+    should remove it once the calendar has answered without it."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted()])
+    result = svc.refresh_events("2026-08-30", [], available_sources={"calendar"})
+    assert result == []
+
+
+def test_one_failed_source_does_not_delete_another_source_events(tmp_path):
+    """Partial failure is the common case — the calendar answers, the
+    timeline does not."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [
+        _persisted(id="evt_cal", source_ids={"calendar_id": "cal1"}),
+        _persisted(id="evt_visit", name="Xoho", source="timeline",
+                   source_ids={"visit_id": "v1"}),
+    ])
+    result = svc.refresh_events("2026-08-30", [], available_sources={"calendar"})
+    assert [e["name"] for e in result] == ["Xoho"]
+
+
+def test_omitting_available_sources_preserves_everything(tmp_path):
+    """The default must be safe: a caller that has not been updated cannot
+    delete data by accident."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted()])
+    assert len(svc.refresh_events("2026-08-30", [])) == 1
+
+
+def test_manual_events_are_still_preserved(tmp_path):
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted(source="manual", source_ids={})])
+    result = svc.refresh_events("2026-08-30", [], available_sources={"calendar"})
+    assert len(result) == 1

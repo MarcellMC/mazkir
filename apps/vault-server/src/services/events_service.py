@@ -10,6 +10,17 @@ from src.tracing_setup import fs_span
 
 logger = logging.getLogger(__name__)
 
+# Which upstream system produced an event, keyed by its source_ids entry.
+# The `source` field cannot answer this: a calendar event fuzzy-matched to a
+# timeline visit is stored as "merged", and create_event writes "manual".
+_SOURCE_SYSTEM_BY_ID_KEY = {
+    "calendar_id": "calendar",
+    "visit_id": "timeline",
+    "transit_id": "timeline",
+    "note_line": "daily-note",
+    "habit_slug": "habit",
+}
+
 
 class PhotoRef:
     """Photo reference attached to an event."""
@@ -222,14 +233,24 @@ class EventsService:
 
         return {"error": f"Event {event_id} not found"}
 
-    def auto_refresh(self, date: str, fresh_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def auto_refresh(
+        self,
+        date: str,
+        fresh_events: list[dict[str, Any]],
+        available_sources: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Merge fresh events with persisted data and save.
 
         Alias for refresh_events — used by the unified GET /events endpoint.
         """
-        return self.refresh_events(date, fresh_events)
+        return self.refresh_events(date, fresh_events, available_sources)
 
-    def refresh_events(self, date: str, fresh_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def refresh_events(
+        self,
+        date: str,
+        fresh_events: list[dict[str, Any]],
+        available_sources: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Re-merge from sources while preserving manually-added data.
 
         Algorithm:
@@ -237,6 +258,15 @@ class EventsService:
         2. Matched: update name/time/location from fresh, keep photos/assets/id
         3. Unmatched fresh: add as new events
         4. Unmatched existing with source in ('manual', 'photo'): preserve as-is
+        5. Unmatched existing from any other source: preserve unless its
+           source system is in `available_sources` — an unmatched event
+           should only be treated as "deleted upstream" when the source that
+           would have produced it actually answered this call. A source that
+           failed or was never configured looks identical to "returned
+           nothing" unless the caller says otherwise, so `available_sources`
+           being `None` (caller didn't say) preserves everything unmatched —
+           the safe default. Losing an expired-token calendar refresh used to
+           silently delete every persisted calendar event for the day.
         """
         existing = self.get_events(date)
         existing_by_source: dict[str, dict] = {}
@@ -277,6 +307,31 @@ class EventsService:
 
         # Preserve manual/photo events that weren't matched
         result.extend(manual_events)
+
+        # Whatever is left in existing_by_source had real source_ids but no
+        # fresh event claimed it this round. That only means "deleted
+        # upstream" if the source system that would have produced it actually
+        # answered — otherwise it means the source failed or was never
+        # configured, and dropping the event here would be indistinguishable
+        # from the calendar genuinely emptying out. Dedup by id first: an
+        # event with two source_ids keys (e.g. a merged calendar+timeline
+        # entry) appears twice in existing_by_source's values.
+        leftover_by_id: dict[str, dict] = {}
+        for evt in existing_by_source.values():
+            leftover_by_id[evt.get("id", id(evt))] = evt
+
+        for evt in leftover_by_id.values():
+            source_ids = evt.get("source_ids", {})
+            its_systems = {
+                _SOURCE_SYSTEM_BY_ID_KEY[key]
+                for key, val in source_ids.items()
+                if val and key in _SOURCE_SYSTEM_BY_ID_KEY
+            }
+            if available_sources is not None and its_systems & available_sources:
+                # The source that would have produced this answered this
+                # round and didn't return it — genuinely gone upstream.
+                continue
+            result.append(evt)
 
         self.save_events(date, result)
         return result
