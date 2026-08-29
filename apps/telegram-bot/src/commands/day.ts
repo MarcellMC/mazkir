@@ -1,21 +1,22 @@
-import { Composer, InlineKeyboard } from "grammy";
+import { Composer } from "grammy";
 import { api } from "../api/client.js";
-import { formatDay } from "../formatters/telegram.js";
+import { buildDayRich } from "../formatters/day-rich.js";
+import { sendRich } from "../bot-utils/send-rich.js";
+import { markActiveSpanError } from "../tracing-utils.js";
 
 export const dayCommand = new Composer();
 
 dayCommand.command("day", async (ctx) => {
+  // Fetch and send are reported separately: a bare catch around both used to
+  // report a Telegram send failure as "is vault-server running?", pointing
+  // the user at the wrong cause.
+  let data;
   try {
-    const data = await api.getDaily();
-    const kb = new InlineKeyboard()
-      .text("📋 Tasks", "nav:tasks")
-      .text("💪 Habits", "nav:habits")
-      .row()
-      .text("🎯 Goals", "nav:goals")
-      .text("📅 Calendar", "nav:calendar");
-
-    await ctx.reply(formatDay(data), { parse_mode: "HTML", reply_markup: kb });
-  } catch {
-    await ctx.reply("❌ Failed to load daily summary. Is vault-server running?");
+    data = await api.getDaily();
+  } catch (err) {
+    markActiveSpanError(err);
+    await ctx.reply("❌ Failed to load the day. Is vault-server running?");
+    return;
   }
+  await sendRich(ctx, buildDayRich(data));
 });
