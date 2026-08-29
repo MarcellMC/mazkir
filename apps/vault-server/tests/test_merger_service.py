@@ -354,3 +354,42 @@ def test_a_block_crossing_midnight_is_clamped_to_the_day():
     assert events[0].start_time == "2026-08-29T23:30"
     assert events[0].end_time == "2026-08-29T23:59"
     assert events[0].end_time > events[0].start_time
+
+
+def test_duplicate_checkboxes_get_distinct_ids():
+    """The agent has produced duplicate todos in this vault before. Two
+    identical lines must reconcile as two blocks, not silently collapse into
+    one — the second would overwrite the first's persisted state."""
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        daily_body="## Tasks\n- [ ] 14:00 — Standup\n- [ ] 14:00 — Standup\n",
+        date="2026-08-29",
+    )
+    assert len(events) == 2
+    ids = [e.source_ids["note_line"] for e in events]
+    assert ids[0] != ids[1]
+
+
+def test_the_same_text_in_two_sections_stays_distinct():
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        daily_body="## Tasks\n- [ ] 14:00 — Standup\n\n## Notes\n- [ ] 14:00 — Standup\n",
+        date="2026-08-29",
+    )
+    assert events[0].source_ids != events[1].source_ids
+
+
+def test_inserting_an_unrelated_checkbox_does_not_shift_other_ids():
+    """Scoping the occurrence counter to (section, text, time) is what buys
+    this: a global counter would orphan every block below an insertion."""
+    m = MergerService()
+    kw = dict(calendar_events=[], timeline_data={"visits": [], "activities": []},
+              date="2026-08-29")
+    before = m.merge(daily_body="## Tasks\n- [ ] 14:00 — Standup\n", **kw)
+    after = m.merge(
+        daily_body="## Tasks\n- [ ] 09:00 — Earlier thing\n- [ ] 14:00 — Standup\n", **kw)
+    standup_before = next(e for e in before if e.name == "Standup")
+    standup_after = next(e for e in after if e.name == "Standup")
+    assert standup_before.source_ids == standup_after.source_ids

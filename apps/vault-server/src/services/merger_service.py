@@ -127,9 +127,20 @@ class MergerService:
         # every merge and matched by source_ids, so nothing needs persisting
         # and no write path is involved.
         if daily_body and date:
+            # Occurrence counter, scoped to (section, text, scheduled_at)
+            # rather than a single running index over all todos. A global
+            # counter would make every id downstream of an inserted
+            # checkbox shift, so adding one unrelated line above a block
+            # would orphan it on the next merge. Scoping to the identical
+            # triple means a normal insertion changes nothing, and only
+            # genuine duplicates receive distinct occurrence numbers.
+            occurrence_counts: dict[tuple[str | None, str, str], int] = {}
             for todo in parse_all_todos(daily_body):
                 if todo.scheduled_at:
-                    merged.append(self._create_note_block(todo, date))
+                    key = (todo.section, todo.text, todo.scheduled_at)
+                    occurrence = occurrence_counts.get(key, 0)
+                    occurrence_counts[key] = occurrence + 1
+                    merged.append(self._create_note_block(todo, date, occurrence))
 
         # Step 4: Sort chronologically
         merged.sort(key=lambda e: e.start_time)
@@ -201,11 +212,15 @@ class MergerService:
                 name, cal.get("start"))},
         )
 
-    def _create_note_block(self, todo, date: str) -> MergedEvent:
+    def _create_note_block(self, todo, date: str, occurrence: int = 0) -> MergedEvent:
         """A timed checkbox is a block: known start, known length.
 
         Untimed checkboxes are filtered out by the caller — without a start
         there is no interval, and coverage arithmetic needs one.
+
+        `occurrence` disambiguates duplicate checkboxes (identical section,
+        text, and time) so they hash to distinct ids instead of colliding —
+        see the caller for why the counter is scoped rather than global.
         """
         start = f"{date}T{todo.scheduled_at}"
         minutes = todo.duration_minutes or 0
@@ -227,7 +242,8 @@ class MergerService:
             duration_minutes=minutes,
             source="daily-note",
             confidence="high",
-            source_ids={"note_line": _stable_id(date, todo.text, todo.scheduled_at)},
+            source_ids={"note_line": _stable_id(
+                date, todo.section, todo.text, todo.scheduled_at, occurrence)},
         )
 
     def _create_unplanned_stop(self, visit: dict) -> MergedEvent:
