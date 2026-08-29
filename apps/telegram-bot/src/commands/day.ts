@@ -18,5 +18,14 @@ dayCommand.command("day", async (ctx) => {
     await ctx.reply("❌ Failed to load the day. Is vault-server running?");
     return;
   }
-  await sendRich(ctx, buildDayRich(data));
+  // buildDayRich is inside the try, not beside it: it throws synchronously
+  // on a malformed payload (a block missing `start`, say), and outside a
+  // try that throw leaves the handler entirely. The `day:` callback wraps
+  // the identical call.
+  try {
+    await sendRich(ctx, buildDayRich(data));
+  } catch (err) {
+    markActiveSpanError(err);
+    await ctx.reply("❌ Failed to render the day.");
+  }
 });

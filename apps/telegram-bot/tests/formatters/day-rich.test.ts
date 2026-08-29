@@ -174,7 +174,55 @@ describe("buildDayRich", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-08-29T21:30:00Z"));
       const out = html({ ...base, date: "2026-08-30" });
-      expect(out).toContain("today");
+      // Assert on the HEADER, not on the string "today" anywhere in the
+      // output: navBar unconditionally emits `data="day:today"` into every
+      // render, so `toContain("today")` was true for every input and stayed
+      // green with the UTC bug restored.
+      expect(out).toContain("<h2>Sun 30 Aug \u00b7 today</h2>");
+    });
+
+    it("does not call another date today", () => {
+      // The negative control the vacuous assertion could never provide.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-08-29T21:30:00Z"));
+      const out = html({ ...base, date: "2026-09-05" });
+      expect(out).toContain("<h2>Sat 5 Sept</h2>");
+      expect(out).not.toContain("\u00b7 today");
+    });
+  });
+
+  describe("completion", () => {
+    const doneBlock = {
+      id: "a", start: "14:00", end: "15:00", title: "Standup",
+      source: "daily-note", type: "task", completed: true,
+      activity: null, category: null, state: "suggested", habit_progress: null,
+    };
+
+    it("marks a completed block", () => {
+      // `/day` filters timed todos out of the Todos list because they are
+      // already blocks, so without this a checked `- [x] 14:00 - Standup`
+      // rendered identically to an outstanding one and appeared nowhere
+      // else. Ship 1 rendered it as done.
+      const out = html({ ...base, blocks: [doneBlock] });
+      expect(out).toContain("<td>\u2705 14:00\u201315:00</td>");
+    });
+
+    it("leaves an outstanding block unmarked", () => {
+      const out = html({ ...base, blocks: [{ ...doneBlock, completed: false }] });
+      expect(out).toContain("<td>14:00\u201315:00</td>");
+      expect(out).not.toContain("\u2705");
+    });
+
+    it("keeps the completion marker out of the habit_progress column", () => {
+      // A completed habit has both signals, and they must not collide:
+      // completion prefixes the time cell, progress owns the marker cell.
+      const out = html({
+        ...base,
+        blocks: [{ ...doneBlock, title: "Dog walk", source: "habit",
+                   type: "habit", habit_progress: "2/2" }],
+      });
+      expect(out).toContain("<td>\u2705 14:00\u201315:00</td>");
+      expect(out).toContain("<td>2/2</td>");
     });
   });
 });

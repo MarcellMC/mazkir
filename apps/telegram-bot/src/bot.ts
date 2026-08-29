@@ -114,3 +114,20 @@ bot.use(callbackHandlers);
 
 // NL message handler (catch-all, must be last)
 bot.use(messageHandler);
+
+// Bot-wide error boundary. Without one, grammY rethrows and an unhandled
+// rejection escapes the process — every callback handler is exposed, and
+// `/day` newly introduced a synchronous throw path (a malformed payload
+// reaching the formatter). Log it and carry on; the user still has the
+// previous message on screen.
+bot.catch((err) => {
+  logger.error(
+    {
+      event_type: "bot_error",
+      update_id: err.ctx?.update?.update_id,
+      chat_id: err.ctx?.chat?.id,
+      err: String(err.error),
+    },
+    "bot_error",
+  );
+});
