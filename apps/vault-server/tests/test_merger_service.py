@@ -215,3 +215,63 @@ class TestMergerService:
             assert "name" in d
             assert "type" in d
             assert "start_time" in d
+
+
+from src.services.events_service import EventsService
+
+
+def _cal(id_="cal1", summary="Standup", start="2026-08-29T09:05", end="2026-08-29T10:00"):
+    return {"id": id_, "summary": summary, "start": start, "end": end,
+            "completed": False, "calendar": "Mazkir"}
+
+
+def test_calendar_event_carries_its_calendar_id():
+    m = MergerService()
+    events = m.merge(calendar_events=[_cal()], timeline_data={"visits": [], "activities": []})
+    assert events[0].source_ids == {"calendar_id": "cal1"}
+
+
+def test_unplanned_stop_source_id_is_stable_for_the_same_visit():
+    visit = {"name": "Xoho", "start_time": "2026-08-29T11:00", "end_time": "2026-08-29T12:00",
+             "duration_minutes": 60, "lat": 32.07, "lng": 34.78, "place_id": "p123"}
+    m = MergerService()
+    a = m.merge(calendar_events=[], timeline_data={"visits": [visit], "activities": []})
+    b = m.merge(calendar_events=[], timeline_data={"visits": [dict(visit)], "activities": []})
+    assert a[0].source_ids == b[0].source_ids
+    assert a[0].source_ids != {}
+
+
+def test_merger_no_longer_guesses_an_activity():
+    """CATEGORY_KEYWORDS targeted the single-facet model Phase 1 replaced.
+    Blocks must arrive unclassified; Ship 6 fills `activity`."""
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[_cal(summary="Gym session")],
+        timeline_data={"visits": [], "activities": []},
+    )
+    assert events[0].activity is None
+
+
+def test_merged_event_survives_a_reopen_with_its_id_and_state(tmp_path):
+    """Regression: without source_ids, refresh_events appends every fresh
+    event as new and drops the persisted copy, so approval could never
+    survive an open. Ship 5 depends on this holding."""
+    m = MergerService()
+    svc = EventsService(tmp_path)
+
+    def fresh():
+        return [e.model_dump() for e in m.merge(
+            calendar_events=[_cal()], timeline_data={"visits": [], "activities": []},
+        )]
+
+    first = svc.refresh_events("2026-08-29", fresh())
+    original_id = first[0]["id"]
+    first[0]["state"] = "approved"
+    first[0]["activity"] = "meetings"
+    svc.save_events("2026-08-29", first)
+
+    second = svc.refresh_events("2026-08-29", fresh())
+    assert len(second) == 1
+    assert second[0]["id"] == original_id
+    assert second[0]["state"] == "approved"
+    assert second[0]["activity"] == "meetings"

@@ -1,5 +1,6 @@
 """Merge calendar events, timeline data, and PKM vault data into MergedEvent[]."""
 
+import hashlib
 import uuid
 from datetime import datetime
 from math import radians, sin, cos, sqrt, atan2
@@ -39,20 +40,27 @@ class MergedEvent(BaseModel):
     source: str  # 'calendar' | 'timeline' | 'merged'
     confidence: str = "medium"  # 'high' | 'medium' | 'low'
 
+    # Reconciliation key. EventsService.refresh_events matches a freshly
+    # merged event to its persisted counterpart through this, which is what
+    # lets an id — and anything the user set on the event — survive a
+    # re-merge. Exactly one entry; the key names the originating source.
+    source_ids: dict[str, str] = Field(default_factory=dict)
+
 
 # Fuzzy matching config
 TIME_MATCH_MINUTES = 30
 DISTANCE_MATCH_METERS = 500
 
-# Keywords for activity category detection
-CATEGORY_KEYWORDS = {
-    "gym": ["gym", "fitness", "workout", "holmes place", "crossfit"],
-    "walk": ["walk", "hike", "park", "dog walk"],
-    "cafe": ["cafe", "café", "coffee", "xoho", "starbucks"],
-    "shopping": ["market", "mall", "shop", "store", "carmel"],
-    "work": ["work", "office", "meeting", "standup", "deep work"],
-    "social": ["dinner", "lunch", "drinks", "party", "friend"],
-}
+
+def _stable_id(*parts: object) -> str:
+    """A deterministic short id for a source that has no id of its own.
+
+    Timeline visits and transit segments carry no stable identifier, so we
+    derive one from the fields that identify them. Same input, same id, on
+    every re-merge — which is the whole point.
+    """
+    raw = "|".join("" if p is None else str(p) for p in parts)
+    return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
 class MergerService:
@@ -150,7 +158,6 @@ class MergerService:
         return MergedEvent(
             name=name,
             type=self._infer_type(cal),
-            activity=self._infer_category(name),
             start_time=cal.get("start", visit["start_time"]),
             end_time=cal.get("end", visit["end_time"]),
             duration_minutes=visit.get("duration_minutes", 0),
@@ -162,6 +169,8 @@ class MergerService:
             },
             source="merged",
             confidence=visit.get("confidence", "medium"),
+            source_ids={"calendar_id": str(cal.get("id", "")) or _stable_id(
+                cal.get("summary"), cal.get("start"))},
         )
 
     def _create_calendar_event(self, cal: dict) -> MergedEvent:
@@ -169,19 +178,19 @@ class MergerService:
         return MergedEvent(
             name=name,
             type=self._infer_type(cal),
-            activity=self._infer_category(name),
             start_time=cal.get("start", ""),
             end_time=cal.get("end", ""),
             duration_minutes=self._calc_duration(cal.get("start", ""), cal.get("end", "")),
             source="calendar",
             confidence="medium",
+            source_ids={"calendar_id": str(cal.get("id", "")) or _stable_id(
+                name, cal.get("start"))},
         )
 
     def _create_unplanned_stop(self, visit: dict) -> MergedEvent:
         return MergedEvent(
             name=visit["name"],
             type="unplanned_stop",
-            activity=self._infer_category(visit["name"]),
             start_time=visit["start_time"],
             end_time=visit["end_time"],
             duration_minutes=visit.get("duration_minutes", 0),
@@ -193,6 +202,8 @@ class MergerService:
             },
             source="timeline",
             confidence=visit.get("confidence", "low"),
+            source_ids={"visit_id": _stable_id(
+                visit["start_time"], visit.get("place_id"), visit["name"])},
         )
 
     def _create_transit_event(self, activity: dict) -> MergedEvent:
@@ -211,6 +222,8 @@ class MergerService:
             },
             source="timeline",
             confidence=activity.get("confidence", "low"),
+            source_ids={"transit_id": _stable_id(
+                activity["start_time"], activity["mode"])},
         )
 
     def _attach_routes(self, events: list[MergedEvent]) -> None:
@@ -243,14 +256,6 @@ class MergerService:
         if "mazkir" in calendar_name:
             return "habit"
         return "calendar"
-
-    @staticmethod
-    def _infer_category(name: str) -> str | None:
-        name_lower = name.lower()
-        for category, keywords in CATEGORY_KEYWORDS.items():
-            if any(kw in name_lower for kw in keywords):
-                return category
-        return None
 
     def _parse_time(self, ts: str) -> datetime | None:
         if not ts:
