@@ -58,3 +58,23 @@ describe("sendRich fallback", () => {
     expect(ctx.reply.mock.calls[0][0]).toContain("hello");
   });
 });
+
+describe("editRich", () => {
+  it("edits the message in place with rich content", async () => {
+    const editMessageText = vi.fn().mockResolvedValue(true);
+    const ctx = { editMessageText } as never;
+    const { editRich } = await import("../../src/bot-utils/send-rich.js");
+    await editRich(ctx, { html: "<p>hi</p>" });
+    expect(editMessageText).toHaveBeenCalledWith({ html: "<p>hi</p>" });
+  });
+
+  it("falls back to plain text when the rich payload is rejected", async () => {
+    const editMessageText = vi.fn()
+      .mockRejectedValueOnce(new Error("rich rejected"))
+      .mockResolvedValue(true);
+    const ctx = { editMessageText } as never;
+    const { editRich } = await import("../../src/bot-utils/send-rich.js");
+    await editRich(ctx, { html: "<p>hi &amp; bye</p>" });
+    expect(editMessageText).toHaveBeenLastCalledWith("hi & bye");
+  });
+});

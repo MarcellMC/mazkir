@@ -11,7 +11,8 @@ import {
 import { buildTasksKeyboard, buildTaskDetailKeyboard } from "../keyboards/tasks.js";
 import { buildGoalsKeyboard, buildGoalDetailKeyboard } from "../keyboards/goals.js";
 import { markActiveSpanError } from "../tracing-utils.js";
-import { sendRich } from "../bot-utils/send-rich.js";
+import { sendRich, editRich } from "../bot-utils/send-rich.js";
+import { buildDayRich } from "../formatters/day-rich.js";
 import {
   setPendingConfirmation,
   clearPendingConfirmation,
@@ -113,6 +114,22 @@ callbackHandlers.callbackQuery(/^task:(?:done|complete):(.+)$/, async (ctx) => {
   } catch (err) {
     markActiveSpanError(err);
     await ctx.answerCallbackQuery({ text: "❌ Failed to complete task" });
+  }
+});
+
+// Date navigation re-renders the same message. The selected date lives in
+// the callback data rather than server state, so a button on an old message
+// still resolves to the day it was drawn for.
+callbackHandlers.callbackQuery(/^day:(.+)$/, async (ctx) => {
+  const arg = ctx.match[1]!;
+  await ctx.answerCallbackQuery();
+  const date = arg === "today" ? undefined : arg;
+  try {
+    const data = await api.getDaily(date);
+    await editRich(ctx, buildDayRich(data));
+  } catch (err) {
+    markActiveSpanError(err);
+    await ctx.editMessageText("❌ Failed to load the day.");
   }
 });
 

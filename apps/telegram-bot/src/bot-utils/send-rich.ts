@@ -3,9 +3,10 @@ import type { InputRichMessage } from "@grammyjs/types";
 import { markActiveSpanError } from "../tracing-utils.js";
 import { logger } from "../logger.js";
 
-// Rich content is an extended markup string in InputRichMessage. Send via the
-// grammY context method ctx.replyWithRichMessage. There is no editMessageText on
-// the rich path — rich is send-once only.
+// Rich content is an extended markup string in InputRichMessage. Send via
+// ctx.replyWithRichMessage, edit via editMessageText's `rich_message`
+// parameter — added in Bot API 10.1, the same release that introduced rich
+// messages. An earlier comment here claimed rich was send-once; it never was.
 
 /** Best-effort plain text for the catch-all fallback: strip tags + decode the
  *  few entities our formatters emit. Never throws. */
@@ -41,5 +42,25 @@ export async function sendRich(
     // `extra` carries reply_markup. Dropping it strips an inline keyboard
     // from the fallback, leaving a prompt the user cannot answer.
     await ctx.reply(richToPlainText(msg), extra as never);
+  }
+}
+
+/** Edit a message in place with rich content, falling back to plain text if
+ *  the payload is rejected. The sibling of sendRich: navigation re-renders
+ *  the same message, so a rejected payload must degrade rather than leave
+ *  the user staring at a stale day. */
+export async function editRich(
+  ctx: Context,
+  msg: InputRichMessage<InputFile>,
+): Promise<void> {
+  try {
+    await ctx.editMessageText(msg);
+  } catch (err) {
+    markActiveSpanError(err);
+    logger.warn(
+      { event_type: "rich_edit_fallback", err: String(err) },
+      "rich_edit_fallback",
+    );
+    await ctx.editMessageText(richToPlainText(msg));
   }
 }
