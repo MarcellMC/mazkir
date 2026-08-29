@@ -349,7 +349,15 @@ class EventsService:
             # carries exactly one source_ids key) but stays correct if an
             # event ever carries two — it should only be dropped once every
             # system that could have produced it has actually answered.
-            if available_sources is not None and its_systems <= available_sources:
+            # `its_systems` must also be non-empty: a source_ids key that
+            # isn't in _SOURCE_SYSTEM_BY_ID_KEY (a future source type added
+            # without a matching entry) leaves its_systems empty, and
+            # `set() <= anything` is True — that would delete the event
+            # unconditionally, including when available_sources is empty
+            # because nothing answered. An unmapped key means we cannot
+            # tell which source owns this event, so we keep it — the same
+            # fail-safe direction as available_sources=None.
+            if available_sources is not None and its_systems and its_systems <= available_sources:
                 # The source that would have produced this answered this
                 # round and didn't return it — genuinely gone upstream.
                 continue

@@ -596,3 +596,16 @@ def test_refresh_events_still_persists(tmp_path):
     result = svc.refresh_events("2026-08-30", [], available_sources={"calendar"})
     assert result == []
     assert svc.get_events("2026-08-30") == []
+
+
+def test_an_event_with_an_unmapped_source_key_is_never_deleted(tmp_path):
+    """An unrecognised source_ids key means we cannot tell which system owns
+    this event, so we keep it. A future source type added without a
+    _SOURCE_SYSTEM_BY_ID_KEY entry must not silently become deletable —
+    especially not when available_sources is empty because nothing answered."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted(
+        id="evt_future", source="something-new", source_ids={"unmapped_id": "x1"},
+    )])
+    assert len(svc.reconcile("2026-08-30", [], available_sources=set())) == 1
+    assert len(svc.reconcile("2026-08-30", [], available_sources={"calendar"})) == 1
