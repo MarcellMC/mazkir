@@ -393,3 +393,84 @@ def test_inserting_an_unrelated_checkbox_does_not_shift_other_ids():
     standup_before = next(e for e in before if e.name == "Standup")
     standup_after = next(e for e in after if e.name == "Standup")
     assert standup_before.source_ids == standup_after.source_ids
+
+
+def _habit(name="Dog Walk", scheduled_at="07:00", completed=False, duration=40,
+           done_count=0, target=1):
+    return {"name": name, "completed_today": completed, "streak": 3,
+            "tokens_per_completion": 5, "scheduled_at": scheduled_at,
+            "duration_minutes": duration, "completions_today": done_count,
+            "daily_target": target}
+
+
+def test_scheduled_habit_with_no_calendar_event_becomes_a_block():
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        habits=[_habit()], date="2026-08-29",
+    )
+    assert len(events) == 1
+    assert events[0].name == "Dog Walk"
+    assert events[0].type == "habit"
+    assert events[0].start_time == "2026-08-29T07:00"
+    assert events[0].end_time == "2026-08-29T07:40"
+    assert events[0].source_ids == {"habit_slug": "2026-08-29:dog-walk"}
+
+
+def test_unscheduled_habit_is_not_a_block():
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        habits=[_habit(scheduled_at=None)], date="2026-08-29",
+    )
+    assert events == []
+
+
+def test_habit_already_attached_to_a_calendar_event_is_not_duplicated():
+    """The existing name-match attaches habit data to the calendar event.
+    Emitting a standalone block too would show the same thing twice."""
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[_cal(summary="Dog Walk", start="2026-08-29T07:00",
+                              end="2026-08-29T07:40")],
+        timeline_data={"visits": [], "activities": []},
+        habits=[_habit()], date="2026-08-29",
+    )
+    assert len(events) == 1
+    assert events[0].source == "calendar"
+    assert events[0].habit["name"] == "Dog Walk"
+
+
+def test_habit_block_carries_todays_progress():
+    """Carried forward from Phase 1: the bot could only ever render a binary
+    box because completions_today never reached it."""
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        habits=[_habit(done_count=1, target=2)], date="2026-08-29",
+    )
+    assert events[0].habit["completions_today"] == 1
+    assert events[0].habit["daily_target"] == 2
+
+
+def test_completed_habit_block_carries_its_tokens():
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        habits=[_habit(completed=True)], date="2026-08-29",
+    )
+    assert events[0].habit["completed"] is True
+    assert events[0].tokens_earned == 5
+
+
+def test_a_habit_crossing_midnight_is_clamped_to_the_day():
+    """Same rule as _create_note_block: wrapping would put the end before the
+    start and the coverage builder would drop the block entirely."""
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        habits=[_habit(scheduled_at="23:30", duration=60)], date="2026-08-29",
+    )
+    assert events[0].start_time == "2026-08-29T23:30"
+    assert events[0].end_time == "2026-08-29T23:59"
+    assert events[0].end_time > events[0].start_time

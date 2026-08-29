@@ -5,7 +5,7 @@ from datetime import date as date_type
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from src.services.habit_completion import is_complete_today
+from src.services.habit_completion import completions_today, daily_target_of, is_complete_today
 from src.services.merger_service import MergerService
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -54,6 +54,10 @@ async def _merge_from_sources(date: date_type) -> list[dict]:
                 "completed_today": is_complete_today(h, date),
                 "streak": meta.get("streak", 0),
                 "tokens_per_completion": meta.get("tokens_per_completion", 5),
+                "scheduled_at": meta.get("scheduled_at") or meta.get("scheduled_time") or None,
+                "duration_minutes": meta.get("duration_minutes", 0),
+                "completions_today": completions_today(h, date),
+                "daily_target": daily_target_of(meta),
             })
     except Exception:
         pass

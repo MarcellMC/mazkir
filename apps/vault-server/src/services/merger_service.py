@@ -1,6 +1,7 @@
 """Merge calendar events, timeline data, and PKM vault data into MergedEvent[]."""
 
 import hashlib
+import re
 import uuid
 from datetime import datetime
 from math import radians, sin, cos, sqrt, atan2
@@ -84,6 +85,7 @@ class MergerService:
 
         merged: list[MergedEvent] = []
         matched_visit_indices: set[int] = set()
+        attached_habits: set[str] = set()
 
         # Step 1: Match calendar events to timeline visits
         for cal in calendar_events:
@@ -101,6 +103,7 @@ class MergerService:
             # Attach habit data
             habit_match = self._find_matching_habit(event.name, habits)
             if habit_match:
+                attached_habits.add(habit_match["name"])
                 event.habit = {
                     "name": habit_match["name"],
                     "completed": habit_match.get("completed_today", False),
@@ -120,6 +123,14 @@ class MergerService:
         # Step 3: Activity segments → transit events
         for activity in activities:
             merged.append(self._create_transit_event(activity))
+
+        # Scheduled habits that no calendar event claimed. Without this,
+        # dropping schedule[] would lose a habit that has a time but no
+        # calendar entry — which is most of them.
+        if date:
+            for h in habits:
+                if h.get("scheduled_at") and h.get("name") not in attached_habits:
+                    merged.append(self._create_habit_block(h, date))
 
         # Timed checkboxes from the note body. The note is a worksurface; the
         # ledger is the source of truth for temporal data, so a checkbox that
@@ -244,6 +255,50 @@ class MergerService:
             confidence="high",
             source_ids={"note_line": _stable_id(
                 date, todo.section, todo.text, todo.scheduled_at, occurrence)},
+        )
+
+    def _create_habit_block(self, habit: dict, date: str) -> MergedEvent:
+        """A scheduled habit with no calendar event of its own.
+
+        Habits that DO have a calendar event are attached to it by the
+        existing name match in step 1; emitting a block for those as well
+        would render the same commitment twice.
+        """
+        name = habit.get("name", "")
+        scheduled_at = habit["scheduled_at"]
+        minutes = habit.get("duration_minutes") or 0
+        hh, mm = (int(x) for x in scheduled_at.split(":"))
+        end_total = hh * 60 + mm + minutes
+        # Clamp rather than wrap: `% 24` would carry a past-midnight block
+        # into the next day's 00:xx, putting its end before its own start.
+        # The coverage builder drops any interval whose end isn't after its
+        # start, so that would silently delete the block instead of
+        # rendering it. Storage splits at midnight (Ship 5); here we just
+        # clip the visible block to the end of this date.
+        end_total = min(end_total, 23 * 60 + 59)
+        end = f"{date}T{end_total // 60:02d}:{end_total % 60:02d}"
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        completed = habit.get("completed_today", False)
+        return MergedEvent(
+            name=name,
+            type="habit",
+            start_time=f"{date}T{scheduled_at}",
+            end_time=end,
+            duration_minutes=minutes,
+            habit={
+                "name": name,
+                "completed": completed,
+                "streak": habit.get("streak", 0),
+                "tokens_earned": habit.get("tokens_per_completion", 0),
+                # /daily renders these as "1/2". Without them the bot can only
+                # show a binary box, which is the Phase 1 §11 carry-forward.
+                "completions_today": habit.get("completions_today", 0),
+                "daily_target": habit.get("daily_target", 1),
+            },
+            tokens_earned=habit.get("tokens_per_completion", 0) if completed else 0,
+            source="habit",
+            confidence="high",
+            source_ids={"habit_slug": f"{date}:{slug}"},
         )
 
     def _create_unplanned_stop(self, visit: dict) -> MergedEvent:
