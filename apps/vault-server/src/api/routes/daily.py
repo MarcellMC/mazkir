@@ -9,7 +9,7 @@ from src.auth import verify_api_key
 from src.config import settings
 from src.services.daily_tasks import parse_all_todos, is_todo_line
 from src.services.habit_completion import is_complete_today
-from src.services.day_coverage import day_coverage, minutes_into_day
+from src.services.day_coverage import MINUTES_PER_DAY, day_coverage, minutes_into_day
 
 router = APIRouter(prefix="/daily", tags=["daily"], dependencies=[Depends(verify_api_key)])
 logger = logging.getLogger(__name__)
@@ -141,21 +141,51 @@ def _build_notes(content: str) -> list[DailyNote]:
     return notes
 
 
+def _end_minutes(timestamp: str, date: str) -> int | None:
+    """`minutes_into_day` for a block's *end*, clipped to end-of-day when the
+    end falls on a later date.
+
+    Spec §4: "Block spanning midnight → rendered clipped to the day."
+    `MergerService` clamps the blocks it builds itself, but a real calendar
+    entry (or a manually created event) carries its own end timestamp, and
+    `minutes_into_day` returns None for one on the next date — which dropped
+    the block entirely. A 22:00→01:00 shift rendered as no blocks at all and
+    a single 00:00–24:00 gap: the whole day read as unaccounted. Ship 1
+    displayed that event, so dropping it was a regression.
+
+    Only a *later* date clips. An end before `date` is not a span, it is
+    corrupt, and None still drops it. Ship 5 owns the second fragment.
+    """
+    direct = minutes_into_day(timestamp, date)
+    if direct is not None:
+        return direct
+    day_part, sep, _ = timestamp.partition("T")
+    if not sep:
+        return None
+    try:
+        if dt_date.fromisoformat(day_part) > dt_date.fromisoformat(date):
+            return MINUTES_PER_DAY
+    except ValueError:
+        return None
+    return None
+
+
 def _build_blocks_and_coverage(
     events: list[dict], date: str, elapsed_minutes: int
 ) -> tuple[list[DailyBlock], list[DailyGap], DayCoverage]:
     """Turn merged events into the day's timeline, plus its coverage.
 
-    Events whose start or end falls outside `date` are dropped: storage
-    splits at midnight, so a neighbouring day's fragment here would distort
-    this day's arithmetic.
+    Events that *start* outside `date` are dropped: storage splits at
+    midnight, so a neighbouring day's fragment here would distort this
+    day's arithmetic. An event that starts on `date` and ends after it is
+    clipped to `24:00` rather than dropped — see `_end_minutes`.
     """
     blocks: list[DailyBlock] = []
     intervals: list[tuple[int, int]] = []
 
     for e in events:
         start = minutes_into_day(e.get("start_time", ""), date)
-        end = minutes_into_day(e.get("end_time", ""), date)
+        end = _end_minutes(e.get("end_time", ""), date)
         if start is None or end is None:
             continue
         habit = e.get("habit") or {}

@@ -266,6 +266,48 @@ class TestDailyBlocks:
         assert blocks == []
         assert coverage.covered_minutes == 0
 
+    def test_a_block_spanning_midnight_is_clipped_to_the_end_of_the_day(self):
+        """Spec §4: "Block spanning midnight → rendered clipped to the day."
+        `minutes_into_day` returns None for an end on the next date, and the
+        block was dropped outright: a 22:00→01:00 shift produced no blocks,
+        zero coverage and one 00:00–24:00 gap — the whole day read as
+        unaccounted. Ship 1 displayed this event."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{"id": "x", "name": "Late shift", "start_time": "2026-08-29T22:00",
+                   "end_time": "2026-08-30T01:00", "source": "calendar",
+                   "type": "calendar"}]
+        blocks, gaps, coverage = _build_blocks_and_coverage(
+            events, "2026-08-29", elapsed_minutes=1440)
+        assert [(b.start, b.end, b.title) for b in blocks] == [
+            ("22:00", "24:00", "Late shift")]
+        assert coverage.covered_minutes == 120
+        assert [(g.start, g.end) for g in gaps] == [("00:00", "22:00")]
+
+    def test_a_block_ending_days_later_is_still_clipped_to_this_day(self):
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{"id": "x", "name": "Conference", "start_time": "2026-08-29T09:00",
+                   "end_time": "2026-09-01T17:00", "source": "calendar",
+                   "type": "calendar"}]
+        blocks, _, coverage = _build_blocks_and_coverage(
+            events, "2026-08-29", elapsed_minutes=1440)
+        assert [(b.start, b.end) for b in blocks] == [("09:00", "24:00")]
+        assert coverage.covered_minutes == 900
+
+    def test_an_end_before_the_day_is_still_dropped(self):
+        """A later end is a span; an earlier one is corrupt data, and
+        clipping it would invent an interval that never happened."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{"id": "x", "name": "Backwards", "start_time": "2026-08-29T09:00",
+                   "end_time": "2026-08-28T17:00", "source": "calendar",
+                   "type": "calendar"}]
+        blocks, _, coverage = _build_blocks_and_coverage(
+            events, "2026-08-29", elapsed_minutes=1440)
+        assert blocks == []
+        assert coverage.covered_minutes == 0
+
     def test_habit_progress_is_surfaced(self):
         """Carried forward from Phase 1: the bot could only render a binary
         box because completions_today never reached it."""
