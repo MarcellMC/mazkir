@@ -39,10 +39,15 @@ async def _merge_from_sources(date: date_type) -> tuple[list[dict], set[str]]:
     calendar_events = []
     if calendar and calendar.is_initialized:
         try:
-            calendar_events = await calendar.get_todays_events(
+            # `.get_todays_events` swallows HttpErrors and returns [] either
+            # way, so it cannot tell "the calendar is empty" from "the token
+            # expired" — that was the bug this fix exists for. The
+            # `_with_status` variant reports a real ok/failed signal.
+            calendar_events, calendar_ok = await calendar.get_todays_events_with_status(
                 all_calendars=True, target_date=date,
             )
-            available_sources.add("calendar")
+            if calendar_ok:
+                available_sources.add("calendar")
         except Exception:
             pass
 
@@ -50,7 +55,11 @@ async def _merge_from_sources(date: date_type) -> tuple[list[dict], set[str]]:
     if timeline:
         try:
             timeline_data = timeline.get_day(date)
-            available_sources.add("timeline")
+            # get_day/_load_timeline_objects returns [] when data/timeline/
+            # doesn't exist rather than raising, so a missing Takeout export
+            # looks identical to "nothing happened today" unless gated here.
+            if timeline.data_path.exists():
+                available_sources.add("timeline")
         except Exception:
             pass
 
@@ -81,7 +90,14 @@ async def _merge_from_sources(date: date_type) -> tuple[list[dict], set[str]]:
         raw_daily = vault.read_daily_note(date)
         daily = raw_daily.get("metadata", {})
         daily_body = raw_daily.get("content", "")
-        available_sources.add("daily-note")
+        # read_daily_note catches FileNotFoundError internally and returns
+        # an empty note, so the call succeeding says nothing about whether
+        # a note exists — a missing note for `date` is real information (no
+        # checkboxes to merge), not a failure. Gate on the vault directory
+        # itself resolving instead; that is the actual "did this source
+        # answer" question.
+        if vault.vault_path.exists():
+            available_sources.add("daily-note")
     except Exception:
         pass
 
@@ -97,6 +113,17 @@ async def _merge_from_sources(date: date_type) -> tuple[list[dict], set[str]]:
     return [e.model_dump() for e in events], available_sources
 
 
+def _events_payload(date: date_type, result: list[dict]) -> dict:
+    return {
+        "date": date.isoformat(),
+        "events": result,
+        "summary": {
+            "total_events": len(result),
+            "total_tokens": sum(e.get("tokens_earned", 0) for e in result),
+        },
+    }
+
+
 @router.get("/{date}")
 async def get_events(date: date_type):
     """Get events for a date — auto-merges from sources and persists."""
@@ -107,15 +134,36 @@ async def get_events(date: date_type):
 
     fresh, available_sources = await _merge_from_sources(date)
     result = events_svc.auto_refresh(date.isoformat(), fresh, available_sources)
+    return _events_payload(date, result)
 
-    return {
-        "date": date.isoformat(),
-        "events": result,
-        "summary": {
-            "total_events": len(result),
-            "total_tokens": sum(e.get("tokens_earned", 0) for e in result),
-        },
-    }
+
+async def get_events_preview(date: date_type) -> dict:
+    """Merge from sources and reconcile against persisted data, without
+    persisting the result.
+
+    `/daily` uses this instead of `get_events` so that browsing a date can
+    never itself write `data/events/{date}.json` for it — a persisted event
+    for a past date must not be silently rewritten just because someone
+    looked at it.
+
+    `GET /events/{date}` itself keeps persisting: `list_events`,
+    `attach_photo_to_event` and `update_event` (the agent's event tools) all
+    read the raw persisted file via `EventsService.get_events`/`attach_photo`
+    rather than re-merging, so this route's persist is what makes a
+    calendar/timeline/habit-derived event referenceable by ID at all — an
+    event the agent should attach a photo to has to have landed in the store
+    via some prior GET (or an explicit POST .../refresh) first. Removing
+    that persist would silently break every one of those tools for anything
+    that isn't a manually created event.
+    """
+    from src.main import get_events as get_events_svc
+    events_svc = get_events_svc()
+    if not events_svc:
+        raise HTTPException(503, "Events service not initialized")
+
+    fresh, available_sources = await _merge_from_sources(date)
+    result = events_svc.reconcile(date.isoformat(), fresh, available_sources)
+    return _events_payload(date, result)
 
 
 @router.post("/{date}/refresh")

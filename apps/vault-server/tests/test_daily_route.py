@@ -1,8 +1,6 @@
-"""Tests for the /daily route — new schedule + notes shape."""
+"""Tests for the /daily route — blocks, gaps, coverage, todos and notes."""
 from datetime import date
 import re
-
-from src.services.daily_tasks import parse_tasks_section
 
 
 # Inline the _extract_section helper to avoid circular-import from daily.py
@@ -32,58 +30,6 @@ class TestExtractSection:
         result = _extract_section(body, "Notes")
         assert "note line" in result
         assert "other content" not in result
-
-
-class TestDailyScheduleBuilding:
-    """Verify that the schedule-building logic works correctly."""
-
-    def test_timed_daily_task_included(self):
-        body = "## Tasks\n- [ ] 14:00 — Visit dentist\n"
-        tasks = parse_tasks_section(body)
-        timed = [t for t in tasks if t.scheduled_at and t.state in ("unchecked", "checked")]
-        assert len(timed) == 1
-        assert "dentist" in timed[0].text.lower()
-        assert timed[0].scheduled_at == "14:00"
-
-    def test_untimed_daily_task_excluded(self):
-        body = "## Tasks\n- [ ] Buy groceries\n"
-        tasks = parse_tasks_section(body)
-        timed = [t for t in tasks if t.scheduled_at]
-        assert len(timed) == 0
-
-    def test_checked_timed_task_is_completed(self):
-        body = "## Tasks\n- [x] 09:00 — Morning standup\n"
-        tasks = parse_tasks_section(body)
-        timed = [t for t in tasks if t.scheduled_at]
-        assert len(timed) == 1
-        assert timed[0].state == "checked"
-
-    def test_notes_parsed_from_section(self):
-        body = "## Notes\n- Remember dentist\n- Call mom\n"
-        section = _extract_section(body, "Notes")
-        lines = [l.strip().lstrip("- ").strip() for l in section.splitlines() if l.strip().lstrip("- ").strip()]
-        assert "Remember dentist" in lines
-        assert "Call mom" in lines
-
-    def test_image_line_detected(self):
-        body = "## Notes\n- ![sunset](data/media/photo.jpg)\n"
-        section = _extract_section(body, "Notes")
-        img_match = None
-        for line in section.splitlines():
-            stripped = line.strip().lstrip("- ").strip()
-            img_match = re.match(r"!\[([^\]]*)\]\(([^)]*)\)", stripped)
-            if img_match:
-                break
-        assert img_match is not None
-        assert img_match.group(1) == "sunset"
-        assert "photo.jpg" in img_match.group(2)
-
-    def test_schedule_sorted_ascending(self):
-        starts = ["10:00", "07:00", "2026-06-04T08:00:00"]
-        sorted_starts = sorted(starts)
-        # ISO datetime "2026-..." sorts before "07:00" alphabetically
-        # In practice, mixing formats is avoided, but sorting still works
-        assert sorted_starts == sorted(starts)
 
 
 class TestDailyResponseModels:
@@ -118,31 +64,6 @@ class TestDailyResponseModels:
         assert note.photo_path == "/data/photo.jpg"
         assert note.caption == "sunset"
         assert note.text is None
-
-
-class TestHabitScheduledAt:
-    """The canonical key is scheduled_at; scheduled_time is the legacy name."""
-
-    def test_prefers_canonical_key(self):
-        from src.api.routes.daily import _habit_scheduled_at
-        assert _habit_scheduled_at({"scheduled_at": "07:30"}) == "07:30"
-
-    def test_falls_back_to_legacy_key(self):
-        from src.api.routes.daily import _habit_scheduled_at
-        assert _habit_scheduled_at({"scheduled_time": "07:30"}) == "07:30"
-
-    def test_canonical_wins_when_both_present(self):
-        from src.api.routes.daily import _habit_scheduled_at
-        meta = {"scheduled_at": "08:00", "scheduled_time": "07:30"}
-        assert _habit_scheduled_at(meta) == "08:00"
-
-    def test_returns_none_when_unscheduled(self):
-        from src.api.routes.daily import _habit_scheduled_at
-        assert _habit_scheduled_at({"name": "Workout"}) is None
-
-    def test_treats_empty_string_as_unscheduled(self):
-        from src.api.routes.daily import _habit_scheduled_at
-        assert _habit_scheduled_at({"scheduled_at": ""}) is None
 
 
 class TestDayTodos:
@@ -356,3 +277,78 @@ class TestDailyBlocks:
                              "completions_today": 1, "daily_target": 2}}]
         blocks, _, _ = _build_blocks_and_coverage(events, "2026-08-29", elapsed_minutes=1440)
         assert blocks[0].habit_progress == "1/2"
+
+
+class TestGetDailyRoute:
+    """Route-level coverage for `get_daily` itself. `_build_blocks_and_coverage`
+    is exercised in isolation everywhere else, but `?date=`, the three
+    `elapsed` branches, the date-or-today default, and the events wiring had
+    no coverage at all — this is the integration point Tasks 7-8 consume.
+    """
+
+    @staticmethod
+    def _vault():
+        from unittest.mock import MagicMock
+        vault = MagicMock()
+        vault.read_daily_note.return_value = {"content": "", "path": "10-daily/x.md"}
+        vault.list_active_habits.return_value = []
+        vault.read_token_ledger.return_value = {"metadata": {}}
+        return vault
+
+    def test_date_elapsed_branches_and_no_schedule_key(self):
+        import datetime as dt
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        import pytz
+        from src.config import settings
+        from src.main import app
+
+        tz = pytz.timezone(settings.vault_timezone)
+
+        async def _no_events(target_date):
+            return {"date": target_date.isoformat(), "events": [], "summary": {}}
+
+        vault = self._vault()
+        with patch("src.main.get_vault", return_value=vault), \
+                patch("src.api.routes.events.get_events_preview", side_effect=_no_events):
+            client = TestClient(app)
+            now_before = dt.datetime.now(tz)
+            today = now_before.date()
+            past = (today - dt.timedelta(days=1)).isoformat()
+            future = (today + dt.timedelta(days=1)).isoformat()
+
+            past_body = client.get("/daily", params={"date": past}).json()
+            future_body = client.get("/daily", params={"date": future}).json()
+            today_body = client.get("/daily").json()
+            now_after = dt.datetime.now(tz)
+
+        # `date` echoes back, including the untouched date-or-today default.
+        assert past_body["date"] == past
+        assert future_body["date"] == future
+        assert today_body["date"] == today.isoformat()
+
+        # elapsed = 1440 for a past date: one full-day gap, nothing covered.
+        assert past_body["gaps"] == [{"start": "00:00", "end": "24:00", "minutes": 1440}]
+        assert past_body["coverage"] == {"covered_minutes": 0, "unaccounted_minutes": 1440}
+
+        # elapsed = 0 for a future date: no gaps at all, not one big one.
+        assert future_body["gaps"] == []
+        assert future_body["coverage"] == {"covered_minutes": 0, "unaccounted_minutes": 0}
+
+        # elapsed = now for today: one gap ending at (about) the wall clock.
+        assert len(today_body["gaps"]) == 1
+        end = today_body["gaps"][0]["end"]
+        gap_end_minutes = int(end[:2]) * 60 + int(end[3:])
+        lo = now_before.hour * 60 + now_before.minute
+        hi = now_after.hour * 60 + now_after.minute
+        assert lo <= gap_end_minutes <= hi
+
+        for body in (past_body, future_body, today_body):
+            assert "schedule" not in body
+
+    def test_traversal_date_is_rejected(self):
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        resp = TestClient(app).get("/daily", params={"date": "../../../../etc/passwd"})
+        assert resp.status_code == 422

@@ -3,10 +3,17 @@
 `_merge_from_sources` reports which upstream systems actually answered, so
 `refresh_events` can tell "the calendar has nothing today" apart from "the
 calendar failed to answer" — only the former means an unmatched persisted
-event was genuinely deleted upstream. An absent or uninitialized calendar
-client must not be reported as available: that is exactly the condition
-that caused the Ship 2 data-loss bug (an expired OAuth token looked
-identical to an empty calendar, and `refresh_events` deleted every
+event was genuinely deleted upstream.
+
+Availability must be a positive signal from the source, not merely the
+absence of an exception: `get_todays_events` swallows `HttpError` and
+returns `[]` either way, `timeline.get_day` returns `[]`/empty when
+`data/timeline/` doesn't exist, and `read_daily_note` catches
+`FileNotFoundError` internally and returns an empty note. Each of those
+looks identical to "the source answered and has nothing" unless gated on
+something more than "the call didn't raise" — which is exactly the
+condition that caused the Ship 2 data-loss bug (an expired OAuth token
+looked identical to an empty calendar, and `refresh_events` deleted every
 persisted calendar event for the day).
 """
 import asyncio
@@ -17,7 +24,7 @@ from src.api.routes import events as events_route
 
 
 class TestMergeFromSourcesAvailability:
-    def _run(self, calendar):
+    def _run(self, calendar=None, vault=None, timeline=None):
         # Imported here, not at module level: importing `src.main` at
         # collection time (before any test executes) runs its module-level
         # `instrument_fastapi(app)` early and poisons the global OTel
@@ -27,17 +34,22 @@ class TestMergeFromSourcesAvailability:
         # collection before executing any of them.
         import src.main  # noqa: F401 — break circular import (main imports routes)
 
-        vault = MagicMock()
-        vault.list_active_habits.return_value = []
-        vault.read_daily_note.return_value = {"metadata": {}, "content": ""}
+        if vault is None:
+            vault = MagicMock()
+            vault.list_active_habits.return_value = []
+            vault.read_daily_note.return_value = {"metadata": {}, "content": ""}
+            vault.vault_path = MagicMock()
+            vault.vault_path.exists.return_value = True
 
         with patch("src.main.get_vault", return_value=vault), \
                 patch("src.main.get_calendar", return_value=calendar), \
-                patch("src.main.get_timeline", return_value=None):
+                patch("src.main.get_timeline", return_value=timeline):
             _, available = asyncio.run(
                 events_route._merge_from_sources(dt.date(2026, 8, 30))
             )
         return available
+
+    # --- calendar ---
 
     def test_absent_calendar_is_not_available(self):
         assert "calendar" not in self._run(calendar=None)
@@ -52,7 +64,63 @@ class TestMergeFromSourcesAvailability:
         calendar.is_initialized = True
 
         async def _events(**kwargs):
-            return []
+            return [], True
 
-        calendar.get_todays_events = _events
+        calendar.get_todays_events_with_status = _events
         assert "calendar" in self._run(calendar=calendar)
+
+    def test_calendar_that_fails_is_not_available(self):
+        """The Critical this fix round exists for: get_todays_events itself
+        swallows HttpError and returns [] regardless, so a failing calendar
+        must be told apart via the ok flag, not by whether the call raised."""
+        calendar = MagicMock()
+        calendar.is_initialized = True
+
+        async def _events(**kwargs):
+            return [], False  # e.g. a 401/403/429 the calendar service swallowed
+
+        calendar.get_todays_events_with_status = _events
+        assert "calendar" not in self._run(calendar=calendar)
+
+    # --- timeline ---
+
+    def test_timeline_with_no_data_path_is_not_available(self):
+        """timeline.get_day returns an empty structure, not an exception,
+        when data/timeline/ doesn't exist — indistinguishable from a
+        genuinely empty day unless gated on the path existing."""
+        timeline = MagicMock()
+        timeline.get_day.return_value = {"visits": [], "activities": []}
+        timeline.data_path = MagicMock()
+        timeline.data_path.exists.return_value = False
+        assert "timeline" not in self._run(timeline=timeline)
+
+    def test_timeline_with_a_data_path_is_available(self):
+        timeline = MagicMock()
+        timeline.get_day.return_value = {"visits": [], "activities": []}
+        timeline.data_path = MagicMock()
+        timeline.data_path.exists.return_value = True
+        assert "timeline" in self._run(timeline=timeline)
+
+    # --- daily note ---
+
+    def test_missing_vault_directory_makes_daily_note_unavailable(self):
+        """read_daily_note catches FileNotFoundError internally and returns
+        an empty note either way, so the call succeeding says nothing about
+        whether a note exists — gate on the vault directory resolving
+        instead, which is the real "did this source answer" question. A
+        missing note for `date` is legitimate information; a missing vault
+        is not."""
+        vault = MagicMock()
+        vault.list_active_habits.return_value = []
+        vault.read_daily_note.return_value = {"metadata": {}, "content": ""}
+        vault.vault_path = MagicMock()
+        vault.vault_path.exists.return_value = False
+        assert "daily-note" not in self._run(vault=vault)
+
+    def test_resolving_vault_directory_makes_daily_note_available(self):
+        vault = MagicMock()
+        vault.list_active_habits.return_value = []
+        vault.read_daily_note.return_value = {"metadata": {}, "content": ""}
+        vault.vault_path = MagicMock()
+        vault.vault_path.exists.return_value = True
+        assert "daily-note" in self._run(vault=vault)

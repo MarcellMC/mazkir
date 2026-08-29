@@ -572,3 +572,27 @@ def test_manual_events_are_still_preserved(tmp_path):
     svc.save_events("2026-08-30", [_persisted(source="manual", source_ids={})])
     result = svc.refresh_events("2026-08-30", [], available_sources={"calendar"})
     assert len(result) == 1
+
+
+def test_reconcile_does_not_persist(tmp_path):
+    """The whole point of the read/write split: /daily calls this to
+    preview a merge without ever writing data/events/{date}.json for
+    whatever date is being browsed — browsing history must not rewrite it."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted()])
+    result = svc.reconcile("2026-08-30", [], available_sources={"calendar"})
+    assert result == []
+    # The file on disk must be untouched — reconcile only computed a view.
+    on_disk = svc.get_events("2026-08-30")
+    assert len(on_disk) == 1
+    assert on_disk[0]["name"] == "Visit Alex"
+
+
+def test_refresh_events_still_persists(tmp_path):
+    """reconcile stays pure; refresh_events keeps its old persisting
+    behaviour unchanged, so POST /events/{date}/refresh is unaffected."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted()])
+    result = svc.refresh_events("2026-08-30", [], available_sources={"calendar"})
+    assert result == []
+    assert svc.get_events("2026-08-30") == []

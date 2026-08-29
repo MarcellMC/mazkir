@@ -1,4 +1,5 @@
-"""Daily note API routes."""
+"""Daily note API routes — blocks, gaps, coverage, todos and notes for one day."""
+import logging
 import re
 from datetime import date as dt_date, datetime
 from fastapi import APIRouter, Depends
@@ -11,6 +12,7 @@ from src.services.habit_completion import is_complete_today
 from src.services.day_coverage import day_coverage, minutes_into_day
 
 router = APIRouter(prefix="/daily", tags=["daily"], dependencies=[Depends(verify_api_key)])
+logger = logging.getLogger(__name__)
 
 tz = pytz.timezone(settings.vault_timezone)
 
@@ -75,17 +77,7 @@ def _extract_section(body: str, name: str) -> str:
     return m.group(1) if m else ""
 
 
-def _habit_scheduled_at(meta: dict) -> str | None:
-    """Time a habit is scheduled for, or None.
-
-    `scheduled_at` is canonical. `scheduled_time` is the legacy key that the
-    habit template used to write; habits created before the rename still
-    carry it, and dropping them would silently empty the schedule.
-    """
-    return meta.get("scheduled_at") or meta.get("scheduled_time") or None
-
-
-def _build_todos(content: str, habits: list[dict], today: dt_date) -> list[DailyTodo]:
+def _build_todos(content: str, habits: list[dict], for_date: dt_date) -> list[DailyTodo]:
     """Every checkbox in the note that has not been moved away, wherever it
     lives. Checked ones are included too, carrying `done=True`.
 
@@ -93,18 +85,21 @@ def _build_todos(content: str, habits: list[dict], today: dt_date) -> list[Daily
     an untimed todo is parsed and then silently dropped.
 
     A checkbox naming an active habit is reconciled against that habit's
-    real state rather than trusted: `complete_habit` writes the habit file
-    and never ticks the note, so the daily template's `## Daily Habits`
-    boxes would otherwise sit unticked forever. Completed today shows as
-    done; not yet completed is omitted, since /habits is where outstanding
-    habits belong and /day should not reopen them every morning.
+    real state on `for_date` rather than trusted: `complete_habit` writes
+    the habit file and never ticks the note, so the daily template's
+    `## Daily Habits` boxes would otherwise sit unticked forever. Completed
+    on `for_date` shows as done; not yet completed is omitted, since /habits
+    is where outstanding habits belong and /day should not reopen them every
+    morning. `for_date` must be the day being viewed, not always today —
+    passing today unconditionally showed yesterday's habit todos as today's
+    state and made every future date's habit todos vanish.
 
     Matched on habit name, not on section name, so it holds wherever the
     checkbox was written.
     """
     habit_state = {
         (h.get("metadata", {}).get("name") or "").strip().casefold():
-            is_complete_today(h, today)
+            is_complete_today(h, for_date)
         for h in habits
     }
 
@@ -170,12 +165,17 @@ def _build_blocks_and_coverage(
             start=f"{start // 60:02d}:{start % 60:02d}",
             end=f"{end // 60:02d}:{end % 60:02d}",
             title=e.get("name", ""),
-            source=e.get("source", ""),
-            type=e.get("type", ""),
+            # `or default`, not `.get(k, default)`: a persisted event can
+            # carry an explicit `null` for these keys, and `.get` only
+            # supplies its default when the key is absent — an explicit
+            # None sails through and 500s the endpoint at the pydantic
+            # boundary (`type`/`source`/`state` are non-optional `str`).
+            source=e.get("source") or "",
+            type=e.get("type") or "",
             completed=bool(habit.get("completed", False)),
             activity=e.get("activity"),
             category=e.get("category"),
-            state=e.get("state", "suggested"),
+            state=e.get("state") or "suggested",
             habit_progress=(
                 f"{habit.get('completions_today', 0)}/{target}" if target else None
             ),
@@ -195,34 +195,56 @@ def _build_blocks_and_coverage(
 
 
 @router.get("", response_model=DailyResponse)
-async def get_daily(date: str | None = None):
+async def get_daily(date: dt_date | None = None):
+    """`date` is typed, not a raw string: FastAPI rejects anything that
+    isn't a real calendar date with 422 before it ever reaches a filesystem
+    path. It used to be `str | None`, and `date`'s only use was interpolated
+    straight into `10-daily/{date}.md` and into the events-preview call —
+    `?date=../../../../etc/hosts` read an arbitrary file off disk and
+    returned its body through notes[]/todos[]. This parameter took no input
+    at all before this route grew ?date=, so there was nothing to validate
+    before now.
+    """
     from src.main import get_vault
-    from src.api.routes.events import get_events as get_events_route
+    from src.api.routes.events import get_events_preview
 
     vault = get_vault()
     now = datetime.now(tz)
-    today = now.strftime("%Y-%m-%d")
-    target = date or today
+    today_date = now.date()
+    target_date = date or today_date
+    target = target_date.isoformat()
 
-    try:
-        daily = vault.read_daily_note(target)
-    except FileNotFoundError:
-        daily = vault.create_daily_note() if target == today else {"content": ""}
+    # read_daily_note catches FileNotFoundError internally and returns an
+    # empty note rather than raising, so there is no exception here to
+    # handle — a missing note for `target` is a legitimate empty day.
+    daily = vault.read_daily_note(target)
     content = daily.get("content", "")
 
     # Blocks come from the events ledger, which owns temporal data. We call
-    # the events route rather than re-merging: two implementations of the
-    # same merge is how the ordinal bug in the Phase 2 design §7 happened.
+    # a read-only preview rather than the persisting GET /events/{date}:
+    # /daily is called on every navigation tap, and persisting on every tap
+    # would let browsing a date rewrite data/events/{date}.json for it from
+    # whatever the vault looks like *now* — a persisted block for a past
+    # date could be silently dropped because a habit was since renamed. We
+    # also call the shared merge rather than re-merging here: two
+    # implementations of the same merge is how the ordinal bug in the Phase
+    # 2 design §7 happened.
     events: list[dict] = []
     try:
-        payload = await get_events_route(dt_date.fromisoformat(target))
+        payload = await get_events_preview(target_date)
         events = payload.get("events", [])
     except Exception:
-        pass
+        # A silent [] here would render identically to a genuinely empty
+        # day — log it so a failing events service doesn't look like the
+        # user did nothing.
+        logger.warning(
+            "GET /daily?date=%s: fetching events failed, showing no blocks",
+            target, exc_info=True,
+        )
 
-    if target < today:
+    if target_date < today_date:
         elapsed = 24 * 60
-    elif target > today:
+    elif target_date > today_date:
         elapsed = 0
     else:
         elapsed = now.hour * 60 + now.minute
@@ -230,7 +252,10 @@ async def get_daily(date: str | None = None):
     blocks, gaps, coverage = _build_blocks_and_coverage(events, target, elapsed)
 
     habits = vault.list_active_habits()
-    todos = _build_todos(content, habits, now.date())
+    # `target_date`, not today: habit checkboxes are reconciled against the
+    # day being viewed, or yesterday shows this morning's completions and
+    # every future date's habit todos vanish.
+    todos = _build_todos(content, habits, target_date)
     notes = _build_notes(content)
 
     try:

@@ -251,7 +251,25 @@ class EventsService:
         fresh_events: list[dict[str, Any]],
         available_sources: set[str] | None = None,
     ) -> list[dict[str, Any]]:
+        """`reconcile`, then persist. See `reconcile` for the merge algorithm."""
+        result = self.reconcile(date, fresh_events, available_sources)
+        self.save_events(date, result)
+        return result
+
+    def reconcile(
+        self,
+        date: str,
+        fresh_events: list[dict[str, Any]],
+        available_sources: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Re-merge from sources while preserving manually-added data.
+
+        Pure: reads persisted state but never writes it. `refresh_events`
+        is this plus `save_events` — callers that only need the merged view
+        for one moment (rendering `/daily` for a browsed date, say) use this
+        directly so that navigating the calendar can never itself alter the
+        store. A persisted event for a past date must not be silently
+        rewritten just because someone looked at it.
 
         Algorithm:
         1. Match fresh events to existing events by source_ids
@@ -327,11 +345,14 @@ class EventsService:
                 for key, val in source_ids.items()
                 if val and key in _SOURCE_SYSTEM_BY_ID_KEY
             }
-            if available_sources is not None and its_systems & available_sources:
+            # Subset, not intersection: unreachable today (every event
+            # carries exactly one source_ids key) but stays correct if an
+            # event ever carries two — it should only be dropped once every
+            # system that could have produced it has actually answered.
+            if available_sources is not None and its_systems <= available_sources:
                 # The source that would have produced this answered this
                 # round and didn't return it — genuinely gone upstream.
                 continue
             result.append(evt)
 
-        self.save_events(date, result)
         return result

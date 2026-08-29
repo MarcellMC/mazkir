@@ -603,9 +603,29 @@ class CalendarService:
         Returns:
             List of event dicts with id, summary, start, end, completed, calendar fields
         """
+        events, _ok = await self.get_todays_events_with_status(all_calendars, target_date)
+        return events
+
+    async def get_todays_events_with_status(
+        self, all_calendars: bool = True, target_date: date_type | None = None
+    ) -> tuple[List[Dict], bool]:
+        """Same as `get_todays_events`, but also reports whether the calendar
+        genuinely answered.
+
+        `get_todays_events` swallows per-calendar `HttpError`s (a partial
+        list is still useful to render) and returns `[]` on a full failure,
+        so an empty result there is indistinguishable from a real empty
+        calendar. Callers that need to tell those apart — e.g.
+        `refresh_events`'s deletion logic, which must not treat "the token
+        expired" as "the calendar is empty" — use this instead. `ok` is
+        False on any HttpError (listing calendars or querying one of them),
+        and also when zero calendars were queried at all: if
+        `GOOGLE_CALENDAR_INCLUDE` matches nothing, no API call happened and
+        an empty result means nothing was asked, not that nothing exists.
+        """
         if not self._initialized:
             logger.error("Calendar service not initialized")
-            return []
+            return [], False
 
         try:
             if target_date:
@@ -630,7 +650,11 @@ class CalendarService:
             elif self._calendar_id:
                 calendar_ids.append({'id': self._calendar_id, 'name': 'Mazkir'})
 
+            if not calendar_ids:
+                return [], False
+
             events = []
+            any_failure = False
             for cal in calendar_ids:
                 try:
                     events_result = self._service.events().list(
@@ -658,6 +682,7 @@ class CalendarService:
                         })
                 except HttpError as e:
                     logger.warning(f"Failed to get events from calendar {cal['name']}: {e}")
+                    any_failure = True
 
             # Sort by start time
             def sort_key(e):
@@ -668,11 +693,11 @@ class CalendarService:
                 return s
 
             events.sort(key=sort_key)
-            return events
+            return events, not any_failure
 
         except HttpError as e:
             logger.error(f"Failed to get today's events: {e}")
-            return []
+            return [], False
 
     async def sync_habit(self, habit: Dict) -> Optional[str]:
         """Sync a habit to calendar (create or update).
