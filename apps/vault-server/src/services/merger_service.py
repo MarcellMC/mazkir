@@ -76,6 +76,20 @@ def _slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
 
+def _normalize_for_match(name: str) -> str:
+    """Casefolded name with separators flattened to single spaces.
+
+    Lets "Dog-Walk", "Dog  Walk" and "Dog — Walk" all read as the same
+    phrase, so `_find_matching_habit`'s containment test is not defeated by
+    punctuation the user happened to type. Anything that is not a letter or
+    a digit becomes a space, which also strips the `🎯` prefix
+    `CalendarService.sync_habit` puts on a habit's calendar event. `\\w` is
+    unicode-aware here, so a Hebrew habit name survives normalization
+    rather than collapsing to the empty string.
+    """
+    return " ".join(re.sub(r"\W+", " ", name.casefold(), flags=re.UNICODE).split())
+
+
 class MergerService:
     def __init__(self, timezone: str = "Asia/Jerusalem"):
         self.tz = pytz.timezone(timezone)
@@ -383,16 +397,34 @@ class MergerService:
                         break
 
     def _find_matching_habit(self, event_name: str, habits: list[dict]) -> dict | None:
-        """Find a habit that matches an event name by keyword overlap."""
-        name_lower = event_name.lower()
+        """Find the habit a calendar event stands for, by whole-phrase match.
+
+        A match here does more than decorate the event: it makes the habit
+        `attached`, and an attached habit emits no standalone block. So a
+        false positive does not merely mislabel a row — it removes one,
+        and reconciliation then reads the missing row as "deleted
+        upstream" and destroys the persisted event with any photo on it.
+
+        This used to fall back to bare single-word overlap, which made
+        every common word a match: a "Design review" meeting claimed the
+        "Review Email" habit, and "Walk to office" claimed "Dog Walk".
+        Now one name must contain the other as a whole phrase.
+
+        The alternative considered — keeping word overlap but gating it on
+        time proximity — was rejected because `scheduled_at` is optional
+        (it is `null` on habits in this vault today). Gating on it would
+        silently stop matching exactly the habits that have no standalone
+        block to fall back on, so they would vanish from `/day` entirely.
+        Phrase containment needs no extra inputs and covers the path that
+        actually generates these events: `CalendarService.sync_habit`
+        writes the summary as `🎯 {name}`, the habit name verbatim.
+        """
+        name_norm = _normalize_for_match(event_name)
         for habit in habits:
-            habit_name = habit.get("name", "").lower()
-            if habit_name in name_lower or name_lower in habit_name:
-                return habit
-            # Check if any word overlaps
-            habit_words = set(habit_name.split())
-            name_words = set(name_lower.replace("\u2014", " ").replace("-", " ").split())
-            if habit_words & name_words:
+            habit_norm = _normalize_for_match(habit.get("name", ""))
+            if not habit_norm or not name_norm:
+                continue
+            if habit_norm in name_norm or name_norm in habit_norm:
                 return habit
         return None
 

@@ -504,3 +504,68 @@ def test_habits_slugifying_identically_get_distinct_ids():
     )
     ids = [e.source_ids["habit_slug"] for e in events]
     assert ids[0] != ids[1]
+
+
+# --- habit attachment: whole-phrase, not incidental word overlap ------------
+#
+# Attachment is not cosmetic. An attached habit emits no standalone block,
+# and reconciliation used to read that missing block as "deleted upstream"
+# and destroy the persisted event, photos included.
+
+def test_a_calendar_event_sharing_one_word_does_not_claim_a_habit():
+    """Reproduces the whole-branch review's Critical 1 against the user's
+    real habit names: a 'Design review' meeting claimed 'Review Email',
+    and 'Walk to office' claimed 'Dog Walk'."""
+    m = MergerService()
+    habits = [_habit(name="Dog Walk", scheduled_at="07:00"),
+              _habit(name="Review Email", scheduled_at="09:00"),
+              _habit(name="Workout", scheduled_at="18:00")]
+    for summary in ("Design review", "Walk to office", "Sprint planning"):
+        events = m.merge(
+            calendar_events=[_cal(summary=summary, start="2026-08-29T14:00",
+                                  end="2026-08-29T15:00")],
+            timeline_data={"visits": [], "activities": []},
+            habits=habits, date="2026-08-29",
+        )
+        standalone = {e.name for e in events if e.source == "habit"}
+        assert standalone == {"Dog Walk", "Review Email", "Workout"}, summary
+        assert all(e.habit is None for e in events if e.source == "calendar")
+
+
+def test_a_habit_calendar_event_still_claims_its_habit():
+    """CalendarService.sync_habit writes the summary as `🎯 {name}`, so the
+    habit name is a whole-phrase substring of the event name."""
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[_cal(summary="🎯 Dog Walk", start="2026-08-29T07:00",
+                              end="2026-08-29T07:40")],
+        timeline_data={"visits": [], "activities": []},
+        habits=[_habit(name="Dog Walk")], date="2026-08-29",
+    )
+    assert len(events) == 1
+    assert events[0].source == "calendar"
+    assert events[0].habit["name"] == "Dog Walk"
+
+
+def test_habit_matching_ignores_separator_punctuation():
+    """`Dog-Walk` and `Dog Walk` are the same phrase; the containment test
+    must not be defeated by whichever separator the user typed."""
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[_cal(summary="Dog-Walk — morning", start="2026-08-29T07:00",
+                              end="2026-08-29T07:40")],
+        timeline_data={"visits": [], "activities": []},
+        habits=[_habit(name="Dog Walk")], date="2026-08-29",
+    )
+    assert len(events) == 1
+    assert events[0].habit is not None
+
+
+def test_an_empty_habit_name_never_matches():
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[_cal(summary="Standup")],
+        timeline_data={"visits": [], "activities": []},
+        habits=[_habit(name="", scheduled_at=None)], date="2026-08-29",
+    )
+    assert events[0].habit is None
