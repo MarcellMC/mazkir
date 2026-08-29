@@ -78,6 +78,8 @@ Without both, moving `/day` to the ledger would silently drop two things visible
 
 Note-derived blocks get `source: "daily-note"` and a `source_ids` entry derived from the note line, so `EventsService.refresh_events` matches them across opens the same way it matches `calendar_id`. They stay `suggested` and ephemeral — regenerated from the note on every open — which is why nothing needs persisting and no write path appears.
 
+**Correction found during implementation:** calendar events did not reconcile either. `MergerService` emitted no `source_ids` at all, so `refresh_events`' matching could never fire for a merged event — each open assigned a new `id` and dropped the persisted copy. Ship 2 fixes that for every merged source, which is what makes this paragraph true rather than aspirational, and is a precondition for Ship 5 persisting approval.
+
 ### 3.3 Gaps
 
 Computed per request, never stored. Two numbers:
