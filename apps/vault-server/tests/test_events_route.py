@@ -124,3 +124,40 @@ class TestMergeFromSourcesAvailability:
         vault.vault_path = MagicMock()
         vault.vault_path.exists.return_value = True
         assert "daily-note" in self._run(vault=vault)
+
+    # --- habits ---
+    #
+    # `list_active_habits` calls `list_files("20-habits")`, which returns []
+    # for a missing directory rather than raising — so "it didn't raise"
+    # marks a renamed or missing habits directory as available, and every
+    # persisted habit-derived event for the day looks deleted upstream.
+    # These use a real tmp_path rather than a MagicMock vault_path, because
+    # `MagicMock() / "20-habits"` yields another MagicMock whose `.exists()`
+    # is truthy — the gate would pass without testing anything.
+
+    def _real_vault(self, vault_path, habits=None, raises=False):
+        vault = MagicMock()
+        if raises:
+            vault.list_active_habits.side_effect = OSError("vault unreadable")
+        else:
+            vault.list_active_habits.return_value = habits or []
+        vault.read_daily_note.return_value = {"metadata": {}, "content": ""}
+        vault.vault_path = vault_path
+        return vault
+
+    def test_missing_habits_directory_makes_habit_source_unavailable(self, tmp_path):
+        assert "habit" not in self._run(vault=self._real_vault(tmp_path))
+
+    def test_present_habits_directory_makes_habit_source_available(self, tmp_path):
+        (tmp_path / "20-habits").mkdir()
+        assert "habit" in self._run(vault=self._real_vault(tmp_path))
+
+    def test_an_empty_habits_directory_is_still_available(self, tmp_path):
+        """A vault with no habit files is real information — nothing is
+        scheduled today — unlike a directory that isn't there at all."""
+        (tmp_path / "20-habits").mkdir()
+        assert "habit" in self._run(vault=self._real_vault(tmp_path, habits=[]))
+
+    def test_a_vault_that_raises_makes_habit_source_unavailable(self, tmp_path):
+        (tmp_path / "20-habits").mkdir()
+        assert "habit" not in self._run(vault=self._real_vault(tmp_path, raises=True))

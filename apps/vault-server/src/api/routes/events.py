@@ -80,7 +80,14 @@ async def _merge_from_sources(date: date_type) -> tuple[list[dict], set[str]]:
                 "completions_today": completions_today(h, date),
                 "daily_target": daily_target_of(meta),
             })
-        available_sources.add("habit")
+        # `list_active_habits` returns [] for a missing `20-habits/`
+        # directory rather than raising, so "it didn't raise" would mark a
+        # renamed or missing habits directory as available — the same
+        # availability-by-exception mistake the calendar and timeline
+        # branches above already correct for. Gate on the directory
+        # resolving, which is the actual "did this source answer" question.
+        if (vault.vault_path / "20-habits").exists():
+            available_sources.add("habit")
     except Exception:
         pass
 
