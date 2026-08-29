@@ -275,3 +275,82 @@ def test_merged_event_survives_a_reopen_with_its_id_and_state(tmp_path):
     assert second[0]["id"] == original_id
     assert second[0]["state"] == "approved"
     assert second[0]["activity"] == "meetings"
+
+
+NOTE_WITH_TIMED = """\
+## Tasks
+- [ ] 14:00 — Visit dentist (60m)
+- [ ] Order dog food (30m)
+
+## Notes
+- [x] 09:00 — Take meds (5m)
+"""
+
+
+def test_timed_checkboxes_become_blocks_from_any_section():
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        daily_body=NOTE_WITH_TIMED, date="2026-08-29",
+    )
+    by_name = {e.name: e for e in events}
+    assert set(by_name) == {"Visit dentist", "Take meds"}
+    assert by_name["Visit dentist"].start_time == "2026-08-29T14:00"
+    assert by_name["Visit dentist"].end_time == "2026-08-29T15:00"
+    assert by_name["Visit dentist"].duration_minutes == 60
+    assert by_name["Visit dentist"].source == "daily-note"
+
+
+def test_untimed_checkbox_is_not_a_block():
+    """An untimed todo has no interval. It stays a todo; Ship 5 places it."""
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        daily_body="## Tasks\n- [ ] Order dog food (30m)\n", date="2026-08-29",
+    )
+    assert events == []
+
+
+def test_timed_checkbox_without_a_duration_is_zero_length():
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        daily_body="## Tasks\n- [ ] 14:00 — Standup\n", date="2026-08-29",
+    )
+    assert events[0].start_time == events[0].end_time == "2026-08-29T14:00"
+    assert events[0].duration_minutes == 0
+
+
+def test_note_block_source_id_is_stable_across_merges():
+    m = MergerService()
+    kw = dict(calendar_events=[], timeline_data={"visits": [], "activities": []},
+              daily_body=NOTE_WITH_TIMED, date="2026-08-29")
+    a = m.merge(**kw)
+    b = m.merge(**kw)
+    assert [e.source_ids for e in a] == [e.source_ids for e in b]
+    assert all("note_line" in e.source_ids for e in a)
+
+
+def test_note_block_records_completion():
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        daily_body=NOTE_WITH_TIMED, date="2026-08-29",
+    )
+    by_name = {e.name: e for e in events}
+    assert by_name["Take meds"].tokens_earned == 0
+    assert by_name["Take meds"].habit is None
+
+
+def test_a_block_crossing_midnight_is_clamped_to_the_day():
+    """Storage splits at midnight. Wrapping the end time instead would put
+    the end before the start, and the coverage builder would drop the block
+    entirely."""
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        daily_body="## Tasks\n- [ ] 23:30 — Sleep (60m)\n", date="2026-08-29",
+    )
+    assert events[0].start_time == "2026-08-29T23:30"
+    assert events[0].end_time == "2026-08-29T23:59"
+    assert events[0].end_time > events[0].start_time

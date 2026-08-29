@@ -59,9 +59,11 @@ async def _merge_from_sources(date: date_type) -> list[dict]:
         pass
 
     daily = {}
+    daily_body = ""
     try:
-        daily = vault.read_daily_note(date)
-        daily = daily.get("metadata", {})
+        raw_daily = vault.read_daily_note(date)
+        daily = raw_daily.get("metadata", {})
+        daily_body = raw_daily.get("content", "")
     except Exception:
         pass
 
@@ -71,6 +73,8 @@ async def _merge_from_sources(date: date_type) -> list[dict]:
         timeline_data=timeline_data,
         habits=habits,
         daily=daily,
+        daily_body=daily_body,
+        date=date.isoformat(),
     )
     return [e.model_dump() for e in events]
 

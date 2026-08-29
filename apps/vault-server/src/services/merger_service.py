@@ -9,6 +9,8 @@ from typing import Any
 import pytz
 from pydantic import BaseModel, Field
 
+from src.services.daily_tasks import parse_all_todos
+
 
 class MergedEvent(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -73,6 +75,8 @@ class MergerService:
         timeline_data: dict,
         habits: list[dict] | None = None,
         daily: dict | None = None,
+        daily_body: str = "",
+        date: str = "",
     ) -> list[MergedEvent]:
         visits = timeline_data.get("visits", [])
         activities = timeline_data.get("activities", [])
@@ -116,6 +120,16 @@ class MergerService:
         # Step 3: Activity segments → transit events
         for activity in activities:
             merged.append(self._create_transit_event(activity))
+
+        # Timed checkboxes from the note body. The note is a worksurface; the
+        # ledger is the source of truth for temporal data, so a checkbox that
+        # has acquired a time is a block. It is regenerated from the note on
+        # every merge and matched by source_ids, so nothing needs persisting
+        # and no write path is involved.
+        if daily_body and date:
+            for todo in parse_all_todos(daily_body):
+                if todo.scheduled_at:
+                    merged.append(self._create_note_block(todo, date))
 
         # Step 4: Sort chronologically
         merged.sort(key=lambda e: e.start_time)
@@ -185,6 +199,35 @@ class MergerService:
             confidence="medium",
             source_ids={"calendar_id": str(cal.get("id", "")) or _stable_id(
                 name, cal.get("start"))},
+        )
+
+    def _create_note_block(self, todo, date: str) -> MergedEvent:
+        """A timed checkbox is a block: known start, known length.
+
+        Untimed checkboxes are filtered out by the caller — without a start
+        there is no interval, and coverage arithmetic needs one.
+        """
+        start = f"{date}T{todo.scheduled_at}"
+        minutes = todo.duration_minutes or 0
+        hh, mm = (int(x) for x in todo.scheduled_at.split(":"))
+        end_total = hh * 60 + mm + minutes
+        # Clamp rather than wrap: `% 24` would carry a past-midnight block
+        # into the next day's 00:xx, putting its end before its own start.
+        # The coverage builder drops any interval whose end isn't after its
+        # start, so that would silently delete the block instead of
+        # rendering it. Storage splits at midnight (Ship 5); here we just
+        # clip the visible block to the end of this date.
+        end_total = min(end_total, 23 * 60 + 59)
+        end = f"{date}T{end_total // 60:02d}:{end_total % 60:02d}"
+        return MergedEvent(
+            name=todo.text,
+            type="task",
+            start_time=start,
+            end_time=end,
+            duration_minutes=minutes,
+            source="daily-note",
+            confidence="high",
+            source_ids={"note_line": _stable_id(date, todo.text, todo.scheduled_at)},
         )
 
     def _create_unplanned_stop(self, visit: dict) -> MergedEvent:
