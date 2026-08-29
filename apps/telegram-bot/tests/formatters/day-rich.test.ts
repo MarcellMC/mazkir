@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { buildDayRich } from "../../src/formatters/day-rich.js";
 
 const base = {
@@ -64,6 +64,30 @@ describe("buildDayRich", () => {
     expect(classified).toContain("meetings × work");
   });
 
+  it("renders a lone activity when category is unset", () => {
+    const out = html({
+      ...base,
+      blocks: [{ id: "a", start: "09:00", end: "10:00", title: "Standup",
+                 source: "calendar", type: "calendar", completed: false,
+                 activity: "meetings", category: null, state: "suggested",
+                 habit_progress: null }],
+    });
+    expect(out).toContain("<td>meetings</td>");
+    expect(out).not.toContain("×");
+  });
+
+  it("renders a lone category when activity is unset", () => {
+    const out = html({
+      ...base,
+      blocks: [{ id: "a", start: "09:00", end: "10:00", title: "Standup",
+                 source: "calendar", type: "calendar", completed: false,
+                 activity: null, category: "work", state: "suggested",
+                 habit_progress: null }],
+    });
+    expect(out).toContain("<td>work</td>");
+    expect(out).not.toContain("×");
+  });
+
   it("renders todos as native task list items", () => {
     const out = html({
       ...base,
@@ -117,5 +141,40 @@ describe("buildDayRich", () => {
   it("tolerates a server that omits todos", () => {
     const { todos, ...withoutTodos } = base;
     expect(() => html(withoutTodos)).not.toThrow();
+  });
+
+  it("labels the todos and notes lists so they read as two sections, not one", () => {
+    const out = html({
+      ...base,
+      todos: [{ text: "Order dog food", done: false, section: "Tasks",
+                scheduled_at: null, duration_minutes: null }],
+      notes: [{ text: "Slept badly" }],
+    });
+    expect(out).toContain("Todos");
+    expect(out).toContain("Notes");
+    // The heading has to precede its own list, not just appear somewhere.
+    const todosHeading = out.indexOf("Todos");
+    const todosItem = out.indexOf("Order dog food");
+    const notesHeading = out.indexOf("Notes");
+    const notesItem = out.indexOf("Slept badly");
+    expect(todosHeading).toBeLessThan(todosItem);
+    expect(notesHeading).toBeLessThan(notesItem);
+    expect(todosItem).toBeLessThan(notesHeading);
+  });
+
+  describe("today, in the vault's timezone rather than UTC", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("still says today just after local midnight, while UTC is still on the previous date", () => {
+      // 2026-08-29T21:30:00Z is 2026-08-30 00:30 in Asia/Jerusalem (UTC+3
+      // in August). A UTC-based "today" would compute 2026-08-29 here and
+      // silently drop the "today" suffix from a page that is today.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-08-29T21:30:00Z"));
+      const out = html({ ...base, date: "2026-08-30" });
+      expect(out).toContain("today");
+    });
   });
 });

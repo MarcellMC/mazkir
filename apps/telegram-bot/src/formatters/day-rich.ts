@@ -28,11 +28,19 @@ function headerLabel(iso: string, today: string): string {
   return iso === today ? `${label} · today` : label;
 }
 
+function facetLabel(b: DailyBlock): string {
+  // Render whichever facets exist: a block can have an activity without a
+  // category (or vice versa) — Ship 6 populates them independently, and
+  // discarding a partial classification throws away the only signal a
+  // block has.
+  if (b.activity && b.category) return `${escapeHtml(b.activity)} × ${escapeHtml(b.category)}`;
+  if (b.activity) return escapeHtml(b.activity);
+  if (b.category) return escapeHtml(b.category);
+  return "";
+}
+
 function blockRow(b: DailyBlock): string {
-  const facets = b.activity && b.category
-    ? `${escapeHtml(b.activity)} × ${escapeHtml(b.category)}`
-    : "";
-  const marker = b.habit_progress ? escapeHtml(b.habit_progress) : facets;
+  const marker = b.habit_progress ? escapeHtml(b.habit_progress) : facetLabel(b);
   return `<tr><td>${b.start}–${b.end}</td><td>${escapeHtml(b.title)}</td><td>${marker}</td></tr>`;
 }
 
@@ -63,8 +71,19 @@ function navBar(selected: string): string {
   );
 }
 
+// The server works in Asia/Jerusalem, which is ahead of UTC, so its date
+// rolls over first. Deriving "today" from toISOString() here would drop the
+// "· today" suffix for the first two or three hours of every local day. The
+// bot has no existing timezone constant to reuse, so this matches the
+// server's VAULT_TIMEZONE default (apps/vault-server/src/config.py) directly.
+const VAULT_TIMEZONE = "Asia/Jerusalem";
+
+function todayInVaultTimezone(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: VAULT_TIMEZONE }).format(new Date());
+}
+
 export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInVaultTimezone();
   const parts: string[] = [];
 
   parts.push(`<h2>${escapeHtml(headerLabel(data.date, today))}</h2>`);
@@ -95,6 +114,7 @@ export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {
       const dur = t.duration_minutes != null ? ` (${t.duration_minutes}m)` : "";
       return `<li>${box}${escapeHtml(t.text)}${escapeHtml(dur)}</li>`;
     });
+    parts.push(`<h3>☑️ Todos</h3>`);
     parts.push(`<ul>${items.join("")}</ul>`);
   }
 
@@ -103,6 +123,7 @@ export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {
       const text = n.text ?? (n.caption ? `📷 ${n.caption}` : "📷");
       return `<li>${escapeHtml(text)}</li>`;
     });
+    parts.push(`<h3>📝 Notes</h3>`);
     parts.push(`<ul>${items.join("")}</ul>`);
   }
 
