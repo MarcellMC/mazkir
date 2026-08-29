@@ -609,3 +609,103 @@ def test_an_event_with_an_unmapped_source_key_is_never_deleted(tmp_path):
     )])
     assert len(svc.reconcile("2026-08-30", [], available_sources=set())) == 1
     assert len(svc.reconcile("2026-08-30", [], available_sources={"calendar"})) == 1
+
+
+def test_a_note_derived_event_is_never_deleted_even_when_its_source_answered(tmp_path):
+    """`note_line` hashes the checkbox's date, section, text and time, so
+    fixing a typo re-hashes it and the fresh merge carries a different id.
+    The daily-note source answered, so availability cannot see the
+    difference between "edited" and "deleted" — and the persisted block,
+    with any photo attached to it, used to be destroyed."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted(
+        id="evt_note", name="Standup", source="daily-note",
+        source_ids={"note_line": "abc123"},
+        photos=[{"path": "whiteboard.jpg", "caption": None, "wikilinks": []}],
+    )])
+    result = svc.reconcile(
+        "2026-08-30", [], available_sources={"calendar", "timeline", "daily-note", "habit"},
+    )
+    assert [e["name"] for e in result] == ["Standup"]
+    assert len(result[0]["photos"]) == 1
+
+
+def test_a_habit_derived_event_is_never_deleted_even_when_its_source_answered(tmp_path):
+    """A habit block is *suppressed* whenever a calendar event claims the
+    habit, so its absence from a merge is shadowing, not deletion — and the
+    habit source answered either way."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted(
+        id="evt_habit", name="Review Email", source="habit",
+        source_ids={"habit_slug": "2026-08-30:review-email"},
+        photos=[{"path": "inbox.jpg", "caption": None, "wikilinks": []}],
+    )])
+    result = svc.reconcile(
+        "2026-08-30", [], available_sources={"calendar", "timeline", "daily-note", "habit"},
+    )
+    assert [e["name"] for e in result] == ["Review Email"]
+    assert len(result[0]["photos"]) == 1
+
+
+def test_timeline_events_stay_deletable(tmp_path):
+    """The restriction is to the two sources with upstream-stable ids —
+    timeline is one of them, so a visit that Google no longer reports is
+    still removed."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted(
+        id="evt_visit", name="Xoho", source="timeline", source_ids={"visit_id": "v1"},
+    )])
+    assert svc.reconcile("2026-08-30", [], available_sources={"timeline"}) == []
+
+
+def test_an_event_spanning_a_deletable_and_a_protected_source_is_kept(tmp_path):
+    """Subset, not intersection: an event carrying two keys is only
+    deletable when *every* system behind it is."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted(
+        id="evt_both", source="merged",
+        source_ids={"calendar_id": "cal1", "note_line": "abc123"},
+    )])
+    result = svc.reconcile(
+        "2026-08-30", [], available_sources={"calendar", "daily-note"},
+    )
+    assert len(result) == 1
+
+
+def test_a_habit_shadowed_by_a_calendar_event_keeps_its_persisted_block(tmp_path):
+    """End-to-end reproduction of the whole-branch review's Critical 1.
+
+    Even with the matcher narrowed, attachment still legitimately
+    suppresses a habit's standalone block — that is the point of it. The
+    suppression must stay a rendering decision: the persisted event, and
+    the photo on it, must survive a merge that does not emit the block.
+    """
+    from src.services.merger_service import MergerService
+
+    m = MergerService()
+    habit = {"name": "Dog Walk", "scheduled_at": "07:00", "duration_minutes": 40,
+             "completed_today": False, "streak": 3, "tokens_per_completion": 5,
+             "completions_today": 0, "daily_target": 1}
+    empty_timeline = {"visits": [], "activities": []}
+    sources = {"calendar", "timeline", "habit", "daily-note"}
+    svc = EventsService(tmp_path)
+
+    standalone = m.merge([], empty_timeline, habits=[habit], date="2026-08-29")
+    persisted = svc.refresh_events(
+        "2026-08-29", [e.model_dump() for e in standalone], sources)
+    persisted[0]["photos"] = [{"path": "dog.jpg", "caption": None, "wikilinks": []}]
+    svc.save_events("2026-08-29", persisted)
+
+    # The habit now has a calendar event of its own, so it emits no block.
+    shadowed = m.merge(
+        [{"id": "cal1", "summary": "🎯 Dog Walk", "start": "2026-08-29T07:00",
+          "end": "2026-08-29T07:40", "completed": False, "calendar": "Mazkir"}],
+        empty_timeline, habits=[habit], date="2026-08-29",
+    )
+    assert not [e for e in shadowed if e.source == "habit"]
+
+    result = svc.refresh_events(
+        "2026-08-29", [e.model_dump() for e in shadowed], sources)
+    survivor = [e for e in result if e["source"] == "habit"]
+    assert len(survivor) == 1
+    assert survivor[0]["photos"] == [{"path": "dog.jpg", "caption": None, "wikilinks": []}]

@@ -21,6 +21,31 @@ _SOURCE_SYSTEM_BY_ID_KEY = {
     "habit_slug": "habit",
 }
 
+# The only source systems whose absence from a fresh merge is real evidence
+# that an event was deleted upstream — and therefore the only ones whose
+# persisted events reconciliation may drop.
+#
+# Their ids come from the upstream system itself (Google's event id; a
+# visit's start time and place_id), so the same event yields the same id on
+# every merge, and a merge that does not emit it means it is genuinely gone.
+#
+# The excluded sources — `daily-note` and `habit` — derive their ids from
+# user-editable text, so an unmatched persisted event is far more likely to
+# mean "the text changed" or "something shadowed it" than "the user deleted
+# it":
+#   * `note_line` hashes the checkbox's date, section, text and time.
+#     Correcting a typo re-hashes it, the old id matches nothing, and the
+#     block (with any photo attached to it) was deleted.
+#   * `habit_slug` blocks are suppressed by `MergerService`'s
+#     calendar-attachment match: when a calendar event claims a habit, the
+#     habit emits no standalone block at all. Its absence from the merge is
+#     shadowing, not deletion — and `available_sources` cannot see the
+#     difference, because the habit source *did* answer.
+#
+# Stale rows for these two linger until Ship 5 gives them stable identity.
+# That is visible clutter; the alternative is silent loss.
+_DELETABLE_SOURCE_SYSTEMS = frozenset({"calendar", "timeline"})
+
 
 class PhotoRef:
     """Photo reference attached to an event."""
@@ -285,6 +310,11 @@ class EventsService:
            being `None` (caller didn't say) preserves everything unmatched —
            the safe default. Losing an expired-token calendar refresh used to
            silently delete every persisted calendar event for the day.
+           A source system must additionally be in
+           `_DELETABLE_SOURCE_SYSTEMS`: answering is not enough when the
+           source's ids come from user-editable text, because then an
+           unmatched event usually means the text changed or another block
+           shadowed it, and `available_sources` cannot see either.
         """
         existing = self.get_events(date)
         existing_by_source: dict[str, dict] = {}
@@ -357,7 +387,19 @@ class EventsService:
             # because nothing answered. An unmapped key means we cannot
             # tell which source owns this event, so we keep it — the same
             # fail-safe direction as available_sources=None.
-            if available_sources is not None and its_systems and its_systems <= available_sources:
+            #
+            # `_DELETABLE_SOURCE_SYSTEMS` is the third gate: even a source
+            # that answered may not have *stable* ids, and for those an
+            # unmatched event means the text changed or something shadowed
+            # it, not that it was deleted. Subset again, for the same
+            # reason as above — an event carrying two keys is only
+            # deletable when every system behind it is.
+            if (
+                available_sources is not None
+                and its_systems
+                and its_systems <= available_sources
+                and its_systems <= _DELETABLE_SOURCE_SYSTEMS
+            ):
                 # The source that would have produced this answered this
                 # round and didn't return it — genuinely gone upstream.
                 continue
