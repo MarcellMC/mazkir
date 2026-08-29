@@ -569,3 +569,61 @@ def test_an_empty_habit_name_never_matches():
         habits=[_habit(name="", scheduled_at=None)], date="2026-08-29",
     )
     assert events[0].habit is None
+
+
+# --- completion travels with the block ------------------------------------
+#
+# `completed` used to exist only inside `habit`, so a checked timed
+# checkbox rendered identically to an outstanding one — and appeared
+# nowhere else, because /day filters timed todos out of the Todos list.
+
+def test_a_checked_timed_checkbox_is_a_completed_block():
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        daily_body="## Tasks\n- [x] 14:00 — Standup (60m)\n", date="2026-08-29",
+    )
+    assert [(e.name, e.completed) for e in events] == [("Standup", True)]
+
+
+def test_an_unchecked_timed_checkbox_is_not_completed():
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        daily_body="## Tasks\n- [ ] 14:00 — Standup (60m)\n", date="2026-08-29",
+    )
+    assert events[0].completed is False
+
+
+def test_a_calendar_events_completion_flag_reaches_the_block():
+    m = MergerService()
+    cal = _cal(summary="Standup")
+    cal["completed"] = True
+    events = m.merge(
+        calendar_events=[cal], timeline_data={"visits": [], "activities": []},
+        date="2026-08-29",
+    )
+    assert events[0].completed is True
+
+
+def test_a_completed_habit_block_is_completed():
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        habits=[_habit(completed=True)], date="2026-08-29",
+    )
+    assert events[0].completed is True
+
+
+def test_a_completed_habit_attached_to_a_calendar_event_marks_that_event():
+    """The attached habit emits no standalone block, so the calendar event
+    is the only row it gets — its completion has to travel with it."""
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[_cal(summary="Dog Walk", start="2026-08-29T07:00",
+                              end="2026-08-29T07:40")],
+        timeline_data={"visits": [], "activities": []},
+        habits=[_habit(completed=True)], date="2026-08-29",
+    )
+    assert len(events) == 1
+    assert events[0].completed is True

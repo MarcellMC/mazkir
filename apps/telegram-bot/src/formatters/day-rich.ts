@@ -40,8 +40,15 @@ function facetLabel(b: DailyBlock): string {
 }
 
 function blockRow(b: DailyBlock): string {
+  // Completion is prefixed to the TIME column, not put in the marker
+  // column: `habit_progress` and the facet label already live there, and a
+  // completed habit has both. Prefixing also puts it in the same column as
+  // the gap row's `⚠`, so the leftmost cell reads as one status channel
+  // down the timeline. Ship 1 rendered `✅ 14:00 — Standup`; this restores
+  // that for every source, not just habits.
+  const done = b.completed ? "✅ " : "";
   const marker = b.habit_progress ? escapeHtml(b.habit_progress) : facetLabel(b);
-  return `<tr><td>${b.start}–${b.end}</td><td>${escapeHtml(b.title)}</td><td>${marker}</td></tr>`;
+  return `<tr><td>${done}${b.start}–${b.end}</td><td>${escapeHtml(b.title)}</td><td>${marker}</td></tr>`;
 }
 
 function gapRow(g: DailyGap): string {

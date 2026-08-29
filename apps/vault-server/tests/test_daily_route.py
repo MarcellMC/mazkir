@@ -394,3 +394,42 @@ class TestGetDailyRoute:
 
         resp = TestClient(app).get("/daily", params={"date": "../../../../etc/passwd"})
         assert resp.status_code == 422
+
+
+class TestBlockCompletion:
+    """`completed` was dead end to end: the merger discarded it, the route
+    read it only from `habit`, and the bot never rendered it. A checked
+    `- [x] 14:00 — Standup` rendered as an ordinary block and appeared
+    nowhere else, since /day filters timed todos out of the Todos list."""
+
+    @staticmethod
+    def _event(**kw):
+        e = {"id": "e1", "name": "Standup", "start_time": "2026-08-29T09:00",
+             "end_time": "2026-08-29T10:00", "source": "calendar", "type": "calendar"}
+        e.update(kw)
+        return e
+
+    def test_the_events_completed_field_reaches_the_block(self):
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        blocks, _, _ = _build_blocks_and_coverage(
+            [self._event(completed=True)], "2026-08-29", elapsed_minutes=1440)
+        assert blocks[0].completed is True
+
+    def test_an_uncompleted_event_stays_uncompleted(self):
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        blocks, _, _ = _build_blocks_and_coverage(
+            [self._event(completed=False)], "2026-08-29", elapsed_minutes=1440)
+        assert blocks[0].completed is False
+
+    def test_a_legacy_event_still_reads_completion_from_habit(self):
+        """Events persisted before MergedEvent.completed existed carry it
+        only inside `habit`."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        blocks, _, _ = _build_blocks_and_coverage(
+            [self._event(source="habit", type="habit",
+                         habit={"name": "Dog walk", "completed": True})],
+            "2026-08-29", elapsed_minutes=1440)
+        assert blocks[0].completed is True

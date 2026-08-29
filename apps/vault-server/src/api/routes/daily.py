@@ -202,7 +202,10 @@ def _build_blocks_and_coverage(
             # boundary (`type`/`source`/`state` are non-optional `str`).
             source=e.get("source") or "",
             type=e.get("type") or "",
-            completed=bool(habit.get("completed", False)),
+            # `habit.completed` is the fallback, not the source: it is
+            # where completion used to live, so persisted events written
+            # before `MergedEvent.completed` existed still carry it there.
+            completed=bool(e.get("completed") or habit.get("completed", False)),
             activity=e.get("activity"),
             category=e.get("category"),
             state=e.get("state") or "suggested",

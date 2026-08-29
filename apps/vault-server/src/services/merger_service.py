@@ -36,6 +36,14 @@ class MergedEvent(BaseModel):
     habit: dict[str, Any] | None = None  # {name, completed, streak, tokens_earned}
     tokens_earned: int = 0
 
+    # Whether the thing this block stands for is done. Every source has an
+    # answer: a checked `- [x]` checkbox, a calendar event the sync marked
+    # with the completion prefix, a habit whose target was met today. Before
+    # this it only existed inside `habit`, so a checked timed todo rendered
+    # identically to an outstanding one and appeared nowhere else (`/day`
+    # filters timed todos out of the Todos list, since they are blocks).
+    completed: bool = False
+
     # Generated assets (populated later)
     assets: dict[str, str] | None = None
 
@@ -140,6 +148,10 @@ class MergerService:
                 }
                 if event.habit["completed"]:
                     event.tokens_earned = event.habit["tokens_earned"]
+                    # An attached habit suppresses its own standalone block,
+                    # so this event is the only row the habit gets. Its
+                    # completion has to travel with it.
+                    event.completed = True
 
             merged.append(event)
 
@@ -240,6 +252,7 @@ class MergerService:
                 "lng": visit["lng"],
                 "place_id": visit.get("place_id"),
             },
+            completed=bool(cal.get("completed", False)),
             source="merged",
             confidence=visit.get("confidence", "medium"),
             source_ids={"calendar_id": str(cal.get("id", "")) or _stable_id(
@@ -254,6 +267,10 @@ class MergerService:
             start_time=cal.get("start", ""),
             end_time=cal.get("end", ""),
             duration_minutes=self._calc_duration(cal.get("start", ""), cal.get("end", "")),
+            # CalendarService derives this from the summary's completion
+            # prefix or the event colour; it was read from the API and then
+            # discarded here.
+            completed=bool(cal.get("completed", False)),
             source="calendar",
             confidence="medium",
             source_ids={"calendar_id": str(cal.get("id", "")) or _stable_id(
@@ -288,6 +305,7 @@ class MergerService:
             start_time=start,
             end_time=end,
             duration_minutes=minutes,
+            completed=todo.state == "checked",
             source="daily-note",
             confidence="high",
             source_ids={"note_line": _stable_id(
@@ -342,6 +360,7 @@ class MergerService:
                 "daily_target": habit.get("daily_target", 1),
             },
             tokens_earned=habit.get("tokens_per_completion", 0) if completed else 0,
+            completed=completed,
             source="habit",
             confidence="high",
             source_ids={"habit_slug": slug_id},
