@@ -1,9 +1,6 @@
 """Tests for the /daily route — new schedule + notes shape."""
 from datetime import date
 import re
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 
 from src.services.daily_tasks import parse_tasks_section
 
@@ -99,13 +96,6 @@ class TestDailyResponseModels:
     it still described a five-field response after `todos` was added.
     """
 
-    def test_response_model_fields(self):
-        from src.api.routes.daily import DailyResponse
-
-        assert set(DailyResponse.model_fields) == {
-            "date", "tokens_today", "tokens_total", "schedule", "todos", "notes",
-        }
-
     def test_todo_model_fields(self):
         from src.api.routes.daily import DailyTodo
 
@@ -115,19 +105,6 @@ class TestDailyResponseModels:
         t = DailyTodo(text="Order dog food")
         assert t.done is False and t.section == ""
         assert t.scheduled_at is None and t.duration_minutes is None
-
-    def test_schedule_item_source_values(self):
-        from pydantic import BaseModel
-
-        class _DailyScheduleItem(BaseModel):
-            start: str
-            title: str
-            source: str
-            completed: bool = False
-
-        for source in ("calendar", "daily-task", "habit"):
-            item = _DailyScheduleItem(start="09:00", title="Test", source=source, completed=False)
-            assert item.source == source
 
     def test_daily_note_photo_fields(self):
         from pydantic import BaseModel
@@ -166,77 +143,6 @@ class TestHabitScheduledAt:
     def test_treats_empty_string_as_unscheduled(self):
         from src.api.routes.daily import _habit_scheduled_at
         assert _habit_scheduled_at({"scheduled_at": ""}) is None
-
-
-class TestScheduledHabitCompletion:
-    """A scheduled habit's `completed` flag means the day's target is met.
-
-    Regression: the route compared `last_completed` to today, and Task 7 sets
-    `last_completed` on partial completions — so the first of two dog walks
-    marked the whole schedule item done.
-    """
-
-    @staticmethod
-    def _today():
-        import datetime as dt
-        import pytz
-        from src.config import settings
-        return dt.datetime.now(pytz.timezone(settings.vault_timezone)).date()
-
-    def _habit(self, *, target=2, log_times=(), last_completed=None):
-        today = self._today().isoformat()
-        log = "".join(f"- {today}T{t}\n" for t in log_times)
-        return {
-            "path": "20-habits/dog-walk.md",
-            "metadata": {
-                "type": "habit",
-                "name": "Dog Walk",
-                "status": "active",
-                "scheduled_at": "07:00",
-                "daily_target": target,
-                "last_completed": last_completed,
-            },
-            "content": f"# Dog Walk\n\n## Completion Log\n{log}",
-        }
-
-    def _schedule(self, habit):
-        from fastapi.testclient import TestClient
-        from src.main import app
-
-        vault = MagicMock()
-        vault.read_daily_note.return_value = {"content": "", "path": "10-daily/x.md"}
-        vault.list_active_habits.return_value = [habit]
-        vault.read_token_ledger.return_value = {"metadata": {}}
-
-        with patch("src.main.get_vault", return_value=vault), \
-                patch("src.main.get_calendar", return_value=None):
-            resp = TestClient(app).get("/daily")
-        assert resp.status_code == 200
-        items = [s for s in resp.json()["schedule"] if s["source"] == "habit"]
-        assert len(items) == 1
-        return items[0]
-
-    def test_partial_completion_is_not_complete(self):
-        # One of two walks: the completion stamped `last_completed` with
-        # today's date, which is exactly what the old check read.
-        item = self._schedule(self._habit(
-            target=2,
-            log_times=["07:12:00"],
-            last_completed=self._today().isoformat(),
-        ))
-        assert item["completed"] is False
-
-    def test_target_met_is_complete(self):
-        item = self._schedule(
-            self._habit(target=2, log_times=["07:12:00", "19:40:00"])
-        )
-        assert item["completed"] is True
-
-    def test_pre_log_habit_completed_today_is_complete(self):
-        item = self._schedule(
-            self._habit(target=2, last_completed=self._today().isoformat())
-        )
-        assert item["completed"] is True
 
 
 class TestDayTodos:
@@ -376,3 +282,77 @@ class TestHabitCheckboxesReflectRealState:
         )
         habits = [self._habit("Review Email"), self._habit("Review Browser Tabs")]
         assert _build_todos(body, habits, date.today()) == []
+
+
+class TestDailyBlocks:
+    def test_block_model_fields(self):
+        from src.api.routes.daily import DailyBlock
+
+        assert set(DailyBlock.model_fields) == {
+            "id", "start", "end", "title", "source", "type", "completed",
+            "activity", "category", "state", "habit_progress",
+        }
+
+    def test_response_model_replaces_schedule_with_blocks(self):
+        from src.api.routes.daily import DailyResponse
+
+        fields = set(DailyResponse.model_fields)
+        assert "schedule" not in fields
+        assert fields == {
+            "date", "tokens_today", "tokens_total",
+            "blocks", "gaps", "coverage", "todos", "notes",
+        }
+
+    def test_builds_blocks_and_gaps_from_events(self):
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [
+            {"id": "e1", "name": "Dog walk", "start_time": "2026-08-29T07:00",
+             "end_time": "2026-08-29T07:40", "source": "habit", "type": "habit",
+             "state": "suggested", "activity": None, "category": None},
+            {"id": "e2", "name": "Standup", "start_time": "2026-08-29T09:05",
+             "end_time": "2026-08-29T10:00", "source": "calendar", "type": "calendar",
+             "state": "suggested", "activity": None, "category": None},
+        ]
+        blocks, gaps, coverage = _build_blocks_and_coverage(
+            events, "2026-08-29", elapsed_minutes=600,
+        )
+        assert [b.title for b in blocks] == ["Dog walk", "Standup"]
+        assert [b.start for b in blocks] == ["07:00", "09:05"]
+        assert coverage.covered_minutes == 95
+        assert [(g.start, g.end) for g in gaps] == [("00:00", "07:00"), ("07:40", "09:05")]
+
+    def test_blocks_sort_by_start_time(self):
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [
+            {"id": "b", "name": "Later", "start_time": "2026-08-29T12:00",
+             "end_time": "2026-08-29T13:00", "source": "calendar", "type": "calendar"},
+            {"id": "a", "name": "Earlier", "start_time": "2026-08-29T09:00",
+             "end_time": "2026-08-29T10:00", "source": "calendar", "type": "calendar"},
+        ]
+        blocks, _, _ = _build_blocks_and_coverage(events, "2026-08-29", elapsed_minutes=1440)
+        assert [b.title for b in blocks] == ["Earlier", "Later"]
+
+    def test_a_block_from_another_day_is_clipped_out(self):
+        """Storage splits at midnight; a stray event from a neighbouring day
+        must not distort this day's coverage."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{"id": "x", "name": "Yesterday", "start_time": "2026-08-28T22:00",
+                   "end_time": "2026-08-28T23:00", "source": "calendar", "type": "calendar"}]
+        blocks, _, coverage = _build_blocks_and_coverage(events, "2026-08-29", elapsed_minutes=1440)
+        assert blocks == []
+        assert coverage.covered_minutes == 0
+
+    def test_habit_progress_is_surfaced(self):
+        """Carried forward from Phase 1: the bot could only render a binary
+        box because completions_today never reached it."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{"id": "h", "name": "Dog walk", "start_time": "2026-08-29T07:00",
+                   "end_time": "2026-08-29T07:40", "source": "habit", "type": "habit",
+                   "habit": {"name": "Dog walk", "completed": False,
+                             "completions_today": 1, "daily_target": 2}}]
+        blocks, _, _ = _build_blocks_and_coverage(events, "2026-08-29", elapsed_minutes=1440)
+        assert blocks[0].habit_progress == "1/2"
