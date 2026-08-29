@@ -66,6 +66,16 @@ def _stable_id(*parts: object) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
+def _slugify(name: str) -> str:
+    """Lowercase, hyphenated form of a habit name, for a readable source id.
+
+    Computed once per habit at the call site (rather than inside the
+    MergedEvent constructor) so `merge` can also use it as the key for the
+    occurrence counter that disambiguates habits that slugify identically.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
 class MergerService:
     def __init__(self, timezone: str = "Asia/Jerusalem"):
         self.tz = pytz.timezone(timezone)
@@ -85,7 +95,11 @@ class MergerService:
 
         merged: list[MergedEvent] = []
         matched_visit_indices: set[int] = set()
-        attached_habits: set[str] = set()
+        # Keyed by object identity (id()), not by name: two distinct habit
+        # files can share a display name, and a name-keyed set would treat
+        # them as one — attaching one to a calendar event would then
+        # silently suppress the other's standalone block too.
+        attached_habits: set[int] = set()
 
         # Step 1: Match calendar events to timeline visits
         for cal in calendar_events:
@@ -103,7 +117,7 @@ class MergerService:
             # Attach habit data
             habit_match = self._find_matching_habit(event.name, habits)
             if habit_match:
-                attached_habits.add(habit_match["name"])
+                attached_habits.add(id(habit_match))
                 event.habit = {
                     "name": habit_match["name"],
                     "completed": habit_match.get("completed_today", False),
@@ -128,9 +142,18 @@ class MergerService:
         # dropping schedule[] would lose a habit that has a time but no
         # calendar entry — which is most of them.
         if date:
+            # Occurrence counter, scoped to the slug that collides — same
+            # rationale as the note-block counter above. Two differently
+            # named habits ("Dog Walk", "Dog-Walk") can slugify identically;
+            # a global counter would also shift an unrelated habit's id
+            # whenever an unrelated one was inserted earlier in the list.
+            habit_slug_occurrences: dict[str, int] = {}
             for h in habits:
-                if h.get("scheduled_at") and h.get("name") not in attached_habits:
-                    merged.append(self._create_habit_block(h, date))
+                if h.get("scheduled_at") and id(h) not in attached_habits:
+                    slug = _slugify(h.get("name", ""))
+                    occurrence = habit_slug_occurrences.get(slug, 0)
+                    habit_slug_occurrences[slug] = occurrence + 1
+                    merged.append(self._create_habit_block(h, date, slug, occurrence))
 
         # Timed checkboxes from the note body. The note is a worksurface; the
         # ledger is the source of truth for temporal data, so a checkbox that
@@ -257,12 +280,21 @@ class MergerService:
                 date, todo.section, todo.text, todo.scheduled_at, occurrence)},
         )
 
-    def _create_habit_block(self, habit: dict, date: str) -> MergedEvent:
+    def _create_habit_block(
+        self, habit: dict, date: str, slug: str, occurrence: int = 0
+    ) -> MergedEvent:
         """A scheduled habit with no calendar event of its own.
 
         Habits that DO have a calendar event are attached to it by the
         existing name match in step 1; emitting a block for those as well
         would render the same commitment twice.
+
+        `slug` is precomputed by the caller (it also drives the occurrence
+        counter there). `occurrence` disambiguates habits that slugify to
+        the same string — "Dog Walk" and "Dog-Walk" both become
+        `dog-walk` — so they hash to distinct ids instead of one silently
+        overwriting the other's persisted data in EventsService's
+        source-id-keyed reconciliation.
         """
         name = habit.get("name", "")
         scheduled_at = habit["scheduled_at"]
@@ -277,7 +309,7 @@ class MergerService:
         # clip the visible block to the end of this date.
         end_total = min(end_total, 23 * 60 + 59)
         end = f"{date}T{end_total // 60:02d}:{end_total % 60:02d}"
-        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        slug_id = f"{date}:{slug}" if occurrence == 0 else f"{date}:{slug}-{occurrence + 1}"
         completed = habit.get("completed_today", False)
         return MergedEvent(
             name=name,
@@ -298,7 +330,7 @@ class MergerService:
             tokens_earned=habit.get("tokens_per_completion", 0) if completed else 0,
             source="habit",
             confidence="high",
-            source_ids={"habit_slug": f"{date}:{slug}"},
+            source_ids={"habit_slug": slug_id},
         )
 
     def _create_unplanned_stop(self, visit: dict) -> MergedEvent:

@@ -474,3 +474,33 @@ def test_a_habit_crossing_midnight_is_clamped_to_the_day():
     assert events[0].start_time == "2026-08-29T23:30"
     assert events[0].end_time == "2026-08-29T23:59"
     assert events[0].end_time > events[0].start_time
+
+
+def test_two_habits_sharing_a_name_do_not_cancel_each_other():
+    """One is attached to a calendar event, the other is not. Keying the
+    dedup set by display name made the unattached one disappear silently —
+    the exact failure this task exists to remove."""
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[_cal(summary="Walk", start="2026-08-29T07:00",
+                              end="2026-08-29T07:40")],
+        timeline_data={"visits": [], "activities": []},
+        habits=[_habit(name="Walk", scheduled_at="07:00"),
+                _habit(name="Walk", scheduled_at="18:00")],
+        date="2026-08-29",
+    )
+    assert len(events) == 2
+    starts = sorted(e.start_time for e in events)
+    assert starts == ["2026-08-29T07:00", "2026-08-29T18:00"]
+
+
+def test_habits_slugifying_identically_get_distinct_ids():
+    m = MergerService()
+    events = m.merge(
+        calendar_events=[], timeline_data={"visits": [], "activities": []},
+        habits=[_habit(name="Dog Walk", scheduled_at="07:00"),
+                _habit(name="Dog-Walk", scheduled_at="18:00")],
+        date="2026-08-29",
+    )
+    ids = [e.source_ids["habit_slug"] for e in events]
+    assert ids[0] != ids[1]
