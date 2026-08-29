@@ -3,6 +3,11 @@
 **Status:** Design, approved in conversation 2026-08-21. Not yet planned.
 **Parent:** `docs/plans/2026-07-27-time-management-system-design.md` (Block A). That doc owns the *data model*; this one owns the *interaction*.
 **Phase 1 shipped:** PR #8 (`c911d43`), vault commit `cf14ac1`.
+**Ship 1 shipped:** PR #9 (`3eb8b2c`), vault commit `fb824da`.
+
+> **Two decisions from the Ship 2 design supersede parts of this document.**
+> 1. The events ledger is the source of truth for temporal data; daily notes are a worksurface. A timed checkbox becomes a block by *inference*, regenerated on every open — so promotion needs no write path. See the Ship 2 design §2.1.
+> 2. Rich messages **are** editable (`editMessageText.rich_message`, Bot API 10.1) and carry their own buttons (Bot API 10.3). This retires §3's `·20·` selected-state hack, and likely retires §3's numeric block picker for Ship 5 — an inline button *can* sit on a block's row. See the Ship 2 design §2.2.
 
 ## 1. What changed the plan
 
@@ -23,7 +28,7 @@ Value-ordered rather than phase-ordered. Each ships independently.
 | # | Ship | Size | Why here |
 |---|------|------|----------|
 | 1 | See my todos (Bug A) | ~2 | Highest value, no dependencies |
-| 2 | Navigable `/day`, rendering blocks read-only | ~6 | The surface everything later writes to |
+| 2 | [Navigable `/day`, rendering blocks read-only](../superpowers/specs/2026-08-29-ship2-navigable-day-design.md) | ~6 | The surface everything later writes to |
 | 3 | Bug B — the agent can't deny its own work | ~3 | Before any new write path inherits it |
 | 4 | NL logging + simple single edits | ~5 | The only capture path sleep and meals will ever have |
 | 5 | Inferred capture: suggested→approved, gaps | ~6 | Reduces typing once capture already works |
