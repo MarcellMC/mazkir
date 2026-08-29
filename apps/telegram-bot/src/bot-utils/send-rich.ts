@@ -1,4 +1,4 @@
-import type { Context } from "grammy";
+import type { Context, InputFile } from "grammy";
 import type { InputRichMessage } from "@grammyjs/types";
 import { markActiveSpanError } from "../tracing-utils.js";
 import { logger } from "../logger.js";
@@ -9,7 +9,7 @@ import { logger } from "../logger.js";
 
 /** Best-effort plain text for the catch-all fallback: strip tags + decode the
  *  few entities our formatters emit. Never throws. */
-export function richToPlainText(msg: InputRichMessage): string {
+export function richToPlainText(msg: InputRichMessage<InputFile>): string {
   const raw = msg.html ?? msg.markdown ?? "";
   return raw
     .replace(/<[^>]+>/g, " ")   // tags become a space so adjacent words don't merge
@@ -25,7 +25,7 @@ export function richToPlainText(msg: InputRichMessage): string {
  *  reply_markup etc. */
 export async function sendRich(
   ctx: Context,
-  msg: InputRichMessage,
+  msg: InputRichMessage<InputFile>,
   extra?: Record<string, unknown>,
 ): Promise<void> {
   try {
