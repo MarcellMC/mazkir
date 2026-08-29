@@ -51,6 +51,12 @@ def minutes_into_day(timestamp: str, date: str) -> int | None:
     Accepts `YYYY-MM-DDTHH:MM[...]` and a bare `HH:MM`. A timestamp on a
     different date returns None rather than folding into this one — a
     block spanning midnight is clipped by the caller, not silently moved.
+
+    UTC timestamps (ending with `Z`) are rejected: they express UTC time,
+    not local wall clock, and converting them requires timezone knowledge
+    this module deliberately does not have (see module docstring). Timestamps
+    with an offset like `+03:00` are accepted as local wall-clock time,
+    since their hour/minute already express what the clock showed.
     """
     if not timestamp:
         return None
@@ -59,6 +65,11 @@ def minutes_into_day(timestamp: str, date: str) -> int | None:
         day_part, _, time_part = timestamp.partition("T")
         if day_part != date:
             return None
+
+    # Reject UTC timestamps explicitly.
+    if time_part.endswith("Z"):
+        return None
+
     parts = time_part.split(":")
     if len(parts) < 2:
         return None

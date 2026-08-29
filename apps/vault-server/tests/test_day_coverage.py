@@ -27,6 +27,23 @@ class TestMinutesIntoDay:
         assert minutes_into_day("garbage", "2026-08-29") is None
 
 
+class TestMinutesIntoDayTimezones:
+    def test_an_offset_timestamp_is_read_as_local_wall_clock(self):
+        """Google Calendar returns RFC3339 with the calendar's offset, whose
+        wall-clock reading is already local. 09:05+03:00 is 09:05 here."""
+        assert minutes_into_day("2026-08-29T09:05:30+03:00", "2026-08-29") == 545
+
+    @pytest.mark.parametrize("ts", [
+        "2026-08-29T09:05Z",
+        "2026-08-29T09:05:30Z",
+    ])
+    def test_a_utc_timestamp_is_rejected_rather_than_misplaced(self, ts):
+        """09:05 UTC is 12:05 in this vault's timezone. Reading the wall clock
+        off it would shift the block three hours earlier with no error. This
+        module has no timezone knowledge, so it declines instead of guessing."""
+        assert minutes_into_day(ts, "2026-08-29") is None
+
+
 class TestDayCoverage:
     def test_the_worked_example_from_the_spec(self):
         """Friday, clock at 15:00, three blocks.
@@ -87,3 +104,11 @@ class TestDayCoverage:
         which would read as a zero-length span."""
         gaps, _ = day_coverage([(0, 60)], elapsed_minutes=DAY)
         assert gaps == [Gap("01:00", "24:00", 1380)]
+
+    def test_a_fully_contained_block_does_not_shrink_its_container(self):
+        """A block nested inside another — the `max()` in the union is what
+        prevents this from undercounting coverage and inventing a gap where the
+        outer block continues."""
+        gaps, coverage = day_coverage([(420, 480), (440, 460)], elapsed_minutes=900)
+        assert coverage.covered_minutes == 60
+        assert not any(g.start == "07:40" for g in gaps)
