@@ -416,18 +416,28 @@ class MergerService:
                         break
 
     def _find_matching_habit(self, event_name: str, habits: list[dict]) -> dict | None:
-        """Find the habit a calendar event stands for, by whole-phrase match.
+        """Find the habit a calendar event stands for, by substring containment.
+
+        Matching is unanchored substring containment, not whole-phrase or
+        token-boundary matching: `'Work'` matches habit `Workout`, `'Email'`
+        matches `Review Email`. That is looser than the name suggests —
+        tightening it to a token-boundary comparison is a real behaviour
+        change, deliberately not made here.
 
         A match here does more than decorate the event: it makes the habit
         `attached`, and an attached habit emits no standalone block. So a
-        false positive does not merely mislabel a row — it removes one,
-        and reconciliation then reads the missing row as "deleted
-        upstream" and destroys the persisted event with any photo on it.
+        false positive does not merely mislabel a row — it removes one. It
+        no longer destroys the persisted event, though: `habit` sits
+        outside `_DELETABLE_SOURCE_SYSTEMS` (`events_service.py`), so
+        reconciliation preserves the now-unmatched row instead of deleting
+        it — a false positive costs a suppressed/duplicated row, not data.
+        Re-adding `habit` to `_DELETABLE_SOURCE_SYSTEMS` would reopen the
+        deletion risk this docstring used to describe.
 
         This used to fall back to bare single-word overlap, which made
         every common word a match: a "Design review" meeting claimed the
         "Review Email" habit, and "Walk to office" claimed "Dog Walk".
-        Now one name must contain the other as a whole phrase.
+        Now one name must contain the other as a substring.
 
         The alternative considered — keeping word overlap but gating it on
         time proximity — was rejected because `scheduled_at` is optional

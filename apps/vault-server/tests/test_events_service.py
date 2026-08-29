@@ -341,6 +341,104 @@ class TestRefreshMerge:
         assert len(result[0]["photos"]) == 1  # Photo preserved
 
 
+class TestReconcileDerivedVsUserSetState:
+    """`completed` and `habit` are recomputed from the vault on every merge,
+    so a matched event must take them from the fresh side — the persisted
+    value is stale the instant the underlying checkbox/habit log changes.
+    `photos`/`assets`/`state` are the opposite: user-set enrichment nothing
+    upstream can regenerate, so those must keep coming from the persisted
+    side. This guards against a fix to one direction accidentally undoing
+    the other."""
+
+    def test_completed_refreshes_from_the_fresh_merge(self, events_service):
+        events_service.save_events("2026-03-04", [{
+            "name": "Morning workout",
+            "type": "daily-task",
+            "start_time": "07:00",
+            "end_time": "07:30",
+            "source": "daily-note",
+            "source_ids": {"note_line": "line1"},
+            "completed": False,
+        }])
+
+        fresh = [{
+            "name": "Morning workout",
+            "type": "daily-task",
+            "start_time": "07:00",
+            "end_time": "07:30",
+            "source": "daily-note",
+            "source_ids": {"note_line": "line1"},
+            "completed": True,
+        }]
+
+        result = events_service.reconcile("2026-03-04", fresh)
+        assert len(result) == 1
+        assert result[0]["completed"] is True  # Ticking the box wins, not the stale persisted value
+
+    def test_habit_dict_refreshes_from_the_fresh_merge(self, events_service):
+        events_service.save_events("2026-03-04", [{
+            "name": "🎯 Meditate",
+            "type": "habit",
+            "start_time": "07:00",
+            "source": "habit",
+            "source_ids": {"habit_slug": "meditate"},
+            "completed": False,
+            "habit": {"name": "Meditate", "completed": False, "streak": 3, "tokens_earned": 0},
+        }])
+
+        fresh = [{
+            "name": "🎯 Meditate",
+            "type": "habit",
+            "start_time": "07:00",
+            "source": "habit",
+            "source_ids": {"habit_slug": "meditate"},
+            "completed": True,
+            "habit": {"name": "Meditate", "completed": True, "streak": 4, "tokens_earned": 5},
+        }]
+
+        result = events_service.reconcile("2026-03-04", fresh)
+        assert len(result) == 1
+        assert result[0]["completed"] is True
+        assert result[0]["habit"]["completed"] is True
+        assert result[0]["habit"]["streak"] == 4
+        assert result[0]["habit"]["tokens_earned"] == 5
+
+    def test_photos_and_state_survive_reconcile_even_as_completed_flips(self, events_service):
+        """A fix that refreshed everything on a match — not just derived
+        fields — would silently drop user-set enrichment. Assert both
+        travel through the same reconcile call that flips `completed`."""
+        events_service.save_events("2026-03-04", [{
+            "name": "Morning workout",
+            "type": "daily-task",
+            "start_time": "07:00",
+            "end_time": "07:30",
+            "source": "daily-note",
+            "source_ids": {"note_line": "line1"},
+            "completed": False,
+            "photos": [{"path": "photo.jpg", "caption": "before"}],
+            "state": "approved",
+        }])
+        old_id = events_service.get_events("2026-03-04")[0]["id"]
+
+        fresh = [{
+            "name": "Morning workout",
+            "type": "daily-task",
+            "start_time": "07:00",
+            "end_time": "07:30",
+            "source": "daily-note",
+            "source_ids": {"note_line": "line1"},
+            "completed": True,
+        }]
+
+        result = events_service.reconcile("2026-03-04", fresh)
+        assert len(result) == 1
+        assert result[0]["id"] == old_id
+        assert result[0]["completed"] is True
+        assert len(result[0]["photos"]) == 1  # user-set enrichment preserved
+        assert result[0]["photos"][0]["caption"] == "before"
+        assert result[0]["state"] == "approved"  # user-set enrichment preserved
+
+
 class TestUpdateEventReturnsPersistedEvent:
     def test_update_event_returns_the_persisted_event(self, events_service):
         svc = events_service

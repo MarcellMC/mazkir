@@ -298,7 +298,10 @@ class EventsService:
 
         Algorithm:
         1. Match fresh events to existing events by source_ids
-        2. Matched: update name/time/location from fresh, keep photos/assets/id
+        2. Matched: update name/time/location/completed/habit from fresh
+           (all re-derived from the vault every merge), keep
+           photos/assets/id/state (user-set enrichment nothing upstream
+           can regenerate)
         3. Unmatched fresh: add as new events
         4. Unmatched existing with source in ('manual', 'photo'): preserve as-is
         5. Unmatched existing from any other source: preserve unless its
@@ -342,13 +345,24 @@ class EventsService:
                     break
 
             if matched_existing:
-                # Update from fresh source, keep persisted data
+                # Update from fresh source, keep persisted data. These
+                # fields are re-derived from the vault on every merge —
+                # `completed` and `habit` (streak/tokens_earned/etc.) are
+                # never user-set on the persisted event, they're computed
+                # from checkbox/habit-log state each time, so the fresh
+                # value is always the current truth and the persisted one
+                # is always stale the instant the vault changes. That is
+                # the opposite of `photos`/`assets`/`state`, which are
+                # enrichment nothing upstream can regenerate — those must
+                # keep coming from `matched_existing`, never from `fresh`.
                 matched_existing["name"] = fresh["name"]
                 matched_existing["start_time"] = fresh["start_time"]
                 matched_existing["end_time"] = fresh.get("end_time", matched_existing.get("end_time"))
                 matched_existing["location"] = fresh.get("location", matched_existing.get("location"))
                 matched_existing["source"] = fresh.get("source", matched_existing.get("source"))
                 matched_existing["source_ids"] = fresh_source_ids
+                matched_existing["completed"] = fresh.get("completed", False)
+                matched_existing["habit"] = fresh.get("habit")
                 result.append(matched_existing)
             else:
                 result.append(fresh)

@@ -132,9 +132,9 @@ callbackHandlers.callbackQuery(/^day:(.+)$/, async (ctx) => {
     markActiveSpanError(err);
     // The error report is itself an edit and can itself be rejected (e.g.
     // chained from the same "not modified" condition, or a second identical
-    // failure). There is no bot.catch() registered, so an unhandled
-    // rejection here would escape the middleware. Log and give up quietly —
-    // the user still has the previous message on screen.
+    // failure). `bot.catch()` (bot.ts) would still net this, but logging
+    // and giving up quietly here avoids bouncing it through the bot-wide
+    // boundary — the user still has the previous message on screen.
     try {
       await ctx.editMessageText("❌ Failed to load the day.");
     } catch (reportErr) {

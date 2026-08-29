@@ -18,14 +18,23 @@ dayCommand.command("day", async (ctx) => {
     await ctx.reply("❌ Failed to load the day. Is vault-server running?");
     return;
   }
-  // buildDayRich is inside the try, not beside it: it throws synchronously
-  // on a malformed payload (a block missing `start`, say), and outside a
-  // try that throw leaves the handler entirely. The `day:` callback wraps
-  // the identical call.
+  // buildDayRich (throws synchronously on a malformed payload — a block
+  // missing `start`, say) and sendRich (a Telegram send failure) get their
+  // own try/catch pairs so each reports its own cause. Collapsing them
+  // back into one try is exactly the conflation this file's own comment
+  // above warns against: a send failure would again read as a render bug.
+  let rich;
   try {
-    await sendRich(ctx, buildDayRich(data));
+    rich = buildDayRich(data);
   } catch (err) {
     markActiveSpanError(err);
     await ctx.reply("❌ Failed to render the day.");
+    return;
+  }
+  try {
+    await sendRich(ctx, rich);
+  } catch (err) {
+    markActiveSpanError(err);
+    await ctx.reply("❌ Failed to send the day.");
   }
 });
