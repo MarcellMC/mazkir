@@ -134,6 +134,106 @@ describe("buildDayRich", () => {
       .toBe(9);  // 7 week days + prev + next
   });
 
+  describe("the week bar (fixed Sunday->Saturday)", () => {
+    // 2026-08-23 (Sun) .. 2026-08-29 (Sat) is one full week, entirely
+    // within August, used as the reference week for most of these tests.
+    const HEBREW_WEEK: [string, string][] = [
+      ["2026-08-23", "א"], // Sun
+      ["2026-08-24", "ב"], // Mon
+      ["2026-08-25", "ג"], // Tue
+      ["2026-08-26", "ד"], // Wed
+      ["2026-08-27", "ה"], // Thu
+      ["2026-08-28", "ו"], // Fri
+      ["2026-08-29", "✨ש"], // Sat
+    ];
+
+    /** Pull the 7 weekday buttons out of the rendered HTML, in document
+     *  order, distinguishing them from the `‹`/`›`/`today` nav buttons by
+     *  label (the nav buttons never start with a Hebrew letter). */
+    function weekdayButtons(out: string): { date: string; label: string; primary: boolean }[] {
+      const re = /<tg-button type="callback_data" data="day:(\d{4}-\d{2}-\d{2})"( style="primary")?>([^<]+)<\/tg-button>/g;
+      const found: { date: string; label: string; primary: boolean }[] = [];
+      for (const m of out.matchAll(re)) {
+        const label = m[3]!;
+        if (label === "‹" || label === "›" || label === "today") continue;
+        found.push({ date: m[1]!, label, primary: Boolean(m[2]) });
+      }
+      return found;
+    }
+
+    it("always orders the seven buttons Sunday->Saturday, regardless of which weekday is selected", () => {
+      const wed = weekdayButtons(html({ ...base, date: "2026-08-26" }));
+      const sat = weekdayButtons(html({ ...base, date: "2026-08-29" }));
+      const expectedDates = HEBREW_WEEK.map(([d]) => d);
+      expect(wed.map((b) => b.date)).toEqual(expectedDates);
+      expect(sat.map((b) => b.date)).toEqual(expectedDates);
+    });
+
+    it("maps the Hebrew letters to the correct weekdays", () => {
+      const out = html({ ...base, date: "2026-08-26" });
+      const buttons = weekdayButtons(out);
+      for (const [date, prefix] of HEBREW_WEEK) {
+        const button = buttons.find((b) => b.date === date)!;
+        expect(button.label.startsWith(prefix)).toBe(true);
+      }
+    });
+
+    it("carries the ✨ prefix on Saturday only", () => {
+      const out = html({ ...base, date: "2026-08-26" });
+      const buttons = weekdayButtons(out);
+      expect(buttons.find((b) => b.date === "2026-08-29")!.label).toBe("✨ש29");
+      for (const b of buttons) {
+        if (b.date !== "2026-08-29") expect(b.label).not.toContain("✨");
+      }
+    });
+
+    it("marks the selected day, and only the selected day, primary", () => {
+      const out = html({ ...base, date: "2026-08-26" });
+      const buttons = weekdayButtons(out);
+      const primaries = buttons.filter((b) => b.primary);
+      expect(primaries).toHaveLength(1);
+      expect(primaries[0]!.date).toBe("2026-08-26");
+    });
+
+    it("pages the arrows by a full week, not by one day", () => {
+      const out = html({ ...base, date: "2026-08-26" });
+      expect(out).toContain('data="day:2026-08-19">‹</tg-button>');
+      expect(out).toContain('data="day:2026-09-02">›</tg-button>');
+    });
+
+    it("shows the selected Sunday first when a Sunday is selected", () => {
+      const out = html({ ...base, date: "2026-08-23" });
+      const buttons = weekdayButtons(out);
+      expect(buttons[0]!.date).toBe("2026-08-23");
+      expect(buttons[0]!.primary).toBe(true);
+      expect(buttons[buttons.length - 1]!.date).toBe("2026-08-29");
+    });
+
+    it("shows the selected Saturday last, with the same week's Sunday first", () => {
+      const out = html({ ...base, date: "2026-08-29" });
+      const buttons = weekdayButtons(out);
+      expect(buttons[0]!.date).toBe("2026-08-23");
+      expect(buttons[buttons.length - 1]!.date).toBe("2026-08-29");
+      expect(buttons[buttons.length - 1]!.primary).toBe(true);
+    });
+
+    it("renders a week spanning a month boundary correctly", () => {
+      // The week containing 2026-08-31 (Mon) runs Sun 2026-08-30 through
+      // Sat 2026-09-05 — it crosses from August into September.
+      const out = html({ ...base, date: "2026-08-31" });
+      const buttons = weekdayButtons(out);
+      expect(buttons.map((b) => b.date)).toEqual([
+        "2026-08-30", "2026-08-31", "2026-09-01", "2026-09-02",
+        "2026-09-03", "2026-09-04", "2026-09-05",
+      ]);
+      expect(buttons[0]!.label).toBe("א30");
+      expect(buttons[1]!.label).toBe("ב31");
+      expect(buttons[1]!.primary).toBe(true);
+      expect(buttons[2]!.label).toBe("ג1");
+      expect(buttons[6]!.label).toBe("✨ש5");
+    });
+  });
+
   it("says so when there is nothing to show", () => {
     expect(html(base)).toContain("no blocks");
   });

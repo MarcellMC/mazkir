@@ -8,7 +8,9 @@ import { escapeHtml } from "./telegram.js";
  *  escapeHtml remains the right tool for user text — a miss renders wrong
  *  rather than losing the whole message, which is what HTML parse_mode did. */
 
-const WEEK_RADIUS = 3;
+// Sunday-first, matching the Hebrew week. Index 0 == Sunday (getUTCDay()'s
+// own numbering) through index 6 == Saturday.
+const WEEKDAY_PREFIXES = ["א", "ב", "ג", "ד", "ה", "ו", "✨ש"];
 
 function hours(minutes: number): string {
   return `${(minutes / 60).toFixed(1)}h`;
@@ -55,25 +57,41 @@ function gapRow(g: DailyGap): string {
   return `<tr><td>⚠ ${g.start}–${g.end}</td><td>—</td><td>${hours(g.minutes)}</td></tr>`;
 }
 
+/** Sunday of the week containing `iso`, computed with the same UTC-safe
+ *  arithmetic as `shiftDate` (parse with an explicit `Z`, only
+ *  `setUTCDate`/`getUTCDay`/`toISOString` — never a local-time getter, which
+ *  would shift the result across a DST boundary). `getUTCDay()` already
+ *  returns 0 for Sunday, so shifting back by that many days lands on it. */
+function weekStart(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  return shiftDate(iso, -d.getUTCDay());
+}
+
+/** Fixed Sunday->Saturday week, so a given weekday always sits in the same
+ *  column and the arrows page a week at a time rather than sliding the
+ *  centre day around. Button labels are plain text only — Bot API 10.3
+ *  buttons accept "only plain text, RichTextCustomEmoji and
+ *  RichTextDateTime entities" (@grammyjs/types 5.0.0), so there is no bold,
+ *  superscript, or font-size markup available to mark Saturday gold. Do NOT
+ *  attempt <sub>, superscript, or size markup inside a button label here —
+ *  it will not render; the ✨ emoji prefix is the deliberate substitute. */
 function weekBar(selected: string): string {
-  const buttons: string[] = [];
-  for (let offset = -WEEK_RADIUS; offset <= WEEK_RADIUS; offset++) {
-    const iso = shiftDate(selected, offset);
+  const sunday = weekStart(selected);
+  const buttons = WEEKDAY_PREFIXES.map((prefix, offset) => {
+    const iso = shiftDate(sunday, offset);
     const day = Number(iso.slice(8, 10));
-    const style = offset === 0 ? ' style="primary"' : "";
-    buttons.push(
-      `<tg-button type="callback_data" data="day:${iso}"${style}>${day}</tg-button>`,
-    );
-  }
+    const style = iso === selected ? ' style="primary"' : "";
+    return `<tg-button type="callback_data" data="day:${iso}"${style}>${prefix}${day}</tg-button>`;
+  });
   return `<tg-button-row align="center">${buttons.join("")}</tg-button-row>`;
 }
 
 function navBar(selected: string): string {
   return (
     `<tg-button-row align="center">` +
-    `<tg-button type="callback_data" data="day:${shiftDate(selected, -1)}">◀</tg-button>` +
+    `<tg-button type="callback_data" data="day:${shiftDate(selected, -7)}">‹</tg-button>` +
     `<tg-button type="callback_data" data="day:today">today</tg-button>` +
-    `<tg-button type="callback_data" data="day:${shiftDate(selected, 1)}">▶</tg-button>` +
+    `<tg-button type="callback_data" data="day:${shiftDate(selected, 7)}">›</tg-button>` +
     `</tg-button-row>`
   );
 }
