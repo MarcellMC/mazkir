@@ -64,3 +64,81 @@ describe("buildGoalDetailRich", () => {
     expect(out).not.toContain("goal:done");
   });
 });
+
+// Ported from the deleted formatGoals / formatGoalDetail suites in
+// telegram.test.ts. These assert what the messages SAY, which the move to a
+// rich message was not supposed to change — only where the buttons live.
+describe("buildGoalsRich priority mapping", () => {
+  it("maps the vault's string priorities onto the emoji scale", () => {
+    const high = html(() => buildGoalsRich([
+      goal({ name: "A", priority: "high", progress: 0 })] as never));
+    const low = html(() => buildGoalsRich([
+      goal({ name: "B", priority: "low", progress: 0 })] as never));
+    expect(high).toContain("🔴");
+    expect(low).toContain("🟢");
+  });
+
+  it("still maps the older numeric scale", () => {
+    expect(html(() => buildGoalsRich([goal({ priority: 5 })] as never))).toContain("🔴");
+    expect(html(() => buildGoalsRich([goal({ priority: 3 })] as never))).toContain("🟡");
+  });
+});
+
+describe("buildGoalDetailRich body", () => {
+  const GOAL = {
+    name: "Get fit <2026>",
+    slug: "get-fit",
+    status: "in-progress",
+    priority: "high",
+    progress: 40,
+    category: "health",
+    start_date: "2026-01-01",
+    target_date: "2026-12-31",
+    path: "30-goals/2026/get-fit.md",
+    milestones: ["Run 5k", "Run 10k"],
+    content: "# Get fit\n\n## Why\nFeel better & live longer\n\n## Checklist\n- [ ]\n",
+  };
+
+  it("renders progress, priority, status and dates", () => {
+    const out = html(() => buildGoalDetailRich(GOAL as never));
+    expect(out).toMatch(/40\s*%/);
+    expect(out).toContain("Priority: <b>high</b>");
+    expect(out).toContain("Status: in-progress");
+    expect(out).toContain("Started: 2026-01-01");
+    expect(out).toContain("Target: 2026-12-31");
+  });
+
+  it("includes the note body but drops the title and empty sections", () => {
+    const out = html(() => buildGoalDetailRich(GOAL as never));
+    expect(out).toContain("## Why");
+    expect(out).not.toContain("## Checklist");
+    expect(out).not.toContain("# Get fit\n");
+  });
+
+  it("lists string milestones and ignores richer entries", () => {
+    const out = html(() => buildGoalDetailRich({
+      ...GOAL, milestones: ["Run 5k", { name: "structured" }],
+    } as never));
+    expect(out).toContain("Run 5k");
+    expect(out).not.toContain("structured");
+  });
+
+  it("omits the milestones block when there are none", () => {
+    expect(html(() => buildGoalDetailRich({ ...GOAL, milestones: [] } as never)))
+      .not.toContain("Milestones");
+  });
+
+  it("escapes HTML in the name and body", () => {
+    const out = html(() => buildGoalDetailRich(GOAL as never));
+    expect(out).toContain("Get fit &lt;2026&gt;");
+    expect(out).toContain("Feel better &amp; live longer");
+    expect(out).not.toContain("<2026>");
+  });
+
+  it("renders without a content field at all", () => {
+    // `content` is optional on the wire; an unguarded stripEmptySections
+    // would throw on undefined and take the whole message with it.
+    const { content, ...noContent } = GOAL;
+    expect(() => buildGoalDetailRich(noContent as never)).not.toThrow();
+  });
+});

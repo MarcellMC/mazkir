@@ -85,3 +85,60 @@ describe("buildTaskDetailRich", () => {
     expect(out).toMatch(/data="task:done:[^"]*" style="success"/);
   });
 });
+
+// Ported from the deleted formatTaskDetail suite in telegram.test.ts. These
+// assert what the detail message SAYS, which the move to a rich message was
+// not supposed to change — only where its buttons live.
+describe("buildTaskDetailRich body", () => {
+  const detail = {
+    name: "Ship feature <v2>",
+    slug: "ship-feature-v2",
+    status: "active",
+    priority: 5,
+    category: "work",
+    due_date: "2026-06-15",
+    tokens_on_completion: 10,
+    created: "2026-06-01",
+    google_event_id: "abc123",
+    path: "40-tasks/active/ship-feature-v2.md",
+    content: "# Ship feature <v2>\n\n## Description\nBig & important release\n\n## Checklist\n- [ ]\n\n## Notes\n",
+  };
+
+  it("escapes HTML in name and body", () => {
+    const out = html(() => buildTaskDetailRich(detail as never));
+    expect(out).toContain("Ship feature &lt;v2&gt;");
+    expect(out).toContain("Big &amp; important release");
+    expect(out).not.toContain("<v2>");
+  });
+
+  it("shows frontmatter fields", () => {
+    const out = html(() => buildTaskDetailRich(detail as never));
+    expect(out).toContain("Priority: <b>5</b>");
+    expect(out).toContain("Category: work");
+    expect(out).toContain("Due: 2026-06-15");
+    expect(out).toContain("Tokens on completion: 10");
+    expect(out).toContain("Synced to Google Calendar");
+  });
+
+  it("drops empty template sections but keeps written content", () => {
+    const out = html(() => buildTaskDetailRich(detail as never));
+    expect(out).toContain("## Description");
+    expect(out).not.toContain("## Checklist");
+    expect(out).not.toContain("## Notes");
+  });
+
+  it("omits the body block when content is pure boilerplate", () => {
+    const out = html(() => buildTaskDetailRich({
+      ...detail,
+      content: "# Title\n\n## Description\n\n\n## Checklist\n- [ ]\n\n## Notes\n",
+    } as never));
+    expect(out).not.toContain("<blockquote>");
+  });
+
+  it("renders without a content field at all", () => {
+    // `content` is optional on the wire; an unguarded stripEmptySections
+    // would throw on undefined and take the whole message with it.
+    const { content, ...noContent } = detail;
+    expect(() => buildTaskDetailRich(noContent as never)).not.toThrow();
+  });
+});
