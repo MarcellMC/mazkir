@@ -1,14 +1,12 @@
 import { Composer } from "grammy";
 import { api } from "../api/client.js";
 import {
-  formatTasks,
-  formatTaskDetail,
   formatHabits,
   formatCalendar,
   formatGoals,
   formatGoalDetail,
 } from "../formatters/telegram.js";
-import { buildTasksKeyboard, buildTaskDetailKeyboard } from "../keyboards/tasks.js";
+import { buildTasksRich, buildTaskDetailRich } from "../formatters/tasks-rich.js";
 import { buildGoalsKeyboard, buildGoalDetailKeyboard } from "../keyboards/goals.js";
 import { buildHabitsKeyboard } from "../keyboards/habits.js";
 import { markActiveSpanError } from "../tracing-utils.js";
@@ -75,9 +73,8 @@ callbackHandlers.callbackQuery(/^task:view:(.+)$/, async (ctx) => {
   try {
     const detail = await api.getTask(slug);
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText(formatTaskDetail(detail), {
-      parse_mode: "HTML",
-      reply_markup: buildTaskDetailKeyboard(detail.slug),
+    await editRich(ctx, buildTaskDetailRich(detail), {
+      reply_markup: buildNavKeyboard("tasks"),
     });
   } catch (err) {
     markActiveSpanError(err);
@@ -110,9 +107,8 @@ callbackHandlers.callbackQuery(/^task:(?:done|complete):(.+)$/, async (ctx) => {
     await api.completeTask(ref);
     await ctx.answerCallbackQuery({ text: "✅ Task completed!" });
     const tasks = await api.listTasks();
-    await ctx.editMessageText(formatTasks(tasks), {
-      parse_mode: "HTML",
-      reply_markup: buildTasksKeyboard(tasks),
+    await editRich(ctx, buildTasksRich(tasks), {
+      reply_markup: buildNavKeyboard("tasks"),
     });
   } catch (err) {
     markActiveSpanError(err);
@@ -156,9 +152,8 @@ callbackHandlers.callbackQuery(/^nav:(.+)$/, async (ctx) => {
     switch (target) {
       case "tasks": {
         const tasks = await api.listTasks();
-        await ctx.editMessageText(formatTasks(tasks), {
-          parse_mode: "HTML",
-          reply_markup: buildTasksKeyboard(tasks),
+        await editRich(ctx, buildTasksRich(tasks), {
+          reply_markup: buildNavKeyboard("tasks"),
         });
         break;
       }

@@ -80,7 +80,7 @@ const DETAIL_BODY_MAX = 800;
 
 /** Drop the "# Title" heading and `## Section` blocks with no real content
  * (template boilerplate like an empty Description or a lone `- [ ]`). */
-function stripEmptySections(content: string): string {
+export function stripEmptySections(content: string): string {
   const withoutTitle = content.replace(/^#\s+.*\n?/, "");
   const blocks = withoutTitle.split(/^(?=##\s)/m);
   const kept = blocks.filter((block) => {
