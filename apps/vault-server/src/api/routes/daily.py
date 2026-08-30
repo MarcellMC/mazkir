@@ -41,6 +41,12 @@ class DailyGap(BaseModel):
 class DayCoverage(BaseModel):
     covered_minutes: int
     unaccounted_minutes: int
+    # Minutes since local midnight for today, 1440 for a past day, 0 for a
+    # future day. Carries the "is it today" signal for free: the bot needs
+    # no timezone comparison at all, since the divider it draws between
+    # elapsed and still-to-come rows shows exactly when
+    # `0 < elapsed_minutes < 1440`.
+    elapsed_minutes: int
 
 
 class DailyNote(BaseModel):
@@ -223,6 +229,7 @@ def _build_blocks_and_coverage(
         DayCoverage(
             covered_minutes=coverage.covered_minutes,
             unaccounted_minutes=coverage.unaccounted_minutes,
+            elapsed_minutes=elapsed_minutes,
         ),
     )
 

@@ -371,11 +371,15 @@ class TestGetDailyRoute:
 
         # elapsed = 1440 for a past date: one full-day gap, nothing covered.
         assert past_body["gaps"] == [{"start": "00:00", "end": "24:00", "minutes": 1440}]
-        assert past_body["coverage"] == {"covered_minutes": 0, "unaccounted_minutes": 1440}
+        assert past_body["coverage"] == {
+            "covered_minutes": 0, "unaccounted_minutes": 1440, "elapsed_minutes": 1440,
+        }
 
         # elapsed = 0 for a future date: no gaps at all, not one big one.
         assert future_body["gaps"] == []
-        assert future_body["coverage"] == {"covered_minutes": 0, "unaccounted_minutes": 0}
+        assert future_body["coverage"] == {
+            "covered_minutes": 0, "unaccounted_minutes": 0, "elapsed_minutes": 0,
+        }
 
         # elapsed = now for today: one gap ending at (about) the wall clock.
         assert len(today_body["gaps"]) == 1
@@ -384,9 +388,25 @@ class TestGetDailyRoute:
         lo = now_before.hour * 60 + now_before.minute
         hi = now_after.hour * 60 + now_after.minute
         assert lo <= gap_end_minutes <= hi
+        assert lo <= today_body["coverage"]["elapsed_minutes"] <= hi
 
         for body in (past_body, future_body, today_body):
             assert "schedule" not in body
+
+    def test_elapsed_minutes_three_cases(self):
+        """`elapsed_minutes` is what lets the bot draw the now-divider
+        without any timezone math of its own: past day -> 1440, future day
+        -> 0, today -> strictly between the two."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        _, _, past = _build_blocks_and_coverage([], "2026-08-29", elapsed_minutes=1440)
+        _, _, future = _build_blocks_and_coverage([], "2026-08-29", elapsed_minutes=0)
+        _, _, today = _build_blocks_and_coverage([], "2026-08-29", elapsed_minutes=600)
+
+        assert past.elapsed_minutes == 1440
+        assert future.elapsed_minutes == 0
+        assert today.elapsed_minutes == 600
+        assert 0 < today.elapsed_minutes < 1440
 
     def test_traversal_date_is_rejected(self):
         from fastapi.testclient import TestClient

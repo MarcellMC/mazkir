@@ -41,20 +41,35 @@ function facetLabel(b: DailyBlock): string {
   return "";
 }
 
-function blockRow(b: DailyBlock): string {
+function blockRow(b: DailyBlock, ahead: boolean): string {
   // Completion is prefixed to the TIME column, not put in the marker
   // column: `habit_progress` and the facet label already live there, and a
   // completed habit has both. Prefixing also puts it in the same column as
   // the gap row's `⚠`, so the leftmost cell reads as one status channel
   // down the timeline. Ship 1 rendered `✅ 14:00 — Standup`; this restores
   // that for every source, not just habits.
-  const done = b.completed ? "✅ " : "";
+  //
+  // `⟳` (still ahead) shares the same prefix slot: a block cannot be both
+  // completed and still ahead of "now", so the two never collide, and the
+  // third column stays free for `habit_progress`/facet classification.
+  const prefix = b.completed ? "✅ " : ahead ? "⟳ " : "";
   const marker = b.habit_progress ? escapeHtml(b.habit_progress) : facetLabel(b);
-  return `<tr><td>${done}${b.start}–${b.end}</td><td>${escapeHtml(b.title)}</td><td>${marker}</td></tr>`;
+  return `<tr><td>${prefix}${b.start}–${b.end}</td><td>${escapeHtml(b.title)}</td><td>${marker}</td></tr>`;
 }
 
 function gapRow(g: DailyGap): string {
   return `<tr><td>⚠ ${g.start}–${g.end}</td><td>—</td><td>${hours(g.minutes)}</td></tr>`;
+}
+
+const MINUTES_PER_DAY = 24 * 60;
+
+/** "HH:MM" -> minutes since midnight. Deliberately not a `Date` parse — the
+ *  spec is explicit that block/gap `start` values are wall-clock offsets,
+ *  not calendar timestamps, and parsing them as dates would drag in a
+ *  timezone this arithmetic has no business knowing about. */
+function toMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(":").map(Number);
+  return (h ?? 0) * 60 + (m ?? 0);
 }
 
 /** Sunday of the week containing `iso`, computed with the same UTC-safe
@@ -119,15 +134,41 @@ export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {
 
   // Blocks and gaps interleave in time order: a gap is a hole between
   // blocks, so reading them as one sequence is the whole point.
+  //
+  // `elapsed_minutes` carries the "is it today" signal for free (past day
+  // -> 1440, future day -> 0, today -> strictly between), so there is no
+  // timezone comparison here — a row is "ahead" purely by comparing its
+  // start to that number.
+  const elapsedMinutes = data.coverage.elapsed_minutes;
   const rows = [
-    ...data.blocks.map((b) => ({ at: b.start, html: blockRow(b) })),
-    ...data.gaps.map((g) => ({ at: g.start, html: gapRow(g) })),
+    ...data.blocks.map((b) => {
+      const ahead = toMinutes(b.start) >= elapsedMinutes;
+      return { at: b.start, ahead, html: blockRow(b, ahead) };
+    }),
+    // Gap rows never carry `⟳`: the server already excludes future time
+    // from `unaccounted`, so a gap starting at or after `elapsed_minutes`
+    // does not occur in practice, but the split still needs to place it on
+    // the correct side if it ever did.
+    ...data.gaps.map((g) => ({ at: g.start, ahead: toMinutes(g.start) >= elapsedMinutes, html: gapRow(g) })),
   ].sort((a, b) => a.at.localeCompare(b.at));
 
   if (rows.length === 0) {
     parts.push("<p>no blocks</p>");
   } else {
-    parts.push(`<table>${rows.map((r) => r.html).join("")}</table>`);
+    // The divider only makes sense on today: on a past day everything is
+    // elapsed, on a future day everything is ahead, and a rule that emits
+    // above or below the whole table is noise rather than a divider.
+    const isToday = elapsedMinutes > 0 && elapsedMinutes < MINUTES_PER_DAY;
+    const elapsedRows = rows.filter((r) => !r.ahead);
+    const aheadRows = rows.filter((r) => r.ahead);
+
+    if (isToday && elapsedRows.length > 0 && aheadRows.length > 0) {
+      parts.push(`<table>${elapsedRows.map((r) => r.html).join("")}</table>`);
+      parts.push("<hr>");
+      parts.push(`<table>${aheadRows.map((r) => r.html).join("")}</table>`);
+    } else {
+      parts.push(`<table>${rows.map((r) => r.html).join("")}</table>`);
+    }
   }
 
   // Timed todos already appear above as blocks; showing them again here

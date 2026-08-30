@@ -7,7 +7,11 @@ const base = {
   tokens_total: 0,
   blocks: [],
   gaps: [],
-  coverage: { covered_minutes: 0, unaccounted_minutes: 0 },
+  // 1440 (a "past day") is the neutral default here: every pre-existing
+  // test in this file predates the ahead-marker feature and expects plain
+  // rows, and 1440 is the one elapsed_minutes value that marks nothing
+  // ahead regardless of a block's start.
+  coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 1440 },
   todos: [],
   notes: [],
 };
@@ -323,6 +327,93 @@ describe("buildDayRich", () => {
       });
       expect(out).toContain("<td>\u2705 14:00\u201315:00</td>");
       expect(out).toContain("<td>2/2</td>");
+    });
+  });
+
+  describe("the now-divider and ahead marker", () => {
+    const block = (start: string, end: string, title: string, completed = false) => ({
+      id: title, start, end, title, source: "calendar", type: "calendar",
+      completed, activity: null, category: null, state: "suggested" as const,
+      habit_progress: null,
+    });
+
+    it("today with rows on both sides: one <hr>, two <table>s, \u27f3 on ahead blocks only", () => {
+      const out = html({
+        ...base,
+        coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600 }, // 10:00
+        blocks: [block("09:00", "09:30", "Past thing"), block("11:00", "12:00", "Future thing")],
+      });
+      expect((out.match(/<table>/g) ?? []).length).toBe(2);
+      expect((out.match(/<hr>/g) ?? []).length).toBe(1);
+      expect(out.indexOf("Past thing")).toBeLessThan(out.indexOf("<hr>"));
+      expect(out.indexOf("<hr>")).toBeLessThan(out.indexOf("Future thing"));
+      expect(out).not.toContain("\u27f3 09:00");
+      expect(out).toContain("\u27f3 11:00");
+    });
+
+    it("today with everything elapsed: no <hr>, one table, no \u27f3", () => {
+      const out = html({
+        ...base,
+        coverage: { covered_minutes: 30, unaccounted_minutes: 1170, elapsed_minutes: 1200 },
+        blocks: [block("09:00", "09:30", "Past thing")],
+      });
+      expect(out).not.toContain("<hr>");
+      expect((out.match(/<table>/g) ?? []).length).toBe(1);
+      expect(out).not.toContain("\u27f3");
+    });
+
+    it("today with everything ahead: no <hr>, one table, \u27f3 present", () => {
+      const out = html({
+        ...base,
+        coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 60 },
+        blocks: [block("09:00", "09:30", "Future thing")],
+      });
+      expect(out).not.toContain("<hr>");
+      expect((out.match(/<table>/g) ?? []).length).toBe(1);
+      expect(out).toContain("\u27f3 09:00");
+    });
+
+    it("a past day (elapsed_minutes: 1440): no <hr>, no \u27f3", () => {
+      const out = html({
+        ...base,
+        coverage: { covered_minutes: 30, unaccounted_minutes: 1410, elapsed_minutes: 1440 },
+        blocks: [block("09:00", "09:30", "Old thing")],
+      });
+      expect(out).not.toContain("<hr>");
+      expect(out).not.toContain("\u27f3");
+    });
+
+    it("a future day (elapsed_minutes: 0): no <hr>; every block is ahead, so \u27f3 on all of them", () => {
+      const out = html({
+        ...base,
+        coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 0 },
+        blocks: [block("09:00", "09:30", "Thing A"), block("14:00", "15:00", "Thing B")],
+      });
+      expect(out).not.toContain("<hr>");
+      expect(out).toContain("\u27f3 09:00");
+      expect(out).toContain("\u27f3 14:00");
+    });
+
+    it("a gap row in the ahead section never carries \u27f3", () => {
+      const out = html({
+        ...base,
+        coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600 },
+        blocks: [block("11:00", "12:00", "Future thing")],
+        gaps: [{ start: "12:00", end: "13:00", minutes: 60 }],
+      });
+      // Exactly one `\u27f3` in the whole render \u2014 the block's, never the gap's.
+      expect(out.match(/\u27f3/g) ?? []).toHaveLength(1);
+      expect(out).toContain("\u26a0 12:00");
+    });
+
+    it("a completed block that is somehow ahead renders \u2705, not both markers", () => {
+      const out = html({
+        ...base,
+        coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600 },
+        blocks: [block("11:00", "12:00", "Weirdly done early", true)],
+      });
+      expect(out).toContain("\u2705 11:00");
+      expect(out).not.toContain("\u27f3");
     });
   });
 });

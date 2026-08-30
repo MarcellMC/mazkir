@@ -21,6 +21,11 @@ export interface DailyGap {
 export interface DayCoverage {
   covered_minutes: number;
   unaccounted_minutes: number;
+  /** Minutes since local midnight for today, 1440 for a past day, 0 for a
+   * future day. Carries the "is it today" signal for free: the bot needs no
+   * timezone comparison at all — the divider between elapsed and
+   * still-to-come rows shows exactly when `0 < elapsed_minutes < 1440`. */
+  elapsed_minutes: number;
 }
 
 export interface DailyNote {

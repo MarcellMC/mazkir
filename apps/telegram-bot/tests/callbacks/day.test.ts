@@ -32,7 +32,7 @@ const DAY = {
   tokens_total: 0,
   blocks: [],
   gaps: [],
-  coverage: { covered_minutes: 0, unaccounted_minutes: 0 },
+  coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 0 },
   todos: [],
   notes: [],
 };

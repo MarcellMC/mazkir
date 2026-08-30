@@ -25,7 +25,8 @@ const { sendRich } = await import("../../src/bot-utils/send-rich.js");
 
 const DAY = {
   date: "2026-08-30", tokens_today: 0, tokens_total: 0,
-  blocks: [], gaps: [], coverage: { covered_minutes: 0, unaccounted_minutes: 0 },
+  blocks: [], gaps: [],
+  coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 0 },
   todos: [], notes: [],
 };
 
