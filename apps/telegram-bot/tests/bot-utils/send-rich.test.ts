@@ -103,4 +103,33 @@ describe("editRich", () => {
     await editRich(ctx, { html: "<p>hi &amp; bye</p>" });
     expect(editMessageText).toHaveBeenLastCalledWith("hi & bye");
   });
+
+  it("passes extra (e.g. reply_markup) through on the success path", async () => {
+    const editMessageText = vi.fn().mockResolvedValue(true);
+    const ctx = { editMessageText } as never;
+    const { editRich } = await import("../../src/bot-utils/send-rich.js");
+    const extra = { reply_markup: { inline_keyboard: [[{ text: "Tasks", callback_data: "nav:tasks" }]] } };
+
+    await editRich(ctx, { html: "<p>hi</p>" }, extra);
+
+    expect(editMessageText).toHaveBeenCalledWith({ html: "<p>hi</p>" }, extra);
+  });
+
+  it("passes extra through on the plain-text fallback too", async () => {
+    // Same reasoning as sendRich's fallback: dropping `extra` here would
+    // strip the keyboard from the degraded message, leaving a prompt the
+    // user cannot answer.
+    const editMessageText = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("Bad Request: can't parse entities"), {
+        description: "Bad Request: can't parse entities",
+      }))
+      .mockResolvedValue(true);
+    const ctx = { editMessageText } as never;
+    const { editRich } = await import("../../src/bot-utils/send-rich.js");
+    const extra = { reply_markup: { inline_keyboard: [[{ text: "Tasks", callback_data: "nav:tasks" }]] } };
+
+    await editRich(ctx, { html: "<p>hi &amp; bye</p>" }, extra);
+
+    expect(editMessageText).toHaveBeenLastCalledWith("hi & bye", extra);
+  });
 });

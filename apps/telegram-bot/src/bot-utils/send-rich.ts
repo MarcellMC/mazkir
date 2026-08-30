@@ -74,9 +74,18 @@ function isNotModifiedError(err: unknown): boolean {
 export async function editRich(
   ctx: Context,
   msg: InputRichMessage<InputFile>,
+  extra?: Record<string, unknown>,
 ): Promise<void> {
   try {
-    await ctx.editMessageText(msg);
+    // Omit the second argument entirely when there's no `extra` rather than
+    // passing `undefined` — existing callers (and their tests) invoke
+    // editMessageText with a single argument, and grammY's mock-free call
+    // shape should stay that way when there's nothing to add.
+    if (extra) {
+      await ctx.editMessageText(msg, extra as never);
+    } else {
+      await ctx.editMessageText(msg);
+    }
   } catch (err) {
     if (isNotModifiedError(err)) return;
     markActiveSpanError(err);
@@ -84,6 +93,13 @@ export async function editRich(
       { event_type: "rich_edit_fallback", err: String(err) },
       "rich_edit_fallback",
     );
-    await ctx.editMessageText(richToPlainText(msg));
+    // Same reasoning as sendRich's fallback: `extra` carries reply_markup,
+    // and dropping it here would strip the keyboard, leaving a prompt the
+    // user cannot answer.
+    if (extra) {
+      await ctx.editMessageText(richToPlainText(msg), extra as never);
+    } else {
+      await ctx.editMessageText(richToPlainText(msg));
+    }
   }
 }

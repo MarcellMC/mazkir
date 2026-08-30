@@ -91,6 +91,20 @@ describe("the day: callback", () => {
     expect(vi.mocked(editRich).mock.calls[0]![1]).toHaveProperty("html");
   });
 
+  it("attaches the Tasks/Habits/Goals cross-view keyboard, with no Calendar button", async () => {
+    const ctx = ctxFor("day:2026-08-30");
+    await dispatch(ctx);
+
+    const extra = vi.mocked(editRich).mock.calls[0]![2] as
+      | { reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] } }
+      | undefined;
+    const buttons = extra?.reply_markup?.inline_keyboard.flat() ?? [];
+    expect(buttons.map((b) => b.callback_data)).toEqual([
+      "nav:tasks", "nav:habits", "nav:goals",
+    ]);
+    expect(buttons.some((b) => b.callback_data === "nav:calendar")).toBe(false);
+  });
+
   it("maps day:today to no date parameter", async () => {
     // `today` stays a token rather than a date so a message tapped after
     // midnight still resolves to the server's idea of today.

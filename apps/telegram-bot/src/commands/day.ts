@@ -2,6 +2,7 @@ import { Composer } from "grammy";
 import { api } from "../api/client.js";
 import { buildDayRich } from "../formatters/day-rich.js";
 import { sendRich } from "../bot-utils/send-rich.js";
+import { buildDayNavKeyboard } from "../keyboards/day.js";
 import { markActiveSpanError } from "../tracing-utils.js";
 
 export const dayCommand = new Composer();
@@ -32,7 +33,7 @@ dayCommand.command("day", async (ctx) => {
     return;
   }
   try {
-    await sendRich(ctx, rich);
+    await sendRich(ctx, rich, { reply_markup: buildDayNavKeyboard() });
   } catch (err) {
     markActiveSpanError(err);
     await ctx.reply("❌ Failed to send the day.");
