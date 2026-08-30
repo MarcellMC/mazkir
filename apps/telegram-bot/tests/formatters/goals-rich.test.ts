@@ -39,6 +39,15 @@ describe("buildGoalsRich", () => {
     }
   });
 
+  it("lists exactly what it gives a button, and counts the rest honestly", () => {
+    const many = Array.from({ length: 11 }, (_, i) =>
+      goal({ name: `G${i}`, path: `30-goals/2026/g-${i}.md` }));
+    const out = html(() => buildGoalsRich(many as never));
+    expect((out.match(/<li>/g) ?? []).length).toBe(8);
+    expect(out).toContain("…and 3 more");
+    expect(out).not.toContain("G8");
+  });
+
   it("caps the buttons and says how many were left out", () => {
     const many = Array.from({ length: 20 }, (_, i) =>
       goal({ name: `G${i}`, path: `30-goals/2026/g-${i}.md` }));

@@ -59,15 +59,18 @@ export function buildTasksRich(tasks: Task[]): InputRichMessage<InputFile> {
   }
 
   const sorted = byPriority(tasks);
+  // The body lists exactly what has a button. Listing all of them and then
+  // adding "…and N more" was both false — the tail WAS listed — and worse
+  // for the user, who could see task 11 and had no way to open it.
   const shown = sorted.slice(0, MAX_BUTTONS);
 
   const parts: string[] = ["<h2>📋 Active Tasks</h2>"];
 
   // Numbering runs across the groups so it matches the button labels, which
-  // index into `sorted` as one sequence rather than restarting per group.
-  const high = sorted.filter((t) => t.priority >= 4);
-  const medium = sorted.filter((t) => t.priority === 3);
-  const low = sorted.filter((t) => t.priority <= 2);
+  // index into `shown` as one sequence rather than restarting per group.
+  const high = shown.filter((t) => t.priority >= 4);
+  const medium = shown.filter((t) => t.priority === 3);
+  const low = shown.filter((t) => t.priority <= 2);
   parts.push(...group("🔴 High Priority", high, 1));
   parts.push(...group("🟡 Medium Priority", medium, high.length + 1));
   parts.push(...group("🟢 Low Priority", low, high.length + medium.length + 1));

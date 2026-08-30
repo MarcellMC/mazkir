@@ -62,6 +62,19 @@ describe("buildTasksRich", () => {
     expect(order).toEqual([["1", "urgent"], ["2", "minor"]]);
   });
 
+  it("lists exactly what it gives a button, and counts the rest honestly", () => {
+    // The body used to list all 11 and then claim "…and 3 more", which was
+    // false — the tail WAS listed — and left items 9-11 visible but with no
+    // button to open them.
+    const many = Array.from({ length: 11 }, (_, i) =>
+      task({ name: `T${i}`, path: `40-tasks/active/t-${i}.md` }));
+    const out = html(() => buildTasksRich(many as never));
+    expect((out.match(/<li>/g) ?? []).length).toBe(8);
+    expect(out).toContain("…and 3 more");
+    expect(out).toContain("<li>8. ⏳ T7</li>");
+    expect(out).not.toContain("T8");
+  });
+
   it("caps the button rows so the message stays usable", () => {
     const many = Array.from({ length: 20 }, (_, i) =>
       task({ name: `T${i}`, slug: `t-${i}` }));

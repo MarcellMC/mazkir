@@ -53,10 +53,12 @@ export function buildGoalsRich(goals: Goal[]): InputRichMessage<InputFile> {
 
   // The server already returns goals sorted by priority then progress, so the
   // body order — and therefore the button numbering — matches what it sent.
+  // The body lists exactly what has a button: listing the tail as well and
+  // then adding "…and N more" was false, and showed goals nothing could open.
   const shown = goals.slice(0, MAX_BUTTONS);
   const parts: string[] = ["<h2>🎯 Goals</h2>"];
 
-  const items = goals.map((g, i) => {
+  const items = shown.map((g, i) => {
     const emoji = goalPriorityEmoji(g.priority);
     const target = g.target_date ? `<br>   📅 Target: ${escapeHtml(g.target_date)}` : "";
     return (
