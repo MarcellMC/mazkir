@@ -1,20 +1,13 @@
 import { Composer } from "grammy";
 import { api } from "../api/client.js";
-import {
-  formatTasks,
-  formatTaskDetail,
-  formatHabits,
-  formatCalendar,
-  formatGoals,
-  formatGoalDetail,
-} from "../formatters/telegram.js";
-import { buildTasksKeyboard, buildTaskDetailKeyboard } from "../keyboards/tasks.js";
-import { buildGoalsKeyboard, buildGoalDetailKeyboard } from "../keyboards/goals.js";
-import { buildHabitsKeyboard } from "../keyboards/habits.js";
+import { formatCalendar } from "../formatters/telegram.js";
+import { buildTasksRich, buildTaskDetailRich } from "../formatters/tasks-rich.js";
+import { buildHabitsRich } from "../formatters/habits-rich.js";
+import { buildGoalsRich, buildGoalDetailRich } from "../formatters/goals-rich.js";
 import { markActiveSpanError } from "../tracing-utils.js";
 import { sendRich, editRich } from "../bot-utils/send-rich.js";
 import { buildDayRich } from "../formatters/day-rich.js";
-import { buildDayNavKeyboard } from "../keyboards/day.js";
+import { buildNavKeyboard } from "../keyboards/nav.js";
 import { logger } from "../logger.js";
 import {
   setPendingConfirmation,
@@ -59,9 +52,14 @@ callbackHandlers.callbackQuery(/^habit:complete:(.+)$/, async (ctx) => {
   try {
     await api.completeHabit(name);
     await ctx.answerCallbackQuery({ text: `✅ ${name} completed!` });
-    // Refresh the habits list in-place
+    // Refresh the habits list in-place. The re-render MUST carry
+    // reply_markup: this edit used to omit it entirely, which stripped every
+    // button from the message and left the user re-issuing /habits to get
+    // them back.
     const habits = await api.listHabits();
-    await ctx.editMessageText(formatHabits(habits), { parse_mode: "HTML" });
+    await editRich(ctx, buildHabitsRich(habits), {
+      reply_markup: buildNavKeyboard("habits"),
+    });
   } catch (err) {
     markActiveSpanError(err);
     await ctx.answerCallbackQuery({ text: "❌ Failed to complete habit" });
@@ -75,9 +73,8 @@ callbackHandlers.callbackQuery(/^task:view:(.+)$/, async (ctx) => {
   try {
     const detail = await api.getTask(slug);
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText(formatTaskDetail(detail), {
-      parse_mode: "HTML",
-      reply_markup: buildTaskDetailKeyboard(detail.slug),
+    await editRich(ctx, buildTaskDetailRich(detail), {
+      reply_markup: buildNavKeyboard("tasks"),
     });
   } catch (err) {
     markActiveSpanError(err);
@@ -92,9 +89,8 @@ callbackHandlers.callbackQuery(/^goal:view:(.+)$/, async (ctx) => {
   try {
     const detail = await api.getGoal(slug);
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText(formatGoalDetail(detail), {
-      parse_mode: "HTML",
-      reply_markup: buildGoalDetailKeyboard(),
+    await editRich(ctx, buildGoalDetailRich(detail), {
+      reply_markup: buildNavKeyboard("goals"),
     });
   } catch (err) {
     markActiveSpanError(err);
@@ -110,9 +106,8 @@ callbackHandlers.callbackQuery(/^task:(?:done|complete):(.+)$/, async (ctx) => {
     await api.completeTask(ref);
     await ctx.answerCallbackQuery({ text: "✅ Task completed!" });
     const tasks = await api.listTasks();
-    await ctx.editMessageText(formatTasks(tasks), {
-      parse_mode: "HTML",
-      reply_markup: buildTasksKeyboard(tasks),
+    await editRich(ctx, buildTasksRich(tasks), {
+      reply_markup: buildNavKeyboard("tasks"),
     });
   } catch (err) {
     markActiveSpanError(err);
@@ -129,7 +124,7 @@ callbackHandlers.callbackQuery(/^day:(.+)$/, async (ctx) => {
   const date = arg === "today" ? undefined : arg;
   try {
     const data = await api.getDaily(date);
-    await editRich(ctx, buildDayRich(data), { reply_markup: buildDayNavKeyboard() });
+    await editRich(ctx, buildDayRich(data), { reply_markup: buildNavKeyboard("day") });
   } catch (err) {
     markActiveSpanError(err);
     // The error report is itself an edit and can itself be rejected (e.g.
@@ -156,25 +151,22 @@ callbackHandlers.callbackQuery(/^nav:(.+)$/, async (ctx) => {
     switch (target) {
       case "tasks": {
         const tasks = await api.listTasks();
-        await ctx.editMessageText(formatTasks(tasks), {
-          parse_mode: "HTML",
-          reply_markup: buildTasksKeyboard(tasks),
+        await editRich(ctx, buildTasksRich(tasks), {
+          reply_markup: buildNavKeyboard("tasks"),
         });
         break;
       }
       case "habits": {
         const habits = await api.listHabits();
-        await ctx.editMessageText(formatHabits(habits), {
-          parse_mode: "HTML",
-          reply_markup: buildHabitsKeyboard(habits),
+        await editRich(ctx, buildHabitsRich(habits), {
+          reply_markup: buildNavKeyboard("habits"),
         });
         break;
       }
       case "goals": {
         const goals = await api.listGoals();
-        await ctx.editMessageText(formatGoals(goals), {
-          parse_mode: "HTML",
-          reply_markup: buildGoalsKeyboard(goals),
+        await editRich(ctx, buildGoalsRich(goals), {
+          reply_markup: buildNavKeyboard("goals"),
         });
         break;
       }
@@ -185,7 +177,7 @@ callbackHandlers.callbackQuery(/^nav:(.+)$/, async (ctx) => {
       }
       case "day": {
         const data = await api.getDaily();
-        await editRich(ctx, buildDayRich(data), { reply_markup: buildDayNavKeyboard() });
+        await editRich(ctx, buildDayRich(data), { reply_markup: buildNavKeyboard("day") });
         break;
       }
     }

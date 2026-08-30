@@ -1,15 +1,18 @@
 import type {
-  Task,
-  TaskDetail,
-  Habit,
-  Goal,
-  GoalDetail,
-  GoalPriority,
   TokensResponse,
   CalendarEvent,
   MessageResponse,
 } from "@mazkir/shared-types";
 
+/** What is left here after the list views became rich messages: the shared
+ *  helpers every formatter needs (escapeHtml, progressBar,
+ *  stripEmptySections, formatTime) plus the views that are still classic
+ *  HTML `parse_mode` messages — /calendar, /tokens, and the agent's NL reply.
+ *
+ *  The task, habit and goal formatters moved to tasks-rich.ts,
+ *  habits-rich.ts and goals-rich.ts. They had to: their in-view buttons now
+ *  render in the message body as `<tg-button-row>` elements, which only a
+ *  rich message can carry. */
 
 export function escapeHtml(text: string): string {
   return text
@@ -33,54 +36,10 @@ export function formatTime(isoString: string): string {
   });
 }
 
-function priorityEmoji(priority: number): string {
-  if (priority >= 4) return "🔴";
-  if (priority === 3) return "🟡";
-  return "🟢";
-}
-
-/** Goals store priority as "high" | "medium" | "low"; map those onto the
- * numeric scale before picking an emoji. */
-function goalPriorityEmoji(priority: GoalPriority): string {
-  if (typeof priority === "number") return priorityEmoji(priority);
-  const scale: Record<string, number> = { high: 5, medium: 3, low: 1 };
-  return priorityEmoji(scale[priority.toLowerCase()] ?? 3);
-}
-
-export function formatTasks(tasks: Task[]): string {
-  if (tasks.length === 0) return "📋 No active tasks. Enjoy the calm!";
-
-  const lines: string[] = ["📋 <b>Active Tasks</b>\n"];
-
-  const high = tasks.filter((t) => t.priority >= 4);
-  const medium = tasks.filter((t) => t.priority === 3);
-  const low = tasks.filter((t) => t.priority <= 2);
-
-  let n = 1;
-  if (high.length > 0) {
-    lines.push("🔴 <b>High Priority</b>");
-    for (const t of high) lines.push(`  ${n++}. ⏳ ${t.name}${t.due_date ? ` (due ${t.due_date})` : ""}`);
-    lines.push("");
-  }
-  if (medium.length > 0) {
-    lines.push("🟡 <b>Medium Priority</b>");
-    for (const t of medium) lines.push(`  ${n++}. ⏳ ${t.name}${t.due_date ? ` (due ${t.due_date})` : ""}`);
-    lines.push("");
-  }
-  if (low.length > 0) {
-    lines.push("🟢 <b>Low Priority</b>");
-    for (const t of low) lines.push(`  ${n++}. ⏳ ${t.name}${t.due_date ? ` (due ${t.due_date})` : ""}`);
-  }
-
-  return lines.join("\n");
-}
-
-const PRIORITY_ICONS: Record<number, string> = { 5: "🔴", 4: "🔴", 3: "🟡", 2: "🟢", 1: "🟢" };
-const DETAIL_BODY_MAX = 800;
-
 /** Drop the "# Title" heading and `## Section` blocks with no real content
- * (template boilerplate like an empty Description or a lone `- [ ]`). */
-function stripEmptySections(content: string): string {
+ * (template boilerplate like an empty Description or a lone `- [ ]`).
+ * Shared by the task and goal detail views in tasks-rich.ts / goals-rich.ts. */
+export function stripEmptySections(content: string): string {
   const withoutTitle = content.replace(/^#\s+.*\n?/, "");
   const blocks = withoutTitle.split(/^(?=##\s)/m);
   const kept = blocks.filter((block) => {
@@ -89,94 +48,6 @@ function stripEmptySections(content: string): string {
     return body.replaceAll(/- \[ \]\s*$/gm, "").trim().length > 0;
   });
   return kept.join("").trim();
-}
-
-export function formatTaskDetail(task: TaskDetail): string {
-  const lines: string[] = [`📋 <b>${escapeHtml(task.name)}</b>\n`];
-
-  const icon = PRIORITY_ICONS[task.priority] ?? "🟡";
-  lines.push(`${icon} Priority: <b>${task.priority}</b>`);
-  if (task.category) lines.push(`🏷 Category: ${escapeHtml(task.category)}`);
-  if (task.due_date) lines.push(`📅 Due: ${escapeHtml(String(task.due_date))}`);
-  lines.push(`📌 Status: ${escapeHtml(task.status)}`);
-  if (task.tokens_on_completion != null) {
-    lines.push(`🪙 Tokens on completion: ${task.tokens_on_completion}`);
-  }
-  if (task.created) lines.push(`🕐 Created: ${escapeHtml(String(task.created))}`);
-  if (task.google_event_id) lines.push(`📆 Synced to Google Calendar`);
-
-  // Note body: drop the title heading (duplicates the name) and empty
-  // template sections, keep everything the user actually wrote.
-  const body = stripEmptySections(task.content);
-  if (body) {
-    const truncated =
-      body.length > DETAIL_BODY_MAX ? body.slice(0, DETAIL_BODY_MAX) + "…" : body;
-    lines.push("", `<blockquote>${escapeHtml(truncated)}</blockquote>`);
-  }
-
-  return lines.join("\n");
-}
-
-export function formatHabits(habits: Habit[]): string {
-  if (habits.length === 0) return "💪 No habits tracked yet.";
-
-  const lines: string[] = ["💪 <b>Habit Tracker</b>\n"];
-  for (const h of habits) {
-    const icon = h.completed_today ? "✅" : "⏳";
-    lines.push(`${icon} <b>${h.name}</b> — 🔥 ${h.streak} day streak`);
-  }
-
-  const avgStreak =
-    habits.length > 0
-      ? Math.round(habits.reduce((s, h) => s + h.streak, 0) / habits.length)
-      : 0;
-  lines.push(`\n📊 Average streak: <b>${avgStreak} days</b>`);
-
-  return lines.join("\n");
-}
-
-export function formatGoals(goals: Goal[]): string {
-  if (goals.length === 0) return "🎯 No active goals.";
-
-  const lines: string[] = ["🎯 <b>Goals</b>\n"];
-  goals.forEach((g, i) => {
-    const emoji = goalPriorityEmoji(g.priority);
-    const bar = progressBar(g.progress);
-    lines.push(`${emoji} <b>${i + 1}. ${escapeHtml(g.name)}</b>`);
-    lines.push(`   ${bar} ${g.progress}%`);
-    if (g.target_date) lines.push(`   📅 Target: ${escapeHtml(g.target_date)}`);
-    lines.push("");
-  });
-
-  return lines.join("\n");
-}
-
-export function formatGoalDetail(goal: GoalDetail): string {
-  const lines: string[] = [`🎯 <b>${escapeHtml(goal.name)}</b>\n`];
-
-  lines.push(`${progressBar(goal.progress)} ${goal.progress}%`);
-  lines.push(`${goalPriorityEmoji(goal.priority)} Priority: <b>${escapeHtml(String(goal.priority))}</b>`);
-  lines.push(`📌 Status: ${escapeHtml(goal.status)}`);
-  if (goal.category) lines.push(`🏷 Category: ${escapeHtml(goal.category)}`);
-  if (goal.start_date) lines.push(`🕐 Started: ${escapeHtml(String(goal.start_date))}`);
-  if (goal.target_date) lines.push(`📅 Target: ${escapeHtml(String(goal.target_date))}`);
-
-  // Milestone entries are free-form in the vault; render the plain-string
-  // ones and leave anything richer to the note body below.
-  const milestones = (goal.milestones ?? []).filter((m) => typeof m === "string");
-  if (milestones.length > 0) {
-    lines.push("", "🚩 <b>Milestones</b>");
-    for (const m of milestones) lines.push(`  • ${escapeHtml(m)}`);
-  }
-
-  const body = stripEmptySections(goal.content);
-  if (body) {
-    const truncated =
-      body.length > DETAIL_BODY_MAX ? body.slice(0, DETAIL_BODY_MAX) + "…" : body;
-    lines.push("", `<blockquote>${escapeHtml(truncated)}</blockquote>`);
-  }
-
-  return lines.join("\n");
 }
 
 export function formatTokens(data: TokensResponse): string {
