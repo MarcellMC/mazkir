@@ -148,18 +148,35 @@ describe("buildDayRich", () => {
       ["2026-08-26", "ד"], // Wed
       ["2026-08-27", "ה"], // Thu
       ["2026-08-28", "ו"], // Fri
-      ["2026-08-29", "✨ש"], // Sat
+      ["2026-08-29", "ש"], // Sat
     ];
+
+    // Invisible-character constants, pinned by codepoint rather than by
+    // pasting the glyph — see the comment above their definitions in
+    // day-rich.ts for what each does and why the isolate/separator choice
+    // matters.
+    const LRI = "⁦";
+    const PDI = "⁩";
+    const HYPHENATION_POINT = "‧";
+
+    /** Build the expected two-line label for a given day-of-month + Hebrew
+     *  letter, matching the LRI/date/separator/letter/PDI shape produced by
+     *  weekBar(). */
+    function expectedLabel(icon: string, day: number, letter: string): string {
+      return `${icon}\n${LRI}${day}${HYPHENATION_POINT}${letter}${PDI}`;
+    }
 
     /** Pull the 7 weekday buttons out of the rendered HTML, in document
      *  order, distinguishing them from the `‹`/`›`/`today` nav buttons by
-     *  label (the nav buttons never start with a Hebrew letter). */
+     *  label (the nav buttons never contain a newline). The label can
+     *  contain `<` as part of user-invisible bidi marks, but never a literal
+     *  `<` character, so matching up to `</tg-button>` non-greedily is safe. */
     function weekdayButtons(out: string): { date: string; label: string; primary: boolean }[] {
-      const re = /<tg-button type="callback_data" data="day:(\d{4}-\d{2}-\d{2})"( style="primary")?>([^<]+)<\/tg-button>/g;
+      const re = /<tg-button type="callback_data" data="day:(\d{4}-\d{2}-\d{2})"( style="primary")?>([\s\S]*?)<\/tg-button>/g;
       const found: { date: string; label: string; primary: boolean }[] = [];
       for (const m of out.matchAll(re)) {
         const label = m[3]!;
-        if (label === "‹" || label === "›" || label === "today") continue;
+        if (!label.includes("\n")) continue; // nav buttons (‹, ›, today) are single-line
         found.push({ date: m[1]!, label, primary: Boolean(m[2]) });
       }
       return found;
@@ -176,18 +193,58 @@ describe("buildDayRich", () => {
     it("maps the Hebrew letters to the correct weekdays", () => {
       const out = html({ ...base, date: "2026-08-26" });
       const buttons = weekdayButtons(out);
-      for (const [date, prefix] of HEBREW_WEEK) {
+      for (const [date, letter] of HEBREW_WEEK) {
         const button = buttons.find((b) => b.date === date)!;
-        expect(button.label.startsWith(prefix)).toBe(true);
+        expect(button.label).toContain(`${HYPHENATION_POINT}${letter}${PDI}`);
       }
     });
 
-    it("carries the ✨ prefix on Saturday only", () => {
+    it("places the correct icon at each position, independent of which day is selected", () => {
+      // Two different selected dates, so a passing assertion proves the icon
+      // is a function of position, not of selection.
+      for (const selected of ["2026-08-23", "2026-08-27"]) {
+        const buttons = weekdayButtons(html({ ...base, date: selected }));
+        expect(buttons.find((b) => b.date === "2026-08-23")!.label.startsWith("♦️\n")).toBe(true); // Sun
+        expect(buttons.find((b) => b.date === "2026-08-29")!.label.startsWith("🕯\n")).toBe(true); // Sat
+        expect(buttons.find((b) => b.date === "2026-08-28")!.label.startsWith("💠\n")).toBe(true); // Fri
+        const mondayToThursday = ["2026-08-24", "2026-08-25", "2026-08-26", "2026-08-27"];
+        for (const date of mondayToThursday) {
+          expect(buttons.find((b) => b.date === date)!.label.startsWith("🔸\n")).toBe(true);
+        }
+        // Exactly one of each of the singleton icons, and exactly four 🔸s.
+        expect(buttons.filter((b) => b.label.startsWith("♦️\n"))).toHaveLength(1);
+        expect(buttons.filter((b) => b.label.startsWith("🔸\n"))).toHaveLength(4);
+        expect(buttons.filter((b) => b.label.startsWith("💠\n"))).toHaveLength(1);
+        expect(buttons.filter((b) => b.label.startsWith("🕯\n"))).toHaveLength(1);
+      }
+    });
+
+    it("joins the icon and the date+letter line with a literal newline", () => {
       const out = html({ ...base, date: "2026-08-26" });
       const buttons = weekdayButtons(out);
-      expect(buttons.find((b) => b.date === "2026-08-29")!.label).toBe("✨ש29");
+      const sunday = buttons.find((b) => b.date === "2026-08-23")!;
+      expect(sunday.label).toBe(expectedLabel("♦️", 23, "א"));
+    });
+
+    it("isolates the label so the date renders left of the Hebrew letter", () => {
+      // Hebrew is strong RTL: without the isolate, "30‧א" displays as
+      // "א‧30". These characters are invisible — assert on codepoints so a
+      // future edit cannot silently drop them.
+      const out = html({ ...base, date: "2026-08-30" });
+      expect(out).toContain(`${LRI}30${HYPHENATION_POINT}א${PDI}`);
+    });
+
+    it("separates date from letter with a hyphenation point, not a middot or hyphen", () => {
+      // Scoped to the week-bar button labels, not the whole render: the
+      // header's "· today" suffix (headerLabel, a separate feature) uses the
+      // ASCII middot U+00B7 legitimately when the rendered date happens to
+      // be the real "today" — that is not the character under test here.
+      const out = html({ ...base, date: "2026-08-30" });
+      const buttons = weekdayButtons(out);
       for (const b of buttons) {
-        if (b.date !== "2026-08-29") expect(b.label).not.toContain("✨");
+        expect(b.label).toContain(HYPHENATION_POINT);
+        expect(b.label).not.toContain("·"); // middot
+        expect(b.label).not.toContain("-א"); // ASCII hyphen + alef
       }
     });
 
@@ -197,6 +254,14 @@ describe("buildDayRich", () => {
       const primaries = buttons.filter((b) => b.primary);
       expect(primaries).toHaveLength(1);
       expect(primaries[0]!.date).toBe("2026-08-26");
+    });
+
+    it("marks the selected day primary even when it is Saturday", () => {
+      const out = html({ ...base, date: "2026-08-29" });
+      const buttons = weekdayButtons(out);
+      const primaries = buttons.filter((b) => b.primary);
+      expect(primaries).toHaveLength(1);
+      expect(primaries[0]!.date).toBe("2026-08-29");
     });
 
     it("pages the arrows by a full week, not by one day", () => {
@@ -230,11 +295,11 @@ describe("buildDayRich", () => {
         "2026-08-30", "2026-08-31", "2026-09-01", "2026-09-02",
         "2026-09-03", "2026-09-04", "2026-09-05",
       ]);
-      expect(buttons[0]!.label).toBe("א30");
-      expect(buttons[1]!.label).toBe("ב31");
+      expect(buttons[0]!.label).toBe(expectedLabel("♦️", 30, "א"));
+      expect(buttons[1]!.label).toBe(expectedLabel("🔸", 31, "ב"));
       expect(buttons[1]!.primary).toBe(true);
-      expect(buttons[2]!.label).toBe("ג1");
-      expect(buttons[6]!.label).toBe("✨ש5");
+      expect(buttons[2]!.label).toBe(expectedLabel("🔸", 1, "ג"));
+      expect(buttons[6]!.label).toBe(expectedLabel("🕯", 5, "ש"));
     });
   });
 

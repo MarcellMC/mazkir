@@ -11,7 +11,24 @@ import { escapeHtml } from "./telegram.js";
 
 // Sunday-first, matching the Hebrew week. Index 0 == Sunday (getUTCDay()'s
 // own numbering) through index 6 == Saturday.
-const WEEKDAY_PREFIXES = ["א", "ב", "ג", "ד", "ה", "ו", "✨ש"];
+const WEEKDAY_LETTERS = ["א", "ב", "ג", "ד", "ה", "ו", "ש"];
+
+// One icon per weekday position, Sunday->Saturday: red diamond opens the
+// week, small diamonds carry the weekdays, the compass/diamond turns toward
+// Friday, and the candle marks Shabbat. Replaces a "✨ש" prefix that used to
+// widen Saturday's button past the others and wrap onto a second line.
+const WEEKDAY_ICONS = ["♦️", "🔸", "🔸", "🔸", "🔸", "💠", "🕯"];
+
+// LRI/PDI (U+2066/U+2069) and the hyphenation point (U+2027, not the middot
+// U+00B7 the user rejected) are all invisible in a diff or terminal. Hebrew
+// is a strong-RTL script, so a bare "30‧א" reorders to display as "א‧30" —
+// the isolate pair pins the date to the left by containing bidi reordering
+// to just this run, without the side effects of an override (LRO) or mark
+// (LRM). Drop any of the three and the label silently reverts to
+// letter-first, or the wrap comes back, with nothing failing to signal it.
+const LRI = "⁦";
+const PDI = "⁩";
+const HYPHENATION_POINT = "‧";
 
 function hours(minutes: number): string {
   return `${(minutes / 60).toFixed(1)}h`;
@@ -88,16 +105,22 @@ function weekStart(iso: string): string {
  *  centre day around. Button labels are plain text only — Bot API 10.3
  *  buttons accept "only plain text, RichTextCustomEmoji and
  *  RichTextDateTime entities" (@grammyjs/types 5.0.0), so there is no bold,
- *  superscript, or font-size markup available to mark Saturday gold. Do NOT
- *  attempt <sub>, superscript, or size markup inside a button label here —
- *  it will not render; the ✨ emoji prefix is the deliberate substitute. */
+ *  superscript, or font-size markup available to mark Saturday gold; the
+ *  per-day icon (see WEEKDAY_ICONS) is the deliberate substitute. Each label
+ *  is two lines joined by a literal "\n" — icon on top, date+letter below —
+ *  which Bot API renders as a line break inside the button. A single-line
+ *  "✨ש5" label used to wrap onto a second line on-device because the
+ *  sparkle made Saturday's label wider than the others; splitting the icon
+ *  onto its own line removes the width mismatch that caused the wrap. */
 function weekBar(selected: string): string {
   const sunday = weekStart(selected);
-  const buttons = WEEKDAY_PREFIXES.map((prefix, offset) => {
+  const buttons = WEEKDAY_LETTERS.map((letter, offset) => {
     const iso = shiftDate(sunday, offset);
     const day = Number(iso.slice(8, 10));
+    const icon = WEEKDAY_ICONS[offset];
     const style = iso === selected ? ' style="primary"' : "";
-    return `<tg-button type="callback_data" data="day:${iso}"${style}>${prefix}${day}</tg-button>`;
+    const label = `${icon}\n${LRI}${day}${HYPHENATION_POINT}${letter}${PDI}`;
+    return `<tg-button type="callback_data" data="day:${iso}"${style}>${label}</tg-button>`;
   });
   return `<tg-button-row align="center">${buttons.join("")}</tg-button-row>`;
 }
