@@ -129,10 +129,10 @@ describe("buildDayRich", () => {
     expect(out).not.toContain("<boss>");
   });
 
-  it("renders a week bar with the selected day styled primary", () => {
+  it("renders a week bar with the selected day styled success", () => {
     const out = html({ ...base, date: "2026-08-29" });
     expect(out).toContain('data="day:2026-08-29"');
-    expect(out).toContain('style="primary"');
+    expect(out).toContain('style="success"');
     expect(out).toContain('data="day:today"');
     expect((out.match(/<tg-button type="callback_data" data="day:2026-/g) ?? []).length)
       .toBe(9);  // 7 week days + prev + next
@@ -171,13 +171,13 @@ describe("buildDayRich", () => {
      *  label (the nav buttons never contain a newline). The label can
      *  contain `<` as part of user-invisible bidi marks, but never a literal
      *  `<` character, so matching up to `</tg-button>` non-greedily is safe. */
-    function weekdayButtons(out: string): { date: string; label: string; primary: boolean }[] {
-      const re = /<tg-button type="callback_data" data="day:(\d{4}-\d{2}-\d{2})"( style="primary")?>([\s\S]*?)<\/tg-button>/g;
-      const found: { date: string; label: string; primary: boolean }[] = [];
+    function weekdayButtons(out: string): { date: string; label: string; selected: boolean }[] {
+      const re = /<tg-button type="callback_data" data="day:(\d{4}-\d{2}-\d{2})"( style="success")?>([\s\S]*?)<\/tg-button>/g;
+      const found: { date: string; label: string; selected: boolean }[] = [];
       for (const m of out.matchAll(re)) {
         const label = m[3]!;
         if (!label.includes("\n")) continue; // nav buttons (‹, ›, today) are single-line
-        found.push({ date: m[1]!, label, primary: Boolean(m[2]) });
+        found.push({ date: m[1]!, label, selected: Boolean(m[2]) });
       }
       return found;
     }
@@ -248,20 +248,20 @@ describe("buildDayRich", () => {
       }
     });
 
-    it("marks the selected day, and only the selected day, primary", () => {
+    it("marks the selected day, and only the selected day, success", () => {
       const out = html({ ...base, date: "2026-08-26" });
       const buttons = weekdayButtons(out);
-      const primaries = buttons.filter((b) => b.primary);
-      expect(primaries).toHaveLength(1);
-      expect(primaries[0]!.date).toBe("2026-08-26");
+      const selected = buttons.filter((b) => b.selected);
+      expect(selected).toHaveLength(1);
+      expect(selected[0]!.date).toBe("2026-08-26");
     });
 
-    it("marks the selected day primary even when it is Saturday", () => {
+    it("marks the selected day success even when it is Saturday", () => {
       const out = html({ ...base, date: "2026-08-29" });
       const buttons = weekdayButtons(out);
-      const primaries = buttons.filter((b) => b.primary);
-      expect(primaries).toHaveLength(1);
-      expect(primaries[0]!.date).toBe("2026-08-29");
+      const selected = buttons.filter((b) => b.selected);
+      expect(selected).toHaveLength(1);
+      expect(selected[0]!.date).toBe("2026-08-29");
     });
 
     it("pages the arrows by a full week, not by one day", () => {
@@ -274,7 +274,7 @@ describe("buildDayRich", () => {
       const out = html({ ...base, date: "2026-08-23" });
       const buttons = weekdayButtons(out);
       expect(buttons[0]!.date).toBe("2026-08-23");
-      expect(buttons[0]!.primary).toBe(true);
+      expect(buttons[0]!.selected).toBe(true);
       expect(buttons[buttons.length - 1]!.date).toBe("2026-08-29");
     });
 
@@ -283,7 +283,7 @@ describe("buildDayRich", () => {
       const buttons = weekdayButtons(out);
       expect(buttons[0]!.date).toBe("2026-08-23");
       expect(buttons[buttons.length - 1]!.date).toBe("2026-08-29");
-      expect(buttons[buttons.length - 1]!.primary).toBe(true);
+      expect(buttons[buttons.length - 1]!.selected).toBe(true);
     });
 
     it("renders a week spanning a month boundary correctly", () => {
@@ -297,7 +297,7 @@ describe("buildDayRich", () => {
       ]);
       expect(buttons[0]!.label).toBe(expectedLabel("♦️", 30, "א"));
       expect(buttons[1]!.label).toBe(expectedLabel("🔸", 31, "ב"));
-      expect(buttons[1]!.primary).toBe(true);
+      expect(buttons[1]!.selected).toBe(true);
       expect(buttons[2]!.label).toBe(expectedLabel("🔸", 1, "ג"));
       expect(buttons[6]!.label).toBe(expectedLabel("🕯", 5, "ש"));
     });
@@ -402,70 +402,107 @@ describe("buildDayRich", () => {
       habit_progress: null,
     });
 
-    it("today with rows on both sides: two <hr>s (now-divider + spacer), two <table>s, \u27f3 on ahead blocks only", () => {
+    // The labelled divider's exact text, built the same way day-rich.ts
+    // builds it (U+2500 BOX DRAWINGS LIGHT HORIZONTAL, eight either side of
+    // "now"), so a future edit that quietly swaps in hyphens \u2014 which look
+    // almost identical in a diff \u2014 fails this rather than passing silently.
+    const NOW_DIVIDER_HTML = `<p>${"\u2500".repeat(8)} now ${"\u2500".repeat(8)}</p>`;
+
+    it("today with rows on both sides: exactly one <hr> (the spacer), the labelled divider, two <table>s, \u27f3 on ahead blocks only", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600 }, // 10:00
         blocks: [block("09:00", "09:30", "Past thing"), block("11:00", "12:00", "Future thing")],
       });
       expect((out.match(/<table>/g) ?? []).length).toBe(2);
-      expect((out.match(/<hr>/g) ?? []).length).toBe(2);
-      // Order: elapsed table \u2192 now-divider \u2192 ahead table \u2192 spacer
+      // Only the week-bar/nav spacer's <hr> remains; the now-divider is no
+      // longer an <hr> at all.
+      expect((out.match(/<hr>/g) ?? []).length).toBe(1);
+      expect(out).toContain(NOW_DIVIDER_HTML);
+      // Order: elapsed table -> now-divider -> ahead table -> spacer
       const firstTableEnd = out.indexOf("</table>");
+      const dividerAt = out.indexOf(NOW_DIVIDER_HTML);
       const lastTableEnd = out.lastIndexOf("</table>");
       const spacerAt = out.indexOf("<p>&nbsp;</p><hr>");
-      expect(firstTableEnd).toBeLessThan(spacerAt);
+      expect(firstTableEnd).toBeLessThan(dividerAt);
+      expect(dividerAt).toBeLessThan(lastTableEnd);
       expect(lastTableEnd).toBeLessThan(spacerAt);
       expect(out.indexOf("Past thing")).toBeLessThan(out.indexOf("Future thing"));
       expect(out).not.toContain("\u27f3 09:00");
       expect(out).toContain("\u27f3 11:00");
     });
 
-    it("today with everything elapsed: spacer only (1 <hr>), one table, no \u27f3", () => {
+    it("pins the divider's exact box-drawing string, not hyphens", () => {
+      const out = html({
+        ...base,
+        coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600 },
+        blocks: [block("09:00", "09:30", "Past thing"), block("11:00", "12:00", "Future thing")],
+      });
+      expect(out).toContain(
+        "<p>\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 now \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500</p>",
+      );
+      expect(out).not.toContain("-------- now --------");
+    });
+
+    it("today with everything elapsed: exactly one <hr> (spacer only), no labelled divider, one table, no \u27f3", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 30, unaccounted_minutes: 1170, elapsed_minutes: 1200 },
         blocks: [block("09:00", "09:30", "Past thing")],
       });
-      // Spacer is always present, so exactly 1 <hr> means no now-divider.
       expect((out.match(/<hr>/g) ?? []).length).toBe(1);
+      expect(out).not.toContain(NOW_DIVIDER_HTML);
       expect((out.match(/<table>/g) ?? []).length).toBe(1);
       expect(out).not.toContain("\u27f3");
     });
 
-    it("today with everything ahead: spacer only (1 <hr>), one table, \u27f3 present", () => {
+    it("today with everything ahead: exactly one <hr> (spacer only), no labelled divider, one table, \u27f3 present", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 60 },
         blocks: [block("09:00", "09:30", "Future thing")],
       });
-      // Spacer is always present, so exactly 1 <hr> means no now-divider.
       expect((out.match(/<hr>/g) ?? []).length).toBe(1);
+      expect(out).not.toContain(NOW_DIVIDER_HTML);
       expect((out.match(/<table>/g) ?? []).length).toBe(1);
       expect(out).toContain("\u27f3 09:00");
     });
 
-    it("a past day (elapsed_minutes: 1440): spacer only (1 <hr>), no \u27f3", () => {
+    it("a past day (elapsed_minutes: 1440): exactly one <hr> (spacer only), no labelled divider, no \u27f3", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 30, unaccounted_minutes: 1410, elapsed_minutes: 1440 },
         blocks: [block("09:00", "09:30", "Old thing")],
       });
-      // Spacer is always present, so exactly 1 <hr> means no now-divider.
       expect((out.match(/<hr>/g) ?? []).length).toBe(1);
+      expect(out).not.toContain(NOW_DIVIDER_HTML);
       expect(out).not.toContain("\u27f3");
     });
 
-    it("a future day (elapsed_minutes: 0): spacer only (1 <hr>); every block is ahead, so \u27f3 on all of them", () => {
+    it("a future day (elapsed_minutes: 0): exactly one <hr> (spacer only), no labelled divider; every block is ahead, so \u27f3 on all of them", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 0 },
         blocks: [block("09:00", "09:30", "Thing A"), block("14:00", "15:00", "Thing B")],
       });
-      // Spacer is always present, so exactly 1 <hr> means no now-divider.
       expect((out.match(/<hr>/g) ?? []).length).toBe(1);
+      expect(out).not.toContain(NOW_DIVIDER_HTML);
       expect(out).toContain("\u27f3 09:00");
       expect(out).toContain("\u27f3 14:00");
+    });
+
+    it("suppresses the labelled divider on today with no rows at all, same rule as an empty side", () => {
+      // The existing elapsed-only / ahead-only cases above already prove
+      // suppression when one side is empty; this covers the other edge the
+      // suppression rule has to hold for \u2014 today, but nothing to show at
+      // all \u2014 which the old <hr>-counting tests never exercised on its own.
+      const out = html({
+        ...base,
+        coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600 },
+        blocks: [],
+      });
+      expect(out).not.toContain(NOW_DIVIDER_HTML);
+      expect((out.match(/<hr>/g) ?? []).length).toBe(1);
     });
 
     it("a gap row in the ahead section never carries \u27f3", () => {

@@ -30,6 +30,15 @@ const LRI = "⁦";
 const PDI = "⁩";
 const HYPHENATION_POINT = "‧";
 
+// The now-divider is a labelled text line, not an `<hr>` — a bare rule
+// stopped being unambiguous once the week-bar/nav spacer added a second
+// `<hr>` to the message with an unrelated meaning. U+2500 BOX DRAWINGS LIGHT
+// HORIZONTAL, eight either side of the word, per the Ship 2 design doc
+// (docs/plans/2026-08-21-time-management-phase2-capture-design.md §3). Not
+// hyphens: they read almost identically but are a different character, so
+// this is pinned as its own constant rather than typed inline anywhere.
+const NOW_DIVIDER = "─".repeat(8) + " now " + "─".repeat(8);
+
 function hours(minutes: number): string {
   return `${(minutes / 60).toFixed(1)}h`;
 }
@@ -118,7 +127,7 @@ function weekBar(selected: string): string {
     const iso = shiftDate(sunday, offset);
     const day = Number(iso.slice(8, 10));
     const icon = WEEKDAY_ICONS[offset];
-    const style = iso === selected ? ' style="primary"' : "";
+    const style = iso === selected ? ' style="success"' : "";
     const label = `${icon}\n${LRI}${day}${HYPHENATION_POINT}${letter}${PDI}`;
     return `<tg-button type="callback_data" data="day:${iso}"${style}>${label}</tg-button>`;
   });
@@ -188,7 +197,7 @@ export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {
 
     if (isToday && elapsedRows.length > 0 && aheadRows.length > 0) {
       parts.push(`<table>${elapsedRows.map((r) => r.html).join("")}</table>`);
-      parts.push("<hr>");
+      parts.push(`<p>${NOW_DIVIDER}</p>`);
       parts.push(`<table>${aheadRows.map((r) => r.html).join("")}</table>`);
     } else {
       parts.push(`<table>${rows.map((r) => r.html).join("")}</table>`);
