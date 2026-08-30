@@ -1,13 +1,9 @@
 import { Composer } from "grammy";
 import { api } from "../api/client.js";
-import {
-  formatCalendar,
-  formatGoals,
-  formatGoalDetail,
-} from "../formatters/telegram.js";
+import { formatCalendar } from "../formatters/telegram.js";
 import { buildTasksRich, buildTaskDetailRich } from "../formatters/tasks-rich.js";
 import { buildHabitsRich } from "../formatters/habits-rich.js";
-import { buildGoalsKeyboard, buildGoalDetailKeyboard } from "../keyboards/goals.js";
+import { buildGoalsRich, buildGoalDetailRich } from "../formatters/goals-rich.js";
 import { markActiveSpanError } from "../tracing-utils.js";
 import { sendRich, editRich } from "../bot-utils/send-rich.js";
 import { buildDayRich } from "../formatters/day-rich.js";
@@ -93,9 +89,8 @@ callbackHandlers.callbackQuery(/^goal:view:(.+)$/, async (ctx) => {
   try {
     const detail = await api.getGoal(slug);
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText(formatGoalDetail(detail), {
-      parse_mode: "HTML",
-      reply_markup: buildGoalDetailKeyboard(),
+    await editRich(ctx, buildGoalDetailRich(detail), {
+      reply_markup: buildNavKeyboard("goals"),
     });
   } catch (err) {
     markActiveSpanError(err);
@@ -170,9 +165,8 @@ callbackHandlers.callbackQuery(/^nav:(.+)$/, async (ctx) => {
       }
       case "goals": {
         const goals = await api.listGoals();
-        await ctx.editMessageText(formatGoals(goals), {
-          parse_mode: "HTML",
-          reply_markup: buildGoalsKeyboard(goals),
+        await editRich(ctx, buildGoalsRich(goals), {
+          reply_markup: buildNavKeyboard("goals"),
         });
         break;
       }
