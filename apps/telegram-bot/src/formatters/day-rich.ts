@@ -218,6 +218,9 @@ export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {
   }
 
   parts.push(weekBar(data.date));
+  // Spacer between week bar and nav bar. A plain space collapses and the gap
+  // disappears — the &nbsp; entity is visible in source and survives copy-paste.
+  parts.push("<p>&nbsp;</p><hr>");
   parts.push(navBar(data.date));
 
   return { html: parts.join("\n") };

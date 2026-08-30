@@ -402,59 +402,68 @@ describe("buildDayRich", () => {
       habit_progress: null,
     });
 
-    it("today with rows on both sides: one <hr>, two <table>s, \u27f3 on ahead blocks only", () => {
+    it("today with rows on both sides: two <hr>s (now-divider + spacer), two <table>s, \u27f3 on ahead blocks only", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600 }, // 10:00
         blocks: [block("09:00", "09:30", "Past thing"), block("11:00", "12:00", "Future thing")],
       });
       expect((out.match(/<table>/g) ?? []).length).toBe(2);
-      expect((out.match(/<hr>/g) ?? []).length).toBe(1);
-      expect(out.indexOf("Past thing")).toBeLessThan(out.indexOf("<hr>"));
-      expect(out.indexOf("<hr>")).toBeLessThan(out.indexOf("Future thing"));
+      expect((out.match(/<hr>/g) ?? []).length).toBe(2);
+      // Order: elapsed table \u2192 now-divider \u2192 ahead table \u2192 spacer
+      const firstTableEnd = out.indexOf("</table>");
+      const lastTableEnd = out.lastIndexOf("</table>");
+      const spacerAt = out.indexOf("<p>&nbsp;</p><hr>");
+      expect(firstTableEnd).toBeLessThan(spacerAt);
+      expect(lastTableEnd).toBeLessThan(spacerAt);
+      expect(out.indexOf("Past thing")).toBeLessThan(out.indexOf("Future thing"));
       expect(out).not.toContain("\u27f3 09:00");
       expect(out).toContain("\u27f3 11:00");
     });
 
-    it("today with everything elapsed: no <hr>, one table, no \u27f3", () => {
+    it("today with everything elapsed: spacer only (1 <hr>), one table, no \u27f3", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 30, unaccounted_minutes: 1170, elapsed_minutes: 1200 },
         blocks: [block("09:00", "09:30", "Past thing")],
       });
-      expect(out).not.toContain("<hr>");
+      // Spacer is always present, so exactly 1 <hr> means no now-divider.
+      expect((out.match(/<hr>/g) ?? []).length).toBe(1);
       expect((out.match(/<table>/g) ?? []).length).toBe(1);
       expect(out).not.toContain("\u27f3");
     });
 
-    it("today with everything ahead: no <hr>, one table, \u27f3 present", () => {
+    it("today with everything ahead: spacer only (1 <hr>), one table, \u27f3 present", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 60 },
         blocks: [block("09:00", "09:30", "Future thing")],
       });
-      expect(out).not.toContain("<hr>");
+      // Spacer is always present, so exactly 1 <hr> means no now-divider.
+      expect((out.match(/<hr>/g) ?? []).length).toBe(1);
       expect((out.match(/<table>/g) ?? []).length).toBe(1);
       expect(out).toContain("\u27f3 09:00");
     });
 
-    it("a past day (elapsed_minutes: 1440): no <hr>, no \u27f3", () => {
+    it("a past day (elapsed_minutes: 1440): spacer only (1 <hr>), no \u27f3", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 30, unaccounted_minutes: 1410, elapsed_minutes: 1440 },
         blocks: [block("09:00", "09:30", "Old thing")],
       });
-      expect(out).not.toContain("<hr>");
+      // Spacer is always present, so exactly 1 <hr> means no now-divider.
+      expect((out.match(/<hr>/g) ?? []).length).toBe(1);
       expect(out).not.toContain("\u27f3");
     });
 
-    it("a future day (elapsed_minutes: 0): no <hr>; every block is ahead, so \u27f3 on all of them", () => {
+    it("a future day (elapsed_minutes: 0): spacer only (1 <hr>); every block is ahead, so \u27f3 on all of them", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 0 },
         blocks: [block("09:00", "09:30", "Thing A"), block("14:00", "15:00", "Thing B")],
       });
-      expect(out).not.toContain("<hr>");
+      // Spacer is always present, so exactly 1 <hr> means no now-divider.
+      expect((out.match(/<hr>/g) ?? []).length).toBe(1);
       expect(out).toContain("\u27f3 09:00");
       expect(out).toContain("\u27f3 14:00");
     });
@@ -480,5 +489,21 @@ describe("buildDayRich", () => {
       expect(out).toContain("\u2705 11:00");
       expect(out).not.toContain("\u27f3");
     });
+  });
+
+  it("separates the week bar from the navigation row", () => {
+    // A plain space collapses and the gap disappears \u2014 assert the entity
+    // specifically, not just "some whitespace".
+    const out = html({ ...base, date: "2026-08-30" });
+    expect(out).toContain("<p>&nbsp;</p><hr>");
+  });
+
+  it("puts the spacer between the two button rows, not elsewhere", () => {
+    const out = html({ ...base, date: "2026-08-30" });
+    const weekBarAt = out.indexOf('data="day:2026-08-30"');
+    const spacerAt = out.indexOf("<p>&nbsp;</p><hr>");
+    const navAt = out.indexOf('data="day:today"');
+    expect(weekBarAt).toBeLessThan(spacerAt);
+    expect(spacerAt).toBeLessThan(navAt);
   });
 });
