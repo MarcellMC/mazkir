@@ -1,14 +1,13 @@
 import { Composer } from "grammy";
 import { api } from "../api/client.js";
 import {
-  formatHabits,
   formatCalendar,
   formatGoals,
   formatGoalDetail,
 } from "../formatters/telegram.js";
 import { buildTasksRich, buildTaskDetailRich } from "../formatters/tasks-rich.js";
+import { buildHabitsRich } from "../formatters/habits-rich.js";
 import { buildGoalsKeyboard, buildGoalDetailKeyboard } from "../keyboards/goals.js";
-import { buildHabitsKeyboard } from "../keyboards/habits.js";
 import { markActiveSpanError } from "../tracing-utils.js";
 import { sendRich, editRich } from "../bot-utils/send-rich.js";
 import { buildDayRich } from "../formatters/day-rich.js";
@@ -57,9 +56,14 @@ callbackHandlers.callbackQuery(/^habit:complete:(.+)$/, async (ctx) => {
   try {
     await api.completeHabit(name);
     await ctx.answerCallbackQuery({ text: `✅ ${name} completed!` });
-    // Refresh the habits list in-place
+    // Refresh the habits list in-place. The re-render MUST carry
+    // reply_markup: this edit used to omit it entirely, which stripped every
+    // button from the message and left the user re-issuing /habits to get
+    // them back.
     const habits = await api.listHabits();
-    await ctx.editMessageText(formatHabits(habits), { parse_mode: "HTML" });
+    await editRich(ctx, buildHabitsRich(habits), {
+      reply_markup: buildNavKeyboard("habits"),
+    });
   } catch (err) {
     markActiveSpanError(err);
     await ctx.answerCallbackQuery({ text: "❌ Failed to complete habit" });
@@ -159,9 +163,8 @@ callbackHandlers.callbackQuery(/^nav:(.+)$/, async (ctx) => {
       }
       case "habits": {
         const habits = await api.listHabits();
-        await ctx.editMessageText(formatHabits(habits), {
-          parse_mode: "HTML",
-          reply_markup: buildHabitsKeyboard(habits),
+        await editRich(ctx, buildHabitsRich(habits), {
+          reply_markup: buildNavKeyboard("habits"),
         });
         break;
       }
