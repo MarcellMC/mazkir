@@ -21,6 +21,11 @@ export function buildTasksKeyboard(tasks: Task[], limit = 8): InlineKeyboard {
     if (i > 0) kb.row();
     kb.text(`${i + 1}. ${t.name}`, `task:view:${taskSlug(t)}`);
   });
+  // Cross-view nav, always on its own row at the bottom. This mixes an
+  // in-view control (the task buttons above) with a cross-view one in a
+  // single keyboard — an interim; separating them needs this view to become
+  // a rich message like /day, which is queued as separate work.
+  kb.row().text("📅 Day", "nav:day");
   return kb;
 }
 

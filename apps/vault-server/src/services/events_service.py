@@ -10,6 +10,42 @@ from src.tracing_setup import fs_span
 
 logger = logging.getLogger(__name__)
 
+# Which upstream system produced an event, keyed by its source_ids entry.
+# The `source` field cannot answer this: a calendar event fuzzy-matched to a
+# timeline visit is stored as "merged", and create_event writes "manual".
+_SOURCE_SYSTEM_BY_ID_KEY = {
+    "calendar_id": "calendar",
+    "visit_id": "timeline",
+    "transit_id": "timeline",
+    "note_line": "daily-note",
+    "habit_slug": "habit",
+}
+
+# The only source systems whose absence from a fresh merge is real evidence
+# that an event was deleted upstream — and therefore the only ones whose
+# persisted events reconciliation may drop.
+#
+# Their ids come from the upstream system itself (Google's event id; a
+# visit's start time and place_id), so the same event yields the same id on
+# every merge, and a merge that does not emit it means it is genuinely gone.
+#
+# The excluded sources — `daily-note` and `habit` — derive their ids from
+# user-editable text, so an unmatched persisted event is far more likely to
+# mean "the text changed" or "something shadowed it" than "the user deleted
+# it":
+#   * `note_line` hashes the checkbox's date, section, text and time.
+#     Correcting a typo re-hashes it, the old id matches nothing, and the
+#     block (with any photo attached to it) was deleted.
+#   * `habit_slug` blocks are suppressed by `MergerService`'s
+#     calendar-attachment match: when a calendar event claims a habit, the
+#     habit emits no standalone block at all. Its absence from the merge is
+#     shadowing, not deletion — and `available_sources` cannot see the
+#     difference, because the habit source *did* answer.
+#
+# Stale rows for these two linger until Ship 5 gives them stable identity.
+# That is visible clutter; the alternative is silent loss.
+_DELETABLE_SOURCE_SYSTEMS = frozenset({"calendar", "timeline"})
+
 
 class PhotoRef:
     """Photo reference attached to an event."""
@@ -222,21 +258,66 @@ class EventsService:
 
         return {"error": f"Event {event_id} not found"}
 
-    def auto_refresh(self, date: str, fresh_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def auto_refresh(
+        self,
+        date: str,
+        fresh_events: list[dict[str, Any]],
+        available_sources: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Merge fresh events with persisted data and save.
 
         Alias for refresh_events — used by the unified GET /events endpoint.
         """
-        return self.refresh_events(date, fresh_events)
+        return self.refresh_events(date, fresh_events, available_sources)
 
-    def refresh_events(self, date: str, fresh_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def refresh_events(
+        self,
+        date: str,
+        fresh_events: list[dict[str, Any]],
+        available_sources: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """`reconcile`, then persist. See `reconcile` for the merge algorithm."""
+        result = self.reconcile(date, fresh_events, available_sources)
+        self.save_events(date, result)
+        return result
+
+    def reconcile(
+        self,
+        date: str,
+        fresh_events: list[dict[str, Any]],
+        available_sources: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Re-merge from sources while preserving manually-added data.
+
+        Pure: reads persisted state but never writes it. `refresh_events`
+        is this plus `save_events` — callers that only need the merged view
+        for one moment (rendering `/daily` for a browsed date, say) use this
+        directly so that navigating the calendar can never itself alter the
+        store. A persisted event for a past date must not be silently
+        rewritten just because someone looked at it.
 
         Algorithm:
         1. Match fresh events to existing events by source_ids
-        2. Matched: update name/time/location from fresh, keep photos/assets/id
+        2. Matched: update name/time/location/completed/habit from fresh
+           (all re-derived from the vault every merge), keep
+           photos/assets/id/state (user-set enrichment nothing upstream
+           can regenerate)
         3. Unmatched fresh: add as new events
         4. Unmatched existing with source in ('manual', 'photo'): preserve as-is
+        5. Unmatched existing from any other source: preserve unless its
+           source system is in `available_sources` — an unmatched event
+           should only be treated as "deleted upstream" when the source that
+           would have produced it actually answered this call. A source that
+           failed or was never configured looks identical to "returned
+           nothing" unless the caller says otherwise, so `available_sources`
+           being `None` (caller didn't say) preserves everything unmatched —
+           the safe default. Losing an expired-token calendar refresh used to
+           silently delete every persisted calendar event for the day.
+           A source system must additionally be in
+           `_DELETABLE_SOURCE_SYSTEMS`: answering is not enough when the
+           source's ids come from user-editable text, because then an
+           unmatched event usually means the text changed or another block
+           shadowed it, and `available_sources` cannot see either.
         """
         existing = self.get_events(date)
         existing_by_source: dict[str, dict] = {}
@@ -264,13 +345,24 @@ class EventsService:
                     break
 
             if matched_existing:
-                # Update from fresh source, keep persisted data
+                # Update from fresh source, keep persisted data. These
+                # fields are re-derived from the vault on every merge —
+                # `completed` and `habit` (streak/tokens_earned/etc.) are
+                # never user-set on the persisted event, they're computed
+                # from checkbox/habit-log state each time, so the fresh
+                # value is always the current truth and the persisted one
+                # is always stale the instant the vault changes. That is
+                # the opposite of `photos`/`assets`/`state`, which are
+                # enrichment nothing upstream can regenerate — those must
+                # keep coming from `matched_existing`, never from `fresh`.
                 matched_existing["name"] = fresh["name"]
                 matched_existing["start_time"] = fresh["start_time"]
                 matched_existing["end_time"] = fresh.get("end_time", matched_existing.get("end_time"))
                 matched_existing["location"] = fresh.get("location", matched_existing.get("location"))
                 matched_existing["source"] = fresh.get("source", matched_existing.get("source"))
                 matched_existing["source_ids"] = fresh_source_ids
+                matched_existing["completed"] = fresh.get("completed", False)
+                matched_existing["habit"] = fresh.get("habit")
                 result.append(matched_existing)
             else:
                 result.append(fresh)
@@ -278,5 +370,53 @@ class EventsService:
         # Preserve manual/photo events that weren't matched
         result.extend(manual_events)
 
-        self.save_events(date, result)
+        # Whatever is left in existing_by_source had real source_ids but no
+        # fresh event claimed it this round. That only means "deleted
+        # upstream" if the source system that would have produced it actually
+        # answered — otherwise it means the source failed or was never
+        # configured, and dropping the event here would be indistinguishable
+        # from the calendar genuinely emptying out. Dedup by id first: an
+        # event with two source_ids keys (e.g. a merged calendar+timeline
+        # entry) appears twice in existing_by_source's values.
+        leftover_by_id: dict[str, dict] = {}
+        for evt in existing_by_source.values():
+            leftover_by_id[evt.get("id", id(evt))] = evt
+
+        for evt in leftover_by_id.values():
+            source_ids = evt.get("source_ids", {})
+            its_systems = {
+                _SOURCE_SYSTEM_BY_ID_KEY[key]
+                for key, val in source_ids.items()
+                if val and key in _SOURCE_SYSTEM_BY_ID_KEY
+            }
+            # Subset, not intersection: unreachable today (every event
+            # carries exactly one source_ids key) but stays correct if an
+            # event ever carries two — it should only be dropped once every
+            # system that could have produced it has actually answered.
+            # `its_systems` must also be non-empty: a source_ids key that
+            # isn't in _SOURCE_SYSTEM_BY_ID_KEY (a future source type added
+            # without a matching entry) leaves its_systems empty, and
+            # `set() <= anything` is True — that would delete the event
+            # unconditionally, including when available_sources is empty
+            # because nothing answered. An unmapped key means we cannot
+            # tell which source owns this event, so we keep it — the same
+            # fail-safe direction as available_sources=None.
+            #
+            # `_DELETABLE_SOURCE_SYSTEMS` is the third gate: even a source
+            # that answered may not have *stable* ids, and for those an
+            # unmatched event means the text changed or something shadowed
+            # it, not that it was deleted. Subset again, for the same
+            # reason as above — an event carrying two keys is only
+            # deletable when every system behind it is.
+            if (
+                available_sources is not None
+                and its_systems
+                and its_systems <= available_sources
+                and its_systems <= _DELETABLE_SOURCE_SYSTEMS
+            ):
+                # The source that would have produced this answered this
+                # round and didn't return it — genuinely gone upstream.
+                continue
+            result.append(evt)
+
         return result

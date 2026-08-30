@@ -71,7 +71,8 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
   return {
     // Daily
-    getDaily: () => request<DailyResponse>("/daily"),
+    getDaily: (date?: string) =>
+      request<DailyResponse>(date ? `/daily?date=${date}` : "/daily"),
 
     // Tasks
     listTasks: () => request<Task[]>("/tasks"),

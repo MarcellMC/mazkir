@@ -1,4 +1,5 @@
-"""Daily note API routes."""
+"""Daily note API routes — blocks, gaps, coverage, todos and notes for one day."""
+import logging
 import re
 from datetime import date as dt_date, datetime
 from fastapi import APIRouter, Depends
@@ -8,19 +9,44 @@ from src.auth import verify_api_key
 from src.config import settings
 from src.services.daily_tasks import parse_all_todos, is_todo_line
 from src.services.habit_completion import is_complete_today
+from src.services.day_coverage import MINUTES_PER_DAY, day_coverage, minutes_into_day
 
 router = APIRouter(prefix="/daily", tags=["daily"], dependencies=[Depends(verify_api_key)])
+logger = logging.getLogger(__name__)
 
 tz = pytz.timezone(settings.vault_timezone)
 
 
-class DailyScheduleItem(BaseModel):
-    start: str
-    end: str | None = None
+class DailyBlock(BaseModel):
+    """One interval of the day, from the events ledger."""
+    id: str
+    start: str            # "HH:MM"
+    end: str              # "HH:MM"
     title: str
-    source: str  # "calendar" | "daily-task" | "habit"
+    source: str           # "calendar" | "timeline" | "merged" | "daily-note" | "habit"
+    type: str
     completed: bool = False
-    calendar_name: str | None = None
+    activity: str | None = None   # populated by Ship 6
+    category: str | None = None   # populated by Ship 6
+    state: str = "suggested"      # "approved" arrives in Ship 5
+    habit_progress: str | None = None  # "1/2" when a daily_target is set
+
+
+class DailyGap(BaseModel):
+    start: str
+    end: str
+    minutes: int
+
+
+class DayCoverage(BaseModel):
+    covered_minutes: int
+    unaccounted_minutes: int
+    # Minutes since local midnight for today, 1440 for a past day, 0 for a
+    # future day. Carries the "is it today" signal for free: the bot needs
+    # no timezone comparison at all, since the divider it draws between
+    # elapsed and still-to-come rows shows exactly when
+    # `0 < elapsed_minutes < 1440`.
+    elapsed_minutes: int
 
 
 class DailyNote(BaseModel):
@@ -41,7 +67,9 @@ class DailyResponse(BaseModel):
     date: str
     tokens_today: int
     tokens_total: int
-    schedule: list[DailyScheduleItem]
+    blocks: list[DailyBlock]
+    gaps: list[DailyGap]
+    coverage: DayCoverage
     todos: list[DailyTodo]
     notes: list[DailyNote]
 
@@ -55,17 +83,7 @@ def _extract_section(body: str, name: str) -> str:
     return m.group(1) if m else ""
 
 
-def _habit_scheduled_at(meta: dict) -> str | None:
-    """Time a habit is scheduled for, or None.
-
-    `scheduled_at` is canonical. `scheduled_time` is the legacy key that the
-    habit template used to write; habits created before the rename still
-    carry it, and dropping them would silently empty the schedule.
-    """
-    return meta.get("scheduled_at") or meta.get("scheduled_time") or None
-
-
-def _build_todos(content: str, habits: list[dict], today: dt_date) -> list[DailyTodo]:
+def _build_todos(content: str, habits: list[dict], for_date: dt_date) -> list[DailyTodo]:
     """Every checkbox in the note that has not been moved away, wherever it
     lives. Checked ones are included too, carrying `done=True`.
 
@@ -73,18 +91,21 @@ def _build_todos(content: str, habits: list[dict], today: dt_date) -> list[Daily
     an untimed todo is parsed and then silently dropped.
 
     A checkbox naming an active habit is reconciled against that habit's
-    real state rather than trusted: `complete_habit` writes the habit file
-    and never ticks the note, so the daily template's `## Daily Habits`
-    boxes would otherwise sit unticked forever. Completed today shows as
-    done; not yet completed is omitted, since /habits is where outstanding
-    habits belong and /day should not reopen them every morning.
+    real state on `for_date` rather than trusted: `complete_habit` writes
+    the habit file and never ticks the note, so the daily template's
+    `## Daily Habits` boxes would otherwise sit unticked forever. Completed
+    on `for_date` shows as done; not yet completed is omitted, since /habits
+    is where outstanding habits belong and /day should not reopen them every
+    morning. `for_date` must be the day being viewed, not always today —
+    passing today unconditionally showed yesterday's habit todos as today's
+    state and made every future date's habit todos vanish.
 
     Matched on habit name, not on section name, so it holds wherever the
     checkbox was written.
     """
     habit_state = {
         (h.get("metadata", {}).get("name") or "").strip().casefold():
-            is_complete_today(h, today)
+            is_complete_today(h, for_date)
         for h in habits
     }
 
@@ -126,80 +147,157 @@ def _build_notes(content: str) -> list[DailyNote]:
     return notes
 
 
-@router.get("", response_model=DailyResponse)
-async def get_daily():
-    from src.main import get_vault, get_calendar
-    vault = get_vault()
-    calendar = get_calendar()
+def _end_minutes(timestamp: str, date: str) -> int | None:
+    """`minutes_into_day` for a block's *end*, clipped to end-of-day when the
+    end falls on a later date.
 
-    today = datetime.now(tz).strftime("%Y-%m-%d")
+    Spec §4: "Block spanning midnight → rendered clipped to the day."
+    `MergerService` clamps the blocks it builds itself, but a real calendar
+    entry (or a manually created event) carries its own end timestamp, and
+    `minutes_into_day` returns None for one on the next date — which dropped
+    the block entirely. A 22:00→01:00 shift rendered as no blocks at all and
+    a single 00:00–24:00 gap: the whole day read as unaccounted. Ship 1
+    displayed that event, so dropping it was a regression.
 
-    # Read or create daily note
+    Only a *later* date clips. An end before `date` is not a span, it is
+    corrupt, and None still drops it. Ship 5 owns the second fragment.
+    """
+    direct = minutes_into_day(timestamp, date)
+    if direct is not None:
+        return direct
+    day_part, sep, _ = timestamp.partition("T")
+    if not sep:
+        return None
     try:
-        daily = vault.read_daily_note()
-    except FileNotFoundError:
-        daily = vault.create_daily_note()
+        if dt_date.fromisoformat(day_part) > dt_date.fromisoformat(date):
+            return MINUTES_PER_DAY
+    except ValueError:
+        return None
+    return None
 
-    schedule: list[DailyScheduleItem] = []
 
-    # Calendar events (already filtered by allowlist from T9)
-    if calendar and calendar.is_initialized:
-        try:
-            cal_events = await calendar.get_todays_events(all_calendars=True)
-            for e in cal_events:
-                schedule.append(DailyScheduleItem(
-                    start=e.get("start", ""),
-                    end=e.get("end"),
-                    title=e.get("summary", ""),
-                    source="calendar",
-                    completed=e.get("completed", False),
-                    calendar_name=e.get("calendar"),
-                ))
-        except Exception:
-            pass
+def _build_blocks_and_coverage(
+    events: list[dict], date: str, elapsed_minutes: int
+) -> tuple[list[DailyBlock], list[DailyGap], DayCoverage]:
+    """Turn merged events into the day's timeline, plus its coverage.
 
-    # Every timed checkbox in the note, from any section and at any nesting
-    # depth. Scoping this to top-level `## Tasks` used to hide a timed
-    # checkbox written under `## Notes` or nested under a parent task: it was
-    # absent from schedule[], excluded from notes[] as a checkbox, and then
-    # dropped from the bot's Todos block for having a time. It appeared
-    # nowhere at all.
-    content = daily.get("content", "")
-    for t in parse_all_todos(content):
-        if t.scheduled_at:
-            schedule.append(DailyScheduleItem(
-                start=t.scheduled_at,
-                title=t.text,
-                source="daily-task",
-                completed=t.state == "checked",
-            ))
+    Events that *start* outside `date` are dropped: storage splits at
+    midnight, so a neighbouring day's fragment here would distort this
+    day's arithmetic. An event that starts on `date` and ends after it is
+    clipped to `24:00` rather than dropped — see `_end_minutes`.
+    """
+    blocks: list[DailyBlock] = []
+    intervals: list[tuple[int, int]] = []
 
-    # Scheduled habits (those with scheduled_at HH:MM)
-    habits = vault.list_active_habits()
-    for h in habits:
-        meta = h.get("metadata", {})
-        scheduled_at = _habit_scheduled_at(meta)
-        if not scheduled_at:
+    for e in events:
+        start = minutes_into_day(e.get("start_time", ""), date)
+        end = _end_minutes(e.get("end_time", ""), date)
+        if start is None or end is None:
             continue
-        schedule.append(DailyScheduleItem(
-            start=scheduled_at,
-            title=meta.get("name", ""),
-            source="habit",
-            # Target met, not merely touched today — `last_completed` is set
-            # on partial completions as well.
-            completed=is_complete_today(h, datetime.now(tz).date()),
+        habit = e.get("habit") or {}
+        target = habit.get("daily_target")
+        blocks.append(DailyBlock(
+            id=e.get("id", ""),
+            start=f"{start // 60:02d}:{start % 60:02d}",
+            end=f"{end // 60:02d}:{end % 60:02d}",
+            title=e.get("name", ""),
+            # `or default`, not `.get(k, default)`: a persisted event can
+            # carry an explicit `null` for these keys, and `.get` only
+            # supplies its default when the key is absent — an explicit
+            # None sails through and 500s the endpoint at the pydantic
+            # boundary (`type`/`source`/`state` are non-optional `str`).
+            source=e.get("source") or "",
+            type=e.get("type") or "",
+            # `habit.completed` is the fallback, not the source: it is
+            # where completion used to live, so persisted events written
+            # before `MergedEvent.completed` existed still carry it there.
+            completed=bool(e.get("completed") or habit.get("completed", False)),
+            activity=e.get("activity"),
+            category=e.get("category"),
+            state=e.get("state") or "suggested",
+            habit_progress=(
+                f"{habit.get('completions_today', 0)}/{target}" if target else None
+            ),
         ))
+        intervals.append((start, end))
 
-    # Sort schedule by start time
-    schedule.sort(key=lambda s: s.start)
+    blocks.sort(key=lambda b: b.start)
+    raw_gaps, coverage = day_coverage(intervals, elapsed_minutes)
+    return (
+        blocks,
+        [DailyGap(start=g.start, end=g.end, minutes=g.minutes) for g in raw_gaps],
+        DayCoverage(
+            covered_minutes=coverage.covered_minutes,
+            unaccounted_minutes=coverage.unaccounted_minutes,
+            elapsed_minutes=elapsed_minutes,
+        ),
+    )
 
-    # Todos parsed from all sections, habit boxes reconciled against real state
-    todos = _build_todos(content, habits, datetime.now(tz).date())
 
-    # Notes parsed from ## Notes section
+@router.get("", response_model=DailyResponse)
+async def get_daily(date: dt_date | None = None):
+    """`date` is typed, not a raw string: FastAPI rejects anything that
+    isn't a real calendar date with 422 before it ever reaches a filesystem
+    path. It used to be `str | None`, and `date`'s only use was interpolated
+    straight into `10-daily/{date}.md` and into the events-preview call —
+    `?date=../../../../etc/hosts` read an arbitrary file off disk and
+    returned its body through notes[]/todos[]. This parameter took no input
+    at all before this route grew ?date=, so there was nothing to validate
+    before now.
+    """
+    from src.main import get_vault
+    from src.api.routes.events import get_events_preview
+
+    vault = get_vault()
+    now = datetime.now(tz)
+    today_date = now.date()
+    target_date = date or today_date
+    target = target_date.isoformat()
+
+    # read_daily_note catches FileNotFoundError internally and returns an
+    # empty note rather than raising, so there is no exception here to
+    # handle — a missing note for `target` is a legitimate empty day.
+    daily = vault.read_daily_note(target)
+    content = daily.get("content", "")
+
+    # Blocks come from the events ledger, which owns temporal data. We call
+    # a read-only preview rather than the persisting GET /events/{date}:
+    # /daily is called on every navigation tap, and persisting on every tap
+    # would let browsing a date rewrite data/events/{date}.json for it from
+    # whatever the vault looks like *now* — a persisted block for a past
+    # date could be silently dropped because a habit was since renamed. We
+    # also call the shared merge rather than re-merging here: two
+    # implementations of the same merge is how the ordinal bug in the Phase
+    # 2 design §7 happened.
+    events: list[dict] = []
+    try:
+        payload = await get_events_preview(target_date)
+        events = payload.get("events", [])
+    except Exception:
+        # A silent [] here would render identically to a genuinely empty
+        # day — log it so a failing events service doesn't look like the
+        # user did nothing.
+        logger.warning(
+            "GET /daily?date=%s: fetching events failed, showing no blocks",
+            target, exc_info=True,
+        )
+
+    if target_date < today_date:
+        elapsed = 24 * 60
+    elif target_date > today_date:
+        elapsed = 0
+    else:
+        elapsed = now.hour * 60 + now.minute
+
+    blocks, gaps, coverage = _build_blocks_and_coverage(events, target, elapsed)
+
+    habits = vault.list_active_habits()
+    # `target_date`, not today: habit checkboxes are reconciled against the
+    # day being viewed, or yesterday shows this morning's completions and
+    # every future date's habit todos vanish.
+    todos = _build_todos(content, habits, target_date)
     notes = _build_notes(content)
 
-    # Token ledger
     try:
         ledger = vault.read_token_ledger()
         tokens_today = ledger["metadata"].get("tokens_today", 0)
@@ -209,10 +307,12 @@ async def get_daily():
         tokens_total = 0
 
     return DailyResponse(
-        date=today,
+        date=target,
         tokens_today=tokens_today,
         tokens_total=tokens_total,
-        schedule=schedule,
+        blocks=blocks,
+        gaps=gaps,
+        coverage=coverage,
         todos=todos,
         notes=notes,
     )

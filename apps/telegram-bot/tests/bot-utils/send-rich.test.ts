@@ -58,3 +58,78 @@ describe("sendRich fallback", () => {
     expect(ctx.reply.mock.calls[0][0]).toContain("hello");
   });
 });
+
+describe("editRich", () => {
+  it("edits the message in place with rich content", async () => {
+    const editMessageText = vi.fn().mockResolvedValue(true);
+    const ctx = { editMessageText } as never;
+    const { editRich } = await import("../../src/bot-utils/send-rich.js");
+    await editRich(ctx, { html: "<p>hi</p>" });
+    expect(editMessageText).toHaveBeenCalledWith({ html: "<p>hi</p>" });
+  });
+
+  it("falls back to plain text when the rich payload is rejected", async () => {
+    const editMessageText = vi.fn()
+      .mockRejectedValueOnce(new Error("rich rejected"))
+      .mockResolvedValue(true);
+    const ctx = { editMessageText } as never;
+    const { editRich } = await import("../../src/bot-utils/send-rich.js");
+    await editRich(ctx, { html: "<p>hi &amp; bye</p>" });
+    expect(editMessageText).toHaveBeenLastCalledWith("hi & bye");
+  });
+
+  it("treats an unchanged message as success, not a failed payload", async () => {
+    // Re-tapping the highlighted day sends identical content. Telegram rejects
+    // that, and routing it through the fallback would replace the rich message
+    // with plain text — permanently removing the in-body navigation buttons.
+    const err = Object.assign(new Error("Bad Request: message is not modified"), {
+      description: "Bad Request: message is not modified",
+    });
+    const editMessageText = vi.fn().mockRejectedValueOnce(err);
+    const ctx = { editMessageText } as never;
+    const { editRich } = await import("../../src/bot-utils/send-rich.js");
+    await editRich(ctx, { html: "<p>same</p>" });
+    expect(editMessageText).toHaveBeenCalledTimes(1);  // no fallback attempt
+  });
+
+  it("still degrades to plain text on a genuine rejection", async () => {
+    const editMessageText = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("Bad Request: can't parse entities"), {
+        description: "Bad Request: can't parse entities",
+      }))
+      .mockResolvedValue(true);
+    const ctx = { editMessageText } as never;
+    const { editRich } = await import("../../src/bot-utils/send-rich.js");
+    await editRich(ctx, { html: "<p>hi &amp; bye</p>" });
+    expect(editMessageText).toHaveBeenLastCalledWith("hi & bye");
+  });
+
+  it("passes extra (e.g. reply_markup) through on the success path", async () => {
+    const editMessageText = vi.fn().mockResolvedValue(true);
+    const ctx = { editMessageText } as never;
+    const { editRich } = await import("../../src/bot-utils/send-rich.js");
+    const extra = { reply_markup: { inline_keyboard: [[{ text: "Tasks", callback_data: "nav:tasks" }]] } };
+
+    await editRich(ctx, { html: "<p>hi</p>" }, extra);
+
+    expect(editMessageText).toHaveBeenCalledWith({ html: "<p>hi</p>" }, extra);
+  });
+
+  it("passes extra through on the plain-text fallback too", async () => {
+    // Same reasoning as sendRich's fallback: dropping `extra` here would
+    // strip the keyboard from the degraded message, leaving a prompt the
+    // user cannot answer.
+    const editMessageText = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("Bad Request: can't parse entities"), {
+        description: "Bad Request: can't parse entities",
+      }))
+      .mockResolvedValue(true);
+    const ctx = { editMessageText } as never;
+    const { editRich } = await import("../../src/bot-utils/send-rich.js");
+    const extra = { reply_markup: { inline_keyboard: [[{ text: "Tasks", callback_data: "nav:tasks" }]] } };
+
+    await editRich(ctx, { html: "<p>hi &amp; bye</p>" }, extra);
+
+    expect(editMessageText).toHaveBeenLastCalledWith("hi & bye", extra);
+  });
+});

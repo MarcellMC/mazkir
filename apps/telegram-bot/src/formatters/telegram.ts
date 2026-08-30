@@ -1,5 +1,4 @@
 import type {
-  DailyResponse,
   Task,
   TaskDetail,
   Habit,
@@ -46,52 +45,6 @@ function goalPriorityEmoji(priority: GoalPriority): string {
   if (typeof priority === "number") return priorityEmoji(priority);
   const scale: Record<string, number> = { high: 5, medium: 3, low: 1 };
   return priorityEmoji(scale[priority.toLowerCase()] ?? 3);
-}
-
-/** Every interpolated value here is free text from the user's Obsidian
- * note, and the digest is sent with HTML parse_mode. One unescaped `<`
- * makes Telegram reject the whole message, and /day's catch reports it
- * as the server being down — so escape at every interpolation. */
-export function formatDay(data: DailyResponse): string {
-  const lines: string[] = [];
-  lines.push(`📅 <b>Daily Note — ${data.date}</b>`);
-  lines.push(`🪙 Tokens today: <b>${data.tokens_today}</b> | Total: <b>${data.tokens_total}</b>`);
-  lines.push("");
-
-  if (data.schedule.length > 0) {
-    lines.push("📆 <b>Schedule</b>");
-    for (const item of data.schedule) {
-      const icon = item.completed ? "✅" : item.source === "habit" ? "🔁" : "⏳";
-      const time = item.start.includes("T") ? formatTime(item.start) : item.start;
-      const cal =
-        item.calendar_name && item.calendar_name !== "Mazkir"
-          ? ` (${escapeHtml(item.calendar_name)})`
-          : "";
-      lines.push(`  ${icon} ${time} — ${escapeHtml(item.title)}${cal}`);
-    }
-  }
-
-  const untimed = (data.todos ?? []).filter((t) => !t.scheduled_at);
-  if (untimed.length > 0) {
-    if (data.schedule.length > 0) lines.push("");
-    lines.push("☑️ <b>Todos</b>");
-    for (const t of untimed) {
-      const box = t.done ? "☑️" : "☐";
-      const dur = t.duration_minutes != null ? ` <i>(${t.duration_minutes}m)</i>` : "";
-      lines.push(`  ${box} ${escapeHtml(t.text)}${dur}`);
-    }
-  }
-
-  if (data.notes && data.notes.length > 0) {
-    if (data.schedule.length > 0 || untimed.length > 0) lines.push("");
-    lines.push("📝 <b>Notes</b>");
-    for (const n of data.notes) {
-      const text = n.text ?? (n.caption ? `📷 ${n.caption}` : "📷");
-      lines.push(`  ${escapeHtml(text)}`);
-    }
-  }
-
-  return lines.join("\n");
 }
 
 export function formatTasks(tasks: Task[]): string {

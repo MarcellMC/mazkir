@@ -10,8 +10,12 @@ import {
 } from "../formatters/telegram.js";
 import { buildTasksKeyboard, buildTaskDetailKeyboard } from "../keyboards/tasks.js";
 import { buildGoalsKeyboard, buildGoalDetailKeyboard } from "../keyboards/goals.js";
+import { buildHabitsKeyboard } from "../keyboards/habits.js";
 import { markActiveSpanError } from "../tracing-utils.js";
-import { sendRich } from "../bot-utils/send-rich.js";
+import { sendRich, editRich } from "../bot-utils/send-rich.js";
+import { buildDayRich } from "../formatters/day-rich.js";
+import { buildDayNavKeyboard } from "../keyboards/day.js";
+import { logger } from "../logger.js";
 import {
   setPendingConfirmation,
   clearPendingConfirmation,
@@ -116,6 +120,34 @@ callbackHandlers.callbackQuery(/^task:(?:done|complete):(.+)$/, async (ctx) => {
   }
 });
 
+// Date navigation re-renders the same message. The selected date lives in
+// the callback data rather than server state, so a button on an old message
+// still resolves to the day it was drawn for.
+callbackHandlers.callbackQuery(/^day:(.+)$/, async (ctx) => {
+  const arg = ctx.match[1]!;
+  await ctx.answerCallbackQuery();
+  const date = arg === "today" ? undefined : arg;
+  try {
+    const data = await api.getDaily(date);
+    await editRich(ctx, buildDayRich(data), { reply_markup: buildDayNavKeyboard() });
+  } catch (err) {
+    markActiveSpanError(err);
+    // The error report is itself an edit and can itself be rejected (e.g.
+    // chained from the same "not modified" condition, or a second identical
+    // failure). `bot.catch()` (bot.ts) would still net this, but logging
+    // and giving up quietly here avoids bouncing it through the bot-wide
+    // boundary — the user still has the previous message on screen.
+    try {
+      await ctx.editMessageText("❌ Failed to load the day.");
+    } catch (reportErr) {
+      logger.warn(
+        { event_type: "day_error_report_failed", err: String(reportErr) },
+        "day_error_report_failed",
+      );
+    }
+  }
+});
+
 // Navigation
 callbackHandlers.callbackQuery(/^nav:(.+)$/, async (ctx) => {
   const target = ctx.match[1];
@@ -132,7 +164,10 @@ callbackHandlers.callbackQuery(/^nav:(.+)$/, async (ctx) => {
       }
       case "habits": {
         const habits = await api.listHabits();
-        await ctx.editMessageText(formatHabits(habits), { parse_mode: "HTML" });
+        await ctx.editMessageText(formatHabits(habits), {
+          parse_mode: "HTML",
+          reply_markup: buildHabitsKeyboard(habits),
+        });
         break;
       }
       case "goals": {
@@ -146,6 +181,11 @@ callbackHandlers.callbackQuery(/^nav:(.+)$/, async (ctx) => {
       case "calendar": {
         const events = await api.getCalendarEvents();
         await ctx.editMessageText(formatCalendar(events), { parse_mode: "HTML" });
+        break;
+      }
+      case "day": {
+        const data = await api.getDaily();
+        await editRich(ctx, buildDayRich(data), { reply_markup: buildDayNavKeyboard() });
         break;
       }
     }

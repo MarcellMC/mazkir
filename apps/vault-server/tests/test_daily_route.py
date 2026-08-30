@@ -1,11 +1,6 @@
-"""Tests for the /daily route — new schedule + notes shape."""
+"""Tests for the /daily route — blocks, gaps, coverage, todos and notes."""
 from datetime import date
 import re
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
-from src.services.daily_tasks import parse_tasks_section
 
 
 # Inline the _extract_section helper to avoid circular-import from daily.py
@@ -37,58 +32,6 @@ class TestExtractSection:
         assert "other content" not in result
 
 
-class TestDailyScheduleBuilding:
-    """Verify that the schedule-building logic works correctly."""
-
-    def test_timed_daily_task_included(self):
-        body = "## Tasks\n- [ ] 14:00 — Visit dentist\n"
-        tasks = parse_tasks_section(body)
-        timed = [t for t in tasks if t.scheduled_at and t.state in ("unchecked", "checked")]
-        assert len(timed) == 1
-        assert "dentist" in timed[0].text.lower()
-        assert timed[0].scheduled_at == "14:00"
-
-    def test_untimed_daily_task_excluded(self):
-        body = "## Tasks\n- [ ] Buy groceries\n"
-        tasks = parse_tasks_section(body)
-        timed = [t for t in tasks if t.scheduled_at]
-        assert len(timed) == 0
-
-    def test_checked_timed_task_is_completed(self):
-        body = "## Tasks\n- [x] 09:00 — Morning standup\n"
-        tasks = parse_tasks_section(body)
-        timed = [t for t in tasks if t.scheduled_at]
-        assert len(timed) == 1
-        assert timed[0].state == "checked"
-
-    def test_notes_parsed_from_section(self):
-        body = "## Notes\n- Remember dentist\n- Call mom\n"
-        section = _extract_section(body, "Notes")
-        lines = [l.strip().lstrip("- ").strip() for l in section.splitlines() if l.strip().lstrip("- ").strip()]
-        assert "Remember dentist" in lines
-        assert "Call mom" in lines
-
-    def test_image_line_detected(self):
-        body = "## Notes\n- ![sunset](data/media/photo.jpg)\n"
-        section = _extract_section(body, "Notes")
-        img_match = None
-        for line in section.splitlines():
-            stripped = line.strip().lstrip("- ").strip()
-            img_match = re.match(r"!\[([^\]]*)\]\(([^)]*)\)", stripped)
-            if img_match:
-                break
-        assert img_match is not None
-        assert img_match.group(1) == "sunset"
-        assert "photo.jpg" in img_match.group(2)
-
-    def test_schedule_sorted_ascending(self):
-        starts = ["10:00", "07:00", "2026-06-04T08:00:00"]
-        sorted_starts = sorted(starts)
-        # ISO datetime "2026-..." sorts before "07:00" alphabetically
-        # In practice, mixing formats is avoided, but sorting still works
-        assert sorted_starts == sorted(starts)
-
-
 class TestDailyResponseModels:
     """Assert on the real response models.
 
@@ -99,13 +42,6 @@ class TestDailyResponseModels:
     it still described a five-field response after `todos` was added.
     """
 
-    def test_response_model_fields(self):
-        from src.api.routes.daily import DailyResponse
-
-        assert set(DailyResponse.model_fields) == {
-            "date", "tokens_today", "tokens_total", "schedule", "todos", "notes",
-        }
-
     def test_todo_model_fields(self):
         from src.api.routes.daily import DailyTodo
 
@@ -115,19 +51,6 @@ class TestDailyResponseModels:
         t = DailyTodo(text="Order dog food")
         assert t.done is False and t.section == ""
         assert t.scheduled_at is None and t.duration_minutes is None
-
-    def test_schedule_item_source_values(self):
-        from pydantic import BaseModel
-
-        class _DailyScheduleItem(BaseModel):
-            start: str
-            title: str
-            source: str
-            completed: bool = False
-
-        for source in ("calendar", "daily-task", "habit"):
-            item = _DailyScheduleItem(start="09:00", title="Test", source=source, completed=False)
-            assert item.source == source
 
     def test_daily_note_photo_fields(self):
         from pydantic import BaseModel
@@ -141,102 +64,6 @@ class TestDailyResponseModels:
         assert note.photo_path == "/data/photo.jpg"
         assert note.caption == "sunset"
         assert note.text is None
-
-
-class TestHabitScheduledAt:
-    """The canonical key is scheduled_at; scheduled_time is the legacy name."""
-
-    def test_prefers_canonical_key(self):
-        from src.api.routes.daily import _habit_scheduled_at
-        assert _habit_scheduled_at({"scheduled_at": "07:30"}) == "07:30"
-
-    def test_falls_back_to_legacy_key(self):
-        from src.api.routes.daily import _habit_scheduled_at
-        assert _habit_scheduled_at({"scheduled_time": "07:30"}) == "07:30"
-
-    def test_canonical_wins_when_both_present(self):
-        from src.api.routes.daily import _habit_scheduled_at
-        meta = {"scheduled_at": "08:00", "scheduled_time": "07:30"}
-        assert _habit_scheduled_at(meta) == "08:00"
-
-    def test_returns_none_when_unscheduled(self):
-        from src.api.routes.daily import _habit_scheduled_at
-        assert _habit_scheduled_at({"name": "Workout"}) is None
-
-    def test_treats_empty_string_as_unscheduled(self):
-        from src.api.routes.daily import _habit_scheduled_at
-        assert _habit_scheduled_at({"scheduled_at": ""}) is None
-
-
-class TestScheduledHabitCompletion:
-    """A scheduled habit's `completed` flag means the day's target is met.
-
-    Regression: the route compared `last_completed` to today, and Task 7 sets
-    `last_completed` on partial completions — so the first of two dog walks
-    marked the whole schedule item done.
-    """
-
-    @staticmethod
-    def _today():
-        import datetime as dt
-        import pytz
-        from src.config import settings
-        return dt.datetime.now(pytz.timezone(settings.vault_timezone)).date()
-
-    def _habit(self, *, target=2, log_times=(), last_completed=None):
-        today = self._today().isoformat()
-        log = "".join(f"- {today}T{t}\n" for t in log_times)
-        return {
-            "path": "20-habits/dog-walk.md",
-            "metadata": {
-                "type": "habit",
-                "name": "Dog Walk",
-                "status": "active",
-                "scheduled_at": "07:00",
-                "daily_target": target,
-                "last_completed": last_completed,
-            },
-            "content": f"# Dog Walk\n\n## Completion Log\n{log}",
-        }
-
-    def _schedule(self, habit):
-        from fastapi.testclient import TestClient
-        from src.main import app
-
-        vault = MagicMock()
-        vault.read_daily_note.return_value = {"content": "", "path": "10-daily/x.md"}
-        vault.list_active_habits.return_value = [habit]
-        vault.read_token_ledger.return_value = {"metadata": {}}
-
-        with patch("src.main.get_vault", return_value=vault), \
-                patch("src.main.get_calendar", return_value=None):
-            resp = TestClient(app).get("/daily")
-        assert resp.status_code == 200
-        items = [s for s in resp.json()["schedule"] if s["source"] == "habit"]
-        assert len(items) == 1
-        return items[0]
-
-    def test_partial_completion_is_not_complete(self):
-        # One of two walks: the completion stamped `last_completed` with
-        # today's date, which is exactly what the old check read.
-        item = self._schedule(self._habit(
-            target=2,
-            log_times=["07:12:00"],
-            last_completed=self._today().isoformat(),
-        ))
-        assert item["completed"] is False
-
-    def test_target_met_is_complete(self):
-        item = self._schedule(
-            self._habit(target=2, log_times=["07:12:00", "19:40:00"])
-        )
-        assert item["completed"] is True
-
-    def test_pre_log_habit_completed_today_is_complete(self):
-        item = self._schedule(
-            self._habit(target=2, last_completed=self._today().isoformat())
-        )
-        assert item["completed"] is True
 
 
 class TestDayTodos:
@@ -376,3 +203,253 @@ class TestHabitCheckboxesReflectRealState:
         )
         habits = [self._habit("Review Email"), self._habit("Review Browser Tabs")]
         assert _build_todos(body, habits, date.today()) == []
+
+
+class TestDailyBlocks:
+    def test_block_model_fields(self):
+        from src.api.routes.daily import DailyBlock
+
+        assert set(DailyBlock.model_fields) == {
+            "id", "start", "end", "title", "source", "type", "completed",
+            "activity", "category", "state", "habit_progress",
+        }
+
+    def test_response_model_replaces_schedule_with_blocks(self):
+        from src.api.routes.daily import DailyResponse
+
+        fields = set(DailyResponse.model_fields)
+        assert "schedule" not in fields
+        assert fields == {
+            "date", "tokens_today", "tokens_total",
+            "blocks", "gaps", "coverage", "todos", "notes",
+        }
+
+    def test_builds_blocks_and_gaps_from_events(self):
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [
+            {"id": "e1", "name": "Dog walk", "start_time": "2026-08-29T07:00",
+             "end_time": "2026-08-29T07:40", "source": "habit", "type": "habit",
+             "state": "suggested", "activity": None, "category": None},
+            {"id": "e2", "name": "Standup", "start_time": "2026-08-29T09:05",
+             "end_time": "2026-08-29T10:00", "source": "calendar", "type": "calendar",
+             "state": "suggested", "activity": None, "category": None},
+        ]
+        blocks, gaps, coverage = _build_blocks_and_coverage(
+            events, "2026-08-29", elapsed_minutes=600,
+        )
+        assert [b.title for b in blocks] == ["Dog walk", "Standup"]
+        assert [b.start for b in blocks] == ["07:00", "09:05"]
+        assert coverage.covered_minutes == 95
+        assert [(g.start, g.end) for g in gaps] == [("00:00", "07:00"), ("07:40", "09:05")]
+
+    def test_blocks_sort_by_start_time(self):
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [
+            {"id": "b", "name": "Later", "start_time": "2026-08-29T12:00",
+             "end_time": "2026-08-29T13:00", "source": "calendar", "type": "calendar"},
+            {"id": "a", "name": "Earlier", "start_time": "2026-08-29T09:00",
+             "end_time": "2026-08-29T10:00", "source": "calendar", "type": "calendar"},
+        ]
+        blocks, _, _ = _build_blocks_and_coverage(events, "2026-08-29", elapsed_minutes=1440)
+        assert [b.title for b in blocks] == ["Earlier", "Later"]
+
+    def test_a_block_from_another_day_is_clipped_out(self):
+        """Storage splits at midnight; a stray event from a neighbouring day
+        must not distort this day's coverage."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{"id": "x", "name": "Yesterday", "start_time": "2026-08-28T22:00",
+                   "end_time": "2026-08-28T23:00", "source": "calendar", "type": "calendar"}]
+        blocks, _, coverage = _build_blocks_and_coverage(events, "2026-08-29", elapsed_minutes=1440)
+        assert blocks == []
+        assert coverage.covered_minutes == 0
+
+    def test_a_block_spanning_midnight_is_clipped_to_the_end_of_the_day(self):
+        """Spec §4: "Block spanning midnight → rendered clipped to the day."
+        `minutes_into_day` returns None for an end on the next date, and the
+        block was dropped outright: a 22:00→01:00 shift produced no blocks,
+        zero coverage and one 00:00–24:00 gap — the whole day read as
+        unaccounted. Ship 1 displayed this event."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{"id": "x", "name": "Late shift", "start_time": "2026-08-29T22:00",
+                   "end_time": "2026-08-30T01:00", "source": "calendar",
+                   "type": "calendar"}]
+        blocks, gaps, coverage = _build_blocks_and_coverage(
+            events, "2026-08-29", elapsed_minutes=1440)
+        assert [(b.start, b.end, b.title) for b in blocks] == [
+            ("22:00", "24:00", "Late shift")]
+        assert coverage.covered_minutes == 120
+        assert [(g.start, g.end) for g in gaps] == [("00:00", "22:00")]
+
+    def test_a_block_ending_days_later_is_still_clipped_to_this_day(self):
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{"id": "x", "name": "Conference", "start_time": "2026-08-29T09:00",
+                   "end_time": "2026-09-01T17:00", "source": "calendar",
+                   "type": "calendar"}]
+        blocks, _, coverage = _build_blocks_and_coverage(
+            events, "2026-08-29", elapsed_minutes=1440)
+        assert [(b.start, b.end) for b in blocks] == [("09:00", "24:00")]
+        assert coverage.covered_minutes == 900
+
+    def test_an_end_before_the_day_is_still_dropped(self):
+        """A later end is a span; an earlier one is corrupt data, and
+        clipping it would invent an interval that never happened."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{"id": "x", "name": "Backwards", "start_time": "2026-08-29T09:00",
+                   "end_time": "2026-08-28T17:00", "source": "calendar",
+                   "type": "calendar"}]
+        blocks, _, coverage = _build_blocks_and_coverage(
+            events, "2026-08-29", elapsed_minutes=1440)
+        assert blocks == []
+        assert coverage.covered_minutes == 0
+
+    def test_habit_progress_is_surfaced(self):
+        """Carried forward from Phase 1: the bot could only render a binary
+        box because completions_today never reached it."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{"id": "h", "name": "Dog walk", "start_time": "2026-08-29T07:00",
+                   "end_time": "2026-08-29T07:40", "source": "habit", "type": "habit",
+                   "habit": {"name": "Dog walk", "completed": False,
+                             "completions_today": 1, "daily_target": 2}}]
+        blocks, _, _ = _build_blocks_and_coverage(events, "2026-08-29", elapsed_minutes=1440)
+        assert blocks[0].habit_progress == "1/2"
+
+
+class TestGetDailyRoute:
+    """Route-level coverage for `get_daily` itself. `_build_blocks_and_coverage`
+    is exercised in isolation everywhere else, but `?date=`, the three
+    `elapsed` branches, the date-or-today default, and the events wiring had
+    no coverage at all — this is the integration point Tasks 7-8 consume.
+    """
+
+    @staticmethod
+    def _vault():
+        from unittest.mock import MagicMock
+        vault = MagicMock()
+        vault.read_daily_note.return_value = {"content": "", "path": "10-daily/x.md"}
+        vault.list_active_habits.return_value = []
+        vault.read_token_ledger.return_value = {"metadata": {}}
+        return vault
+
+    def test_date_elapsed_branches_and_no_schedule_key(self):
+        import datetime as dt
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        import pytz
+        from src.config import settings
+        from src.main import app
+
+        tz = pytz.timezone(settings.vault_timezone)
+
+        async def _no_events(target_date):
+            return {"date": target_date.isoformat(), "events": [], "summary": {}}
+
+        vault = self._vault()
+        with patch("src.main.get_vault", return_value=vault), \
+                patch("src.api.routes.events.get_events_preview", side_effect=_no_events):
+            client = TestClient(app)
+            now_before = dt.datetime.now(tz)
+            today = now_before.date()
+            past = (today - dt.timedelta(days=1)).isoformat()
+            future = (today + dt.timedelta(days=1)).isoformat()
+
+            past_body = client.get("/daily", params={"date": past}).json()
+            future_body = client.get("/daily", params={"date": future}).json()
+            today_body = client.get("/daily").json()
+            now_after = dt.datetime.now(tz)
+
+        # `date` echoes back, including the untouched date-or-today default.
+        assert past_body["date"] == past
+        assert future_body["date"] == future
+        assert today_body["date"] == today.isoformat()
+
+        # elapsed = 1440 for a past date: one full-day gap, nothing covered.
+        assert past_body["gaps"] == [{"start": "00:00", "end": "24:00", "minutes": 1440}]
+        assert past_body["coverage"] == {
+            "covered_minutes": 0, "unaccounted_minutes": 1440, "elapsed_minutes": 1440,
+        }
+
+        # elapsed = 0 for a future date: no gaps at all, not one big one.
+        assert future_body["gaps"] == []
+        assert future_body["coverage"] == {
+            "covered_minutes": 0, "unaccounted_minutes": 0, "elapsed_minutes": 0,
+        }
+
+        # elapsed = now for today: one gap ending at (about) the wall clock.
+        assert len(today_body["gaps"]) == 1
+        end = today_body["gaps"][0]["end"]
+        gap_end_minutes = int(end[:2]) * 60 + int(end[3:])
+        lo = now_before.hour * 60 + now_before.minute
+        hi = now_after.hour * 60 + now_after.minute
+        assert lo <= gap_end_minutes <= hi
+        assert lo <= today_body["coverage"]["elapsed_minutes"] <= hi
+
+        for body in (past_body, future_body, today_body):
+            assert "schedule" not in body
+
+    def test_elapsed_minutes_three_cases(self):
+        """`elapsed_minutes` is what lets the bot draw the now-divider
+        without any timezone math of its own: past day -> 1440, future day
+        -> 0, today -> strictly between the two."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        _, _, past = _build_blocks_and_coverage([], "2026-08-29", elapsed_minutes=1440)
+        _, _, future = _build_blocks_and_coverage([], "2026-08-29", elapsed_minutes=0)
+        _, _, today = _build_blocks_and_coverage([], "2026-08-29", elapsed_minutes=600)
+
+        assert past.elapsed_minutes == 1440
+        assert future.elapsed_minutes == 0
+        assert today.elapsed_minutes == 600
+        assert 0 < today.elapsed_minutes < 1440
+
+    def test_traversal_date_is_rejected(self):
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        resp = TestClient(app).get("/daily", params={"date": "../../../../etc/passwd"})
+        assert resp.status_code == 422
+
+
+class TestBlockCompletion:
+    """`completed` was dead end to end: the merger discarded it, the route
+    read it only from `habit`, and the bot never rendered it. A checked
+    `- [x] 14:00 — Standup` rendered as an ordinary block and appeared
+    nowhere else, since /day filters timed todos out of the Todos list."""
+
+    @staticmethod
+    def _event(**kw):
+        e = {"id": "e1", "name": "Standup", "start_time": "2026-08-29T09:00",
+             "end_time": "2026-08-29T10:00", "source": "calendar", "type": "calendar"}
+        e.update(kw)
+        return e
+
+    def test_the_events_completed_field_reaches_the_block(self):
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        blocks, _, _ = _build_blocks_and_coverage(
+            [self._event(completed=True)], "2026-08-29", elapsed_minutes=1440)
+        assert blocks[0].completed is True
+
+    def test_an_uncompleted_event_stays_uncompleted(self):
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        blocks, _, _ = _build_blocks_and_coverage(
+            [self._event(completed=False)], "2026-08-29", elapsed_minutes=1440)
+        assert blocks[0].completed is False
+
+    def test_a_legacy_event_still_reads_completion_from_habit(self):
+        """Events persisted before MergedEvent.completed existed carry it
+        only inside `habit`."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        blocks, _, _ = _build_blocks_and_coverage(
+            [self._event(source="habit", type="habit",
+                         habit={"name": "Dog walk", "completed": True})],
+            "2026-08-29", elapsed_minutes=1440)
+        assert blocks[0].completed is True

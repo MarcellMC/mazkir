@@ -43,6 +43,31 @@ describe("ApiClient", () => {
     );
   });
 
+  it("getDaily fetches /daily?date= when a date is given", async () => {
+    const mockResponse = {
+      date: "2026-03-02",
+      day_of_week: "Monday",
+      tokens_earned: 10,
+      tokens_total: 100,
+      habits: [],
+      calendar_events: [],
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(mockResponse), { status: 200 })
+    );
+
+    const result = await api.getDaily("2026-03-02");
+    expect(result).toEqual(mockResponse);
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:8000/daily?date=2026-03-02",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "X-API-Key": "test-key",
+        }),
+      })
+    );
+  });
+
   it("completeTask sends PATCH with completed: true", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ success: true }), { status: 200 })

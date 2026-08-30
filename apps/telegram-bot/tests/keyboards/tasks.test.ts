@@ -38,25 +38,35 @@ describe("taskSlug", () => {
 });
 
 describe("buildTasksKeyboard", () => {
-  it("every button's callback_data fits Telegram's 64-byte limit", () => {
+  it("every task button's callback_data fits Telegram's 64-byte limit", () => {
     const kb = buildTasksKeyboard([LONG_TASK, SHORT_TASK]);
-    const buttons = kb.inline_keyboard.flat();
+    const buttons = kb.inline_keyboard.flat().filter(
+      (b) => (b as { callback_data?: string }).callback_data?.startsWith("task:view:"),
+    );
     expect(buttons.length).toBe(2);
     for (const b of buttons) {
-      expect("callback_data" in b).toBe(true);
       const data = (b as { callback_data: string }).callback_data;
       expect(Buffer.byteLength(data, "utf8")).toBeLessThanOrEqual(64);
-      expect(data.startsWith("task:view:")).toBe(true);
     }
   });
 
-  it("caps the number of buttons", () => {
+  it("adds a Day button, on its own row, for cross-view navigation", () => {
+    const kb = buildTasksKeyboard([SHORT_TASK]);
+    const buttons = kb.inline_keyboard.flat() as { text: string; callback_data: string }[];
+    expect(buttons[buttons.length - 1]).toEqual({ text: "📅 Day", callback_data: "nav:day" });
+    expect(kb.inline_keyboard[kb.inline_keyboard.length - 1]!.length).toBe(1);
+  });
+
+  it("caps the number of task buttons, independent of the Day button", () => {
     const tasks = Array.from({ length: 20 }, (_, i) => ({
       ...SHORT_TASK,
       path: `40-tasks/active/task-${i}.md`,
     }));
     const kb = buildTasksKeyboard(tasks);
-    expect(kb.inline_keyboard.flat().length).toBe(8);
+    const taskButtons = kb.inline_keyboard.flat().filter(
+      (b) => (b as { callback_data?: string }).callback_data?.startsWith("task:view:"),
+    );
+    expect(taskButtons.length).toBe(8);
   });
 
   it("labels buttons with sequential numbers", () => {

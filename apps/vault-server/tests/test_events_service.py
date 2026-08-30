@@ -341,6 +341,104 @@ class TestRefreshMerge:
         assert len(result[0]["photos"]) == 1  # Photo preserved
 
 
+class TestReconcileDerivedVsUserSetState:
+    """`completed` and `habit` are recomputed from the vault on every merge,
+    so a matched event must take them from the fresh side — the persisted
+    value is stale the instant the underlying checkbox/habit log changes.
+    `photos`/`assets`/`state` are the opposite: user-set enrichment nothing
+    upstream can regenerate, so those must keep coming from the persisted
+    side. This guards against a fix to one direction accidentally undoing
+    the other."""
+
+    def test_completed_refreshes_from_the_fresh_merge(self, events_service):
+        events_service.save_events("2026-03-04", [{
+            "name": "Morning workout",
+            "type": "daily-task",
+            "start_time": "07:00",
+            "end_time": "07:30",
+            "source": "daily-note",
+            "source_ids": {"note_line": "line1"},
+            "completed": False,
+        }])
+
+        fresh = [{
+            "name": "Morning workout",
+            "type": "daily-task",
+            "start_time": "07:00",
+            "end_time": "07:30",
+            "source": "daily-note",
+            "source_ids": {"note_line": "line1"},
+            "completed": True,
+        }]
+
+        result = events_service.reconcile("2026-03-04", fresh)
+        assert len(result) == 1
+        assert result[0]["completed"] is True  # Ticking the box wins, not the stale persisted value
+
+    def test_habit_dict_refreshes_from_the_fresh_merge(self, events_service):
+        events_service.save_events("2026-03-04", [{
+            "name": "🎯 Meditate",
+            "type": "habit",
+            "start_time": "07:00",
+            "source": "habit",
+            "source_ids": {"habit_slug": "meditate"},
+            "completed": False,
+            "habit": {"name": "Meditate", "completed": False, "streak": 3, "tokens_earned": 0},
+        }])
+
+        fresh = [{
+            "name": "🎯 Meditate",
+            "type": "habit",
+            "start_time": "07:00",
+            "source": "habit",
+            "source_ids": {"habit_slug": "meditate"},
+            "completed": True,
+            "habit": {"name": "Meditate", "completed": True, "streak": 4, "tokens_earned": 5},
+        }]
+
+        result = events_service.reconcile("2026-03-04", fresh)
+        assert len(result) == 1
+        assert result[0]["completed"] is True
+        assert result[0]["habit"]["completed"] is True
+        assert result[0]["habit"]["streak"] == 4
+        assert result[0]["habit"]["tokens_earned"] == 5
+
+    def test_photos_and_state_survive_reconcile_even_as_completed_flips(self, events_service):
+        """A fix that refreshed everything on a match — not just derived
+        fields — would silently drop user-set enrichment. Assert both
+        travel through the same reconcile call that flips `completed`."""
+        events_service.save_events("2026-03-04", [{
+            "name": "Morning workout",
+            "type": "daily-task",
+            "start_time": "07:00",
+            "end_time": "07:30",
+            "source": "daily-note",
+            "source_ids": {"note_line": "line1"},
+            "completed": False,
+            "photos": [{"path": "photo.jpg", "caption": "before"}],
+            "state": "approved",
+        }])
+        old_id = events_service.get_events("2026-03-04")[0]["id"]
+
+        fresh = [{
+            "name": "Morning workout",
+            "type": "daily-task",
+            "start_time": "07:00",
+            "end_time": "07:30",
+            "source": "daily-note",
+            "source_ids": {"note_line": "line1"},
+            "completed": True,
+        }]
+
+        result = events_service.reconcile("2026-03-04", fresh)
+        assert len(result) == 1
+        assert result[0]["id"] == old_id
+        assert result[0]["completed"] is True
+        assert len(result[0]["photos"]) == 1  # user-set enrichment preserved
+        assert result[0]["photos"][0]["caption"] == "before"
+        assert result[0]["state"] == "approved"  # user-set enrichment preserved
+
+
 class TestUpdateEventReturnsPersistedEvent:
     def test_update_event_returns_the_persisted_event(self, events_service):
         svc = events_service
@@ -514,3 +612,198 @@ def test_activity_wins_when_both_names_are_given(tmp_path):
     )
 
     assert svc.get_events("2026-08-17")[0]["activity"] == "walk"
+
+
+def _persisted(**kw):
+    e = {"id": "evt_1", "name": "Visit Alex", "type": "calendar",
+         "start_time": "2026-08-30T00:00", "end_time": "2026-08-30T01:00",
+         "source": "calendar", "source_ids": {"calendar_id": "cal1"},
+         "state": "approved", "photos": []}
+    e.update(kw)
+    return e
+
+
+def test_an_unavailable_source_does_not_delete_its_events(tmp_path):
+    """The bug this fixes: a failed calendar fetch looked identical to an
+    empty calendar, so every persisted calendar event was deleted. With
+    /daily calling this on every navigation tap, browsing a week with an
+    expired token would have wiped seven days."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted()])
+    result = svc.refresh_events("2026-08-30", [], available_sources=set())
+    assert [e["name"] for e in result] == ["Visit Alex"]
+    assert result[0]["state"] == "approved"
+
+
+def test_an_available_source_still_deletes_events_it_no_longer_returns(tmp_path):
+    """The feature must survive the fix: deleting a calendar event really
+    should remove it once the calendar has answered without it."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted()])
+    result = svc.refresh_events("2026-08-30", [], available_sources={"calendar"})
+    assert result == []
+
+
+def test_one_failed_source_does_not_delete_another_source_events(tmp_path):
+    """Partial failure is the common case — the calendar answers, the
+    timeline does not."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [
+        _persisted(id="evt_cal", source_ids={"calendar_id": "cal1"}),
+        _persisted(id="evt_visit", name="Xoho", source="timeline",
+                   source_ids={"visit_id": "v1"}),
+    ])
+    result = svc.refresh_events("2026-08-30", [], available_sources={"calendar"})
+    assert [e["name"] for e in result] == ["Xoho"]
+
+
+def test_omitting_available_sources_preserves_everything(tmp_path):
+    """The default must be safe: a caller that has not been updated cannot
+    delete data by accident."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted()])
+    assert len(svc.refresh_events("2026-08-30", [])) == 1
+
+
+def test_manual_events_are_still_preserved(tmp_path):
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted(source="manual", source_ids={})])
+    result = svc.refresh_events("2026-08-30", [], available_sources={"calendar"})
+    assert len(result) == 1
+
+
+def test_reconcile_does_not_persist(tmp_path):
+    """The whole point of the read/write split: /daily calls this to
+    preview a merge without ever writing data/events/{date}.json for
+    whatever date is being browsed — browsing history must not rewrite it."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted()])
+    result = svc.reconcile("2026-08-30", [], available_sources={"calendar"})
+    assert result == []
+    # The file on disk must be untouched — reconcile only computed a view.
+    on_disk = svc.get_events("2026-08-30")
+    assert len(on_disk) == 1
+    assert on_disk[0]["name"] == "Visit Alex"
+
+
+def test_refresh_events_still_persists(tmp_path):
+    """reconcile stays pure; refresh_events keeps its old persisting
+    behaviour unchanged, so POST /events/{date}/refresh is unaffected."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted()])
+    result = svc.refresh_events("2026-08-30", [], available_sources={"calendar"})
+    assert result == []
+    assert svc.get_events("2026-08-30") == []
+
+
+def test_an_event_with_an_unmapped_source_key_is_never_deleted(tmp_path):
+    """An unrecognised source_ids key means we cannot tell which system owns
+    this event, so we keep it. A future source type added without a
+    _SOURCE_SYSTEM_BY_ID_KEY entry must not silently become deletable —
+    especially not when available_sources is empty because nothing answered."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted(
+        id="evt_future", source="something-new", source_ids={"unmapped_id": "x1"},
+    )])
+    assert len(svc.reconcile("2026-08-30", [], available_sources=set())) == 1
+    assert len(svc.reconcile("2026-08-30", [], available_sources={"calendar"})) == 1
+
+
+def test_a_note_derived_event_is_never_deleted_even_when_its_source_answered(tmp_path):
+    """`note_line` hashes the checkbox's date, section, text and time, so
+    fixing a typo re-hashes it and the fresh merge carries a different id.
+    The daily-note source answered, so availability cannot see the
+    difference between "edited" and "deleted" — and the persisted block,
+    with any photo attached to it, used to be destroyed."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted(
+        id="evt_note", name="Standup", source="daily-note",
+        source_ids={"note_line": "abc123"},
+        photos=[{"path": "whiteboard.jpg", "caption": None, "wikilinks": []}],
+    )])
+    result = svc.reconcile(
+        "2026-08-30", [], available_sources={"calendar", "timeline", "daily-note", "habit"},
+    )
+    assert [e["name"] for e in result] == ["Standup"]
+    assert len(result[0]["photos"]) == 1
+
+
+def test_a_habit_derived_event_is_never_deleted_even_when_its_source_answered(tmp_path):
+    """A habit block is *suppressed* whenever a calendar event claims the
+    habit, so its absence from a merge is shadowing, not deletion — and the
+    habit source answered either way."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted(
+        id="evt_habit", name="Review Email", source="habit",
+        source_ids={"habit_slug": "2026-08-30:review-email"},
+        photos=[{"path": "inbox.jpg", "caption": None, "wikilinks": []}],
+    )])
+    result = svc.reconcile(
+        "2026-08-30", [], available_sources={"calendar", "timeline", "daily-note", "habit"},
+    )
+    assert [e["name"] for e in result] == ["Review Email"]
+    assert len(result[0]["photos"]) == 1
+
+
+def test_timeline_events_stay_deletable(tmp_path):
+    """The restriction is to the two sources with upstream-stable ids —
+    timeline is one of them, so a visit that Google no longer reports is
+    still removed."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted(
+        id="evt_visit", name="Xoho", source="timeline", source_ids={"visit_id": "v1"},
+    )])
+    assert svc.reconcile("2026-08-30", [], available_sources={"timeline"}) == []
+
+
+def test_an_event_spanning_a_deletable_and_a_protected_source_is_kept(tmp_path):
+    """Subset, not intersection: an event carrying two keys is only
+    deletable when *every* system behind it is."""
+    svc = EventsService(tmp_path)
+    svc.save_events("2026-08-30", [_persisted(
+        id="evt_both", source="merged",
+        source_ids={"calendar_id": "cal1", "note_line": "abc123"},
+    )])
+    result = svc.reconcile(
+        "2026-08-30", [], available_sources={"calendar", "daily-note"},
+    )
+    assert len(result) == 1
+
+
+def test_a_habit_shadowed_by_a_calendar_event_keeps_its_persisted_block(tmp_path):
+    """End-to-end reproduction of the whole-branch review's Critical 1.
+
+    Even with the matcher narrowed, attachment still legitimately
+    suppresses a habit's standalone block — that is the point of it. The
+    suppression must stay a rendering decision: the persisted event, and
+    the photo on it, must survive a merge that does not emit the block.
+    """
+    from src.services.merger_service import MergerService
+
+    m = MergerService()
+    habit = {"name": "Dog Walk", "scheduled_at": "07:00", "duration_minutes": 40,
+             "completed_today": False, "streak": 3, "tokens_per_completion": 5,
+             "completions_today": 0, "daily_target": 1}
+    empty_timeline = {"visits": [], "activities": []}
+    sources = {"calendar", "timeline", "habit", "daily-note"}
+    svc = EventsService(tmp_path)
+
+    standalone = m.merge([], empty_timeline, habits=[habit], date="2026-08-29")
+    persisted = svc.refresh_events(
+        "2026-08-29", [e.model_dump() for e in standalone], sources)
+    persisted[0]["photos"] = [{"path": "dog.jpg", "caption": None, "wikilinks": []}]
+    svc.save_events("2026-08-29", persisted)
+
+    # The habit now has a calendar event of its own, so it emits no block.
+    shadowed = m.merge(
+        [{"id": "cal1", "summary": "🎯 Dog Walk", "start": "2026-08-29T07:00",
+          "end": "2026-08-29T07:40", "completed": False, "calendar": "Mazkir"}],
+        empty_timeline, habits=[habit], date="2026-08-29",
+    )
+    assert not [e for e in shadowed if e.source == "habit"]
+
+    result = svc.refresh_events(
+        "2026-08-29", [e.model_dump() for e in shadowed], sources)
+    survivor = [e for e in result if e["source"] == "habit"]
+    assert len(survivor) == 1
+    assert survivor[0]["photos"] == [{"path": "dog.jpg", "caption": None, "wikilinks": []}]

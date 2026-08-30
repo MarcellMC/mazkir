@@ -46,6 +46,12 @@ export interface MergedEvent {
   }
   tokens_earned: number
 
+  // Whether the thing this event stands for is done — a checked checkbox, a
+  // calendar event the sync marked complete, a habit whose target was met.
+  // Optional because events persisted before it existed carry it only
+  // inside `habit`.
+  completed?: boolean
+
   // Photos
   photos: PhotoRef[]
 
