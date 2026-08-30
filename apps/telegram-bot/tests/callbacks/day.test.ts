@@ -8,6 +8,7 @@ vi.mock("../../src/config.js", () => ({
     authorizedUserId: 123,
     webappUrl: "http://localhost:5173",
     logLevel: "INFO",
+    vaultTimezone: "Asia/Jerusalem",
   },
 }));
 

@@ -8,6 +8,7 @@ interface Config {
   webappUrl: string;
   logLevel: string;
   streamResponses: boolean;
+  vaultTimezone: string;
 }
 
 function loadConfig(): Config {
@@ -26,6 +27,10 @@ function loadConfig(): Config {
     webappUrl: process.env.WEBAPP_URL ?? "http://localhost:5173",
     logLevel: process.env.LOG_LEVEL ?? "INFO",
     streamResponses: process.env.STREAM_RESPONSES === "true",
+    // The default here must match the server's VAULT_TIMEZONE default
+    // (apps/vault-server/src/config.py) — see day-rich.ts for why the two
+    // must agree.
+    vaultTimezone: process.env.VAULT_TIMEZONE ?? "Asia/Jerusalem",
   };
 }
 

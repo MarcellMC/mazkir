@@ -1,6 +1,7 @@
 import type { InputFile } from "grammy";
 import type { InputRichMessage } from "@grammyjs/types";
 import type { DailyResponse, DailyBlock, DailyGap } from "@mazkir/shared-types";
+import { config } from "../config.js";
 import { escapeHtml } from "./telegram.js";
 
 /** Rich messages are authored as HTML here rather than markdown because
@@ -113,13 +114,13 @@ function navBar(selected: string): string {
 
 // The server works in Asia/Jerusalem, which is ahead of UTC, so its date
 // rolls over first. Deriving "today" from toISOString() here would drop the
-// "· today" suffix for the first two or three hours of every local day. The
-// bot has no existing timezone constant to reuse, so this matches the
-// server's VAULT_TIMEZONE default (apps/vault-server/src/config.py) directly.
-const VAULT_TIMEZONE = "Asia/Jerusalem";
-
+// "· today" suffix for the first two or three hours of every local day.
+// Read from VAULT_TIMEZONE (config.ts, same fallback as the server's
+// VAULT_TIMEZONE default in apps/vault-server/src/config.py) rather than
+// hardcoded: the two must agree, or this label silently diverges the moment
+// either side's timezone changes.
 function todayInVaultTimezone(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: VAULT_TIMEZONE }).format(new Date());
+  return new Intl.DateTimeFormat("en-CA", { timeZone: config.vaultTimezone }).format(new Date());
 }
 
 export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {

@@ -91,11 +91,9 @@ async def _merge_from_sources(date: date_type) -> tuple[list[dict], set[str]]:
     except Exception:
         pass
 
-    daily = {}
     daily_body = ""
     try:
         raw_daily = vault.read_daily_note(date)
-        daily = raw_daily.get("metadata", {})
         daily_body = raw_daily.get("content", "")
         # read_daily_note catches FileNotFoundError internally and returns
         # an empty note, so the call succeeding says nothing about whether
@@ -113,7 +111,6 @@ async def _merge_from_sources(date: date_type) -> tuple[list[dict], set[str]]:
         calendar_events=calendar_events,
         timeline_data=timeline_data,
         habits=habits,
-        daily=daily,
         daily_body=daily_body,
         date=date.isoformat(),
     )

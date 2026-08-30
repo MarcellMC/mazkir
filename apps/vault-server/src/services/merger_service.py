@@ -74,6 +74,24 @@ def _stable_id(*parts: object) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
+def _calendar_source_ids(cal: dict) -> dict[str, str]:
+    """`source_ids` for a calendar event, shared by `_create_merged_event`
+    and `_create_calendar_event` so an id-less, summary-less event cannot
+    hash to two different identities depending on which path built it —
+    which happened only when the event fuzzy-matched a timeline visit that
+    day, since only one of the two paths ran per event.
+
+    `cal.get("id") or ""`, not `.get("id", "")`: a persisted calendar event
+    can carry an explicit `id: None`, and `.get(k, default)` only supplies
+    its default when the key is *absent* — an explicit `None` sails through,
+    and `str(None)` is the truthy string `"None"`, which short-circuits past
+    the `_stable_id` fallback entirely.
+    """
+    cal_id = str(cal.get("id") or "")
+    name = cal.get("summary") or "Unknown"
+    return {"calendar_id": cal_id or _stable_id(name, cal.get("start"))}
+
+
 def _slugify(name: str) -> str:
     """Lowercase, hyphenated form of a habit name, for a readable source id.
 
@@ -107,7 +125,6 @@ class MergerService:
         calendar_events: list[dict],
         timeline_data: dict,
         habits: list[dict] | None = None,
-        daily: dict | None = None,
         daily_body: str = "",
         date: str = "",
     ) -> list[MergedEvent]:
@@ -255,8 +272,7 @@ class MergerService:
             completed=bool(cal.get("completed", False)),
             source="merged",
             confidence=visit.get("confidence", "medium"),
-            source_ids={"calendar_id": str(cal.get("id", "")) or _stable_id(
-                cal.get("summary"), cal.get("start"))},
+            source_ids=_calendar_source_ids(cal),
         )
 
     def _create_calendar_event(self, cal: dict) -> MergedEvent:
@@ -273,8 +289,7 @@ class MergerService:
             completed=bool(cal.get("completed", False)),
             source="calendar",
             confidence="medium",
-            source_ids={"calendar_id": str(cal.get("id", "")) or _stable_id(
-                name, cal.get("start"))},
+            source_ids=_calendar_source_ids(cal),
         )
 
     def _create_note_block(self, todo, date: str, occurrence: int = 0) -> MergedEvent:

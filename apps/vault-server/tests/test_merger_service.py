@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from src.services.merger_service import MergerService, MergedEvent
+from src.services.merger_service import MergerService, MergedEvent, _stable_id
 
 
 @pytest.fixture
@@ -86,19 +86,9 @@ def habits_data():
     ]
 
 
-@pytest.fixture
-def daily_data():
-    """Sample daily data as returned by /daily."""
-    return {
-        "date": "2026-02-27",
-        "tokens_earned": 10,
-        "tokens_total": 250,
-    }
-
-
 class TestMergerService:
     def test_merge_calendar_with_timeline_match(
-        self, calendar_events, timeline_data, habits_data, daily_data
+        self, calendar_events, timeline_data, habits_data
     ):
         """Calendar gym event + timeline gym visit → single merged event."""
         merger = MergerService(timezone="Asia/Jerusalem")
@@ -106,7 +96,6 @@ class TestMergerService:
             calendar_events=calendar_events,
             timeline_data=timeline_data,
             habits=habits_data,
-            daily=daily_data,
         )
 
         # Find the gym event
@@ -117,7 +106,7 @@ class TestMergerService:
         assert gym.location["lat"] == pytest.approx(32.1079, abs=0.001)
 
     def test_unmatched_calendar_event_preserved(
-        self, calendar_events, timeline_data, habits_data, daily_data
+        self, calendar_events, timeline_data, habits_data
     ):
         """Calendar event with no timeline match → kept as calendar-only."""
         merger = MergerService(timezone="Asia/Jerusalem")
@@ -125,7 +114,6 @@ class TestMergerService:
             calendar_events=calendar_events,
             timeline_data=timeline_data,
             habits=habits_data,
-            daily=daily_data,
         )
 
         standup = next(e for e in events if "standup" in e.name.lower())
@@ -133,7 +121,7 @@ class TestMergerService:
         assert standup.location is None
 
     def test_unmatched_timeline_visit_becomes_unplanned_stop(
-        self, calendar_events, timeline_data, habits_data, daily_data
+        self, calendar_events, timeline_data, habits_data
     ):
         """Timeline visit with no calendar match → unplanned_stop."""
         merger = MergerService(timezone="Asia/Jerusalem")
@@ -141,7 +129,6 @@ class TestMergerService:
             calendar_events=calendar_events,
             timeline_data=timeline_data,
             habits=habits_data,
-            daily=daily_data,
         )
 
         market = next(e for e in events if "carmel" in e.name.lower())
@@ -149,7 +136,7 @@ class TestMergerService:
         assert market.source == "timeline"
 
     def test_transit_activity_becomes_route(
-        self, calendar_events, timeline_data, habits_data, daily_data
+        self, calendar_events, timeline_data, habits_data
     ):
         """Activity segments → transit events with route data."""
         merger = MergerService(timezone="Asia/Jerusalem")
@@ -157,7 +144,6 @@ class TestMergerService:
             calendar_events=calendar_events,
             timeline_data=timeline_data,
             habits=habits_data,
-            daily=daily_data,
         )
 
         transit = [e for e in events if e.type == "transit"]
@@ -166,7 +152,7 @@ class TestMergerService:
         assert transit[0].route_from["mode"] == "transit"
 
     def test_habit_attached_to_matching_event(
-        self, calendar_events, timeline_data, habits_data, daily_data
+        self, calendar_events, timeline_data, habits_data
     ):
         """Gym habit → attached to gym calendar event."""
         merger = MergerService(timezone="Asia/Jerusalem")
@@ -174,7 +160,6 @@ class TestMergerService:
             calendar_events=calendar_events,
             timeline_data=timeline_data,
             habits=habits_data,
-            daily=daily_data,
         )
 
         gym = next(e for e in events if "gym" in e.name.lower() or "holmes" in e.name.lower())
@@ -183,7 +168,7 @@ class TestMergerService:
         assert gym.habit["streak"] == 15
 
     def test_events_sorted_chronologically(
-        self, calendar_events, timeline_data, habits_data, daily_data
+        self, calendar_events, timeline_data, habits_data
     ):
         """All events sorted by start_time."""
         merger = MergerService(timezone="Asia/Jerusalem")
@@ -191,14 +176,13 @@ class TestMergerService:
             calendar_events=calendar_events,
             timeline_data=timeline_data,
             habits=habits_data,
-            daily=daily_data,
         )
 
         times = [e.start_time for e in events]
         assert times == sorted(times)
 
     def test_merged_event_serializes_to_dict(
-        self, calendar_events, timeline_data, habits_data, daily_data
+        self, calendar_events, timeline_data, habits_data
     ):
         """MergedEvent can be serialized to dict for JSON response."""
         merger = MergerService(timezone="Asia/Jerusalem")
@@ -206,7 +190,6 @@ class TestMergerService:
             calendar_events=calendar_events,
             timeline_data=timeline_data,
             habits=habits_data,
-            daily=daily_data,
         )
 
         for event in events:
@@ -229,6 +212,46 @@ def test_calendar_event_carries_its_calendar_id():
     m = MergerService()
     events = m.merge(calendar_events=[_cal()], timeline_data={"visits": [], "activities": []})
     assert events[0].source_ids == {"calendar_id": "cal1"}
+
+
+def test_idless_summaryless_event_hashes_the_same_whether_or_not_it_matches_a_visit():
+    """`_create_merged_event` (visit matched) and `_create_calendar_event`
+    (no match) used to compute the stable-id fallback from different
+    fields — `cal.get("summary")` (None) vs the locally defaulted `name`
+    ("Unknown") — so the same event's `source_ids` flipped identity
+    depending on whether a timeline visit happened to be nearby that day.
+    `source_ids` is the reconciliation key, so a flip orphans the
+    persisted event."""
+    cal = {"start": "2026-08-29T11:00", "end": "2026-08-29T12:00", "completed": False}
+    matching_visit = {
+        "name": "Xoho", "start_time": "2026-08-29T11:05", "end_time": "2026-08-29T12:00",
+        "duration_minutes": 55, "lat": 32.07, "lng": 34.78, "place_id": "p123",
+    }
+
+    m = MergerService()
+    matched = m.merge(
+        calendar_events=[dict(cal)],
+        timeline_data={"visits": [matching_visit], "activities": []},
+    )
+    unmatched = m.merge(calendar_events=[dict(cal)], timeline_data={"visits": [], "activities": []})
+
+    assert matched[0].source_ids == unmatched[0].source_ids
+    assert matched[0].source_ids != {}
+
+
+def test_explicit_none_id_falls_through_to_the_stable_hash():
+    """`cal["id"] = None` (an explicit key, not an absent one) must not
+    become the string `"None"` — `.get("id", "")` only supplies its
+    default when the key is absent, so `str(cal.get("id", ""))` turned a
+    real `None` into `"None"`, which is truthy and short-circuited past
+    the `_stable_id` fallback."""
+    cal = _cal(id_=None)  # {"id": None, ...} — an explicit key, not an absent one
+
+    m = MergerService()
+    events = m.merge(calendar_events=[cal], timeline_data={"visits": [], "activities": []})
+
+    assert events[0].source_ids["calendar_id"] != "None"
+    assert events[0].source_ids == {"calendar_id": _stable_id("Standup", cal["start"])}
 
 
 def test_unplanned_stop_source_id_is_stable_for_the_same_visit():
