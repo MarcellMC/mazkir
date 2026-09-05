@@ -2070,3 +2070,17 @@ class TestSkillInTurnAudit:
         )
 
         assert captured["skill"] is None
+
+
+class TestMirrorInvariantGuidelines:
+    def test_static_prefix_forbids_unchecked_denial(self, agent):
+        prefix = agent._build_static_prefix()
+        assert "Never deny a past action without checking" in prefix
+
+    def test_static_prefix_warns_that_tool_lists_change(self, agent):
+        prefix = agent._build_static_prefix()
+        assert "what you can do now, not what you did earlier" in prefix
+
+    def test_static_prefix_forbids_reasoning_from_absence(self, agent):
+        prefix = agent._build_static_prefix()
+        assert "no record, not proof of inaction" in prefix
