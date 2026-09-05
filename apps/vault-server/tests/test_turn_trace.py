@@ -82,3 +82,85 @@ class TestReadTurnRecords:
         got = read_turn_records(tmp_path, chat_id=1, date="2026-09-05")
 
         assert got == []
+
+
+def _call(name, params=None, ok=True, error_code=None, pending=False, no_result=False):
+    if pending:
+        summary = None
+    elif no_result:
+        summary = None
+    elif ok:
+        summary = {"ok": True, "data": {}}
+    else:
+        summary = {"ok": False, "error": {"code": error_code, "message": "boom"}}
+    call = {"name": name, "params": params or {}, "result_summary": summary}
+    if pending:
+        call["pending"] = True
+    return call
+
+
+class TestRenderTrace:
+    def test_no_calls_renders_none(self):
+        from src.services.turn_trace import render_trace
+        assert render_trace({"tools": []}) == "[Tools I called this turn: none]"
+
+    def test_missing_tools_key_renders_none(self):
+        from src.services.turn_trace import render_trace
+        assert render_trace({}) == "[Tools I called this turn: none]"
+
+    def test_skill_appears_in_header(self):
+        from src.services.turn_trace import render_trace
+        out = render_trace({"skill": "time-management", "tools": []})
+        assert out == "[Tools I called this turn, as time-management: none]"
+
+    def test_successful_call(self):
+        from src.services.turn_trace import render_trace
+        out = render_trace({"tools": [_call("daily_add_task", {"text": "Order dog food"})]})
+        assert 'daily_add_task(text="Order dog food") → ok' in out
+
+    def test_failed_call_shows_error_code(self):
+        from src.services.turn_trace import render_trace
+        out = render_trace({"tools": [
+            _call("delete_task", {"name": "old"}, ok=False, error_code="SCHEMA_INVALID"),
+        ]})
+        assert "delete_task(name=\"old\") → SCHEMA_INVALID" in out
+
+    def test_pending_call_is_marked_not_executed(self):
+        from src.services.turn_trace import render_trace
+        out = render_trace({"tools": [_call("delete_task", {"name": "old"}, pending=True)]})
+        assert "→ proposed, awaiting confirmation — NOT executed" in out
+        assert "→ ok" not in out
+
+    def test_missing_result_summary(self):
+        from src.services.turn_trace import render_trace
+        out = render_trace({"tools": [_call("get_daily", no_result=True)]})
+        assert "→ no result recorded" in out
+
+    def test_multiple_calls_each_get_a_line(self):
+        from src.services.turn_trace import render_trace
+        out = render_trace({"tools": [
+            _call("daily_add_task", {"text": "Order dog food"}),
+            _call("daily_add_task", {"text": "Bring the bicycle to repair shop"}),
+        ]})
+        assert out.count("daily_add_task") == 2
+        assert out.startswith("[Tools I called this turn:\n")
+        assert out.endswith("]")
+
+    def test_long_params_are_truncated(self):
+        from src.services.turn_trace import render_trace
+        body = "x" * 500
+        out = render_trace({"tools": [_call("save_knowledge", {"content": body})]})
+        assert "…" in out
+        assert len(out) < 200
+        assert body not in out
+
+    def test_non_string_params_render_without_quotes(self):
+        from src.services.turn_trace import render_trace
+        out = render_trace({"tools": [_call("update_goal", {"progress": 40, "done": True})]})
+        assert "progress=40" in out
+        assert "done=True" in out
+
+    def test_call_without_params(self):
+        from src.services.turn_trace import render_trace
+        out = render_trace({"tools": [_call("list_tasks")]})
+        assert "list_tasks() → ok" in out

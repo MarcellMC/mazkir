@@ -64,3 +64,66 @@ def read_turn_records(
         # return accumulated records; empty if open() itself failed
         pass
     return records
+
+
+_HEADER = "Tools I called this turn"
+_MAX_PARAM_CHARS = 80
+_PENDING_OUTCOME = "proposed, awaiting confirmation — NOT executed"
+
+
+def _render_params(params: Any) -> str:
+    """Render a call's params compactly, capped at _MAX_PARAM_CHARS."""
+    if not isinstance(params, dict) or not params:
+        return ""
+    bits = [
+        f'{k}="{v}"' if isinstance(v, str) else f"{k}={v}"
+        for k, v in params.items()
+    ]
+    text = ", ".join(bits)
+    if len(text) > _MAX_PARAM_CHARS:
+        text = text[:_MAX_PARAM_CHARS] + "…"
+    return text
+
+
+def _render_outcome(call: dict[str, Any]) -> str:
+    """Render what became of one call.
+
+    A gated call that never ran must never read as done -- fixing false
+    denial by manufacturing false claims would violate the invariant the
+    'Reporting writes' guidelines already establish.
+    """
+    if call.get("pending"):
+        return _PENDING_OUTCOME
+    summary = call.get("result_summary")
+    if not isinstance(summary, dict):
+        return "no result recorded"
+    if summary.get("ok") is True:
+        return "ok"
+    error = summary.get("error")
+    if isinstance(error, dict) and error.get("code"):
+        return str(error["code"])
+    return "failed"
+
+
+def render_trace(record: dict[str, Any]) -> str:
+    """Render one turn record as a single bracketed trace block.
+
+    A turn that called nothing renders an explicit ``none`` rather than
+    nothing at all: an unmatched turn contributes no block (see
+    ``attach_traces``), so silence would be ambiguous between "I called
+    nothing" and "no record survived the join" -- and a model reasoning
+    confidently from ambiguous absence is the bug this ship fixes.
+    """
+    skill = record.get("skill")
+    header = f"{_HEADER}, as {skill}" if skill else _HEADER
+
+    calls = record.get("tools") or []
+    if not calls:
+        return f"[{header}: none]"
+
+    lines = [
+        f"   {c.get('name', 'unknown')}({_render_params(c.get('params'))})"
+        f" → {_render_outcome(c)}"
+        for c in calls
+    ]
+    return f"[{header}:\n" + "\n".join(lines) + "]"
