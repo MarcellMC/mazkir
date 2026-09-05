@@ -9,6 +9,7 @@ from typing import Any
 import frontmatter
 import pytz
 
+from src.services.turn_trace import attach_traces, read_turn_records
 from src.services.vault_service import VaultService
 
 
@@ -29,10 +30,14 @@ class MemoryService:
         vault: VaultService,
         vault_path: Path,
         timezone: str = "Asia/Jerusalem",
+        logs_dir: Path | None = None,
     ):
         self.vault = vault
         self.vault_path = Path(vault_path)
         self.tz = pytz.timezone(timezone)
+        # Where agent-turns.jsonl lives. None disables per-turn tool traces,
+        # which is what every caller that predates Ship 3 gets.
+        self.logs_dir = Path(logs_dir) if logs_dir else None
         self.window_size = 20  # messages before decay
         self.graph: dict[str, dict] = {}
         self._claude: Any = None  # Set after init for summarization
@@ -352,13 +357,24 @@ class MemoryService:
 
         Combines: conversation history (short-term), vault state snapshot
         (mid-term), and relevant knowledge + preferences (long-term).
+
+        Each turn's tool calls are attached to the assistant message that
+        turn produced, so the agent reads what it actually did rather than
+        inferring it from the tools its *current* skill happens to hold.
         """
         conversation = self.load_conversation(chat_id)
+        messages = conversation["messages"]
+
+        if self.logs_dir is not None:
+            today = datetime.datetime.now(self.tz).strftime("%Y-%m-%d")
+            records = read_turn_records(self.logs_dir, chat_id, today)
+            messages = attach_traces(messages, records)
+
         vault_snapshot = self._build_vault_snapshot(conversation)
         knowledge = self._gather_relevant_knowledge(conversation)
 
         return ConversationContext(
-            messages=conversation["messages"],
+            messages=messages,
             summary=conversation["summary"],
             vault_snapshot=vault_snapshot,
             knowledge=knowledge,

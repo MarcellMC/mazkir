@@ -76,6 +76,7 @@ async def lifespan(app: FastAPI):
         vault=vault,
         vault_path=settings.vault_path,
         timezone=settings.vault_timezone,
+        logs_dir=settings.logs_dir,
     )
     memory.window_size = settings.conversation_window_size
     memory.initialize()

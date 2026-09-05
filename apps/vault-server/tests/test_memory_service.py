@@ -1,6 +1,7 @@
 """Tests for MemoryService."""
 
 import datetime
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -407,3 +408,58 @@ def test_vault_snapshot_counts_a_habit_done_only_when_its_target_is_met(tmp_path
     snapshot = memory._build_vault_snapshot()
 
     assert "1 habits (0 done today)" in snapshot
+
+
+class TestAssembleContextTraces:
+    def _memory_with_logs(self, vault_service, vault_path, tmp_path):
+        return MemoryService(
+            vault=vault_service,
+            vault_path=vault_path,
+            timezone="Asia/Jerusalem",
+            logs_dir=tmp_path / "logs",
+        )
+
+    def test_no_logs_dir_leaves_messages_untouched(self, memory_service):
+        memory_service.save_turn(999, "add a todo", "Added it.", [])
+
+        context = memory_service.assemble_context(999)
+
+        assert context.messages[1]["content"] == "Added it."
+
+    def test_trace_is_attached_to_the_assistant_message(
+        self, vault_service, vault_path, tmp_path,
+    ):
+        memory = self._memory_with_logs(vault_service, vault_path, tmp_path)
+        memory.save_turn(999, "add a todo", "Added it.", [])
+
+        today = datetime.datetime.now(memory.tz).strftime("%Y-%m-%d")
+        logs = tmp_path / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "agent-turns.jsonl").write_text(json.dumps({
+            "ts": f"{today}T10:00:00+0300",
+            "chat_id": 999,
+            "skill": "time-management",
+            "user_text": "add a todo",
+            "tools": [{
+                "name": "daily_add_task",
+                "params": {"text": "Order dog food"},
+                "result_summary": {"ok": True, "data": {}},
+            }],
+        }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        context = memory.assemble_context(999)
+
+        assistant = context.messages[1]["content"]
+        assert assistant.startswith("Added it.")
+        assert "as time-management" in assistant
+        assert 'daily_add_task(text="Order dog food") → ok' in assistant
+
+    def test_missing_log_file_is_not_an_error(
+        self, vault_service, vault_path, tmp_path,
+    ):
+        memory = self._memory_with_logs(vault_service, vault_path, tmp_path)
+        memory.save_turn(999, "add a todo", "Added it.", [])
+
+        context = memory.assemble_context(999)
+
+        assert context.messages[1]["content"] == "Added it."
