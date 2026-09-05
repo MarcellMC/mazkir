@@ -1,6 +1,7 @@
 """Service for managing conversation history, knowledge, and graph index."""
 
 import datetime
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,8 @@ import pytz
 
 from src.services.turn_trace import attach_traces, read_turn_records
 from src.services.vault_service import VaultService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -366,9 +369,31 @@ class MemoryService:
         messages = conversation["messages"]
 
         if self.logs_dir is not None:
+            # NOTE (timezone coupling): `today` here is filtered against
+            # self.tz (VAULT_TIMEZONE), but the `ts` field on each record was
+            # stamped by emit_agent_turn (logging_setup.py) using
+            # time.strftime -- the *process's* local time, not VAULT_TIMEZONE.
+            # They agree only when the two happen to match, which they do on
+            # this host. If the process runs with TZ=UTC while
+            # VAULT_TIMEZONE=Asia/Jerusalem, every turn between 00:00 and
+            # 03:00 local falls on the "wrong" date for this filter and
+            # silently gets no trace attached -- degrading safely (a missing
+            # trace, never a wrong one), but silently.
             today = datetime.datetime.now(self.tz).strftime("%Y-%m-%d")
-            records = read_turn_records(self.logs_dir, chat_id, today)
-            messages = attach_traces(messages, records)
+            # turn_trace is documented as never-raising, but that contract
+            # lives in a module this method doesn't own -- a malformed log
+            # line must cost this chat's traces for one turn, never the
+            # whole reply, so the guarantee is structural here too.
+            try:
+                records = read_turn_records(self.logs_dir, chat_id, today)
+                messages = attach_traces(messages, records)
+            except Exception:
+                logger.warning(
+                    "turn trace attach failed for chat_id=%s; "
+                    "falling back to untraced messages",
+                    chat_id,
+                    exc_info=True,
+                )
 
         vault_snapshot = self._build_vault_snapshot(conversation)
         knowledge = self._gather_relevant_knowledge(conversation)

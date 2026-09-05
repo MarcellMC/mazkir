@@ -464,6 +464,63 @@ class TestAssembleContextTraces:
 
         assert context.messages[1]["content"] == "Added it."
 
+    def test_malformed_tools_field_does_not_break_assemble_context(
+        self, vault_service, vault_path, tmp_path,
+    ):
+        """A malformed log record (e.g. "tools" logged as a string instead of
+        a list) must cost this turn's trace, never the whole reply.
+        render_trace's own coercion degrades this to a "none" block rather
+        than raising -- exercise it end to end through assemble_context."""
+        memory = self._memory_with_logs(vault_service, vault_path, tmp_path)
+        memory.save_turn(999, "add a todo", "Added it.", [])
+
+        today = datetime.datetime.now(memory.tz).strftime("%Y-%m-%d")
+        logs = tmp_path / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "agent-turns.jsonl").write_text(json.dumps({
+            "ts": f"{today}T10:00:00+0300",
+            "chat_id": 999,
+            "user_text": "add a todo",
+            "tools": "oops",
+        }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        context = memory.assemble_context(999)  # must not raise
+
+        assert context.messages[1]["content"].startswith("Added it.")
+
+    def test_trace_block_exception_falls_back_to_untraced_messages(
+        self, vault_service, vault_path, tmp_path, monkeypatch,
+    ):
+        """Structural guard: even if a future bug in turn_trace slips past
+        its own defenses and raises, assemble_context must not propagate it
+        -- one turn loses its trace, not the whole reply. Forces the failure
+        directly (rather than relying on a specific malformed shape) so this
+        test keeps covering the guarantee regardless of what render_trace
+        does or does not already catch."""
+        memory = self._memory_with_logs(vault_service, vault_path, tmp_path)
+        memory.save_turn(999, "add a todo", "Added it.", [])
+
+        today = datetime.datetime.now(memory.tz).strftime("%Y-%m-%d")
+        logs = tmp_path / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "agent-turns.jsonl").write_text(json.dumps({
+            "ts": f"{today}T10:00:00+0300",
+            "chat_id": 999,
+            "user_text": "add a todo",
+            "tools": [],
+        }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        def _boom(messages, records):
+            raise RuntimeError("simulated turn_trace failure")
+
+        monkeypatch.setattr(
+            "src.services.memory_service.attach_traces", _boom,
+        )
+
+        context = memory.assemble_context(999)  # must not raise
+
+        assert context.messages[1]["content"] == "Added it."
+
 
 class TestBugBRegression:
     """2026-08-20: two todos were added under `time-management`, then the

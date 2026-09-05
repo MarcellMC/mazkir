@@ -72,14 +72,21 @@ _PENDING_OUTCOME = "proposed, awaiting confirmation — NOT executed"
 
 
 def _render_params(params: Any) -> str:
-    """Render a call's params compactly, capped at _MAX_PARAM_CHARS."""
+    """Render a call's params compactly, capped at _MAX_PARAM_CHARS.
+
+    Values are flattened to a single line (embedded ``\\n``/``\\r`` replaced
+    with a space) *before* the length cap is applied, so the cap measures the
+    string that will actually appear on the line. A multi-line param value
+    (e.g. a note body passed to ``edit_daily_section``) would otherwise break
+    the module's one-rendered-line-per-call contract.
+    """
     if not isinstance(params, dict) or not params:
         return ""
     bits = [
         f'{k}="{v}"' if isinstance(v, str) else f"{k}={v}"
         for k, v in params.items()
     ]
-    text = ", ".join(bits)
+    text = ", ".join(bits).replace("\n", " ").replace("\r", " ")
     if len(text) > _MAX_PARAM_CHARS:
         text = text[:_MAX_PARAM_CHARS] + "…"
     return text
@@ -118,14 +125,19 @@ def render_trace(record: dict[str, Any]) -> str:
     header = f"{_HEADER}, as {skill}" if skill else _HEADER
 
     calls = record.get("tools") or []
-    if not calls:
-        return f"[{header}: none]"
+    if not isinstance(calls, list):
+        # Malformed record (e.g. "tools" logged as a non-list) -- never raise,
+        # render as if nothing was called rather than trusting the shape.
+        calls = []
 
     lines = [
         f"   {c.get('name', 'unknown')}({_render_params(c.get('params'))})"
         f" → {_render_outcome(c)}"
         for c in calls
+        if isinstance(c, dict)  # skip non-dict entries rather than raising
     ]
+    if not lines:
+        return f"[{header}: none]"
     return f"[{header}:\n" + "\n".join(lines) + "]"
 
 
@@ -169,6 +181,20 @@ def attach_traces(
     The invariant: a mismatch yields a missing trace, never a wrong one.
     Attaching someone else's trace would be a worse version of the bug this
     ship exists to fix, because it would arrive dressed as evidence.
+
+    One more divergence, noted rather than fixed: ``MemoryService._parse_messages``
+    drops any message whose text is empty, which orphans that pair's partner
+    (the note loses one side of the pair, not the record). Once a pair is
+    missing from ``messages`` this way, the tail walk below mismatches on
+    every *older* pair too -- it decrements the pair pointer ``i`` on a
+    mismatch but never the record pointer ``j``, so ``records[j]`` stays
+    pointed at a record one turn newer than the pair it is next compared
+    against. Measured against production data: 0 of 715 ``agent-turns.jsonl``
+    records have an empty ``assistant_text`` or ``user_text``, so this has
+    not been observed to fire. Left as documentation, not a fix, because the
+    failure mode it causes -- more missing traces, never a wrong one -- is
+    the same conservative direction this function's invariant already
+    mandates.
     """
     out = [dict(m) for m in messages]
     pairs = _pair_indices(out)

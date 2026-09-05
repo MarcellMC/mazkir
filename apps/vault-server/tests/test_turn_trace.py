@@ -154,6 +154,43 @@ class TestRenderTrace:
         out = render_trace({"tools": [_call("list_tasks")]})
         assert "list_tasks() → ok" in out
 
+    def test_error_dict_without_code_renders_failed(self):
+        """tool_executor.execute_tool's exception path: {"error": str(e)},
+        no "ok" key and no error.code — the realistic shape behind the
+        undocumented 'failed' fallback."""
+        call = {"name": "edit_daily_section", "params": {}, "result_summary": {"error": "boom"}}
+        out = render_trace({"tools": [call]})
+        assert "edit_daily_section() → failed" in out
+
+    def test_tools_as_non_list_does_not_raise(self):
+        out = render_trace({"tools": "oops"})
+        assert out == "[Tools I called this turn: none]"
+
+    def test_tools_list_of_non_dicts_does_not_raise(self):
+        assert render_trace({"tools": [1, 2]}) == "[Tools I called this turn: none]"
+        assert render_trace({"tools": [None]}) == "[Tools I called this turn: none]"
+
+    def test_mixed_valid_and_invalid_entries_renders_the_valid_ones(self):
+        out = render_trace({"tools": [
+            _call("daily_add_task", {"text": "Order dog food"}),
+            None,
+            1,
+            "oops",
+        ]})
+        assert 'daily_add_task(text="Order dog food") → ok' in out
+        assert out.count("→") == 1
+
+    def test_newline_in_params_renders_on_a_single_line(self):
+        out = render_trace({"tools": [
+            _call("edit_daily_section", {"content": "- Bought kebabs\n- Also bread"}),
+        ]})
+        # One call -> exactly one embedded "\n" in the whole block (the one
+        # joining the header to the call line). A newline surviving inside
+        # the param value would add a second one and split the call across
+        # two lines.
+        assert out.count("\n") == 1
+        assert "→ ok" in out
+
 
 def _msgs(*pairs):
     """Build a message list from (user_text, assistant_text) pairs."""

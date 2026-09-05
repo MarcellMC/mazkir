@@ -1,6 +1,7 @@
 # Ship 3 — The agent can't deny its own work (Design)
 
-**Status:** Design, approved in conversation 2026-09-05. Not yet planned.
+**Status:** Implemented. All seven plan tasks landed on `feat/ship3-agent-action-memory`, reviewed and merge-ready.
+**Plan:** `docs/superpowers/plans/2026-09-05-ship3-agent-action-memory.md`
 **Parent:** `docs/plans/2026-08-21-time-management-phase2-capture-design.md` §2 ship 3, §9. That doc owns the interaction model across all nine ships; this one owns Ship 3.
 **Ship 1 shipped:** PR #9 (`3eb8b2c`), vault commit `fb824da`.
 **Ship 2 shipped:** PR #11 (`934c003`).
@@ -110,13 +111,14 @@ The comment is from the 2026-03-02 plan that prescribed this code; it was droppe
 
 One rendered line per call: name, identifying params, outcome. `_sanitize_params` already strips `_`-prefixed fields and truncates strings at 200; the renderer caps further.
 
-Three outcome forms:
+Four outcome forms:
 
 | Form | Meaning |
 |---|---|
 | `→ ok` | executed, succeeded |
 | `→ AMBIGUOUS_MATCH` | executed, failed — the error code, not prose |
 | `→ proposed, awaiting confirmation — NOT executed` | gated, never ran |
+| `→ failed` | executed, failed, but the result carries no `error.code` to name it — the fallback for a result that is a dict but has neither `ok: true` nor a coded `error`. Reachable in practice: `tool_executor.execute_tool` returns a bare `{"error": str(e)}` on a handler exception and `{"error": f"Unknown tool: ..."}` for an unregistered tool name, neither of which is an `{"code": ...}` dict. |
 
 **The third form is the mirror of the mirror.** A gate-blocked `delete_task` the user never answered must not read as done. Fixing false denial by manufacturing false claims would violate the invariant Phase 1 already established.
 

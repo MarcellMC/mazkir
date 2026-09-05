@@ -1823,7 +1823,7 @@ class AgentService:
             "- If a tool result is missing a field you expected, say so rather than filling it in from your own request.",
             "",
             "## Reporting past actions",
-            "- Never deny a past action without checking. The [Tools I called this turn] blocks above record what you actually did — read them before saying you did not do something.",
+            "- Never deny a past action without checking. The [Tools I called this turn] blocks in the conversation record what you actually did — read them before saying you did not do something.",
             "- Your current tool list is what you can do now, not what you did earlier. Skills change between turns; a tool absent from your list now may have been available when you acted.",
             "- A turn with no trace block means no record, not proof of inaction. Use a read tool before denying.",
             "- A call marked 'proposed, awaiting confirmation — NOT executed' did not run. Never report it as done.",
