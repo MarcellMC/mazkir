@@ -4,6 +4,8 @@
 **Parent:** `docs/plans/2026-07-27-time-management-system-design.md` (Block A). That doc owns the *data model*; this one owns the *interaction*.
 **Phase 1 shipped:** PR #8 (`c911d43`), vault commit `cf14ac1`.
 **Ship 1 shipped:** PR #9 (`3eb8b2c`), vault commit `fb824da`.
+**Ship 2 shipped:** PR #11 (`934c003`).
+**Ship 3 shipped:** see `docs/superpowers/specs/2026-09-05-ship3-agent-action-memory-design.md`.
 
 > **Two decisions from the Ship 2 design supersede parts of this document.**
 > 1. The events ledger is the source of truth for temporal data; daily notes are a worksurface. A timed checkbox becomes a block by *inference*, regenerated on every open — so promotion needs no write path. See the Ship 2 design §2.1.
@@ -169,10 +171,10 @@ Retrospective phrasing (parent doc §4.3) is part of logging quality: the distin
 
 **Fix, two halves:**
 
-1. **Make the past factual.** Record a compact per-turn tool trace in conversation memory — tool name, ok, a short param summary — so the model reads what it actually did instead of reconstructing it. The data already exists in `data/logs/agent-turns.jsonl`; it simply never reaches the model. The conversation store already exists to hold it.
+1. **Make the past factual.** *(Shipped, Ship 3.)* `MemoryService.assemble_context` reads this chat's records from `data/logs/agent-turns.jsonl` and attaches each turn's tool calls to the assistant message that turn produced. `services/turn_trace.py` owns it.
 2. **The mirror invariant.** §3.4 forbids reporting a write the tool result does not confirm. Add its complement: **never deny a past action without checking.** Read tools are available in every skill; the failure was behavioural, not capability.
 
-**Secondary finding:** `agent-turns.jsonl` records tools but not the routed skill, which made this materially harder to diagnose. Worth adding while touching that code.
+**Secondary finding:** `agent-turns.jsonl` records tools but not the routed skill, which made this materially harder to diagnose. Worth adding while touching that code. Fixed in Ship 3 — `_run_agent_turn` now takes `skill` and records it.
 
 ## 10. Open questions
 

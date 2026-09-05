@@ -463,3 +463,66 @@ class TestAssembleContextTraces:
         context = memory.assemble_context(999)
 
         assert context.messages[1]["content"] == "Added it."
+
+
+class TestBugBRegression:
+    """2026-08-20: two todos were added under `time-management`, then the
+    router sent the follow-up question to `mazkir`, whose tool list has no
+    task-creation tool.  The agent inspected its *current* tools, concluded
+    it had never added them, and added them again.
+
+    One iteration, zero tool calls.  What was missing was not a capability
+    but the fact of what it had done -- so this pins that fact into context.
+    """
+
+    def test_the_denial_turn_sees_both_writes(
+        self, vault_service, vault_path, tmp_path,
+    ):
+        memory = MemoryService(
+            vault=vault_service,
+            vault_path=vault_path,
+            timezone="Asia/Jerusalem",
+            logs_dir=tmp_path / "logs",
+        )
+        chat_id = 424242
+
+        memory.save_turn(
+            chat_id,
+            "add order dog food and bring the bicycle to repair shop",
+            "Added both to today's note.",
+            [],
+        )
+        memory.save_turn(chat_id, "where did you add those?", "", [])
+
+        today = datetime.datetime.now(memory.tz).strftime("%Y-%m-%d")
+        logs = tmp_path / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "agent-turns.jsonl").write_text(json.dumps({
+            "ts": f"{today}T14:22:00+0300",
+            "chat_id": chat_id,
+            "skill": "time-management",
+            "user_text": "add order dog food and bring the bicycle to repair shop",
+            "tools": [
+                {
+                    "name": "daily_add_task",
+                    "params": {"text": "Order dog food"},
+                    "result_summary": {"ok": True, "data": {}},
+                },
+                {
+                    "name": "daily_add_task",
+                    "params": {"text": "Bring the bicycle to repair shop"},
+                    "result_summary": {"ok": True, "data": {}},
+                },
+            ],
+        }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        context = memory.assemble_context(chat_id)
+
+        # The write turn's assistant message now carries both calls...
+        write_turn = context.messages[1]["content"]
+        assert 'daily_add_task(text="Order dog food") → ok' in write_turn
+        assert 'daily_add_task(text="Bring the bicycle to repair shop") → ok' in write_turn
+        assert "as time-management" in write_turn
+
+        # ...and the question that triggered the denial follows it.
+        assert context.messages[2]["content"] == "where did you add those?"
