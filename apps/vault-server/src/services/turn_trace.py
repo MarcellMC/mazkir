@@ -40,22 +40,27 @@ def read_turn_records(
         return []
 
     records: list[dict[str, Any]] = []
-    # errors="replace" so a partially-flushed multibyte character cannot
-    # raise out of the iterator itself, before json.loads ever sees it.
-    with path.open(encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue  # torn or corrupt line -- skip it, never raise
-            if not isinstance(record, dict):
-                continue
-            if record.get("chat_id") != chat_id:
-                continue
-            if not str(record.get("ts", "")).startswith(date):
-                continue
-            records.append(record)
+    try:
+        # errors="replace" so a partially-flushed multibyte character cannot
+        # raise out of the iterator itself, before json.loads ever sees it.
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue  # torn or corrupt line -- skip it, never raise
+                if not isinstance(record, dict):
+                    continue
+                if record.get("chat_id") != chat_id:
+                    continue
+                if not str(record.get("ts", "")).startswith(date):
+                    continue
+                records.append(record)
+    except OSError:
+        # path is unreadable (e.g. directory, permission denied, TOCTOU deleted)
+        # return accumulated records; empty if open() itself failed
+        pass
     return records

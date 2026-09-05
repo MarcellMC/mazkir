@@ -74,3 +74,11 @@ class TestReadTurnRecords:
         got = read_turn_records(tmp_path, chat_id=1, date="2026-09-05")
 
         assert [r["user_text"] for r in got] == ["good"]
+
+    def test_returns_empty_when_path_is_directory(self, tmp_path):
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "agent-turns.jsonl").mkdir()
+
+        got = read_turn_records(tmp_path, chat_id=1, date="2026-09-05")
+
+        assert got == []
