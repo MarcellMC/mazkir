@@ -1295,6 +1295,7 @@ class AgentService:
         max_iterations: int,
         cache_static_prefix: str | None = None,
         model: str | None = None,
+        skill: str | None = None,
     ) -> LoopOutcome:
         """Parameterized inner Claude tool-use loop.
 
@@ -1320,6 +1321,7 @@ class AgentService:
             max_iterations=max_iterations,
             cache_static_prefix=cache_static_prefix,
             model=model,
+            skill=skill,
         )
         if result.awaiting_confirmation:
             return LoopOutcome(
@@ -1340,6 +1342,7 @@ class AgentService:
         action_id: str | None = None,
         cache_static_prefix: str | None = None,
         model: str | None = None,
+        skill: str | None = None,
     ) -> AgentResponse:
         """Core agent loop: Claude <-> tools until end_turn or max iterations.
 
@@ -1549,6 +1552,7 @@ class AgentService:
                                 prior_action_id=action_id,
                                 iters=iters,
                                 stop_reason=stop_reason,
+                                skill=skill,
                             )
                             return AgentResponse(
                                 response=description,
@@ -1606,6 +1610,7 @@ class AgentService:
             prior_action_id=action_id,
             iters=iters,
             stop_reason=stop_reason,
+            skill=skill,
         )
         return AgentResponse(response=assistant_text)
 
@@ -1622,9 +1627,11 @@ class AgentService:
         prior_action_id: str | None,
         iters: int,
         stop_reason: str | None,
+        skill: str | None = None,
     ) -> None:
         emit_agent_turn({
             "chat_id": chat_id,
+            "skill": skill,
             "user_text": user_text,
             "tools": tools_audit,
             "assistant_text": assistant_text,
