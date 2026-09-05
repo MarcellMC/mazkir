@@ -27,6 +27,26 @@ check "node present"     docker run --rm "$IMAGE" node --version
 check "git present"      docker run --rm "$IMAGE" git --version
 check "gh present"       docker run --rm "$IMAGE" gh --version
 check "claude present"   docker run --rm "$IMAGE" claude --version
+check "xdg-open shim present" docker run --rm "$IMAGE" xdg-open https://example.com
+
+echo
+echo "== oauth url is recoverable without a clipboard =="
+# The image has no browser, no DISPLAY and no clipboard binary, so a login
+# URL that is only printed has to be transcribed by hand out of a wrapped
+# terminal line. The shim writes it to the /workspace bind mount and pushes
+# it to the host clipboard over OSC 52 instead.
+URL_WS="$(mktemp -d)"
+chmod 777 "$URL_WS"
+docker run --rm -t -v "$URL_WS":/workspace "$IMAGE" \
+  xdg-open "https://claude.ai/oauth/authorize?code=smoke" > "$URL_WS/out" 2>&1 || true
+
+check "url captured to the bind mount" bash -c \
+  "grep -q 'code=smoke' '$URL_WS/.claude-auth-url'"
+check "url emitted as OSC 52 on a tty" bash -c \
+  "grep -qa \$'\\033]52;c;' '$URL_WS/out'"
+check "url printed alone on its own line" bash -c \
+  "grep -qx 'https://claude.ai/oauth/authorize?code=smoke' <(tr -d '\\r' < '$URL_WS/out')"
+rm -rf "$URL_WS"
 
 echo
 echo "== session provisioning =="

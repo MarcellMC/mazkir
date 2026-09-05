@@ -124,6 +124,17 @@ RUN usermod -d /home/marcellmc -m -s /usr/bin/zsh node \
     && touch /home/marcellmc/.claude.json \
     && chown node:node /home/marcellmc/.claude /home/marcellmc/.claude.json /workspace
 
+# Stand-in for xdg-open. Claude Code shells out to xdg-open to open the
+# OAuth login URL, and Debian slim ships no xdg-utils, no browser, no
+# DISPLAY and no clipboard binary -- so the URL could only be printed,
+# wrapped across a terminal line, and hand-transcribed. The shim captures
+# it to the /workspace bind mount and pushes it to the host clipboard over
+# OSC 52 instead. BROWSER is set as well because that is the other name
+# the same lookup goes by.
+COPY open-url.sh /usr/local/bin/xdg-open
+RUN chmod +x /usr/local/bin/xdg-open
+ENV BROWSER=/usr/local/bin/xdg-open
+
 COPY --chown=node:node entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

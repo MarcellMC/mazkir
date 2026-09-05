@@ -41,16 +41,47 @@ read-write mount fix below. If your host username/home differs from
 `/home/marcellmc/...` mount target in `docker-compose.yml` and
 `spawn_container` to match.
 
-## 2. Authenticate Claude Code (once, persists on a named volume)
+## 2. Authenticate Claude Code (nothing to do — it syncs from the host)
 
-    docker volume create mazkir-claude-auth
-    docker run -it --rm -v mazkir-claude-auth:/home/marcellmc/.claude mazkir-coding-agent:latest claude auth login
+`session.sh launch` copies your host credential
+(`~/.claude/.credentials.json`, or `CODING_AGENT_CLAUDE_CREDENTIALS_PATH`)
+onto the `mazkir-claude-auth` volume before every launch, creating the
+volume if it does not exist. So as long as you are logged in on the host,
+a session boots authenticated. Verify with:
 
-Follow the printed OAuth URL, approve from your phone/browser. This must be
-a real claude.ai account login (Pro/Max) — an API key will not work with
-Remote Control. Every subsequent spawned container reuses this volume and
-is already authenticated. Re-run this step only if the token is revoked or
-expires.
+    docker run --rm -v mazkir-claude-auth:/home/marcellmc/.claude \
+      -v ~/.config/mazkir/coding-agent-claude-home.json:/home/marcellmc/.claude.json \
+      --entrypoint claude mazkir-coding-agent:latest auth status
+
+`"loggedIn": true` means every session will start authenticated.
+`session.sh auth` re-syncs on demand; `--no-credential-sync` opts a launch
+out.
+
+**Why this is a sync and not a login.** The volume holds its own OAuth
+credential with its own refresh token, and that token's life is shorter
+than the gaps between sessions. A volume authenticated in July was found in
+September holding `accessToken:""`, `refreshToken:""` and a
+`refreshTokenExpiresAt` a week in the past — a refresh had failed and
+blanked the tokens on the way out. The container then demands an
+interactive login it is very badly equipped to complete: the image has no
+browser, no `DISPLAY`, no Wayland socket and no clipboard binary, so the
+OAuth URL can only be printed and hand-transcribed out of a wrapped
+terminal line. Re-syncing from the host every launch means the volume never
+reaches that cliff. The container's own refreshes become throwaway; the
+host copy is authoritative.
+
+**If a login is genuinely unavoidable**, the image installs `open-url.sh`
+as `/usr/local/bin/xdg-open` (and points `$BROWSER` at it), which is what
+Claude Code shells out to when it wants to open the URL. It delivers the
+URL three ways, because each one fails in a different environment: it
+writes it to `<session-dir>/.claude-auth-url` on the `/workspace` bind
+mount, pushes it to your system clipboard over OSC 52 (just bytes down the
+tty — needs no X, no Wayland and no clipboard binary; tmux forwards it on
+its default `set-clipboard=external`), and prints it alone on its own line
+so nothing else gets caught in a hand selection.
+
+This must be a real claude.ai account login (Pro/Max) — an API key will not
+work with Remote Control.
 
 **Onboarding state (theme, subscription-vs-API choice) needs a second file.**
 It lives in `~/.claude.json` — a file *sibling to* `~/.claude/`, which the
@@ -60,13 +91,16 @@ Docker refuses with "not a directory"), so this needs a host-side bind
 mount instead:
 
     mkdir -p ~/.config/mazkir && echo '{}' > ~/.config/mazkir/coding-agent-claude-home.json
+    ./infra/coding-agent/session.sh auth
     docker run -it --rm \
       -v mazkir-claude-auth:/home/marcellmc/.claude \
       -v ~/.config/mazkir/coding-agent-claude-home.json:/home/marcellmc/.claude.json \
-      mazkir-coding-agent:latest claude auth login
+      mazkir-coding-agent:latest claude
 
-Go through the theme/billing prompts once here too — they'll persist in
-that file from now on.
+Go through the theme prompts once here — they'll persist in that file from
+now on. Not `claude auth login`: the `session.sh auth` on the line above
+has already put a working credential on the volume, which is the point of
+step 2.
 
 **Point `vault-server` at the same file.** Both the automated path
 (`spawn_container`) and the interactive one (`session.sh`) must mount

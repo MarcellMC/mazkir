@@ -19,6 +19,12 @@ DEFAULT_REPO="${MAZKIR_REPO_PATH:-$HOME/dev/mazkir}"
 # Pin it here so every lane, automated and manual, agrees. Set to empty to
 # defer to the container's own default.
 DEFAULT_MODEL="${CODING_AGENT_MODEL-opus}"
+# Claude Code's own OAuth credential lives on this volume, shared by every
+# session. See sync_claude_credentials for why the host's copy is
+# authoritative and gets pushed in before every launch.
+CLAUDE_AUTH_VOLUME="${CLAUDE_AUTH_VOLUME:-mazkir-claude-auth}"
+CLAUDE_IMAGE="${CODING_AGENT_IMAGE:-mazkir-coding-agent:latest}"
+DEFAULT_CREDENTIALS="${CODING_AGENT_CLAUDE_CREDENTIALS_PATH:-$HOME/.claude/.credentials.json}"
 
 die() { echo "session.sh: $*" >&2; exit 1; }
 
@@ -148,6 +154,11 @@ repo_keep_reason() {
   [ -d "$repo/.git" ] || return 0
   # Ignore two entries that are never workspace content:
   #   .coding-task-prompt.md  -- scratch written by launch
+  #   .claude-auth-url        -- scratch written by the xdg-open shim when
+  #                              Claude prints an OAuth URL. Without this,
+  #                              logging in once would make a finished
+  #                              session look dirty forever and `clean`
+  #                              would refuse to reclaim it.
   #   memory/                 -- the nested vault clone, a separate repo
   #                              evaluated on its own below. Without this
   #                              the parent reports "uncommitted changes"
@@ -156,6 +167,7 @@ repo_keep_reason() {
   #                              but the check must not depend on that.)
   dirty="$(git -C "$repo" status --porcelain 2>/dev/null \
     | grep -v '^?? \.coding-task-prompt\.md$' \
+    | grep -v '^?? \.claude-auth-url$' \
     | grep -v '^?? memory/$' || true)"
   if [ -n "$dirty" ]; then
     printf '%s has uncommitted changes' "$label"; return 0
@@ -266,10 +278,81 @@ write_credential_env_file() {
   printf '%s' "$out"
 }
 
+# Claude Code's OAuth credential, as opposed to the GitHub PAT above.
+#
+# It lives on a named volume shared by every session, and it ROTS. The
+# refresh token has a shorter life than the gaps between sessions, so a
+# volume that worked in July was found in September holding
+# accessToken:"" refreshToken:"" and a refreshTokenExpiresAt a week in the
+# past -- a refresh had failed and blanked the tokens on its way out.
+#
+# The container then demands an interactive login, which is close to
+# unfinishable from inside: the image has no browser, no DISPLAY and no
+# clipboard binary, so the OAuth URL can only be printed and transcribed by
+# hand out of a wrapped terminal line. (open-url.sh softens that, but not
+# needing to log in at all is the better fix.)
+#
+# So the host's credential is authoritative and is copied in before every
+# launch. The container's own refreshes become throwaway; re-syncing each
+# time is what keeps the volume from ever reaching the expiry cliff again.
+sync_claude_credentials() {
+  local src="$1" dry_run="$2"
+
+  if [ ! -f "$src" ]; then
+    echo "session.sh: no Claude credential at $src; skipping sync" >&2
+    return 0
+  fi
+  # A blanked credential is exactly what a failed refresh leaves behind.
+  # Copying that in would replace whatever the volume holds -- possibly
+  # still valid -- with one that is definitely dead.
+  if ! grep -q '"accessToken"[[:space:]]*:[[:space:]]*"[^"]' "$src"; then
+    echo "session.sh: $src has no access token; log in on the host first. Skipping sync" >&2
+    return 0
+  fi
+
+  if [ "$dry_run" -eq 1 ]; then
+    echo "credential-sync: $src -> $CLAUDE_AUTH_VOLUME"
+    return 0
+  fi
+
+  docker volume inspect "$CLAUDE_AUTH_VOLUME" >/dev/null 2>&1 \
+    || docker volume create "$CLAUDE_AUTH_VOLUME" >/dev/null
+
+  # As root, because a volume created just above is root-owned and the file
+  # still has to end up readable by the container's uid-1000 `node` user.
+  # Mounted read-only at a path of its own -- the credential reaches the
+  # container through a mount, never through argv, same rule as the PAT.
+  if docker run --rm --user 0:0 --entrypoint sh \
+      -v "$CLAUDE_AUTH_VOLUME":/vol \
+      -v "$src":/src/.credentials.json:ro \
+      "$CLAUDE_IMAGE" -c 'cp /src/.credentials.json /vol/.credentials.json \
+        && chown 1000:1000 /vol /vol/.credentials.json \
+        && chmod 600 /vol/.credentials.json' >/dev/null 2>&1; then
+    echo "session.sh: synced Claude credential into $CLAUDE_AUTH_VOLUME" >&2
+  else
+    # Non-fatal: the most likely cause is that $CLAUDE_IMAGE has not been
+    # built yet, and the launch below builds it. Refusing to launch over a
+    # sync failure would be worse than launching with a stale credential.
+    echo "session.sh: credential sync failed (is $CLAUDE_IMAGE built?); continuing" >&2
+  fi
+}
+
+cmd_auth() {
+  local credentials="$DEFAULT_CREDENTIALS"
+  for arg in "$@"; do
+    case "$arg" in
+      --credentials-file=*) credentials="${arg#--credentials-file=}" ;;
+      *) die "unknown option: $arg" ;;
+    esac
+  done
+  sync_claude_credentials "$credentials" 0
+}
+
 cmd_launch() {
   local name="" root="$DEFAULT_ROOT" mode="manual" prompt_file="" dry_run=0
   local keep_env_file=0 detach=0 model="$DEFAULT_MODEL"
   local token_file="${CODING_AGENT_GITHUB_TOKEN_PATH:-}"
+  local credentials="$DEFAULT_CREDENTIALS" sync_credentials=1
   name="$1"; shift
   [ -n "$name" ] || die "usage: session.sh launch <name> [--mode=MODE] [--prompt-file=PATH]"
   for arg in "$@"; do
@@ -279,6 +362,8 @@ cmd_launch() {
       --prompt-file=*) prompt_file="${arg#--prompt-file=}" ;;
       --model=*) model="${arg#--model=}" ;;
       --github-token-file=*) token_file="${arg#--github-token-file=}" ;;
+      --credentials-file=*) credentials="${arg#--credentials-file=}" ;;
+      --no-credential-sync) sync_credentials=0 ;;
       --dry-run) dry_run=1 ;;
       --detach) detach=1 ;;
       --keep-env-file) keep_env_file=1 ;;
@@ -331,6 +416,12 @@ cmd_launch() {
   export CLAUDE_JSON_PATH="${CLAUDE_JSON_PATH:-$HOME/.config/mazkir/coding-agent-claude-home.json}"
   export CLAUDE_PLUGINS_PATH="${CLAUDE_PLUGINS_PATH:-$HOME/.claude/plugins}"
   export DOTFILES_PATH="${DOTFILES_PATH:-$HOME/dotfiles}"
+
+  # Before the container starts, not after: the whole point is that Claude
+  # is already authenticated when it boots.
+  if [ "$sync_credentials" -eq 1 ]; then
+    sync_claude_credentials "$credentials" "$dry_run"
+  fi
 
   # The credential reaches the container through compose's env_file key,
   # not argv. CREDENTIAL_ENV_FILE is substituted into docker-compose.yml.
@@ -402,6 +493,11 @@ session.sh -- containerized coding sessions
   session.sh provision <name> [--repo=PATH] [--vault-repo=PATH] [--root=PATH]
   session.sh launch <name> [--mode=MODE] [--prompt-file=PATH] [--model=NAME]
                            [--dry-run]
+  session.sh auth [--credentials-file=PATH]
+      Push the host's Claude OAuth credential onto the shared auth volume.
+      `launch` already does this every time; run it by hand after logging
+      in on the host, or with --no-credential-sync in play.
+
   session.sh list [--root=PATH]
       One line per session: name, branch, and SAFE or KEEP: <reason>.
   session.sh clean <name> [--root=PATH] [--force]
@@ -409,6 +505,14 @@ session.sh -- containerized coding sessions
 
 Interactive sessions appear in Claude Mobile under <name>. There is no
 session URL to copy -- find them by name.
+
+Claude authentication is synced from the host (~/.claude/.credentials.json,
+or CODING_AGENT_CLAUDE_CREDENTIALS_PATH) onto the mazkir-claude-auth volume
+before every launch, so a session never has to run its own OAuth login --
+the image has no browser or clipboard to complete one with. Pass
+--no-credential-sync to leave the volume alone. If a login is unavoidable
+anyway, the container's xdg-open shim copies the URL to your clipboard over
+OSC 52 and writes it to <session-dir>/.claude-auth-url.
 
 Sessions run on opus by default (CODING_AGENT_MODEL, or --model=NAME per
 launch). A session inherits nothing from the host shell, so without this it
@@ -427,6 +531,7 @@ main() {
   local cmd="$1"; shift
   case "$cmd" in
     provision) cmd_provision "$@" ;;
+    auth) cmd_auth "$@" ;;
     list) cmd_list "$@" ;;
     clean) cmd_clean "$@" ;;
     launch) cmd_launch "$@" ;;
