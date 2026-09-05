@@ -127,3 +127,62 @@ def render_trace(record: dict[str, Any]) -> str:
         for c in calls
     ]
     return f"[{header}:\n" + "\n".join(lines) + "]"
+
+
+def _pair_indices(messages: list[dict[str, Any]]) -> list[tuple[int, int]]:
+    """Indices of adjacent (user, assistant) message pairs, oldest first.
+
+    ``save_turn`` always appends the two together, but the sliding window can
+    begin mid-pair, so unpaired messages at either end are skipped.
+    """
+    pairs: list[tuple[int, int]] = []
+    i = 0
+    while i < len(messages) - 1:
+        if (
+            messages[i].get("role") == "user"
+            and messages[i + 1].get("role") == "assistant"
+        ):
+            pairs.append((i, i + 1))
+            i += 2
+        else:
+            i += 1
+    return pairs
+
+
+def attach_traces(
+    messages: list[dict[str, Any]], records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach each turn's trace to the assistant message that turn produced.
+
+    Both sequences are chronological and pair 1:1 -- every path through
+    ``_run_agent_turn`` calls ``save_turn`` and then ``_emit_turn_audit``
+    with the same ``original_text``.  They can still diverge two ways:
+    conversation decay truncates the note from the *front* while the log
+    keeps everything, and a crash between those two calls leaves a message
+    pair with no record.
+
+    So the walk runs from the tail, where the two agree, matching on exact
+    ``user_text``.  On a mismatch the *pair* is skipped and nothing is
+    attached, which absorbs the missing-record case while leaving surplus
+    older records unconsumed.
+
+    The invariant: a mismatch yields a missing trace, never a wrong one.
+    Attaching someone else's trace would be a worse version of the bug this
+    ship exists to fix, because it would arrive dressed as evidence.
+    """
+    out = [dict(m) for m in messages]
+    pairs = _pair_indices(out)
+
+    i = len(pairs) - 1
+    j = len(records) - 1
+    while i >= 0 and j >= 0:
+        user_idx, assistant_idx = pairs[i]
+        if out[user_idx].get("content") == records[j].get("user_text"):
+            trace = render_trace(records[j])
+            existing = out[assistant_idx].get("content", "")
+            out[assistant_idx]["content"] = f"{existing}\n\n{trace}"
+            i -= 1
+            j -= 1
+        else:
+            i -= 1  # this pair has no record -- attach nothing, never guess
+    return out

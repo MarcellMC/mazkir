@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from src.services.turn_trace import read_turn_records
+from src.services.turn_trace import attach_traces, read_turn_records, render_trace
 
 
 def _write_log(logs_dir, rows):
@@ -101,43 +101,35 @@ def _call(name, params=None, ok=True, error_code=None, pending=False, no_result=
 
 class TestRenderTrace:
     def test_no_calls_renders_none(self):
-        from src.services.turn_trace import render_trace
         assert render_trace({"tools": []}) == "[Tools I called this turn: none]"
 
     def test_missing_tools_key_renders_none(self):
-        from src.services.turn_trace import render_trace
         assert render_trace({}) == "[Tools I called this turn: none]"
 
     def test_skill_appears_in_header(self):
-        from src.services.turn_trace import render_trace
         out = render_trace({"skill": "time-management", "tools": []})
         assert out == "[Tools I called this turn, as time-management: none]"
 
     def test_successful_call(self):
-        from src.services.turn_trace import render_trace
         out = render_trace({"tools": [_call("daily_add_task", {"text": "Order dog food"})]})
         assert 'daily_add_task(text="Order dog food") → ok' in out
 
     def test_failed_call_shows_error_code(self):
-        from src.services.turn_trace import render_trace
         out = render_trace({"tools": [
             _call("delete_task", {"name": "old"}, ok=False, error_code="SCHEMA_INVALID"),
         ]})
         assert "delete_task(name=\"old\") → SCHEMA_INVALID" in out
 
     def test_pending_call_is_marked_not_executed(self):
-        from src.services.turn_trace import render_trace
         out = render_trace({"tools": [_call("delete_task", {"name": "old"}, pending=True)]})
         assert "→ proposed, awaiting confirmation — NOT executed" in out
         assert "→ ok" not in out
 
     def test_missing_result_summary(self):
-        from src.services.turn_trace import render_trace
         out = render_trace({"tools": [_call("get_daily", no_result=True)]})
         assert "→ no result recorded" in out
 
     def test_multiple_calls_each_get_a_line(self):
-        from src.services.turn_trace import render_trace
         out = render_trace({"tools": [
             _call("daily_add_task", {"text": "Order dog food"}),
             _call("daily_add_task", {"text": "Bring the bicycle to repair shop"}),
@@ -147,7 +139,6 @@ class TestRenderTrace:
         assert out.endswith("]")
 
     def test_long_params_are_truncated(self):
-        from src.services.turn_trace import render_trace
         body = "x" * 500
         out = render_trace({"tools": [_call("save_knowledge", {"content": body})]})
         assert "…" in out
@@ -155,12 +146,114 @@ class TestRenderTrace:
         assert body not in out
 
     def test_non_string_params_render_without_quotes(self):
-        from src.services.turn_trace import render_trace
         out = render_trace({"tools": [_call("update_goal", {"progress": 40, "done": True})]})
         assert "progress=40" in out
         assert "done=True" in out
 
     def test_call_without_params(self):
-        from src.services.turn_trace import render_trace
         out = render_trace({"tools": [_call("list_tasks")]})
         assert "list_tasks() → ok" in out
+
+
+def _msgs(*pairs):
+    """Build a message list from (user_text, assistant_text) pairs."""
+    out = []
+    for user, assistant in pairs:
+        out.append({"role": "user", "content": user})
+        out.append({"role": "assistant", "content": assistant})
+    return out
+
+
+def _rec(user_text, tool_name="daily_add_task", skill=None):
+    record = {
+        "user_text": user_text,
+        "tools": [{
+            "name": tool_name,
+            "params": {},
+            "result_summary": {"ok": True, "data": {}},
+        }],
+    }
+    if skill:
+        record["skill"] = skill
+    return record
+
+
+class TestAttachTraces:
+    def test_attaches_trace_to_the_matching_assistant_message(self):
+        messages = _msgs(("add two todos", "Added both."))
+        out = attach_traces(messages, [_rec("add two todos")])
+
+        assert out[0]["content"] == "add two todos"
+        assert out[1]["content"].startswith("Added both.")
+        assert "daily_add_task() → ok" in out[1]["content"]
+
+    def test_does_not_mutate_input(self):
+        messages = _msgs(("hi", "hello"))
+        attach_traces(messages, [_rec("hi")])
+
+        assert messages[1]["content"] == "hello"
+
+    def test_no_records_leaves_messages_unchanged(self):
+        messages = _msgs(("hi", "hello"))
+        out = attach_traces(messages, [])
+
+        assert out == messages
+
+    def test_extra_older_records_are_ignored(self):
+        """Decay truncates the note from the front; the log keeps everything."""
+        messages = _msgs(("third", "C"))
+        records = [_rec("first"), _rec("second"), _rec("third")]
+
+        out = attach_traces(messages, records)
+
+        assert "→ ok" in out[1]["content"]
+        assert out[1]["content"].startswith("C")
+
+    def test_duplicate_user_texts_disambiguate_by_order(self):
+        messages = _msgs(("yes", "Did A."), ("yes", "Did B."))
+        records = [_rec("yes", tool_name="tool_a"), _rec("yes", tool_name="tool_b")]
+
+        out = attach_traces(messages, records)
+
+        assert "tool_a" in out[1]["content"]
+        assert "tool_b" in out[3]["content"]
+
+    def test_pair_without_a_record_gets_nothing_and_others_still_align(self):
+        """save_turn runs before _emit_turn_audit; a crash between leaves a gap."""
+        messages = _msgs(("one", "A"), ("two", "B"), ("three", "C"))
+        records = [_rec("one", tool_name="tool_one"), _rec("three", tool_name="tool_three")]
+
+        out = attach_traces(messages, records)
+
+        assert "tool_one" in out[1]["content"]
+        assert out[3]["content"] == "B"          # no record -- nothing attached
+        assert "tool_three" in out[5]["content"]
+
+    def test_never_attaches_a_mismatched_trace(self):
+        messages = _msgs(("what did you do?", "Nothing."))
+        records = [_rec("delete everything", tool_name="delete_task")]
+
+        out = attach_traces(messages, records)
+
+        assert out[1]["content"] == "Nothing."
+        assert "delete_task" not in out[1]["content"]
+
+    def test_window_starting_mid_pair_is_handled(self):
+        """A 20-message window can begin on an assistant message."""
+        messages = [{"role": "assistant", "content": "orphan"}] + _msgs(("hi", "hello"))
+        out = attach_traces(messages, [_rec("hi")])
+
+        assert out[0]["content"] == "orphan"
+        assert "→ ok" in out[2]["content"]
+
+    def test_turn_with_no_tools_renders_none_block(self):
+        messages = _msgs(("hi", "hello"))
+        out = attach_traces(messages, [{"user_text": "hi", "tools": []}])
+
+        assert out[1]["content"] == "hello\n\n[Tools I called this turn: none]"
+
+    def test_skill_is_carried_into_the_attached_block(self):
+        messages = _msgs(("add two todos", "Added both."))
+        out = attach_traces(messages, [_rec("add two todos", skill="time-management")])
+
+        assert "as time-management" in out[1]["content"]
