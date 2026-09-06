@@ -654,3 +654,119 @@ def test_provisioning_under_the_rewrite_still_sets_the_github_remote(
         "config", "--get", "remote.origin.url", cwd=root / "nested2",
     )
     assert configured == "git@github.com:Test/source.git"
+
+
+# --- Claude OAuth credential sync ---------------------------------------
+#
+# The shared auth volume rots: its refresh token expires between sessions,
+# a failed refresh blanks the tokens, and the container then demands an
+# interactive login it has no browser or clipboard to complete. The host's
+# credential is authoritative and gets pushed in before every launch.
+
+
+def _valid_credentials(path):
+    path.write_text(
+        '{"claudeAiOauth":{"accessToken":"sk-ant-oat-live","refreshToken":"r",'
+        '"expiresAt":9999999999999,"subscriptionType":"pro"}}'
+    )
+    return path
+
+
+def test_launch_syncs_the_host_credential_before_starting(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("authed", source_repo, root)
+    creds = _valid_credentials(tmp_path / ".credentials.json")
+
+    result = _launch("authed", root, f"--credentials-file={creds}")
+
+    assert f"credential-sync: {creds} -> mazkir-claude-auth" in result.stdout
+
+
+def test_launch_never_puts_the_oauth_token_in_argv(source_repo, tmp_path):
+    """Same rule as the GitHub PAT: argv is echoed back by `docker inspect`
+    for as long as the container exists. The credential travels as a mount."""
+    root = tmp_path / "agent-sessions"
+    _provision("authed2", source_repo, root)
+    creds = _valid_credentials(tmp_path / ".credentials.json")
+
+    result = _launch("authed2", root, f"--credentials-file={creds}")
+
+    assert "sk-ant-oat-live" not in result.stdout + result.stderr
+
+
+def test_launch_skips_the_sync_when_the_host_credential_is_blank(
+    source_repo, tmp_path
+):
+    """A failed refresh leaves accessToken:"" behind. Copying that in would
+    replace a possibly-valid volume credential with a certainly-dead one --
+    which is how the volume got into that state in the first place."""
+    root = tmp_path / "agent-sessions"
+    _provision("blank", source_repo, root)
+    creds = tmp_path / ".credentials.json"
+    creds.write_text('{"claudeAiOauth":{"accessToken":"","refreshToken":""}}')
+
+    result = _launch("blank", root, f"--credentials-file={creds}")
+
+    assert result.returncode == 0, result.stderr
+    assert "credential-sync:" not in result.stdout
+    assert "no access token" in result.stderr
+
+
+def test_launch_skips_the_sync_when_the_host_has_no_credential(
+    source_repo, tmp_path
+):
+    root = tmp_path / "agent-sessions"
+    _provision("nocreds", source_repo, root)
+    missing = tmp_path / "nope.json"
+
+    result = _launch("nocreds", root, f"--credentials-file={missing}")
+
+    assert result.returncode == 0, result.stderr
+    assert "credential-sync:" not in result.stdout
+    assert str(missing) in result.stderr
+
+
+def test_a_missing_credential_never_blocks_the_launch(source_repo, tmp_path):
+    """Skipping the sync must not stop the container: a stale credential is
+    recoverable, a session that refuses to start is just broken."""
+    root = tmp_path / "agent-sessions"
+    _provision("stillruns", source_repo, root)
+
+    out = _launch(
+        "stillruns", root, f"--credentials-file={tmp_path / 'nope.json'}"
+    ).stdout
+
+    assert "docker compose" in out
+    assert "--remote-control" in out
+
+
+def test_credential_sync_can_be_turned_off(source_repo, tmp_path):
+    root = tmp_path / "agent-sessions"
+    _provision("nosync", source_repo, root)
+    creds = _valid_credentials(tmp_path / ".credentials.json")
+
+    result = _launch(
+        "nosync", root, f"--credentials-file={creds}", "--no-credential-sync"
+    )
+
+    assert "credential-sync:" not in result.stdout
+
+
+def test_a_captured_auth_url_does_not_make_a_session_look_dirty(
+    source_repo, tmp_path
+):
+    """The xdg-open shim writes the OAuth URL to /workspace so the host can
+    read it. Counting that as uncommitted work would mean logging in once
+    left the session unreclaimable forever."""
+    root = tmp_path / "agent-sessions"
+    _provision("urlcap", source_repo, root)
+    session = root / "urlcap"
+    _push_to_a_bare_upstream(session, tmp_path, "urlcap")
+    (session / ".claude-auth-url").write_text("https://claude.ai/oauth/x\n")
+
+    assert "SAFE" in _list(root).stdout
+
+    result = _clean("urlcap", root)
+
+    assert result.returncode == 0, result.stderr
+    assert not session.exists()

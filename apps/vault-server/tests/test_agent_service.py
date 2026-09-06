@@ -2023,3 +2023,64 @@ def test_list_habits_reports_completion_progress(agent, mock_services):
 
     assert habit["completions_today"] == 1
     assert habit["daily_target"] == 2
+
+
+class TestSkillInTurnAudit:
+    def test_emit_turn_audit_records_skill(self, agent, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            "src.services.agent_service.emit_agent_turn",
+            lambda record: captured.update(record),
+        )
+
+        agent._emit_turn_audit(
+            chat_id=123,
+            user_text="add two todos",
+            tools_audit=[],
+            assistant_text="Added both.",
+            items_referenced=[],
+            awaiting_confirmation=False,
+            pending_action_id=None,
+            prior_action_id=None,
+            iters=1,
+            stop_reason="end_turn",
+            skill="time-management",
+        )
+
+        assert captured["skill"] == "time-management"
+
+    def test_emit_turn_audit_skill_defaults_to_none(self, agent, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            "src.services.agent_service.emit_agent_turn",
+            lambda record: captured.update(record),
+        )
+
+        agent._emit_turn_audit(
+            chat_id=123,
+            user_text="hi",
+            tools_audit=[],
+            assistant_text="hello",
+            items_referenced=[],
+            awaiting_confirmation=False,
+            pending_action_id=None,
+            prior_action_id=None,
+            iters=1,
+            stop_reason="end_turn",
+        )
+
+        assert captured["skill"] is None
+
+
+class TestMirrorInvariantGuidelines:
+    def test_static_prefix_forbids_unchecked_denial(self, agent):
+        prefix = agent._build_static_prefix()
+        assert "Never deny a past action without checking" in prefix
+
+    def test_static_prefix_warns_that_tool_lists_change(self, agent):
+        prefix = agent._build_static_prefix()
+        assert "what you can do now, not what you did earlier" in prefix
+
+    def test_static_prefix_forbids_reasoning_from_absence(self, agent):
+        prefix = agent._build_static_prefix()
+        assert "no record, not proof of inaction" in prefix

@@ -1295,6 +1295,7 @@ class AgentService:
         max_iterations: int,
         cache_static_prefix: str | None = None,
         model: str | None = None,
+        skill: str | None = None,
     ) -> LoopOutcome:
         """Parameterized inner Claude tool-use loop.
 
@@ -1320,6 +1321,7 @@ class AgentService:
             max_iterations=max_iterations,
             cache_static_prefix=cache_static_prefix,
             model=model,
+            skill=skill,
         )
         if result.awaiting_confirmation:
             return LoopOutcome(
@@ -1340,6 +1342,7 @@ class AgentService:
         action_id: str | None = None,
         cache_static_prefix: str | None = None,
         model: str | None = None,
+        skill: str | None = None,
     ) -> AgentResponse:
         """Core agent loop: Claude <-> tools until end_turn or max iterations.
 
@@ -1549,6 +1552,7 @@ class AgentService:
                                 prior_action_id=action_id,
                                 iters=iters,
                                 stop_reason=stop_reason,
+                                skill=skill,
                             )
                             return AgentResponse(
                                 response=description,
@@ -1606,6 +1610,7 @@ class AgentService:
             prior_action_id=action_id,
             iters=iters,
             stop_reason=stop_reason,
+            skill=skill,
         )
         return AgentResponse(response=assistant_text)
 
@@ -1622,9 +1627,11 @@ class AgentService:
         prior_action_id: str | None,
         iters: int,
         stop_reason: str | None,
+        skill: str | None = None,
     ) -> None:
         emit_agent_turn({
             "chat_id": chat_id,
+            "skill": skill,
             "user_text": user_text,
             "tools": tools_audit,
             "assistant_text": assistant_text,
@@ -1814,6 +1821,12 @@ class AgentService:
             "- Tool results may carry data.calendar_sync. If it is ok: false AND attempted: true, tell the user the calendar was NOT updated and give the reason. Never claim a sync you cannot see in the result.",
             "- calendar_sync with attempted: false means there was nothing to sync (no calendar configured, a delete, a task with no due date). That is not a failure — say nothing about the calendar.",
             "- If a tool result is missing a field you expected, say so rather than filling it in from your own request.",
+            "",
+            "## Reporting past actions",
+            "- Never deny a past action without checking. The [Tools I called this turn] blocks in the conversation record what you actually did — read them before saying you did not do something.",
+            "- Your current tool list is what you can do now, not what you did earlier. Skills change between turns; a tool absent from your list now may have been available when you acted.",
+            "- A turn with no trace block means no record, not proof of inaction. Use a read tool before denying.",
+            "- A call marked 'proposed, awaiting confirmation — NOT executed' did not run. Never report it as done.",
             "",
             "## Guidelines",
             "- Be concise and friendly",

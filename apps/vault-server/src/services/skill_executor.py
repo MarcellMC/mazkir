@@ -148,6 +148,7 @@ class SkillExecutor:
                         max_iterations=skill.max_iterations,
                         cache_static_prefix=cache_static_prefix,
                         model=skill.model,
+                        skill=skill.name,
                     ))
                     response_text = outcome.response_text
                     stop_reason = outcome.stop_reason

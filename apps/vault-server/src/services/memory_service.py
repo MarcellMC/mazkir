@@ -1,6 +1,7 @@
 """Service for managing conversation history, knowledge, and graph index."""
 
 import datetime
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +10,10 @@ from typing import Any
 import frontmatter
 import pytz
 
+from src.services.turn_trace import attach_traces, read_turn_records
 from src.services.vault_service import VaultService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -29,10 +33,14 @@ class MemoryService:
         vault: VaultService,
         vault_path: Path,
         timezone: str = "Asia/Jerusalem",
+        logs_dir: Path | None = None,
     ):
         self.vault = vault
         self.vault_path = Path(vault_path)
         self.tz = pytz.timezone(timezone)
+        # Where agent-turns.jsonl lives. None disables per-turn tool traces,
+        # which is what every caller that predates Ship 3 gets.
+        self.logs_dir = Path(logs_dir) if logs_dir else None
         self.window_size = 20  # messages before decay
         self.graph: dict[str, dict] = {}
         self._claude: Any = None  # Set after init for summarization
@@ -352,13 +360,46 @@ class MemoryService:
 
         Combines: conversation history (short-term), vault state snapshot
         (mid-term), and relevant knowledge + preferences (long-term).
+
+        Each turn's tool calls are attached to the assistant message that
+        turn produced, so the agent reads what it actually did rather than
+        inferring it from the tools its *current* skill happens to hold.
         """
         conversation = self.load_conversation(chat_id)
+        messages = conversation["messages"]
+
+        if self.logs_dir is not None:
+            # NOTE (timezone coupling): `today` here is filtered against
+            # self.tz (VAULT_TIMEZONE), but the `ts` field on each record was
+            # stamped by emit_agent_turn (logging_setup.py) using
+            # time.strftime -- the *process's* local time, not VAULT_TIMEZONE.
+            # They agree only when the two happen to match, which they do on
+            # this host. If the process runs with TZ=UTC while
+            # VAULT_TIMEZONE=Asia/Jerusalem, every turn between 00:00 and
+            # 03:00 local falls on the "wrong" date for this filter and
+            # silently gets no trace attached -- degrading safely (a missing
+            # trace, never a wrong one), but silently.
+            today = datetime.datetime.now(self.tz).strftime("%Y-%m-%d")
+            # turn_trace is documented as never-raising, but that contract
+            # lives in a module this method doesn't own -- a malformed log
+            # line must cost this chat's traces for one turn, never the
+            # whole reply, so the guarantee is structural here too.
+            try:
+                records = read_turn_records(self.logs_dir, chat_id, today)
+                messages = attach_traces(messages, records)
+            except Exception:
+                logger.warning(
+                    "turn trace attach failed for chat_id=%s; "
+                    "falling back to untraced messages",
+                    chat_id,
+                    exc_info=True,
+                )
+
         vault_snapshot = self._build_vault_snapshot(conversation)
         knowledge = self._gather_relevant_knowledge(conversation)
 
         return ConversationContext(
-            messages=conversation["messages"],
+            messages=messages,
             summary=conversation["summary"],
             vault_snapshot=vault_snapshot,
             knowledge=knowledge,
