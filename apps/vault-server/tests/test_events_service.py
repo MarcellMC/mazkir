@@ -170,6 +170,159 @@ class TestUpdateEvent:
         assert len(events[0]["photos"]) == 1  # Photo preserved
 
 
+class TestUpdateEventAcrossDates:
+    """The date argument is a hint, and an update may move the event's file.
+
+    `list_events` hands out IDs for any date, so an update arriving with the
+    wrong date hint — or none — is normal, not an error.
+    """
+
+    def test_update_finds_event_in_other_date_file(self, events_service):
+        events_service.create_event(date="2026-09-08", name="Walk", start_time="2026-09-08T10:00:00")
+        event_id = events_service.get_events("2026-09-08")[0]["id"]
+
+        result = events_service.update_event("2026-09-07", event_id, {"name": "Dog walk"})
+
+        assert result["updated"] is True
+        assert result["date"] == "2026-09-08"
+        assert events_service.get_events("2026-09-08")[0]["name"] == "Dog walk"
+        assert events_service.get_events("2026-09-07") == []
+
+    def test_update_scans_when_date_omitted(self, events_service):
+        events_service.create_event(date="2026-09-08", name="Walk", start_time="2026-09-08T10:00:00")
+        event_id = events_service.get_events("2026-09-08")[0]["id"]
+
+        result = events_service.update_event(None, event_id, {"name": "Dog walk"})
+
+        assert result["updated"] is True
+        assert result["date"] == "2026-09-08"
+
+    def test_new_date_moves_the_event_and_keeps_its_time(self, events_service):
+        events_service.create_event(
+            date="2026-09-08", name="Walk",
+            start_time="2026-09-08T16:30:00", end_time="2026-09-08T17:10:00",
+        )
+        event_id = events_service.get_events("2026-09-08")[0]["id"]
+
+        result = events_service.update_event(
+            "2026-09-08", event_id, {}, new_date="2026-09-07"
+        )
+
+        assert result["date"] == "2026-09-07"
+        assert result["moved_from"] == "2026-09-08"
+        assert events_service.get_events("2026-09-08") == []
+        moved = events_service.get_events("2026-09-07")
+        assert len(moved) == 1
+        assert moved[0]["id"] == event_id
+        assert moved[0]["start_time"] == "2026-09-07T16:30:00"
+        assert moved[0]["end_time"] == "2026-09-07T17:10:00"
+
+    def test_start_time_on_another_day_moves_the_file_too(self, events_service):
+        """The file an event lives in is the day it belongs to.
+
+        Rewriting start_time to another date without moving the row would
+        leave the old day showing an event it no longer has.
+        """
+        events_service.create_event(date="2026-09-08", name="Walk", start_time="2026-09-08T10:00:00")
+        event_id = events_service.get_events("2026-09-08")[0]["id"]
+
+        result = events_service.update_event(
+            "2026-09-08", event_id, {"start_time": "2026-09-07T21:00:00"}
+        )
+
+        assert result["date"] == "2026-09-07"
+        assert events_service.get_events("2026-09-08") == []
+        assert events_service.get_events("2026-09-07")[0]["start_time"] == "2026-09-07T21:00:00"
+
+    def test_move_lands_beside_the_target_days_existing_events(self, events_service):
+        events_service.create_event(date="2026-09-07", name="Breakfast", start_time="2026-09-07T08:00:00")
+        events_service.create_event(date="2026-09-08", name="Walk", start_time="2026-09-08T10:00:00")
+        event_id = events_service.get_events("2026-09-08")[0]["id"]
+
+        events_service.update_event("2026-09-08", event_id, {}, new_date="2026-09-07")
+
+        names = {e["name"] for e in events_service.get_events("2026-09-07")}
+        assert names == {"Breakfast", "Walk"}
+
+    def test_moved_event_survives_reconcile_at_its_new_date(self, events_service):
+        """A moved calendar event must not be deleted by the next merge.
+
+        `reconcile` drops an unmatched calendar event when the calendar
+        answered — and the calendar will never emit this one for the day the
+        user moved it to. Detaching the upstream ids on the move is what
+        keeps the move from silently undoing itself.
+        """
+        events_service.save_events("2026-09-08", [{
+            "id": "evt_moved",
+            "name": "Dog walk",
+            "start_time": "2026-09-08T16:30:00",
+            "end_time": "2026-09-08T17:10:00",
+            "source": "calendar",
+            "source_ids": {"calendar_id": "gcal_123"},
+        }])
+
+        events_service.update_event("2026-09-08", "evt_moved", {}, new_date="2026-09-07")
+
+        moved = events_service.get_events("2026-09-07")[0]
+        assert moved["source_ids"] == {}
+        assert moved["moved_from_source_ids"] == {"calendar_id": "gcal_123"}
+        assert moved["source"] == "manual"
+
+        # The calendar answers for 2026-09-07 and has nothing matching it.
+        survivors = events_service.reconcile("2026-09-07", [], available_sources={"calendar"})
+        assert [e["id"] for e in survivors] == ["evt_moved"]
+
+    def test_same_day_update_leaves_source_ids_alone(self, events_service):
+        events_service.save_events("2026-09-08", [{
+            "id": "evt_1",
+            "name": "Dog walk",
+            "start_time": "2026-09-08T16:30:00",
+            "source": "calendar",
+            "source_ids": {"calendar_id": "gcal_123"},
+        }])
+
+        events_service.update_event("2026-09-08", "evt_1", {"start_time": "2026-09-08T17:00:00"})
+
+        event = events_service.get_events("2026-09-08")[0]
+        assert event["source_ids"] == {"calendar_id": "gcal_123"}
+        assert event["source"] == "calendar"
+        assert "moved_from_source_ids" not in event
+
+    def test_update_unknown_id_reports_not_found_after_scanning(self, events_service):
+        events_service.create_event(date="2026-09-08", name="Walk", start_time="2026-09-08T10:00:00")
+
+        result = events_service.update_event(None, "evt_nope", {"name": "X"})
+
+        assert "error" in result
+
+
+class TestDeleteEvent:
+    def test_delete_removes_the_event(self, events_service):
+        events_service.create_event(date="2026-09-07", name="Dog walk", start_time="2026-09-07T16:30:00")
+        events_service.create_event(date="2026-09-07", name="Dinner", start_time="2026-09-07T19:00:00")
+        event_id = events_service.get_events("2026-09-07")[0]["id"]
+
+        result = events_service.delete_event("2026-09-07", event_id)
+
+        assert result["deleted"] is True
+        assert result["event"]["name"] == "Dog walk"
+        assert result["date"] == "2026-09-07"
+        assert [e["name"] for e in events_service.get_events("2026-09-07")] == ["Dinner"]
+
+    def test_delete_finds_event_on_another_date(self, events_service):
+        events_service.create_event(date="2026-09-08", name="Dog walk", start_time="2026-09-08T16:30:00")
+        event_id = events_service.get_events("2026-09-08")[0]["id"]
+
+        result = events_service.delete_event("2026-09-07", event_id)
+
+        assert result["date"] == "2026-09-08"
+        assert events_service.get_events("2026-09-08") == []
+
+    def test_delete_unknown_id_errors(self, events_service):
+        result = events_service.delete_event("2026-09-07", "evt_nope")
+        assert "error" in result
+
+
 class TestAttachPhoto:
     def test_attach_photo_to_event(self, events_service):
         events_service.create_event(date="2026-03-04", name="Walk", start_time="14:00")

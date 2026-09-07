@@ -47,6 +47,38 @@ _SOURCE_SYSTEM_BY_ID_KEY = {
 _DELETABLE_SOURCE_SYSTEMS = frozenset({"calendar", "timeline"})
 
 
+def _date_part(timestamp: str | None) -> str | None:
+    """The YYYY-MM-DD prefix of an ISO timestamp, or None if there isn't one.
+
+    Returns None for a bare `HH:MM` and for anything that doesn't parse as a
+    real date, so callers can fall back rather than inventing a file name out
+    of a malformed string.
+    """
+    from datetime import date as _date
+
+    if not isinstance(timestamp, str) or len(timestamp) < 10:
+        return None
+    head = timestamp[:10]
+    try:
+        _date.fromisoformat(head)
+    except ValueError:
+        return None
+    return head
+
+
+def _with_date(timestamp: str | None, new_date: str) -> str | None:
+    """Re-date an ISO timestamp, keeping its time-of-day."""
+    if not isinstance(timestamp, str):
+        return timestamp
+    if "T" in timestamp:
+        return f"{new_date}T{timestamp.split('T', 1)[1]}"
+    if _date_part(timestamp):
+        return new_date
+    # A bare time carries no date to replace; the caller normalizes those
+    # against the target date before we ever see them.
+    return timestamp
+
+
 class PhotoRef:
     """Photo reference attached to an event."""
 
@@ -183,32 +215,127 @@ class EventsService:
 
     def update_event(
         self,
-        date: str,
+        date: str | None,
         event_id: str,
         updates: dict,
+        new_date: str | None = None,
     ) -> dict:
-        """Update fields on an existing event."""
-        events = self.get_events(date)
-        for event in events:
-            if event["id"] == event_id:
-                # Recalculate duration if times changed
-                start = updates.get("start_time", event.get("start_time"))
-                end = updates.get("end_time", event.get("end_time"))
-                if "start_time" in updates or "end_time" in updates:
-                    if start and end and start != end:
-                        from datetime import datetime as _dt
-                        try:
-                            st = _dt.fromisoformat(start)
-                            et = _dt.fromisoformat(end)
-                            updates["duration_minutes"] = max(0, int((et - st).total_seconds() / 60))
-                        except (ValueError, TypeError):
-                            pass
+        """Update fields on an existing event, relocating it when its day changes.
 
-                event.update(updates)
-                self.save_events(date, events)
-                return {"updated": True, "event": event}
+        `date` is a hint, exactly as in `attach_photo`: if it's omitted or the
+        event isn't in that date's file, every event file is scanned for the ID
+        (IDs are unique). Callers routinely know an event only by the ID
+        `list_events` handed them, and defaulting the hint to today made every
+        update to an event on any other day fail with "not found".
+
+        `new_date` moves the event to another day, re-dating its start and end
+        while keeping their times of day. It is also what a bare `HH:MM`
+        update should already have been normalized against.
+
+        The file an event lives in *is* the day it belongs to — `/day` and
+        `list_events` both read `data/events/{date}.json` and nothing re-checks
+        the timestamps inside. So an update that lands the event on another
+        date moves its row to that date's file; leaving it behind would give
+        the old day an event it no longer has and the new day nothing at all.
+        """
+        source_date = self.resolve_event_date(event_id, date)
+        if source_date is None:
+            return {"error": f"Event {event_id} not found"}
+        events = self.get_events(source_date)
+
+        for index, event in enumerate(events):
+            if event["id"] != event_id:
+                continue
+
+            if new_date:
+                # Re-date whichever timestamps this update leaves in place.
+                # An explicit start_time/end_time in `updates` wins — the
+                # caller normalized those against new_date already.
+                for field in ("start_time", "end_time"):
+                    if field not in updates:
+                        moved = _with_date(event.get(field), new_date)
+                        if moved is not None:
+                            updates[field] = moved
+
+            # Recalculate duration if times changed
+            start = updates.get("start_time", event.get("start_time"))
+            end = updates.get("end_time", event.get("end_time"))
+            if "start_time" in updates or "end_time" in updates:
+                if start and end and start != end:
+                    from datetime import datetime as _dt
+                    try:
+                        st = _dt.fromisoformat(start)
+                        et = _dt.fromisoformat(end)
+                        updates["duration_minutes"] = max(0, int((et - st).total_seconds() / 60))
+                    except (ValueError, TypeError):
+                        pass
+
+            event.update(updates)
+
+            target_date = _date_part(event.get("start_time")) or new_date or source_date
+            if target_date == source_date:
+                self.save_events(source_date, events)
+                return {"updated": True, "event": event, "date": source_date}
+
+            # Moved. Detach the upstream ids first: the event now sits on a
+            # day its source never claimed it for, so `reconcile` at the
+            # target date would find no fresh event matching those ids and —
+            # for a calendar or timeline event, whose source answers and has
+            # stable ids — delete it on the next read, silently undoing the
+            # move. Keeping them under `moved_from_source_ids` preserves the
+            # provenance without letting reconciliation act on it. What the
+            # upstream system still holds is untouched; a caller that cares
+            # (the agent's update_event tool) reports that separately.
+            if event.get("source_ids"):
+                event["moved_from_source_ids"] = event["source_ids"]
+                event["source_ids"] = {}
+            if event.get("source") not in ("manual", "photo"):
+                event["source"] = "manual"
+
+            events.pop(index)
+            self.save_events(source_date, events)
+            target_events = self.get_events(target_date)
+            target_events.append(event)
+            self.save_events(target_date, target_events)
+            return {
+                "updated": True,
+                "event": event,
+                "date": target_date,
+                "moved_from": source_date,
+            }
 
         return {"error": f"Event {event_id} not found"}
+
+    def delete_event(self, date: str | None, event_id: str) -> dict:
+        """Delete an event from the store. `date` is a hint, as in `update_event`.
+
+        Returns the deleted event so the caller can report what actually went
+        away — and can see, from its `source_ids`, whether the next merge will
+        simply put it back.
+        """
+        source_date = self.resolve_event_date(event_id, date)
+        if source_date is None:
+            return {"error": f"Event {event_id} not found"}
+
+        events = self.get_events(source_date)
+        for index, event in enumerate(events):
+            if event["id"] == event_id:
+                events.pop(index)
+                self.save_events(source_date, events)
+                return {"deleted": True, "event": event, "date": source_date}
+
+        return {"error": f"Event {event_id} not found"}
+
+    def resolve_event_date(self, event_id: str, date: str | None = None) -> str | None:
+        """The date file holding `event_id`, trusting `date` only if it's right.
+
+        The hint is checked first (one file read for the common case), then
+        every file is scanned. Returns None when no file holds the ID.
+        """
+        if date:
+            if any(e.get("id") == event_id for e in self.get_events(date)):
+                return date
+        return self.find_event_date(event_id)
 
     def find_event_date(self, event_id: str) -> str | None:
         """Scan all persisted event files for an event ID; return its date (file stem).
@@ -239,13 +366,10 @@ class EventsService:
         file, all event files are scanned for the ID (IDs are unique). This
         keeps attachment robust when the caller doesn't know the event's date.
         """
-        target_date = date
-        events = self.get_events(date) if date else []
-        if not any(e.get("id") == event_id for e in events):
-            found = self.find_event_date(event_id)
-            if found:
-                target_date = found
-                events = self.get_events(found)
+        target_date = self.resolve_event_date(event_id, date)
+        if target_date is None:
+            return {"error": f"Event {event_id} not found"}
+        events = self.get_events(target_date)
 
         for event in events:
             if event["id"] == event_id:

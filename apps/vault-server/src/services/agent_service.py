@@ -87,6 +87,31 @@ def _register_destructive_previews() -> None:
     def _preview_complete_habit(params: dict, ctx: Any) -> str:
         return f"Would log completion of habit **{params.get('habit_name', '?')}**"
 
+    def _preview_delete_event(params: dict, ctx: Any) -> str:
+        """Name the event, not just its ID.
+
+        `evt_7a8857a4` tells the user nothing about what they are approving,
+        and an event ID is exactly the kind of thing an agent can mix up
+        between two similar rows. Look the event up so the confirmation
+        names it; fall back to the ID when the store can't be reached.
+        """
+        event_id = params.get("event_id", "?")
+        events = (ctx or {}).get("events")
+        try:
+            date = events.resolve_event_date(event_id, params.get("date"))
+            event = next(e for e in events.get_events(date) if e["id"] == event_id)
+        except Exception:
+            return f"Would delete event `{event_id}`"
+
+        when = (event.get("start_time") or "").replace("T", " ")[:16]
+        line = f"Would delete event: **{event.get('name', event_id)}**"
+        if when:
+            line += f" ({when})"
+        if (event.get("source_ids") or {}).get("calendar_id"):
+            line += " — including its Google Calendar entry"
+        return line
+
+    register_preview_fn("delete_event", _preview_delete_event)
     register_preview_fn("delete_task", _preview_delete_task)
     register_preview_fn("archive_task", _preview_archive_task)
     register_preview_fn("delete_habit", _preview_delete_habit)
@@ -938,7 +963,20 @@ class AgentService:
                         "type": "object",
                         "properties": {
                             "event_id": {"type": "string", "description": "Event ID from list_events"},
-                            "date": {"type": "string", "description": "Event date YYYY-MM-DD (defaults to today)"},
+                            "date": {
+                                "type": "string",
+                                "description": (
+                                    "Date the event is currently stored under (YYYY-MM-DD). "
+                                    "Optional — the event is located by ID across dates if omitted or wrong."
+                                ),
+                            },
+                            "new_date": {
+                                "type": "string",
+                                "description": (
+                                    "Move the event to this date (YYYY-MM-DD). Keeps its time of day "
+                                    "unless start_time/end_time are also given."
+                                ),
+                            },
                             "name": {"type": "string", "description": "New event name"},
                             "start_time": {"type": "string", "description": "New start time ISO or HH:MM"},
                             "end_time": {"type": "string", "description": "New end time ISO or HH:MM"},
@@ -962,6 +1000,36 @@ class AgentService:
                 },
                 "handler": self._tool_update_event,
                 "risk": "write",
+                "pre_hooks": ["validate_schema"],
+            },
+            "delete_event": {
+                "schema": {
+                    "name": "delete_event",
+                    "description": (
+                        "Delete an event from the day's record — use for duplicates or "
+                        "things that never happened. Also removes the matching Google "
+                        "Calendar entry when the event came from there. "
+                        "Use list_events first to find the event ID."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "event_id": {"type": "string", "description": "Event ID from list_events"},
+                            "date": {
+                                "type": "string",
+                                "description": (
+                                    "Date the event is stored under (YYYY-MM-DD). "
+                                    "Optional — the event is located by ID across dates if omitted or wrong."
+                                ),
+                            },
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["event_id"],
+                    },
+                },
+                "handler": self._tool_delete_event,
+                "risk": "destructive",
                 "pre_hooks": ["validate_schema"],
             },
         }
@@ -1459,7 +1527,11 @@ class AgentService:
                                 preview_text = render_preview(
                                     call["name"],
                                     dict(call["input"]),
-                                    ctx={"vault": self.vault, "tool": tool_entry},
+                                    ctx={
+                                        "vault": self.vault,
+                                        "events": self.events,
+                                        "tool": tool_entry,
+                                    },
                                 )
                                 preview_texts[call["id"]] = preview_text
                                 action = "needs_confirmation"
@@ -1839,6 +1911,8 @@ class AgentService:
             "- Use list_events to check today's events before deciding how to handle a photo",
             "- Use attach_photo_to_event to link a photo to an existing event, or create_event for a new one",
             "- Use attach_to_daily only for simple logging (screenshots, memes, non-event photos)",
+            "- To move an event to another day, call update_event with new_date. Its `date` argument only says where the event is stored now, and it is optional — an event ID from list_events is found whatever day it is on.",
+            "- Use delete_event for a duplicate or an event that never happened. If the result carries reappears_from_source, say so: the event will come back on the next refresh unless the checkbox, habit or calendar entry behind it changes.",
             "- When a location is provided, include it when attaching to daily note",
             "- Reply context [Replying to ...] shows what message the user is responding to — use it for context",
             "- Forward context [Forwarded from ...] shows forwarded messages — treat as shared information",
@@ -2811,10 +2885,25 @@ class AgentService:
         return ok(result, items=items)
 
     def _tool_update_event(self, params: dict) -> dict:
-        import datetime as dt
         if not self.events:
             return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
-        date = params.get("date", dt.date.today().isoformat())
+
+        # `date` is only a hint about where the event is stored now, and the
+        # event may well be on another day — the agent is given IDs by
+        # `list_events`, which can list any date. Resolve the real one before
+        # doing anything, both to find the event and to know what day a bare
+        # `HH:MM` belongs to. Defaulting the hint to today used to make every
+        # update to a non-today event fail with PATH_NOT_FOUND.
+        event_id = params["event_id"]
+        new_date = params.get("new_date")
+        current_date = self.events.resolve_event_date(event_id, params.get("date"))
+        if current_date is None:
+            return err(
+                ErrorCode.PATH_NOT_FOUND,
+                f"Event {event_id} not found",
+                details={"event_id": event_id},
+            )
+        date = new_date or current_date
 
         def _normalize_time(t: str | None) -> str | None:
             if not t:
@@ -2840,14 +2929,100 @@ class AgentService:
             updates["activity"] = params["category"]
 
         result = self.events.update_event(
-            date=date,
-            event_id=params["event_id"],
+            date=current_date,
+            event_id=event_id,
             updates=updates,
+            new_date=new_date,
         )
         if "error" in result:
-            return err(ErrorCode.PATH_NOT_FOUND, result["error"], details={"event_id": params["event_id"]})
-        items = [str(self.events._file_path(date))]
+            return err(ErrorCode.PATH_NOT_FOUND, result["error"], details={"event_id": event_id})
+
+        stored_date = result.get("date", current_date)
+        items = [str(self.events._file_path(stored_date))]
+        moved_from = result.get("moved_from")
+        if moved_from:
+            items.append(str(self.events._file_path(moved_from)))
+            # A moved event keeps nothing pointing at its upstream entry, and
+            # CalendarService has no move/update call — so if this came from
+            # Google Calendar, that entry is still sitting on the old date and
+            # will be re-merged there on the next read. Say so rather than let
+            # the agent report a clean move.
+            upstream = result.get("event", {}).get("moved_from_source_ids") or {}
+            if upstream.get("calendar_id"):
+                # attempted: True is deliberate. The prompt's reporting rule
+                # reads attempted: false as "there was nothing to sync, stay
+                # quiet" — but there was something here and it did not
+                # happen, and the user only finds out otherwise when the old
+                # day re-merges the event back.
+                result["calendar_sync"] = {
+                    "ok": False,
+                    "attempted": True,
+                    "reason": "cross_date_move_not_supported",
+                    "event_id": upstream["calendar_id"],
+                    "detail": (
+                        f"The Google Calendar entry is still on {moved_from}; "
+                        "only the Mazkir event moved."
+                    ),
+                }
         return ok(result, items=items)
+
+    def _tool_delete_event(self, params: dict) -> dict:
+        if not self.events:
+            return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
+
+        event_id = params["event_id"]
+        # Same hint semantics as update_event: `date` narrows the search, it
+        # does not constrain it.
+        date = self.events.resolve_event_date(event_id, params.get("date"))
+        if date is None:
+            return err(
+                ErrorCode.PATH_NOT_FOUND,
+                f"Event {event_id} not found",
+                details={"event_id": event_id},
+            )
+
+        event = next((e for e in self.events.get_events(date) if e["id"] == event_id), {})
+        source_ids = event.get("source_ids") or {}
+
+        # Delete upstream first. A calendar-sourced event deleted only from the
+        # store comes straight back on the next merge — that is precisely the
+        # duplicate-event case this tool exists for — so a delete that leaves
+        # Google Calendar alone is not a delete. It stays best-effort: the
+        # store write below is what the user asked for either way.
+        calendar_sync: dict
+        calendar_id = source_ids.get("calendar_id")
+        if not calendar_id:
+            calendar_sync = {"ok": False, "attempted": False, "reason": "not_applicable"}
+        elif not self.calendar or not getattr(self.calendar, "is_initialized", False):
+            calendar_sync = {"ok": False, "attempted": False, "reason": "calendar_not_configured"}
+        else:
+            try:
+                from src.services.hooks.sync_to_calendar import _maybe_await
+                deleted = _maybe_await(self.calendar.delete_event(calendar_id))
+                calendar_sync = {
+                    "ok": bool(deleted),
+                    "attempted": True,
+                    "event_id": calendar_id,
+                }
+                if not deleted:
+                    calendar_sync["reason"] = "delete_failed"
+            except Exception as e:
+                logger.warning(f"Failed to delete event from Google Calendar: {e}")
+                calendar_sync = {"ok": False, "attempted": True, "reason": str(e)}
+
+        result = self.events.delete_event(date=date, event_id=event_id)
+        if "error" in result:
+            return err(ErrorCode.PATH_NOT_FOUND, result["error"], details={"event_id": event_id})
+
+        result["calendar_sync"] = calendar_sync
+        # An event derived from a daily-note checkbox or a scheduled habit is
+        # regenerated by MergerService on every read, so deleting the row only
+        # clears it until the next one. The agent must not promise otherwise;
+        # the checkbox or habit is what has to change.
+        regenerating = {k for k in ("note_line", "habit_slug", "visit_id", "transit_id") if source_ids.get(k)}
+        if regenerating or (calendar_id and not calendar_sync["ok"]):
+            result["reappears_from_source"] = True
+        return ok(result, items=[str(self.events._file_path(date))])
 
     def _tool_complete_task(self, params: dict) -> dict:
         from src.services.resolver import resolve_item
