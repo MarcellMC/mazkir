@@ -961,6 +961,9 @@ class TestEventTools:
         events_mock = mock_services[4]
         events_mock.update_event.return_value = {"updated": True, "event_id": "evt_abc"}
         events_mock._file_path.return_value = "data/events/2026-03-19.json"
+        # Bare HH:MM anchors to the day the event is actually stored under,
+        # which is what the resolver reports — not to today.
+        events_mock.resolve_event_date.return_value = "2026-03-19"
 
         agent._tool_update_event({
             "event_id": "evt_abc",
@@ -980,6 +983,230 @@ class TestEventTools:
         result = agent._tool_update_event({"event_id": "nonexistent", "name": "X"})
         assert result["ok"] is False
         assert "error" in result
+
+    def test_update_event_resolves_the_date_before_updating(self, agent, mock_services):
+        """The date hint is not where the event has to be.
+
+        `list_events` hands out IDs for any date; defaulting the hint to today
+        made every update to an event on another day fail with PATH_NOT_FOUND
+        even though the ID was valid.
+        """
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.update_event.return_value = {"updated": True, "event": {}, "date": "2026-09-08"}
+        events_mock._file_path.return_value = "data/events/2026-09-08.json"
+
+        result = agent._tool_update_event({"event_id": "evt_abc", "name": "Dog walk"})
+
+        assert result["ok"] is True
+        assert events_mock.update_event.call_args.kwargs["date"] == "2026-09-08"
+
+    def test_update_event_unresolvable_id_never_reaches_the_service(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = None
+
+        result = agent._tool_update_event({"event_id": "evt_nope", "name": "X"})
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "PATH_NOT_FOUND"
+        events_mock.update_event.assert_not_called()
+
+    def test_update_event_forwards_new_date_and_anchors_times_to_it(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.update_event.return_value = {
+            "updated": True, "event": {}, "date": "2026-09-07", "moved_from": "2026-09-08",
+        }
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+
+        result = agent._tool_update_event({
+            "event_id": "evt_abc",
+            "new_date": "2026-09-07",
+            "start_time": "16:30",
+        })
+
+        kwargs = events_mock.update_event.call_args.kwargs
+        assert kwargs["new_date"] == "2026-09-07"
+        assert kwargs["updates"]["start_time"] == "2026-09-07T16:30:00"
+        # Both days changed, so both files are affected items.
+        assert result["_items"] == [
+            "data/events/2026-09-07.json",
+            "data/events/2026-09-08.json",
+        ]
+
+    def test_moved_calendar_event_reports_that_gcal_did_not_move(self, agent, mock_services):
+        """CalendarService has no move call, so the upstream entry stays put.
+
+        Reporting a clean move would be a lie the user only discovers when
+        the old day re-merges the event back.
+        """
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.update_event.return_value = {
+            "updated": True,
+            "date": "2026-09-07",
+            "moved_from": "2026-09-08",
+            "event": {"moved_from_source_ids": {"calendar_id": "gcal_123"}},
+        }
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+
+        result = agent._tool_update_event({"event_id": "evt_abc", "new_date": "2026-09-07"})
+
+        sync = result["data"]["calendar_sync"]
+        assert sync["ok"] is False
+        # attempted: True — the prompt tells the agent to stay quiet about
+        # attempted: false, and this is something the user has to hear.
+        assert sync["attempted"] is True
+        assert sync["event_id"] == "gcal_123"
+        assert "2026-09-08" in sync["detail"]
+
+    def test_same_day_update_reports_no_calendar_verdict(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.update_event.return_value = {
+            "updated": True, "event": {}, "date": "2026-09-08",
+        }
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+
+        result = agent._tool_update_event({"event_id": "evt_abc", "start_time": "16:30"})
+
+        assert "calendar_sync" not in result["data"]
+
+
+class TestDeleteEventTool:
+    def test_delete_event_tool_registered_as_destructive(self, agent):
+        assert "delete_event" in agent.tools
+        assert agent.tools["delete_event"]["risk"] == "destructive"
+        # Destructive tools always render a preview and ask, whatever the
+        # model's confidence.
+        assert agent.tools["delete_event"]["preview"] is True
+        assert agent.tools["delete_event"]["confidence_threshold"] == 0.95
+        # Event writes share one file per day — never dispatched concurrently.
+        assert agent.tools["delete_event"]["safe_for_parallel"] is False
+
+    def test_delete_event_removes_the_event(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-07"
+        events_mock.get_events.return_value = [{"id": "evt_dup", "name": "Dog walk", "source_ids": {}}]
+        events_mock.delete_event.return_value = {
+            "deleted": True, "event": {"name": "Dog walk"}, "date": "2026-09-07",
+        }
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        agent.calendar = None
+
+        result = agent._tool_delete_event({"event_id": "evt_dup"})
+
+        assert result["ok"] is True
+        assert result["data"]["deleted"] is True
+        assert events_mock.delete_event.call_args.kwargs["date"] == "2026-09-07"
+        assert result["_items"] == ["data/events/2026-09-07.json"]
+
+    def test_delete_event_unknown_id(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = None
+
+        result = agent._tool_delete_event({"event_id": "evt_nope"})
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "PATH_NOT_FOUND"
+        events_mock.delete_event.assert_not_called()
+
+    def test_delete_event_also_deletes_the_calendar_entry(self, agent, mock_services):
+        """A duplicate deleted only from the store returns on the next merge.
+
+        Deleting the calendar entry too is what makes the delete stick — and
+        the duplicate calendar event is the case this tool exists for.
+        """
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-07"
+        events_mock.get_events.return_value = [
+            {"id": "evt_dup", "name": "Dog walk", "source_ids": {"calendar_id": "gcal_dup"}},
+        ]
+        events_mock.delete_event.return_value = {
+            "deleted": True, "event": {"name": "Dog walk"}, "date": "2026-09-07",
+        }
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        from unittest.mock import AsyncMock
+        agent.calendar.is_initialized = True
+        agent.calendar.delete_event = AsyncMock(return_value=True)
+
+        result = agent._tool_delete_event({"event_id": "evt_dup"})
+
+        agent.calendar.delete_event.assert_awaited_once_with("gcal_dup")
+        assert result["data"]["calendar_sync"] == {
+            "ok": True, "attempted": True, "event_id": "gcal_dup",
+        }
+        assert "reappears_from_source" not in result["data"]
+
+    def test_failed_calendar_delete_warns_that_it_comes_back(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-07"
+        events_mock.get_events.return_value = [
+            {"id": "evt_dup", "name": "Dog walk", "source_ids": {"calendar_id": "gcal_dup"}},
+        ]
+        events_mock.delete_event.return_value = {
+            "deleted": True, "event": {"name": "Dog walk"}, "date": "2026-09-07",
+        }
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        from unittest.mock import AsyncMock
+        agent.calendar.is_initialized = True
+        agent.calendar.delete_event = AsyncMock(return_value=False)
+
+        result = agent._tool_delete_event({"event_id": "evt_dup"})
+
+        assert result["data"]["calendar_sync"]["ok"] is False
+        assert result["data"]["calendar_sync"]["reason"] == "delete_failed"
+        assert result["data"]["reappears_from_source"] is True
+
+    def test_note_derived_event_is_flagged_as_regenerating(self, agent, mock_services):
+        """A checkbox in the daily note is re-merged into an event every read.
+
+        Deleting the row clears it until the next merge; the checkbox is what
+        has to change, and the agent must not promise otherwise.
+        """
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-07"
+        events_mock.get_events.return_value = [
+            {"id": "evt_note", "name": "Dog walk", "source_ids": {"note_line": "abc123"}},
+        ]
+        events_mock.delete_event.return_value = {
+            "deleted": True, "event": {"name": "Dog walk"}, "date": "2026-09-07",
+        }
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        agent.calendar = None
+
+        result = agent._tool_delete_event({"event_id": "evt_note"})
+
+        assert result["data"]["reappears_from_source"] is True
+        assert result["data"]["calendar_sync"]["attempted"] is False
+
+    def test_delete_event_preview_names_the_event(self, agent, mock_services):
+        """`evt_7a8857a4` is not something a user can approve or refuse."""
+        from src.services.preview import render_preview
+
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-07"
+        events_mock.get_events.return_value = [{
+            "id": "evt_dup",
+            "name": "Dog walk",
+            "start_time": "2026-09-07T16:30:00",
+            "source_ids": {"calendar_id": "gcal_dup"},
+        }]
+
+        text = render_preview(
+            "delete_event", {"event_id": "evt_dup"}, ctx={"events": events_mock},
+        )
+
+        assert "Dog walk" in text
+        assert "2026-09-07 16:30" in text
+        assert "Google Calendar" in text
+
+    def test_delete_event_preview_falls_back_to_the_id(self, agent):
+        from src.services.preview import render_preview
+
+        text = render_preview("delete_event", {"event_id": "evt_dup"}, ctx={"events": None})
+
+        assert "evt_dup" in text
 
     def test_attach_photo_calls_service(self, agent, mock_services):
         events_mock = mock_services[4]
