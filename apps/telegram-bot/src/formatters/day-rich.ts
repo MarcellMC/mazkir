@@ -1,6 +1,6 @@
 import type { InputFile } from "grammy";
 import type { InputRichMessage } from "@grammyjs/types";
-import type { DailyResponse, DailyBlock, DailyGap } from "@mazkir/shared-types";
+import type { DailyResponse, DailyBlock, DailyGap, DailyIncomplete } from "@mazkir/shared-types";
 import { config } from "../config.js";
 import { escapeHtml } from "./telegram.js";
 
@@ -214,6 +214,19 @@ export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {
       return `<li>${box}${escapeHtml(t.text)}${escapeHtml(dur)}</li>`;
     });
     parts.push(`<h3>☑️ Todos</h3>`);
+    parts.push(`<ul>${items.join("")}</ul>`);
+  }
+
+  // Read-only text, no buttons: a block is completed by talking, and a
+  // button that opens a conversation is machinery this view does not need.
+  const incomplete = data.incomplete ?? [];
+  if (incomplete.length > 0) {
+    const items = incomplete.map((b: DailyIncomplete) => {
+      const known = b.start ? `started ${b.start}` : b.end ? `ended ${b.end}` : "no times";
+      const want = b.missing.includes("start_time") ? "no start time" : "no end time";
+      return `<li>⁇ <b>${escapeHtml(b.title)}</b> — ${escapeHtml(known)}, ${escapeHtml(want)}</li>`;
+    });
+    parts.push(`<h3>⁇ Needs a time</h3>`);
     parts.push(`<ul>${items.join("")}</ul>`);
   }
 

@@ -2993,3 +2993,61 @@ class TestUpdateEventCalendarSync:
         sync = result["data"]["calendar_sync"]
         assert sync["ok"] is False
         assert sync["reason"] == "create_failed"
+
+
+class TestIncompleteBlocksInContext:
+    """Push, not pull.
+
+    Ship 3's lesson: the agent will not call a tool to discover something
+    it does not know to look for. Bug B was one iteration and zero tool
+    calls with two read tools in hand.
+    """
+
+    def test_incomplete_blocks_appear_in_the_prompt_tail(self, agent, mock_services):
+        from types import SimpleNamespace
+        events_mock = mock_services[4]
+        events_mock.get_events.return_value = [
+            {"id": "e1", "name": "Dog walk", "start_time": None,
+             "end_time": "2026-09-08T16:40:00"},
+            {"id": "e2", "name": "Standup", "start_time": "2026-09-08T10:00:00",
+             "end_time": "2026-09-08T10:30:00"},
+        ]
+        # test_agent_service.py defines its OWN mock_services fixture, and
+        # unlike conftest.py's it does not set `tz` — leaving `vault.tz` a
+        # MagicMock that `datetime.now()` would silently accept, making the
+        # test pass for the wrong reason.
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
+        ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
+
+        prompt = agent._build_system_prompt(ctx)
+
+        assert "Incomplete blocks today: 1" in prompt
+        assert "Dog walk" in prompt
+        assert "no start time" in prompt
+        assert "Standup" not in prompt
+
+    def test_no_line_when_every_block_is_complete(self, agent, mock_services):
+        from types import SimpleNamespace
+        events_mock = mock_services[4]
+        events_mock.get_events.return_value = [
+            {"id": "e2", "name": "Standup", "start_time": "2026-09-08T10:00:00",
+             "end_time": "2026-09-08T10:30:00"},
+        ]
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
+        ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
+
+        assert "Incomplete blocks" not in agent._build_system_prompt(ctx)
+
+    def test_a_failing_read_costs_the_line_not_the_turn(self, agent, mock_services):
+        from types import SimpleNamespace
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
+        mock_services[4].get_events.side_effect = OSError("disk gone")
+        ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
+
+        prompt = agent._build_system_prompt(ctx)
+
+        assert "Current date/time" in prompt
+        assert "Incomplete blocks" not in prompt

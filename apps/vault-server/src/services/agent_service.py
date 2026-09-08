@@ -1992,6 +1992,12 @@ class AgentService:
             "- Use list_events to check today's events before deciding how to handle a photo",
             "- Use attach_photo_to_event to link a photo to an existing event, or create_event for a new one",
             "- Use attach_to_daily only for simple logging (screenshots, memes, non-event photos)",
+            "- Logging time: supply any TWO of start_time / end_time / duration_minutes to create_event and the third is computed. Never compute one yourself.",
+            "- Which end does the utterance anchor? 'just got back from X' / 'finished X' gives the END; 'starting X' gives the START; 'X from A to B' gives both.",
+            "- Never invent a missing time. Create the block with what you were told, leave the rest empty, and ask. An incomplete block is a correct record of an incomplete statement.",
+            "- To move a block, use update_event's shift_minutes. Setting start_time alone stretches the block rather than moving it.",
+            "- If the context lists incomplete blocks, you may mention them once when it fits the conversation. Do not raise them every turn.",
+            "- When you write to a day that is not today, say which day in your reply.",
             "- To move an event to another day, call update_event with new_date. Its `date` argument only says where the event is stored now, and it is optional — an event ID from list_events is found whatever day it is on.",
             "- Use delete_event for a duplicate or an event that never happened. If the result carries reappears_from_source, say so: the event will come back on the next refresh unless the checkbox, habit or calendar entry behind it changes.",
             "- When a location is provided, include it when attaching to daily note",
@@ -2040,6 +2046,29 @@ class AgentService:
 
         if context.knowledge:
             parts.extend(["", "## Relevant knowledge", context.knowledge])
+
+        # Push, not pull. The agent will not call a tool to discover
+        # something it does not know to look for — that is Bug B — so
+        # unfinished blocks arrive in the prompt rather than waiting to be
+        # queried. Cheap: an incomplete block is always user-created, so it
+        # is always in the persisted store. A local read, never a merge.
+        try:
+            from src.services.events_service import is_complete
+            import datetime as _dt
+            today = _dt.datetime.now(self.vault.tz).strftime("%Y-%m-%d")
+            unfinished = [e for e in self.events.get_events(today) if not is_complete(e)]
+            if unfinished:
+                described = "; ".join(
+                    f"{e.get('name', '?')} — "
+                    f"{'no start time' if not e.get('start_time') else 'no end time'}"
+                    for e in unfinished[:5]
+                )
+                parts.extend([
+                    "",
+                    f"Incomplete blocks today: {len(unfinished)} ({described})",
+                ])
+        except Exception as e:
+            logger.debug(f"Could not list incomplete blocks: {e}")
 
         return "\n".join(parts)
 
