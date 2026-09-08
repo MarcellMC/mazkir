@@ -219,9 +219,12 @@ class TestDailyBlocks:
 
         fields = set(DailyResponse.model_fields)
         assert "schedule" not in fields
+        # Exact set, deliberately: this is the tripwire that catches a field
+        # arriving without anyone deciding it should. Extend it only when the
+        # design doc calls for the new field, never to make a run go green.
         assert fields == {
             "date", "tokens_today", "tokens_total",
-            "blocks", "gaps", "coverage", "todos", "notes",
+            "blocks", "gaps", "coverage", "incomplete", "todos", "notes",
         }
 
     def test_builds_blocks_and_gaps_from_events(self):
