@@ -363,7 +363,7 @@ def split_at_midnight(start_time: str, end_time: str) -> list[tuple[str, str]]:
 cd apps/vault-server && ./venv/bin/python -m pytest tests/test_interval.py -q
 ```
 
-Expected: `20 passed`.
+Expected: every test in this task's Step 1 passing.
 
 - [ ] **Step 5: Run the full suite**
 
@@ -371,7 +371,7 @@ Expected: `20 passed`.
 cd apps/vault-server && ./venv/bin/python -m pytest tests/ -q
 ```
 
-Expected: `957 passed` (937 baseline + 20).
+Expected: all of this task's new tests passing, and the total no lower than when the task began.
 
 - [ ] **Step 6: Commit**
 
@@ -767,7 +767,7 @@ Expected: all pass, including the pre-existing `TestUpdateEventAcrossDates` and 
 cd apps/vault-server && ./venv/bin/python -m pytest tests/ -q
 ```
 
-Expected: `971 passed` (957 + 14).
+Expected: all of this task's new tests passing, and the total no lower than when the task began.
 
 - [ ] **Step 9: Commit**
 
@@ -976,7 +976,7 @@ def resolve_block(reference: str, candidates: list[dict[str, Any]]) -> dict:
 cd apps/vault-server && ./venv/bin/python -m pytest tests/test_block_resolver.py -q
 ```
 
-Expected: `9 passed`.
+Expected: every test in this task's Step 1 passing.
 
 - [ ] **Step 5: Run the full suite and commit**
 
@@ -986,7 +986,7 @@ git add apps/vault-server/src/services/block_resolver.py apps/vault-server/tests
 git commit -m "feat(events): resolve blocks by description"
 ```
 
-Expected: `980 passed`.
+Expected: all of this task's new tests passing, and the total no lower than when the task began.
 
 ---
 
@@ -1127,7 +1127,7 @@ def test_sync_to_calendar_hook_uses_the_shared_bridge():
 cd apps/vault-server && ./venv/bin/python -m pytest tests/ -q
 ```
 
-Expected: `985 passed`. A pure refactor — any pre-existing test that fails here means the move changed behaviour, so fix the move rather than the test.
+Expected: all of this task's new tests passing, and the total no lower than when the task began. A pure refactor — any pre-existing test that fails here means the move changed behaviour, so fix the move rather than the test.
 
 - [ ] **Step 7: Commit**
 
@@ -1342,7 +1342,7 @@ In `_register_tools`, replace `list_events`'s description (line ~846):
 cd apps/vault-server && ./venv/bin/python -m pytest tests/ -q
 ```
 
-Expected: `989 passed`.
+Expected: all of this task's new tests passing, and the total no lower than when the task began.
 
 - [ ] **Step 6: Commit**
 
@@ -1880,7 +1880,7 @@ replacing its own `resolve_event_date` call.
 cd apps/vault-server && ./venv/bin/python -m pytest tests/ -q
 ```
 
-Expected: `1002 passed`.
+Expected: all of this task's new tests passing, and the total no lower than when the task began.
 
 - [ ] **Step 8: Commit**
 
@@ -2154,7 +2154,7 @@ The existing `moved_from` branch keeps its own `calendar_sync` assignment and mu
 cd apps/vault-server && ./venv/bin/python -m pytest tests/ -q
 ```
 
-Expected: `1008 passed`.
+Expected: all of this task's new tests passing, and the total no lower than when the task began.
 
 - [ ] **Step 7: Commit**
 
@@ -2373,7 +2373,7 @@ cd apps/vault-server && ./venv/bin/python -m pytest tests/ -q
 cd ../../packages/shared-types && npx tsc -b
 ```
 
-Expected: `1012 passed`; `tsc -b` exits 0.
+Expected: this task's new tests passing, the server total no lower than when the task began, and `tsc -b` exits 0.
 
 - [ ] **Step 7: Commit**
 
@@ -2574,7 +2574,7 @@ cd apps/telegram-bot && TELEGRAM_BOT_TOKEN=x AUTHORIZED_USER_ID=1 npx vitest run
 cd ../vault-server && ./venv/bin/python -m pytest tests/ -q
 ```
 
-Expected: bot `151 passed` (147 + 4); server `1015 passed`.
+Expected: this task's new tests passing on both sides, and neither total lower than when the task began.
 
 - [ ] **Step 7: Commit**
 
@@ -2810,7 +2810,7 @@ cd apps/telegram-bot && TELEGRAM_BOT_TOKEN=x AUTHORIZED_USER_ID=1 npx vitest run
 cd ../vault-server && ./venv/bin/python -m pytest tests/ -q
 ```
 
-Expected: bot `156 passed`; server `1019 passed`.
+Expected: this task's new tests passing on both sides, and neither total lower than when the task began.
 
 - [ ] **Step 7: Commit**
 
@@ -2899,7 +2899,7 @@ cd ../telegram-web-app && npx vitest run
 cd ../../packages/shared-types && npx tsc -b
 ```
 
-Expected: server `1019 passed`, bot `156 passed`, webapp `21 passed`, `tsc -b` exits 0.
+Expected: every suite green, no total lower than when the task began, `tsc -b` exits 0.
 
 - [ ] **Step 6: Commit**
 
@@ -2920,20 +2920,11 @@ git commit -m "docs(ship4): record the provenance, completeness and sync decisio
 
 **One known gap, deliberate.** `EventsService.create_event` gains a `logical_id` keyword in Task 6 rather than in Task 2, because Task 2's subject is provenance and the split is the only thing that needs the field. A reviewer of Task 2 will not see it; Task 6's step 5 names the change explicitly.
 
-## Expected test counts
+## Test-count rule
 
-| After task | Server | Bot |
-|---|---|---|
-| baseline (`c3ffcee`) | 937 | 147 |
-| 1 | 957 | 147 |
-| 2 | 971 | 147 |
-| 3 | 980 | 147 |
-| 4 | 985 | 147 |
-| 5 | 989 | 147 |
-| 6 | 1002 | 147 |
-| 7 | 1008 | 147 |
-| 8 | 1012 | 147 |
-| 9 | 1015 | 151 |
-| 10 | 1019 | 156 |
+The hand-counted per-task totals that used to live here were wrong from Task 1 onward and generated a false "Important" finding in Task 3's review. They are gone. Two rules bind instead, and both are exactly checkable:
 
-**These numbers are advisory and were counted by hand — treat a small discrepancy as an arithmetic slip in this table, not a defect.** Two rules bind instead, and both are checkable: the count must never *decrease*, and every test written in a task's step 1 must be present and passing at that task's end. A task that lands more tests than listed is fine.
+1. **The count never decreases.** Branch-point baseline: **937 server**, **147 bot** (bot needs `TELEGRAM_BOT_TOKEN=x AUTHORIZED_USER_ID=1`).
+2. **Every test written in a task's Step 1 is present and passing when that task ends.**
+
+Report the total you observe; do not reconcile it against a predicted number, because there is no longer one to reconcile against.
