@@ -3217,6 +3217,33 @@ class AgentService:
         new_date = params.get("new_date")
         date = new_date or current_date
 
+        # A move and a duration in one call are refused, not reconciled.
+        # Deriving an endpoint anchors on whichever timestamp is known, and
+        # with no endpoint named that is the stored one — which still carries
+        # the OLD date. Both derived values would then land in `updates`,
+        # `EventsService.update_event` re-dates only the fields `updates`
+        # does NOT already carry, and so nothing moves: the row stays in its
+        # original file and the tool returns ok with no `moved_from`, leaving
+        # the agent free to report a move that never happened.
+        #
+        # This is deliberately a refusal rather than a derivation. Making it
+        # work means re-dating the anchor before deriving, inside the
+        # trickiest function on this branch; a guard's worst failure is
+        # refusing something it could have accepted, which the user fixes
+        # with a second sentence. The ship already refuses ambiguous input
+        # this way — three mutually inconsistent values are rejected rather
+        # than resolved by guesswork. Do not "fix" this into the version that
+        # writes silently to the wrong day.
+        if new_date and params.get("duration_minutes") is not None:
+            return err(
+                ErrorCode.SCHEMA_INVALID,
+                "new_date and duration_minutes cannot be combined: the duration "
+                "would be measured from a time on the old date and the move would "
+                "silently not happen. Move the event in one call, then set its "
+                "duration in another.",
+                details={"event_id": event_id, "new_date": new_date},
+            )
+
         shift = params.get("shift_minutes")
         if shift:
             import datetime as _dt

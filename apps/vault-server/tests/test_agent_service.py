@@ -2785,6 +2785,52 @@ class TestUpdateEventDuration:
         pinned = events_mock.update_event.call_args.kwargs["user_set_fields"]
         assert set(pinned) == {"start_time", "end_time"}
 
+    def test_new_date_with_a_duration_is_refused(self, agent, mock_services):
+        """"That dog walk was yesterday, and it was 40 minutes."
+
+        Both derived endpoints land in `updates`, anchored on a stored
+        timestamp that still carries the OLD date, and
+        `EventsService.update_event` re-dates for `new_date` only the fields
+        `updates` does not already carry — so nothing is re-dated, the row
+        never leaves its original file, and the tool returns ok with no
+        `moved_from` for the agent to notice. It would report a move that
+        did not happen.
+        """
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Dog walk",
+            "start_time": "2026-09-08T16:00:00", "end_time": "2026-09-08T16:40:00",
+        })
+        agent.calendar = None
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "new_date": "2026-09-07", "duration_minutes": 40,
+        })
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "SCHEMA_INVALID"
+        events_mock.update_event.assert_not_called()
+
+    def test_a_bare_new_date_still_moves_the_event(self, agent, mock_services):
+        """The guard must refuse only the combination — a move on its own
+        re-dates correctly and still reports `moved_from`."""
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Dog walk",
+            "start_time": "2026-09-08T16:00:00", "end_time": "2026-09-08T16:40:00",
+        })
+        events_mock.update_event.return_value = {
+            "updated": True, "event": {}, "date": "2026-09-07",
+            "moved_from": "2026-09-08",
+        }
+        agent.calendar = None
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "new_date": "2026-09-07",
+        })
+
+        assert result["ok"] is True
+        assert events_mock.update_event.call_args.kwargs["new_date"] == "2026-09-07"
+        assert result["data"]["moved_from"] == "2026-09-08"
+
     def test_duration_is_in_the_schema(self, agent):
         props = agent.tools["update_event"]["schema"]["input_schema"]["properties"]
         assert "duration_minutes" in props
