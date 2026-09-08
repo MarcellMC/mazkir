@@ -105,6 +105,13 @@ def derive_interval(
     else:
         start_iso = _fmt(_parse(end_iso) - dt.timedelta(minutes=duration_minutes))
 
+    # Validate ordering after derivation — the same rule as the direct-endpoints branch.
+    if _parse(end_iso) < _parse(start_iso):
+        return {
+            "ok": False,
+            "error": f"End {end_iso} is before start {start_iso}",
+        }
+
     return {
         "ok": True,
         "start_time": start_iso,
@@ -143,5 +150,9 @@ def split_at_midnight(start_time: str, end_time: str) -> list[tuple[str, str]]:
             cursor.date() + dt.timedelta(days=1), dt.time(0, 0, 0)
         )
 
-    fragments.append((_fmt(cursor), _fmt(finish)))
+    # Drop a trailing fragment whose start equals its end (zero-length phantom).
+    # A genuinely stated zero-length interval (18:00 → 18:00) does not cross
+    # midnight, so it never reaches this function — the drop is safe.
+    if cursor < finish:
+        fragments.append((_fmt(cursor), _fmt(finish)))
     return fragments

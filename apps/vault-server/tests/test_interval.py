@@ -89,6 +89,18 @@ class TestDeriveInterval:
         r = derive_interval("2026-09-08T19:00:00", "2026-09-08T18:00:00", None, DATE)
         assert r["ok"] is False
 
+    def test_negative_duration_with_start_is_rejected(self):
+        """A hallucinated negative duration is exactly the input this module
+        exists to catch, not to launder into a reversed block."""
+        r = derive_interval("18:00", None, -30, DATE)
+        assert r["ok"] is False
+
+    def test_negative_duration_with_end_is_rejected(self):
+        """A hallucinated negative duration is exactly the input this module
+        exists to catch, not to launder into a reversed block."""
+        r = derive_interval(None, "18:00", -30, DATE)
+        assert r["ok"] is False
+
 
 class TestMidnight:
     def test_bare_times_in_reverse_order_cross_midnight(self):
@@ -119,3 +131,12 @@ class TestMidnight:
     def test_split_of_a_same_day_interval_is_one_fragment(self):
         parts = split_at_midnight("2026-09-08T18:00:00", "2026-09-08T19:00:00")
         assert parts == [("2026-09-08T18:00:00", "2026-09-08T19:00:00")]
+
+    def test_split_ending_exactly_at_midnight_drops_phantom_fragment(self):
+        """'Worked until midnight' is a plausible real input. The interval
+        ends exactly at the next day's 00:00:00, which would naively produce
+        a zero-length fragment on that day. A genuinely stated zero-length
+        interval (18:00 → 18:00) does not cross midnight, so it never reaches
+        this function — the drop is safe and cannot swallow a legitimate event."""
+        parts = split_at_midnight("2026-09-08T22:00:00", "2026-09-09T00:00:00")
+        assert parts == [("2026-09-08T22:00:00", "2026-09-08T23:59:59")]
