@@ -411,6 +411,37 @@ class TestGetDailyRoute:
         assert today.elapsed_minutes == 600
         assert 0 < today.elapsed_minutes < 1440
 
+    def test_incomplete_blocks_reach_the_response(self):
+        """The builders are covered in isolation, but the wiring was not:
+        deleting `incomplete=incomplete` from `get_daily` left every server
+        test passing, because the pydantic field defaults to []. A feature
+        that ships invisible is Bug A's shape again — which is the very bug
+        this array exists to fix."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        async def _one_incomplete(target_date):
+            return {
+                "date": target_date.isoformat(),
+                "events": [{
+                    "id": "evt_1", "name": "Dog walk",
+                    "start_time": "2026-09-08T16:00:00", "end_time": None,
+                    "source": "manual", "type": "manual",
+                }],
+                "summary": {},
+            }
+
+        with patch("src.main.get_vault", return_value=self._vault()), \
+                patch("src.api.routes.events.get_events_preview", side_effect=_one_incomplete):
+            body = TestClient(app).get("/daily", params={"date": "2026-09-08"}).json()
+
+        assert body["blocks"] == []
+        assert len(body["incomplete"]) == 1
+        assert body["incomplete"][0]["title"] == "Dog walk"
+        assert body["incomplete"][0]["missing"] == ["end_time"]
+        assert body["incomplete"][0]["start"] == "16:00"
+
     def test_traversal_date_is_rejected(self):
         from fastapi.testclient import TestClient
         from src.main import app

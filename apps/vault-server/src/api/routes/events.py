@@ -50,15 +50,22 @@ async def get_events_preview(date: date_type) -> dict:
     for a past date must not be silently rewritten just because someone
     looked at it.
 
-    `GET /events/{date}` itself keeps persisting: `list_events`,
-    `attach_photo_to_event` and `update_event` (the agent's event tools) all
-    read the raw persisted file via `EventsService.get_events`/`attach_photo`
-    rather than re-merging, so this route's persist is what makes a
-    calendar/timeline/habit-derived event referenceable by ID at all — an
-    event the agent should attach a photo to has to have landed in the store
-    via some prior GET (or an explicit POST .../refresh) first. Removing
-    that persist would silently break every one of those tools for anything
-    that isn't a manually created event.
+    Ship 4 moved the agent's event tools onto the shared merge in
+    `services/day_assembly.py`, so the old justification for `GET
+    /events/{date}`'s persist — that `list_events` and `update_event` could
+    only ever see the raw persisted file — no longer holds. What is true now:
+
+    - Reads still never persist. This function, and everything reached
+      through it, is `reconcile` (pure) and not `refresh_events`.
+    - An *edit* does persist, deliberately and at one place:
+      `AgentService._resolve_reference` calls `refresh_events` when
+      materialising an inferred block so the reference the user just named
+      has a row to update. Navigation must not write; an explicit edit must.
+    - `GET /events/{date}` still persists by design. It is the explicit
+      "bring this day up to date" call — the webapp and `POST
+      .../refresh` both rely on it — and it is what gives a
+      calendar/timeline/habit-derived event a stable ID for anything that
+      addresses one by ID rather than by description.
     """
     from src.main import get_events as get_events_svc
     events_svc = get_events_svc()
