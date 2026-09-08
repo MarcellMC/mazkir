@@ -2722,6 +2722,9 @@ class AgentService:
         """
         import datetime as dt
 
+        if not self.events:
+            return [], True
+
         degraded = False
         try:
             from src.services.async_bridge import maybe_await
@@ -2729,11 +2732,15 @@ class AgentService:
             fresh, available = maybe_await(
                 day_assembly.merge_from_sources(dt.date.fromisoformat(date))
             )
-            events = self.events.reconcile(date, fresh, available)
         except Exception as e:
+            # Only source failures degrade. `reconcile` below is pure local
+            # logic (see its docstring) — a bug there must surface as an
+            # error, not be laundered into "the calendar was unavailable".
             logger.warning(f"Falling back to the persisted store for {date}: {e}")
             events = self.events.get_events(date)
             degraded = True
+        else:
+            events = self.events.reconcile(date, fresh, available)
 
         for event in events:
             event["date"] = date

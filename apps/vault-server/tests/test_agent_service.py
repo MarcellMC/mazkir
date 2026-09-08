@@ -2400,3 +2400,24 @@ class TestListEventsReconciles:
         assert result["ok"] is True
         assert result["data"]["events"][0]["id"] == "evt_1"
         assert result["data"]["degraded"] is True
+
+    def test_reconcile_bug_propagates_rather_than_reading_as_degraded(self, agent, mock_services):
+        """A bug in `reconcile` itself — pure local logic, not a source call —
+        must surface as a real error, not be laundered into "the calendar was
+        unavailable". Only `merge_from_sources` failures may degrade."""
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.side_effect = KeyError("logical_id")
+
+        async def fake_merge(date):
+            return [], set()
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            with pytest.raises(KeyError):
+                agent._tool_list_events({"date": "2026-09-08"})
+
+    def test_reconciled_events_with_no_events_service_is_degraded_not_a_crash(self, agent):
+        agent.events = None
+        events, degraded = agent._reconciled_events("2026-09-08")
+        assert events == []
+        assert degraded is True
