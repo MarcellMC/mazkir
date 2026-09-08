@@ -1069,7 +1069,10 @@ class TestEventTools:
         assert sync["event_id"] == "gcal_123"
         assert "2026-09-08" in sync["detail"]
 
-    def test_same_day_update_reports_no_calendar_verdict(self, agent, mock_services):
+    def test_same_day_update_of_an_incomplete_block_reports_incomplete(self, agent, mock_services):
+        """A same-day edit now always carries a calendar_sync verdict — an
+        empty stored event has no start/end, so the verdict is 'incomplete'
+        rather than silence."""
         events_mock = mock_services[4]
         events_mock.resolve_event_date.return_value = "2026-09-08"
         events_mock.update_event.return_value = {
@@ -1079,7 +1082,7 @@ class TestEventTools:
 
         result = agent._tool_update_event({"event_id": "evt_abc", "start_time": "16:30"})
 
-        assert "calendar_sync" not in result["data"]
+        assert result["data"]["calendar_sync"]["reason"] == "incomplete"
 
 
 class TestDeleteEventTool:
@@ -2773,3 +2776,78 @@ class TestResolveReferenceMaterializesWithStableId:
         assert event_id in stored_ids, (
             f"resolved id {event_id!r} was never persisted; store holds {stored_ids!r}"
         )
+
+
+class TestUpdateEventCalendarSync:
+    def _stored(self, **over):
+        base = {
+            "id": "evt_1", "name": "Standup",
+            "start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T10:30:00",
+            "source_ids": {"calendar_id": "gcal_1"}, "calendar": "Mazkir",
+        }
+        base.update(over)
+        return base
+
+    def _wire(self, mock_services, stored):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.get_events.return_value = [stored]
+        events_mock.update_event.return_value = {
+            "updated": True, "event": stored, "date": "2026-09-08",
+        }
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        return events_mock
+
+    def test_edit_patches_the_google_entry(self, agent, mock_services):
+        """Without this the ledger changes, Google does not, and the next
+        merge puts the old value back."""
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored())
+        agent.calendar.is_initialized = True
+        agent.calendar.update_event = AsyncMock(return_value=True)
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "Morning sync"})
+
+        agent.calendar.update_event.assert_awaited_once()
+        assert result["data"]["calendar_sync"]["ok"] is True
+
+    def test_event_in_another_calendar_is_not_patched(self, agent, mock_services):
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(calendar="Work"))
+        agent.calendar.is_initialized = True
+        agent.calendar.update_event = AsyncMock(return_value=True)
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        agent.calendar.update_event.assert_not_awaited()
+        assert result["data"]["calendar_sync"]["reason"] == "not_in_mazkir_calendar"
+
+    def test_incomplete_block_is_not_synced(self, agent, mock_services):
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(end_time=None, source_ids={}))
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        agent.calendar.create_event.assert_not_awaited()
+        assert result["data"]["calendar_sync"]["reason"] == "incomplete"
+
+    def test_completing_a_block_creates_its_calendar_entry(self, agent, mock_services):
+        """'Sync it once it's complete' needs no flag: the absence of a
+        calendar_id already records that it is not in the calendar yet."""
+        from unittest.mock import AsyncMock
+        stored = self._stored(source_ids={}, calendar=None)
+        events_mock = self._wire(mock_services, stored)
+        events_mock.update_event.return_value = {
+            "updated": True, "event": stored, "date": "2026-09-08",
+        }
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "end_time": "2026-09-08T10:30:00",
+        })
+
+        agent.calendar.create_event.assert_awaited_once()
+        assert result["data"]["calendar_sync"]["event_id"] == "gcal_new"

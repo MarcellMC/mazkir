@@ -509,6 +509,49 @@ class CalendarService:
             logger.error(f"Failed to create event: {e}")
             return None
 
+    async def update_event(
+        self,
+        event_id: str,
+        name: str | None = None,
+        date: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+    ) -> bool:
+        """Patch an existing event in Mazkir's own calendar.
+
+        The one write `CalendarService` was missing. Without it an edit made
+        by talking changed the ledger and never reached Google — and then
+        the next merge read the unchanged Google values back over the edit.
+
+        Only the supplied fields are sent, so a rename does not have to
+        restate the times.
+        """
+        if not self._initialized or not self._calendar_id:
+            logger.error("Calendar service not properly initialized")
+            return False
+
+        body: Dict = {}
+        if name is not None:
+            body["summary"] = name
+        if start_time is not None:
+            body["start"] = {"dateTime": start_time, "timeZone": self.timezone}
+        if end_time is not None:
+            body["end"] = {"dateTime": end_time, "timeZone": self.timezone}
+        if not body:
+            return True
+
+        try:
+            self._service.events().patch(
+                calendarId=self._calendar_id,
+                eventId=event_id,
+                body=body,
+            ).execute()
+            logger.info(f"Updated event: {event_id}")
+            return True
+        except HttpError as e:
+            logger.error(f"Failed to update event: {e}")
+            return False
+
     async def mark_event_complete(self, event_id: str, instance_date: Optional[str] = None) -> bool:
         """Mark a calendar event as complete.
 

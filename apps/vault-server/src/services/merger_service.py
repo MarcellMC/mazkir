@@ -57,6 +57,13 @@ class MergedEvent(BaseModel):
     # re-merge. Exactly one entry; the key names the originating source.
     source_ids: dict[str, str] = Field(default_factory=dict)
 
+    # Which Google calendar this came from, by display name. Mazkir writes
+    # only to its own calendar (`calendarId=self._calendar_id` on every
+    # write), so knowing the owner up front is what lets an edit report
+    # "not in Mazkir's calendar" instead of issuing a doomed API call and
+    # reading a 404 as an unexplained failure.
+    calendar: str | None = None
+
 
 # Fuzzy matching config
 TIME_MATCH_MINUTES = 30
@@ -273,6 +280,7 @@ class MergerService:
             source="merged",
             confidence=visit.get("confidence", "medium"),
             source_ids=_calendar_source_ids(cal),
+            calendar=cal.get("calendar"),
         )
 
     def _create_calendar_event(self, cal: dict) -> MergedEvent:
@@ -290,6 +298,7 @@ class MergerService:
             source="calendar",
             confidence="medium",
             source_ids=_calendar_source_ids(cal),
+            calendar=cal.get("calendar"),
         )
 
     def _create_note_block(self, todo, date: str, occurrence: int = 0) -> MergedEvent:

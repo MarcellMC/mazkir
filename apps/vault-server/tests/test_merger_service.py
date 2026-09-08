@@ -650,3 +650,39 @@ def test_a_completed_habit_attached_to_a_calendar_event_marks_that_event():
     )
     assert len(events) == 1
     assert events[0].completed is True
+
+
+class TestCalendarOwnership:
+    """Which calendar an event came from must survive the merge.
+
+    `get_todays_events_with_status` returns `'calendar': cal['name']` per
+    event and `_calendar_source_ids` dropped it, so Mazkir could not tell
+    its own events from the ones it must not write to without asking Google
+    and reading a 404.
+    """
+
+    def test_calendar_name_is_carried_onto_the_merged_event(self):
+        from src.services.merger_service import MergerService
+        merger = MergerService(timezone="Asia/Jerusalem")
+        events = merger.merge(
+            calendar_events=[{
+                "id": "gcal_1", "summary": "Standup", "calendar": "Mazkir",
+                "start": "2026-09-08T10:00:00", "end": "2026-09-08T10:30:00",
+            }],
+            timeline_data={"visits": [], "activities": []},
+            habits=[], daily_body="", date="2026-09-08",
+        )
+        assert events[0].calendar == "Mazkir"
+
+    def test_absent_calendar_name_is_none_not_a_crash(self):
+        from src.services.merger_service import MergerService
+        merger = MergerService(timezone="Asia/Jerusalem")
+        events = merger.merge(
+            calendar_events=[{
+                "id": "gcal_1", "summary": "Standup",
+                "start": "2026-09-08T10:00:00", "end": "2026-09-08T10:30:00",
+            }],
+            timeline_data={"visits": [], "activities": []},
+            habits=[], daily_body="", date="2026-09-08",
+        )
+        assert events[0].calendar is None

@@ -3206,6 +3206,52 @@ class AgentService:
             return err(ErrorCode.PATH_NOT_FOUND, result["error"], details={"event_id": event_id})
 
         stored_date = result.get("date", current_date)
+
+        # Push the edit upstream. The ledger holding the change is only half
+        # of it: an un-propagated source value gets merged back over the
+        # edit on the very next read.
+        stored = result.get("event") or {}
+        calendar_id = (stored.get("source_ids") or {}).get("calendar_id")
+        owning = stored.get("calendar")
+        from src.services.events_service import is_complete
+
+        if not is_complete(stored):
+            result["calendar_sync"] = {"ok": False, "attempted": False, "reason": "incomplete"}
+        elif not self.calendar or not getattr(self.calendar, "is_initialized", False):
+            result["calendar_sync"] = {
+                "ok": False, "attempted": False, "reason": "calendar_not_configured",
+            }
+        elif calendar_id and owning not in (None, "Mazkir"):
+            result["calendar_sync"] = {
+                "ok": False, "attempted": False, "reason": "not_in_mazkir_calendar",
+            }
+        else:
+            from src.services.async_bridge import maybe_await
+            try:
+                if calendar_id:
+                    pushed = maybe_await(self.calendar.update_event(
+                        event_id=calendar_id,
+                        name=stored.get("name"),
+                        start_time=stored.get("start_time"),
+                        end_time=stored.get("end_time"),
+                    ))
+                    result["calendar_sync"] = {
+                        "ok": bool(pushed), "attempted": True, "event_id": calendar_id,
+                    }
+                else:
+                    gcal_id = maybe_await(self.calendar.create_event(
+                        name=stored.get("name"),
+                        date=stored_date,
+                        start_time=(stored.get("start_time") or "")[11:16],
+                        end_time=(stored.get("end_time") or "")[11:16] or None,
+                    ))
+                    result["calendar_sync"] = {
+                        "ok": bool(gcal_id), "attempted": True, "event_id": gcal_id,
+                    }
+            except Exception as e:
+                logger.warning(f"Failed to sync event edit to Google Calendar: {e}")
+                result["calendar_sync"] = {"ok": False, "attempted": True, "reason": str(e)}
+
         items = [str(self.events._file_path(stored_date))]
         moved_from = result.get("moved_from")
         if moved_from:
