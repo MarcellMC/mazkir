@@ -2716,6 +2716,30 @@ class TestUpdateEventShiftAndReference:
         assert "2026-08-20" in searched
         assert len(searched) == 2
 
+    def test_selected_date_reaches_the_resolver_via_handle_message(self, agent, mock_services):
+        """`handle_message(selected_date=...)` stores it as `self._selected_date`;
+        `_resolve_reference` must fall back to that when the tool call itself
+        carries no `selected_date` param — the model never sets that param,
+        so this fallback is the only way the hint actually reaches a tool
+        call in production."""
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.return_value = []
+
+        # Simulate what handle_message does at the top of the method,
+        # without driving the full agent/Claude loop.
+        agent._selected_date = "2026-08-20"
+
+        async def fake_merge(date):
+            return [], set()
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            agent._tool_update_event({"block_reference": "gym", "name": "X"})
+
+        searched = {c.args[0] for c in events_mock.reconcile.call_args_list}
+        assert "2026-08-20" in searched
+        assert len(searched) == 2
+
     def test_delete_event_accepts_a_reference(self, agent, mock_services):
         from unittest.mock import patch
         events_mock = mock_services[4]

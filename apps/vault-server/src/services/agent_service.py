@@ -1174,6 +1174,7 @@ class AgentService:
         reply_to: dict | None = None,
         forwarded_from: dict | None = None,
         stream_callback: "Callable[[str], None] | None" = None,
+        selected_date: str | None = None,
     ) -> AgentResponse:
         """Main entry point: process a user message through the agent loop.
 
@@ -1183,9 +1184,14 @@ class AgentService:
                 chunks are forwarded (i.e. after all tool calls complete).
                 Intermediate tool-use iterations are buffered and discarded so
                 that internal reasoning steps are not surfaced to the caller.
+            selected_date: The day the user's client is currently displaying,
+                if any. A hint, not a target — it only steers which days
+                `_resolve_reference` searches for a `block_reference`, never
+                the day a write lands on by itself.
         """
         self._stream_callback = stream_callback
         self._current_chat_id = chat_id
+        self._selected_date = selected_date
         session_id = str(chat_id)
         user_id = str(chat_id)
         try:
@@ -2070,6 +2076,10 @@ class AgentService:
         except Exception as e:
             logger.debug(f"Could not list incomplete blocks: {e}")
 
+        selected = getattr(self, "_selected_date", None)
+        if selected:
+            parts.extend(["", f"The user is currently viewing {selected}."])
+
         return "\n".join(parts)
 
     def _extract_text(self, response) -> str:
@@ -2931,7 +2941,8 @@ class AgentService:
             )
 
         today = dt.date.today().isoformat()
-        dates = [d for d in dict.fromkeys([params.get("selected_date"), today]) if d]
+        selected_date = params.get("selected_date") or getattr(self, "_selected_date", None)
+        dates = [d for d in dict.fromkeys([selected_date, today]) if d]
 
         candidates: list[dict] = []
         for date in dates:

@@ -15,10 +15,22 @@ import {
 import { callbackHandlers } from "./callbacks/index.js";
 import { messageHandler } from "./conversations/message.js";
 import { logger } from "./logger.js";
+import { noteOtherSend } from "./state/selected-date.js";
 
 const tracer = trace.getTracer("mazkir.telegram-bot");
 
 export const bot = new Bot(config.botToken);
+
+// A transformer, not a per-call-site update: the hint has to be dropped by
+// every send in the bot, and a rule that each new send site must opt into
+// is a rule that will be missed. `day.ts` and the `day:` callback re-arm it
+// immediately after their own send.
+bot.api.config.use(async (prev, method, payload, signal) => {
+  const result = await prev(method, payload, signal);
+  const chatId = (payload as { chat_id?: number }).chat_id;
+  if (chatId !== undefined) noteOtherSend(chatId);
+  return result;
+});
 
 // Authorization + per-update logging middleware
 bot.use(async (ctx, next) => {

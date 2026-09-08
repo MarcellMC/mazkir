@@ -164,7 +164,8 @@ def test_message_route_streams_sse_when_requested():
     from src.services.agent_service import AgentResponse
 
     def fake_handle_message(text, chat_id, attachments=None, reply_to=None,
-                            forwarded_from=None, stream_callback=None):
+                            forwarded_from=None, stream_callback=None,
+                            selected_date=None):
         if stream_callback is not None:
             stream_callback("Hello")
             stream_callback(" world")
@@ -214,7 +215,8 @@ def test_message_route_non_streaming_unchanged():
     received_callback: list = []
 
     def fake_handle_message(text, chat_id, attachments=None, reply_to=None,
-                            forwarded_from=None, stream_callback=None):
+                            forwarded_from=None, stream_callback=None,
+                            selected_date=None):
         received_callback.append(stream_callback)
         return AgentResponse(response="ok", iterations=1)
 

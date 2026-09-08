@@ -106,3 +106,28 @@ def test_full_enriched_request():
     )
     assert len(req.attachments) == 2
     assert req.reply_to is not None
+
+
+def test_selected_date_is_accepted_on_the_request():
+    from src.api.routes.message import MessageRequest
+    req = MessageRequest(text="move gym -30m", chat_id=1, selected_date="2026-08-20")
+    assert req.selected_date == "2026-08-20"
+
+
+def test_selected_date_is_optional():
+    from src.api.routes.message import MessageRequest
+    assert MessageRequest(text="hello", chat_id=1).selected_date is None
+
+
+def test_selected_date_is_forwarded_to_the_agent():
+    from src.api.routes.message import MessageRequest, _prepare_agent_kwargs
+    kwargs = _prepare_agent_kwargs(
+        MessageRequest(text="move gym -30m", chat_id=1, selected_date="2026-08-20")
+    )
+    assert kwargs["selected_date"] == "2026-08-20"
+
+
+def test_absent_selected_date_forwards_as_none():
+    from src.api.routes.message import MessageRequest, _prepare_agent_kwargs
+    kwargs = _prepare_agent_kwargs(MessageRequest(text="hello", chat_id=1))
+    assert kwargs["selected_date"] is None

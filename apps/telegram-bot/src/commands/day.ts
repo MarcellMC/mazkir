@@ -4,6 +4,7 @@ import { buildDayRich } from "../formatters/day-rich.js";
 import { sendRich } from "../bot-utils/send-rich.js";
 import { buildNavKeyboard } from "../keyboards/nav.js";
 import { markActiveSpanError } from "../tracing-utils.js";
+import { setSelectedDate, noteDayView } from "../state/selected-date.js";
 
 export const dayCommand = new Composer();
 
@@ -32,8 +33,10 @@ dayCommand.command("day", async (ctx) => {
     await ctx.reply("❌ Failed to render the day.");
     return;
   }
+  setSelectedDate(ctx.chat!.id, data.date);
   try {
     await sendRich(ctx, rich, { reply_markup: buildNavKeyboard("day") });
+    noteDayView(ctx.chat!.id);
   } catch (err) {
     markActiveSpanError(err);
     await ctx.reply("❌ Failed to send the day.");
