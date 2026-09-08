@@ -2830,13 +2830,26 @@ The tools are unreachable through the skill loop until the vault's frontmatter l
 - Modify: `CLAUDE.md`
 - Test: `apps/vault-server/tests/test_skill_set.py`
 
-- [ ] **Step 1: Check what the skill loop can actually reach**
+- [ ] **Step 1: Pin the registration in a test, so it cannot silently regress**
 
-```bash
-grep -n "list_events\|create_event\|update_event\|delete_event" ~/pkm/00-system/skills/time-management.md
+`tests/test_skill_set.py` reads the **real** vault at `settings.skills_dir` and validates it against the live tool registry — it is the only thing that would have caught `delete_event` being registered in `AgentService` and reachable by nothing. Extend its existing assertion:
+
+```python
+def test_time_management_has_event_and_task_tools():
+    t = _registry().get("time-management")
+    assert t is not None
+    assert "create_event" in t.tools
+    assert "create_task" in t.tools
+    # A tool registered in AgentService but absent from every skill's
+    # `tools:` frontmatter is unreachable through the skill loop, which is
+    # the live dispatch path. `delete_event` shipped in exactly that state
+    # because the container that added it could not mount the vault.
+    assert "update_event" in t.tools
+    assert "delete_event" in t.tools
+    assert "list_events" in t.tools
 ```
 
-All four must be present. `delete_event` was added on 2026-09-08 (vault commit `0f22833`); the other three predate this ship.
+Run it before touching anything: `./venv/bin/python -m pytest tests/test_skill_set.py -q`. All five must already be present — `delete_event` was added to the vault on 2026-09-08 (vault commit `0f22833`), the other four predate this ship. A failure here means the vault is not at that commit; stop and report it rather than editing the frontmatter blind.
 
 - [ ] **Step 2: Update the skill's `when_to_use`**
 
@@ -2875,7 +2888,7 @@ Add to the Architecture bullets:
 - **The selected-date hint (Ship 4):** the bot passes `selected_date` on `POST /message` while the `/day` view is still the last message it sent to that chat, and drops it after any other send. Two guards make a stale hint harmless: `block_reference` resolves against the hinted day *and* today (so a stale hint only matters when the block exists on that day alone), and any write to a day that is not today names the day in the reply.
 ```
 
-Update the tool-count line's `34 registered tools` to `34` (no new tools are added by this ship — `create_event`, `update_event`, `delete_event` and `list_events` all gain parameters) and add `list_events` to the note that it now reaches the calendar.
+Leave the tool count at `34`: this ship adds no tools, it adds parameters to four existing ones (`create_event`, `update_event`, `delete_event`, `list_events`). Do change the `safe` risk-level line to note that `list_events` now reaches the calendar and is no longer free.
 
 - [ ] **Step 5: Run everything**
 
