@@ -3075,3 +3075,36 @@ class TestIncompleteBlocksInContext:
 
         assert "Current date/time" in prompt
         assert "Incomplete blocks" not in prompt
+
+
+class TestSelectedDateInPromptTail:
+    """The hint is almost always redundant with 'Current date/time' — a
+    plain /day with no argument returns today, so it must be suppressed
+    exactly then, or the one time it is informative gets skimmed past."""
+
+    def test_absent_when_selected_date_is_today(self, agent, mock_services):
+        from types import SimpleNamespace
+        import datetime
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
+        mock_services[4].get_events.return_value = []
+        ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
+        agent._selected_date = datetime.datetime.now().strftime("%Y-%m-%d")
+
+        prompt = agent._build_system_prompt(ctx)
+
+        assert "currently viewing" not in prompt
+
+    def test_present_when_selected_date_differs_from_today(self, agent, mock_services):
+        from types import SimpleNamespace
+        import datetime
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
+        mock_services[4].get_events.return_value = []
+        ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
+        yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        agent._selected_date = yesterday
+
+        prompt = agent._build_system_prompt(ctx)
+
+        assert f"The user is currently viewing {yesterday}." in prompt

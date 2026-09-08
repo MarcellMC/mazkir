@@ -2077,7 +2077,7 @@ class AgentService:
             logger.debug(f"Could not list incomplete blocks: {e}")
 
         selected = getattr(self, "_selected_date", None)
-        if selected:
+        if selected and selected != now.strftime("%Y-%m-%d"):
             parts.extend(["", f"The user is currently viewing {selected}."])
 
         return "\n".join(parts)
