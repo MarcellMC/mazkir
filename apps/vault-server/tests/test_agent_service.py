@@ -2311,3 +2311,92 @@ class TestMirrorInvariantGuidelines:
     def test_static_prefix_forbids_reasoning_from_absence(self, agent):
         prefix = agent._build_static_prefix()
         assert "no record, not proof of inaction" in prefix
+
+
+class TestListEventsReconciles:
+    """`list_events` must show the day `/day` shows.
+
+    It used to read `EventsService.get_events` — the raw persisted file —
+    while `/day` rendered a reconciled view that is deliberately not
+    persisted. A calendar block the user was looking at could be entirely
+    absent from what the agent saw.
+    """
+
+    def test_list_events_uses_the_reconciled_view(self, agent, mock_services):
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.return_value = [{
+            "id": "evt_1", "name": "Standup",
+            "start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T10:30:00",
+            "source": "calendar", "source_ids": {"calendar_id": "gcal_1"},
+        }]
+
+        async def fake_merge(date):
+            return [], {"calendar"}
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            result = agent._tool_list_events({"date": "2026-09-08"})
+
+        assert result["ok"] is True
+        assert result["data"]["events"][0]["name"] == "Standup"
+        events_mock.reconcile.assert_called_once()
+        # Reading must not write: `/day` navigation relies on that, and the
+        # agent listing a day is the same kind of read.
+        events_mock.refresh_events.assert_not_called()
+
+    def test_listed_events_report_completeness(self, agent, mock_services):
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.return_value = [
+            {"id": "evt_1", "name": "Standup",
+             "start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T10:30:00"},
+            {"id": "evt_2", "name": "Dog walk",
+             "start_time": None, "end_time": "2026-09-08T16:40:00"},
+        ]
+
+        async def fake_merge(date):
+            return [], set()
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            result = agent._tool_list_events({"date": "2026-09-08"})
+
+        by_id = {e["id"]: e for e in result["data"]["events"]}
+        assert by_id["evt_1"]["complete"] is True
+        assert by_id["evt_2"]["complete"] is False
+
+    def test_listed_events_carry_their_date(self, agent, mock_services):
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.return_value = [
+            {"id": "evt_1", "name": "Standup", "start_time": "2026-09-08T10:00:00",
+             "end_time": "2026-09-08T10:30:00"},
+        ]
+
+        async def fake_merge(date):
+            return [], set()
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            result = agent._tool_list_events({"date": "2026-09-08"})
+
+        assert result["data"]["events"][0]["date"] == "2026-09-08"
+
+    def test_merge_failure_falls_back_to_the_persisted_store(self, agent, mock_services):
+        """A source outage must degrade to the stored day, never to nothing:
+        an empty list would read to the agent as 'that block does not
+        exist', which is the shape of the denial bug Ship 3 fixed."""
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.get_events.return_value = [
+            {"id": "evt_1", "name": "Standup",
+             "start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T10:30:00"},
+        ]
+
+        async def boom(date):
+            raise RuntimeError("calendar unreachable")
+
+        with patch("src.services.day_assembly.merge_from_sources", boom):
+            result = agent._tool_list_events({"date": "2026-09-08"})
+
+        assert result["ok"] is True
+        assert result["data"]["events"][0]["id"] == "evt_1"
+        assert result["data"]["degraded"] is True

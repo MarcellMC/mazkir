@@ -867,7 +867,12 @@ class AgentService:
             "list_events": {
                 "schema": {
                     "name": "list_events",
-                    "description": "List today's events (calendar, timeline, manual). Returns event IDs, names, times, locations, and photo counts.",
+                    "description": (
+                        "List a day's events exactly as /day shows them — calendar, "
+                        "timeline, timed checkboxes and scheduled habits, merged. "
+                        "Each row carries `complete`: false means the block is missing "
+                        "a start or an end time. Reaches the calendar, so it is not free."
+                    ),
                     "input_schema": {
                         "type": "object",
                         "properties": {
@@ -2701,25 +2706,68 @@ class AgentService:
         from src.services.tool_handlers.daily import promote_daily_task
         return promote_daily_task(self.vault, params)
 
+    def _reconciled_events(self, date: str) -> tuple[list[dict], bool]:
+        """The day as `/day` renders it, plus whether it is degraded.
+
+        Merges from every source and reconciles against the persisted
+        store — but does not persist. Reading a day must not rewrite it;
+        that is Ship 2's rule and it applies to the agent looking at a day
+        exactly as it applies to the user browsing one.
+
+        On a source failure this falls back to the persisted store rather
+        than to an empty list. An empty list would read to the agent as
+        "that block does not exist", which is the shape of the 2026-08-20
+        denial bug — a temporary outage must not become a confident denial.
+        Every event carries a `date` key, which `resolve_block` needs.
+        """
+        import datetime as dt
+
+        degraded = False
+        try:
+            from src.services.async_bridge import maybe_await
+            import src.services.day_assembly as day_assembly
+            fresh, available = maybe_await(
+                day_assembly.merge_from_sources(dt.date.fromisoformat(date))
+            )
+            events = self.events.reconcile(date, fresh, available)
+        except Exception as e:
+            logger.warning(f"Falling back to the persisted store for {date}: {e}")
+            events = self.events.get_events(date)
+            degraded = True
+
+        for event in events:
+            event["date"] = date
+        return events, degraded
+
     def _tool_list_events(self, params: dict) -> dict:
         import datetime as dt
+        from src.services.events_service import is_complete
+
         date = params.get("date", dt.date.today().isoformat())
         if not self.events:
             return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
-        events = self.events.get_events(date)
+
+        events, degraded = self._reconciled_events(date)
         summary = []
         for e in events:
             summary.append({
                 "id": e["id"],
+                "date": date,
                 "name": e["name"],
                 "type": e.get("type", "unknown"),
                 "start_time": e.get("start_time"),
                 "end_time": e.get("end_time"),
                 "location": e.get("location"),
+                "activity": e.get("activity"),
+                "complete": is_complete(e),
+                "logical_id": e.get("logical_id"),
                 "photo_count": len(e.get("photos", [])),
                 "source": e.get("source"),
             })
-        return ok({"events": summary, "date": date})
+        result = {"events": summary, "date": date}
+        if degraded:
+            result["degraded"] = True
+        return ok(result)
 
     def _tool_attach_photo_to_event(self, params: dict) -> dict:
         if not self.events:
