@@ -38,6 +38,22 @@ class DailyGap(BaseModel):
     minutes: int
 
 
+class DailyIncomplete(BaseModel):
+    """A block that cannot be drawn on a timeline yet.
+
+    Missing a start or an end, so it has no interval — which is why it is
+    its own array rather than a `blocks[]` entry with null fields. It is
+    also why it contributes nothing to coverage: the gap it sits inside is
+    the prompt to finish it.
+    """
+    id: str
+    title: str
+    start: str | None = None      # "HH:MM" when known
+    end: str | None = None
+    missing: list[str]            # subset of ["start_time", "end_time"]
+    source: str
+
+
 class DayCoverage(BaseModel):
     covered_minutes: int
     unaccounted_minutes: int
@@ -70,6 +86,7 @@ class DailyResponse(BaseModel):
     blocks: list[DailyBlock]
     gaps: list[DailyGap]
     coverage: DayCoverage
+    incomplete: list[DailyIncomplete] = []
     todos: list[DailyTodo]
     notes: list[DailyNote]
 
@@ -176,6 +193,52 @@ def _end_minutes(timestamp: str, date: str) -> int | None:
     return None
 
 
+def _block_times(e: dict, date: str) -> tuple[int | None, int | None, str | None, str | None]:
+    """Minute offsets for one event, alongside the raw timestamps.
+
+    The raw values are returned too because `minutes_into_day` answers None
+    for two different questions — "there is no timestamp" and "the timestamp
+    belongs to another day" — and the callers need to tell those apart.
+    """
+    start_raw = e.get("start_time")
+    end_raw = e.get("end_time")
+    return (
+        minutes_into_day(start_raw or "", date),
+        _end_minutes(end_raw or "", date),
+        start_raw,
+        end_raw,
+    )
+
+
+def _build_incomplete(events: list[dict], date: str) -> list[DailyIncomplete]:
+    """Events that belong to `date` but cannot be drawn as blocks.
+
+    `_build_blocks_and_coverage` drops these with a bare `continue`, which is
+    Bug A's exact shape: written correctly, parsed correctly, invisible. They
+    are reported separately rather than as blocks with null fields because
+    they have no interval — nothing to sort by, nothing to measure.
+    """
+    out: list[DailyIncomplete] = []
+    for e in events:
+        start, end, start_raw, end_raw = _block_times(e, date)
+        if start is not None and end is not None:
+            continue
+        # A timestamp that is present but belongs to another day is a
+        # neighbouring fragment, not an incomplete block — it stays out, or
+        # it would appear on a day it does not belong to.
+        if start_raw and end_raw:
+            continue
+        out.append(DailyIncomplete(
+            id=e.get("id", ""),
+            title=e.get("name", ""),
+            start=f"{start // 60:02d}:{start % 60:02d}" if start is not None else None,
+            end=f"{end // 60:02d}:{end % 60:02d}" if end is not None else None,
+            missing=[f for f, v in (("start_time", start_raw), ("end_time", end_raw)) if not v],
+            source=e.get("source") or "",
+        ))
+    return out
+
+
 def _build_blocks_and_coverage(
     events: list[dict], date: str, elapsed_minutes: int
 ) -> tuple[list[DailyBlock], list[DailyGap], DayCoverage]:
@@ -190,8 +253,7 @@ def _build_blocks_and_coverage(
     intervals: list[tuple[int, int]] = []
 
     for e in events:
-        start = minutes_into_day(e.get("start_time", ""), date)
-        end = _end_minutes(e.get("end_time", ""), date)
+        start, end, _, _ = _block_times(e, date)
         if start is None or end is None:
             continue
         habit = e.get("habit") or {}
@@ -290,6 +352,7 @@ async def get_daily(date: dt_date | None = None):
         elapsed = now.hour * 60 + now.minute
 
     blocks, gaps, coverage = _build_blocks_and_coverage(events, target, elapsed)
+    incomplete = _build_incomplete(events, target)
 
     habits = vault.list_active_habits()
     # `target_date`, not today: habit checkboxes are reconciled against the
@@ -313,6 +376,7 @@ async def get_daily(date: dt_date | None = None):
         blocks=blocks,
         gaps=gaps,
         coverage=coverage,
+        incomplete=incomplete,
         todos=todos,
         notes=notes,
     )
