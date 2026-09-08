@@ -33,11 +33,16 @@ Value-ordered rather than phase-ordered. Each ships independently.
 | 2 | [Navigable `/day`, rendering blocks read-only](../superpowers/specs/2026-08-29-ship2-navigable-day-design.md) | ~6 | The surface everything later writes to |
 | 3 | Bug B — the agent can't deny its own work | ~3 | Before any new write path inherits it |
 | 4 | NL logging + simple single edits | ~5 | The only capture path sleep and meals will ever have |
+| 4b | [Ambient capture: knowing what to log](#12-ambient-capture-ship-4b) | ~6 | Ship 4 gives Mazkir hands; this gives it judgment |
 | 5 | Inferred capture: suggested→approved, gaps | ~6 | Reduces typing once capture already works |
 | 6 | Classification | ~4 | Needs blocks to classify |
 | 7 | Batch edit → preview → accept all | ~4 | Needs blocks *and* addressing |
 | 8 | Timers | ~2 | NL already covers this ground retrospectively |
 | 9 | Weekly readout | ~5 | The old "2b" |
+
+**Why 4b is lettered, not numbered.** Ships 5–9 are referenced by number from `merger_service.py`, `routes/daily.py`, `CLAUDE.md` and two specs. Renumbering would silently change what every one of those comments means, which is a worse cost than an odd-looking label.
+
+**Why 4b follows 4 rather than replacing part of it.** Extraction files *into* the ledger. Until Ship 4 lands, that ledger drops partial input, reverts corrections, and cannot hold anything crossing midnight — so better listening would only mean losing better-understood facts. Hands first, then ears.
 
 **Why NL logging (4) precedes inference (5).** Sleep and eating have no automatic signal — no calendar entry, no distinguishable location, no habit fires. They are also the two buckets the user most wants to fix. Shipping inference first fills `dev` and `work` (which the calendar already covers) while leaving those two empty, which is precisely backwards. After Ship 4 a full day can be logged by talking; Ship 5 then makes it *cheaper*, not *possible*.
 
@@ -175,6 +180,31 @@ Retrospective phrasing (parent doc §4.3) is part of logging quality: the distin
 2. **The mirror invariant.** §3.4 forbids reporting a write the tool result does not confirm. Add its complement: **never deny a past action without checking.** Read tools are available in every skill; the failure was behavioural, not capability.
 
 **Secondary finding:** `agent-turns.jsonl` records tools but not the routed skill, which made this materially harder to diagnose. Worth adding while touching that code. Fixed in Ship 3 — `_run_agent_turn` now takes `skill` and records it.
+
+## 12. Ambient capture (Ship 4b)
+
+Ship 4 makes Mazkir able to record what it is told. 4b is about it working out what it has been told — *"I want to simply describe what I'm doing, did, or am planning to do, and have Mazkir log everything it should, spot and reward habits, and manage events and notes without me explaining everything."* (2026-09-08.)
+
+That is not a storage problem, which is why it is a separate ship. Four things stand in the way, all in the routing and prompt layer:
+
+**One message, one destination.** `RouterService` classifies the whole message and dispatches to a single skill; further skills are reached only when that skill emits a `next_skill` token, sequentially and at most three hops. *"Rough day, finally got the report out around 4, then walked the dog"* gets one classification, and whatever does not fit that skill's tool list is dropped without comment — the same family as Bug B. 4b needs fan-out: one message producing several actions across skills, not a chain that depends on each skill volunteering the next.
+
+**Habit matching is fuzzy on the name, and prose does not use names.** `resolve_item` scores `rapidfuzz.token_set_ratio` against the habit's `name` with a floor of 60. Measured against the live habit set on 2026-09-08:
+
+```
+'went for a run'    → workout      38   no match
+'gym'               → dog walk     18   no match
+'cleared my inbox'  → review email 36   no match
+'walked the dog'    → dog walk     73   MATCH
+```
+
+So a habit is spotted when the user happens to use its own words and missed silently otherwise — and a missed habit is an unpaid token, which is the mechanism the whole motivation tier rests on. The fix is habits carrying aliases or a description the matcher can see, not a lower threshold: lowering it to catch `run → workout` would also match `review email` to half the vault.
+
+**Nothing decides that a volunteered fact deserves an action.** The agent acts on requests. *"I'm at the dentist"* is a statement, and no prompt anywhere says what should happen to one. This needs an explicit policy, because the default — do nothing unless asked — is exactly what makes the user feel they have to explain everything.
+
+**Past and planned are mechanically identical.** `create_event` accepts any date, so both work, but nothing distinguishes recording what happened from scheduling what will. Related to Ship 5's `suggested`/`approved` axis without being the same question.
+
+**Not yet designed.** This section states the problem and its obstacles; it needs its own brainstorm and spec before planning.
 
 ## 10. Open questions
 

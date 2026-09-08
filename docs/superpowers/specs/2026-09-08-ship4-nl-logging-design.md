@@ -275,6 +275,8 @@ Mazkir writes only to its own calendar: `ensure_mazkir_calendar` (`calendar_serv
 
 The last row is what makes *"sync it once it's complete"* work without a flag to remember: the presence of `calendar_id` already records whether the block is in the calendar, and the edit that fills the last missing field is what triggers the create.
 
+**A consequence worth taking.** PR #15 handles a cross-date move by detaching `source_ids` into `moved_from_source_ids` and marking the event `manual`, because the Google entry stays on the old day and `reconcile` at the target date would otherwise delete the moved row. That workaround exists *only* because there was no way to move the Google entry. With `CalendarService.update_event` available, a move of a Mazkir-owned event patches the upstream entry's date too — the entry moves, `reconcile` at the new date matches it, and the block keeps tracking its source instead of being orphaned into `manual`. The detach path stays for events Mazkir does not own, where it remains the only correct answer.
+
 Every branch emits the existing `{ok, attempted, reason?, event_id?}` shape, so the agent's reporting rule keeps working unchanged — and `attempted: true` on a real failure still means "tell the user this did not happen."
 
 ## 7. Surfacing
@@ -313,6 +315,7 @@ The accompanying prompt rule is deliberately restrained — mention them once, w
 - **Timers.** Ship 8.
 - **Calendar sync for midnight-spanning blocks**, and cross-fragment edit propagation. §3.3.
 - **Inferred durations.** Mazkir asks rather than guesses. Inference is Ship 5, and the guessing is not good enough yet.
+- **Working out what to log from a message that did not ask.** Multi-intent extraction, habit matching against prose rather than habit names, and a policy for volunteered facts are Ship 4b — see the parent document §12. This ship makes the ledger able to *hold* what such a layer would produce; it does not produce it.
 - **Deleting a source-derived block permanently.** PR #15's `reappears_from_source` is the honest answer until Ship 5's unapprove exists.
 
 ## 9. Testing
