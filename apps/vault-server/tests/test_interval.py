@@ -140,3 +140,27 @@ class TestMidnight:
         this function — the drop is safe and cannot swallow a legitimate event."""
         parts = split_at_midnight("2026-09-08T22:00:00", "2026-09-09T00:00:00")
         assert parts == [("2026-09-08T22:00:00", "2026-09-08T23:59:59")]
+
+
+class TestCrossesMidnightIsTotal:
+    """A predicate answers; it does not raise.
+
+    `_tool_update_event` calls this after the ledger write has already
+    landed, so a raise here reports a completed write as a failed one.
+    """
+
+    def test_unparseable_input_is_not_a_crossing(self):
+        from src.services.interval import crosses_midnight
+
+        assert crosses_midnight("not-a-timestamp", "2026-09-08T10:00:00") is False
+        assert crosses_midnight("2026-09-08T10:00:00", "garbage") is False
+        assert crosses_midnight("2026-09-08T25:00:00", "2026-09-08T10:00:00") is False
+
+    def test_derive_interval_keeps_its_strictness(self):
+        """The softening is the predicate's alone — validating user input
+        is a different job from answering a question about stored data."""
+        import pytest
+        from src.services.interval import derive_interval
+
+        with pytest.raises(ValueError):
+            derive_interval("nonsense", None, 30, "2026-09-08")

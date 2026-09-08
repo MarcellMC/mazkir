@@ -963,7 +963,16 @@ class AgentService:
                         "type": "object",
                         "properties": {
                             "name": {"type": "string", "description": "Event name"},
-                            "date": {"type": "string", "description": "Event date YYYY-MM-DD (defaults to today)"},
+                            "date": {
+                                "type": "string",
+                                "description": (
+                                    "Event date YYYY-MM-DD (defaults to today). For a span "
+                                    "that crossed midnight, this is the date it STARTED on: "
+                                    "'slept 23:30 to 07:15' said on the morning of the 9th "
+                                    "is date=2026-09-08, not the 9th. Defaulting it would "
+                                    "log tonight's sleep instead of last night's."
+                                ),
+                            },
                             "start_time": {"type": "string", "description": "Start time ISO or HH:MM"},
                             "end_time": {"type": "string", "description": "End time ISO or HH:MM"},
                             "duration_minutes": {
@@ -1038,6 +1047,17 @@ class AgentService:
                             "name": {"type": "string", "description": "New event name"},
                             "start_time": {"type": "string", "description": "New start time ISO or HH:MM"},
                             "end_time": {"type": "string", "description": "New end time ISO or HH:MM"},
+                            "duration_minutes": {
+                                "type": "integer",
+                                "description": (
+                                    "How long the block lasted, in minutes. The other "
+                                    "endpoint is computed from whichever one is already "
+                                    "known — never work it out yourself. This is the second "
+                                    "half of a partial capture: 'just got back from the dog "
+                                    "walk' records an end, and 'it was 40 minutes' lands "
+                                    "here to fill in the start."
+                                ),
+                            },
                             "shift_minutes": {
                                 "type": "integer",
                                 "description": (
@@ -3136,7 +3156,16 @@ class AgentService:
 
         # Unified record: also log the event in the daily note's ## Schedule section.
         # Best-effort — a failure here never invalidates the events-store write.
-        if not params.get("photo_path"):
+        #
+        # Incomplete blocks are deliberately skipped and must stay skipped.
+        # `- HH:MM[-HH:MM] text` is the only shape `parse_schedule_section`
+        # can read, so a block with no start has no line to write: the
+        # renderer used to emit `- None-16:40 Dog walk`, which nothing could
+        # parse and which the next rewrite of the section therefore silently
+        # dropped — written wrong, then lost, with no error anywhere. An
+        # unfinished block is not a schedule line yet; the edit that
+        # completes it is the natural moment for one.
+        if not params.get("photo_path") and complete:
             try:
                 from src.services.daily_schedule import (
                     ScheduleEntry,
@@ -3229,9 +3258,74 @@ class AgentService:
         elif "category" in params:
             updates["activity"] = params["category"]
 
+        # A duration is the second half of a partial capture: "just got back
+        # from the dog walk" writes an end and no start, and "it was 40
+        # minutes" has to land somewhere. Deriving the missing endpoint here
+        # rather than asking the model for it is the same reason create_event
+        # takes any two of three — this is precisely the arithmetic that
+        # shifted a block by its own length on 2026-08-16.
+        duration = params.get("duration_minutes")
+        if duration is not None:
+            from src.services.interval import derive_interval
+            stored_now = next(
+                (e for e in self.events.get_events(current_date) if e["id"] == event_id),
+                {},
+            )
+            said_start = updates.get("start_time")
+            said_end = updates.get("end_time")
+            start_known = said_start or stored_now.get("start_time")
+            end_known = said_end or stored_now.get("end_time")
+
+            if said_start and said_end:
+                # Both endpoints named in this call: three values were
+                # supplied, so let derive_interval reject them when they
+                # disagree rather than silently picking two.
+                args = (said_start, said_end, duration)
+            elif said_end:
+                # An endpoint named in this call anchors, ahead of a stored
+                # one: "it ended at 16:40 and took 40 minutes" must move the
+                # start, not recompute the end that was just stated.
+                args = (None, said_end, duration)
+            elif said_start:
+                args = (said_start, None, duration)
+            elif start_known:
+                # Nothing named — the stored start anchors: "it lasted 40
+                # minutes" keeps where it began and moves where it ended.
+                args = (start_known, None, duration)
+            elif end_known:
+                args = (None, end_known, duration)
+            else:
+                return err(
+                    ErrorCode.SCHEMA_INVALID,
+                    "duration_minutes needs a start_time or an end_time to measure "
+                    "from — this block has neither. Supply one of them in the same "
+                    "call, or ask.",
+                    details={"event_id": event_id},
+                )
+
+            try:
+                derived = derive_interval(*args, date)
+            except (ValueError, TypeError) as exc:
+                # A stored timestamp we cannot parse is not the user's error
+                # to be raised at — report it as a rejected edit.
+                return err(
+                    ErrorCode.SCHEMA_INVALID,
+                    f"Could not compute the interval: {exc}",
+                    details={"event_id": event_id},
+                )
+            if not derived["ok"]:
+                return err(
+                    ErrorCode.SCHEMA_INVALID, derived["error"],
+                    details={"event_id": event_id},
+                )
+            updates["start_time"] = derived["start_time"]
+            updates["end_time"] = derived["end_time"]
+
         # Every field the user names in an edit is a field they have now
         # claimed: without pinning, the next merge puts the source's value
-        # back and the edit silently disappears.
+        # back and the edit silently disappears. A derived endpoint counts —
+        # the user supplied the duration that produced it, and an unpinned
+        # endpoint is undone by the next merge.
         user_set_fields = [f for f in updates if f in USER_SETTABLE_FIELDS]
 
         result = self.events.update_event(
@@ -3278,6 +3372,21 @@ class AgentService:
         elif calendar_id and owning not in (None, "Mazkir"):
             result["calendar_sync"] = {
                 "ok": False, "attempted": False, "reason": "not_in_mazkir_calendar",
+            }
+        elif not calendar_id and (stored.get("source_ids") or {}):
+            # The create branch below exists for blocks Mazkir owns. A block
+            # that carries source_ids but no calendar_id is *inferred* — a
+            # timed checkbox, a scheduled habit, a location visit — and is
+            # regenerated from that source on every merge. Creating a Google
+            # entry for it duplicates the thing in the calendar, and writing
+            # the new id back gives the persisted event a second source_ids
+            # key, after which two fresh events (the note one and the
+            # calendar one) both match the same persisted row and the block
+            # renders twice forever. An empty source_ids — a manual block, or
+            # one created while the calendar was unreachable — is the only
+            # case where the create is ours to make.
+            result["calendar_sync"] = {
+                "ok": False, "attempted": False, "reason": "derived_from_source",
             }
         else:
             from src.services.async_bridge import maybe_await

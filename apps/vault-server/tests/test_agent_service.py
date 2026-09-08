@@ -910,12 +910,46 @@ class TestEventTools:
             "name": "Afternoon walk",
             "date": "2026-06-07",
             "start_time": "15:00",
+            "end_time": "15:45",
         })
 
         assert result["ok"] is True
         _, written_body = vault.write_daily_note.call_args[0]
+        # The existing start-only line round-trips untouched — an end is
+        # optional in the *format*; it is only a newly created block that
+        # has to be complete before it earns a line.
         assert "- 09:00 Standup" in written_body
-        assert "- 15:00 Afternoon walk" in written_body
+        assert "- 15:00–15:45 Afternoon walk" in written_body
+
+    def test_create_event_skips_schedule_for_an_incomplete_block(self, agent, mock_services):
+        """'Just got back from the dog walk' records an end and no start.
+        `render_schedule_section` has no null handling, so writing one
+        anyway appended `- None-16:40 Dog walk`, which `parse_schedule_section`
+        cannot re-parse and which is therefore silently dropped the next
+        time anything rewrites the section: written wrong, then lost."""
+        vault = mock_services[1]
+        events_mock = mock_services[4]
+        agent.calendar = None
+        events_mock.create_event.return_value = {"id": "evt_i", "path": "data/events/2026-09-08.json"}
+        vault.read_daily_note.return_value = {"content": "## Schedule\n- 09:00 Standup\n"}
+
+        result = agent._tool_create_event({
+            "name": "Dog walk", "date": "2026-09-08", "end_time": "16:40",
+        })
+
+        assert result["ok"] is True
+        vault.write_daily_note.assert_not_called()
+
+    def test_create_event_skips_schedule_when_there_is_no_time_at_all(self, agent, mock_services):
+        vault = mock_services[1]
+        events_mock = mock_services[4]
+        agent.calendar = None
+        events_mock.create_event.return_value = {"id": "evt_n", "path": "data/events/2026-09-08.json"}
+
+        result = agent._tool_create_event({"name": "Nap", "date": "2026-09-08"})
+
+        assert result["ok"] is True
+        vault.write_daily_note.assert_not_called()
 
     def test_create_event_skips_schedule_for_photo(self, agent, mock_services):
         vault = mock_services[1]
@@ -2545,6 +2579,16 @@ class TestCreateEventIntervals:
         assert result["data"]["complete"] is False
         assert result["data"]["calendar_sync"]["reason"] == "incomplete"
 
+    def test_date_description_explains_the_overnight_anchor(self, agent):
+        """`date` defaults to today and derive_interval reads a reversed pair
+        as "the end is the next day", so "slept 23:30 to 07:15" said at 08:00
+        logs *tonight* unless the model knows to pass yesterday. Nothing said
+        so; the description is half of where it now does (the other half is
+        the rule in memory/00-system/skills/time-management.md)."""
+        desc = agent.tools["create_event"]["schema"]["input_schema"]["properties"]["date"]["description"]
+        assert "midnight" in desc.lower()
+        assert "started" in desc.lower()
+
     def test_name_is_the_only_required_field(self, agent):
         schema = agent.tools["create_event"]["schema"]["input_schema"]
         assert schema["required"] == ["name"]
@@ -2595,6 +2639,155 @@ class TestCreateEventMidnight:
         assert first["logical_id"] == second["logical_id"]
         assert result["data"]["calendar_sync"]["reason"] == "crosses_midnight"
         assert result["data"]["calendar_sync"]["attempted"] is False
+
+
+class TestUpdateEventDuration:
+    """The second half of a partial capture.
+
+    "Just got back from the dog walk" writes an end and no start; "it was 40
+    minutes" is the sentence that finishes it, and before this it had nowhere
+    to land — the model had to compute 16:40 minus 40 itself, the exact
+    arithmetic §3.1 moved into Python after it shifted a block by its own
+    length on 2026-08-16.
+    """
+
+    @staticmethod
+    def _wire(mock_services, stored):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.get_events.return_value = [stored]
+        events_mock.update_event.return_value = {
+            "updated": True, "event": {}, "date": "2026-09-08",
+        }
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        return events_mock
+
+    def test_duration_against_a_known_end_derives_the_start(self, agent, mock_services):
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Dog walk",
+            "start_time": None, "end_time": "2026-09-08T16:40:00",
+        })
+        agent.calendar = None
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "duration_minutes": 40,
+        })
+
+        assert result["ok"] is True
+        updates = events_mock.update_event.call_args.kwargs["updates"]
+        assert updates["start_time"] == "2026-09-08T16:00:00"
+        assert updates["end_time"] == "2026-09-08T16:40:00"
+
+    def test_duration_against_a_known_start_derives_the_end(self, agent, mock_services):
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Nap",
+            "start_time": "2026-09-08T14:00:00", "end_time": None,
+        })
+        agent.calendar = None
+
+        agent._tool_update_event({"event_id": "evt_1", "duration_minutes": 25})
+
+        updates = events_mock.update_event.call_args.kwargs["updates"]
+        assert updates["end_time"] == "2026-09-08T14:25:00"
+
+    def test_an_endpoint_supplied_in_the_same_call_counts_as_known(self, agent, mock_services):
+        """Both halves can arrive in one sentence: 'the dog walk ended at
+        16:40 and took 40 minutes'."""
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Dog walk", "start_time": None, "end_time": None,
+        })
+        agent.calendar = None
+
+        agent._tool_update_event({
+            "event_id": "evt_1", "end_time": "16:40", "duration_minutes": 40,
+        })
+
+        updates = events_mock.update_event.call_args.kwargs["updates"]
+        assert updates["start_time"] == "2026-09-08T16:00:00"
+
+    def test_an_endpoint_named_in_the_call_outranks_a_stored_one(self, agent, mock_services):
+        """"It ended at 16:40 and took 40 minutes" on a block that already
+        has a start must move the start. Anchoring on the stored start would
+        recompute the end the user had just stated."""
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Dog walk",
+            "start_time": "2026-09-08T15:00:00", "end_time": "2026-09-08T15:30:00",
+        })
+        agent.calendar = None
+
+        agent._tool_update_event({
+            "event_id": "evt_1", "end_time": "16:40", "duration_minutes": 40,
+        })
+
+        updates = events_mock.update_event.call_args.kwargs["updates"]
+        assert updates["end_time"] == "2026-09-08T16:40:00"
+        assert updates["start_time"] == "2026-09-08T16:00:00"
+
+    def test_a_bare_duration_on_a_complete_block_keeps_the_start(self, agent, mock_services):
+        """"Actually it was 90 minutes" with nothing else named: the start
+        stays put and the end moves."""
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Gym",
+            "start_time": "2026-09-08T18:00:00", "end_time": "2026-09-08T19:00:00",
+        })
+        agent.calendar = None
+
+        agent._tool_update_event({"event_id": "evt_1", "duration_minutes": 90})
+
+        updates = events_mock.update_event.call_args.kwargs["updates"]
+        assert updates["start_time"] == "2026-09-08T18:00:00"
+        assert updates["end_time"] == "2026-09-08T19:30:00"
+
+    def test_a_block_with_neither_endpoint_is_rejected(self, agent, mock_services):
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Nap", "start_time": None, "end_time": None,
+        })
+        agent.calendar = None
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "duration_minutes": 25,
+        })
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "SCHEMA_INVALID"
+        assert "start_time" in result["error"]["message"]
+        assert "end_time" in result["error"]["message"]
+        events_mock.update_event.assert_not_called()
+
+    def test_three_disagreeing_values_are_rejected(self, agent, mock_services):
+        """Same rule as create_event: two of the three are wrong and nothing
+        here can tell which, so guessing would corrupt the day silently."""
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Gym", "start_time": None, "end_time": None,
+        })
+        agent.calendar = None
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "start_time": "18:00", "end_time": "19:00",
+            "duration_minutes": 90,
+        })
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "SCHEMA_INVALID"
+        events_mock.update_event.assert_not_called()
+
+    def test_derived_endpoints_are_pinned(self, agent, mock_services):
+        """An unpinned endpoint is put back by the very next merge — the
+        §1.2 revert, arriving via the duration path instead of the name."""
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Dog walk",
+            "start_time": None, "end_time": "2026-09-08T16:40:00",
+        })
+        agent.calendar = None
+
+        agent._tool_update_event({"event_id": "evt_1", "duration_minutes": 40})
+
+        pinned = events_mock.update_event.call_args.kwargs["user_set_fields"]
+        assert set(pinned) == {"start_time", "end_time"}
+
+    def test_duration_is_in_the_schema(self, agent):
+        props = agent.tools["update_event"]["schema"]["input_schema"]["properties"]
+        assert "duration_minutes" in props
 
 
 class TestUpdateEventShiftAndReference:
@@ -2999,6 +3192,44 @@ class TestUpdateEventCalendarSync:
         sync = result["data"]["calendar_sync"]
         assert sync["ok"] is False
         assert sync["reason"] == "update_failed"
+
+    def test_a_source_derived_block_is_never_created_in_the_calendar(self, agent, mock_services):
+        """The create branch exists for blocks Mazkir owns. An inferred
+        block — a timed checkbox, a habit, a location visit — is regenerated
+        from its source on every merge, so creating a Google entry for it
+        both duplicates the entry and gives the persisted event a second
+        source_ids key, after which two fresh events match the one
+        persisted row and the block renders twice forever.
+        """
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(
+            source_ids={"note_line": "h"}, calendar=None,
+        ))
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        agent.calendar.create_event.assert_not_awaited()
+        assert result["data"]["calendar_sync"] == {
+            "ok": False, "attempted": False, "reason": "derived_from_source",
+        }
+
+    def test_a_source_derived_block_with_a_calendar_id_is_still_patched(self, agent, mock_services):
+        """The gate is on *creating*, not on syncing: a block that already
+        carries a calendar_id genuinely is a calendar event, whatever else
+        its source_ids say."""
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(
+            source_ids={"note_line": "h", "calendar_id": "gcal_1"}, calendar="Mazkir",
+        ))
+        agent.calendar.is_initialized = True
+        agent.calendar.update_event = AsyncMock(return_value=True)
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        agent.calendar.update_event.assert_awaited_once()
+        assert result["data"]["calendar_sync"]["ok"] is True
 
     def test_create_failure_without_exception_carries_a_reason(self, agent, mock_services):
         from unittest.mock import AsyncMock

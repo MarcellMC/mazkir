@@ -25,6 +25,9 @@ _LINE_RE = re.compile(
 
 @dataclass
 class ScheduleEntry:
+    # `start` is typed non-optional because a line without one cannot be
+    # rendered or parsed; `render_schedule_section` drops such an entry
+    # rather than trusting every caller to have checked.
     start: str
     text: str
     end: str | None = None
@@ -52,6 +55,13 @@ def parse_schedule_section(body: str) -> list[ScheduleEntry]:
 def render_schedule_section(entries: list[ScheduleEntry]) -> str:
     lines = ["## Schedule"]
     for e in entries:
+        if not e.start:
+            # `- HH:MM[-HH:MM] text` is the only shape `parse_schedule_section`
+            # reads, so an entry with no start has no representation here at
+            # all. Interpolating it anyway wrote `- None-16:40 Dog walk`,
+            # which the next rewrite of the section silently discarded. A
+            # line that cannot be read back is worse than no line.
+            continue
         rng = f"{e.start}–{e.end}" if e.end else e.start
         lines.append(f"- {rng} {e.text}")
     return "\n".join(lines) + "\n"

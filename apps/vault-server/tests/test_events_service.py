@@ -1159,3 +1159,98 @@ class TestUpdateEventGuards:
         events_service.update_event("2026-09-08", event_id, updates)
 
         assert updates == {"end_time": "2026-09-08T19:00:00"}
+
+
+class TestReconcileDualKeySourceIds:
+    """A persisted event reachable under two source_ids keys must still
+    produce exactly one row.
+
+    Nothing in the repo produced a dual-key `source_ids` until the calendar
+    ladder in `_tool_update_event` started writing `calendar_id` onto an
+    inferred block, so this path had never been exercised. When it was, the
+    matched branch popped only the key it matched on and left the other one
+    in the lookup, so a second fresh event handed the *same* persisted dict
+    back a second time: `/day` rendered the block twice and it settled into
+    a permanent duplicate. The gate in `_tool_update_event` now stops that
+    state arising, but this is the property that actually matters.
+    """
+
+    def test_two_fresh_events_matching_one_persisted_event_yield_one_row(
+        self, events_service
+    ):
+        events_service.save_events("2026-09-08", [{
+            "name": "Dog walk",
+            "type": "daily-task",
+            "start_time": "2026-09-08T16:00:00",
+            "end_time": "2026-09-08T16:40:00",
+            "source": "daily-note",
+            "source_ids": {"note_line": "h", "calendar_id": "gcal_new"},
+        }])
+
+        fresh = [
+            {"name": "Dog walk", "type": "daily-task",
+             "start_time": "2026-09-08T16:00:00", "end_time": "2026-09-08T16:40:00",
+             "source": "daily-note", "source_ids": {"note_line": "h"}},
+            {"name": "Dog walk", "type": "calendar",
+             "start_time": "2026-09-08T16:00:00", "end_time": "2026-09-08T16:40:00",
+             "source": "calendar", "source_ids": {"calendar_id": "gcal_new"}},
+        ]
+
+        persisted_id = events_service.get_events("2026-09-08")[0]["id"]
+
+        result = events_service.reconcile("2026-09-08", fresh, {"calendar", "daily-note"})
+
+        # The persisted row is claimed exactly once. (The other fresh event
+        # is then simply unmatched and becomes a new row, which is the
+        # correct outcome once this state exists at all — what must never
+        # happen is the same stored dict, with the same id, coming back
+        # twice.)
+        assert [e.get("id") for e in result].count(persisted_id) == 1
+        assert len({id(e) for e in result}) == len(result)
+
+
+class TestReconcileRefreshesTheOwningCalendar:
+    """`calendar` decides whether Mazkir may write to a Google entry.
+
+    It is re-derived from the source on every merge, like name/start/end, so
+    it belongs with those and not with the preserved enrichment. Without the
+    copy, an event persisted before the field existed never acquires one and
+    every edit falls through into a doomed patch reported as `update_failed`
+    rather than the accurate `not_in_mazkir_calendar`.
+    """
+
+    def test_calendar_is_copied_from_the_fresh_event(self, events_service):
+        events_service.save_events("2026-09-08", [{
+            "name": "Standup", "type": "calendar",
+            "start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T10:30:00",
+            "source": "calendar", "source_ids": {"calendar_id": "cal_1"},
+        }])
+
+        result = events_service.reconcile("2026-09-08", [{
+            "name": "Standup", "type": "calendar",
+            "start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T10:30:00",
+            "source": "calendar", "source_ids": {"calendar_id": "cal_1"},
+            "calendar": "Work",
+        }], {"calendar"})
+
+        assert result[0]["calendar"] == "Work"
+
+    def test_a_fresh_event_without_the_field_leaves_the_persisted_one_alone(
+        self, events_service
+    ):
+        """A source that does not report a calendar must not blank one that
+        was previously known."""
+        events_service.save_events("2026-09-08", [{
+            "name": "Standup", "type": "calendar",
+            "start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T10:30:00",
+            "source": "calendar", "source_ids": {"calendar_id": "cal_1"},
+            "calendar": "Mazkir",
+        }])
+
+        result = events_service.reconcile("2026-09-08", [{
+            "name": "Standup", "type": "calendar",
+            "start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T10:30:00",
+            "source": "calendar", "source_ids": {"calendar_id": "cal_1"},
+        }], {"calendar"})
+
+        assert result[0]["calendar"] == "Mazkir"

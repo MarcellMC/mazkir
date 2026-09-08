@@ -121,10 +121,26 @@ def derive_interval(
 
 
 def crosses_midnight(start_time: str, end_time: str) -> bool:
-    """True when the two timestamps fall on different calendar days."""
+    """True when the two timestamps fall on different calendar days.
+
+    A predicate answers a question; it does not raise. Unparseable input is
+    not a midnight crossing, so it is `False`. This matters because the
+    calendar-sync ladder in `_tool_update_event` calls this *after* the
+    ledger write has already succeeded — a malformed stored timestamp would
+    otherwise turn a completed write into a raised tool error, reporting a
+    success as a failure, which is exactly the inversion the
+    `{ok, attempted, reason}` contract exists to prevent.
+
+    `derive_interval` keeps its strictness deliberately: it is validating
+    input the user just supplied, where rejecting bad values is the right
+    answer. Only the predicate softens.
+    """
     if not start_time or not end_time:
         return False
-    return _parse(start_time).date() != _parse(end_time).date()
+    try:
+        return _parse(start_time).date() != _parse(end_time).date()
+    except (ValueError, TypeError):
+        return False
 
 
 def split_at_midnight(start_time: str, end_time: str) -> list[tuple[str, str]]:

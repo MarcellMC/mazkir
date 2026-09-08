@@ -563,6 +563,16 @@ class EventsService:
                     break
 
             if matched_existing:
+                # Claiming a persisted event retires *all* of its lookup
+                # keys, not just the one that matched. An event reachable
+                # under two keys (say `note_line` and `calendar_id`) would
+                # otherwise be handed back a second time to whichever fresh
+                # event matches the other key, and reconcile would return
+                # the same dict — same `id` — twice: `/day` renders the
+                # block twice and it never settles.
+                for _key, _val in (matched_existing.get("source_ids") or {}).items():
+                    existing_by_source.pop(f"{_key}:{_val}", None)
+
                 # Update from fresh source, keep persisted data. These
                 # fields are re-derived from the vault on every merge —
                 # `completed` and `habit` (streak/tokens_earned/etc.) are
@@ -578,6 +588,14 @@ class EventsService:
                 matched_existing["end_time"] = fresh.get("end_time", matched_existing.get("end_time"))
                 matched_existing["location"] = fresh.get("location", matched_existing.get("location"))
                 matched_existing["source"] = fresh.get("source", matched_existing.get("source"))
+                # `calendar` says which Google calendar the event came from,
+                # and ownership is decided from it. It is re-derived every
+                # merge like `name`/`start_time`, so it belongs here and not
+                # among the preserved enrichment — without this, an event
+                # persisted before the field existed never acquires one and
+                # every edit fails open into a doomed patch reported as
+                # `update_failed` rather than `not_in_mazkir_calendar`.
+                matched_existing["calendar"] = fresh.get("calendar", matched_existing.get("calendar"))
                 matched_existing["source_ids"] = fresh_source_ids
                 matched_existing["completed"] = fresh.get("completed", False)
                 matched_existing["habit"] = fresh.get("habit")
