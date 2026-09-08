@@ -931,7 +931,18 @@ class AgentService:
                             "name": {"type": "string", "description": "Event name"},
                             "date": {"type": "string", "description": "Event date YYYY-MM-DD (defaults to today)"},
                             "start_time": {"type": "string", "description": "Start time ISO or HH:MM"},
-                            "end_time": {"type": "string", "description": "End time (optional, defaults to start_time)"},
+                            "end_time": {"type": "string", "description": "End time ISO or HH:MM"},
+                            "duration_minutes": {
+                                "type": "integer",
+                                "description": (
+                                    "How long it lasted, in minutes. Supply any TWO of "
+                                    "start_time / end_time / duration_minutes and the third "
+                                    "is computed — never work it out yourself. Supply only "
+                                    "one and the block is created incomplete, which is the "
+                                    "right outcome for 'just got back from the dog walk': "
+                                    "record the end, leave the start empty, and ask."
+                                ),
+                            },
                             "location": {
                                 "type": "object",
                                 "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}, "name": {"type": "string"}},
@@ -950,7 +961,7 @@ class AgentService:
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
-                        "required": ["name", "start_time"],
+                        "required": ["name"],
                     },
                 },
                 "handler": self._tool_create_event,
@@ -968,6 +979,14 @@ class AgentService:
                         "type": "object",
                         "properties": {
                             "event_id": {"type": "string", "description": "Event ID from list_events"},
+                            "block_reference": {
+                                "type": "string",
+                                "description": (
+                                    "Name the block instead of its ID — 'the gym block', "
+                                    "'dog walk'. Searched across the day being viewed and "
+                                    "today. Use this OR event_id."
+                                ),
+                            },
                             "date": {
                                 "type": "string",
                                 "description": (
@@ -985,6 +1004,14 @@ class AgentService:
                             "name": {"type": "string", "description": "New event name"},
                             "start_time": {"type": "string", "description": "New start time ISO or HH:MM"},
                             "end_time": {"type": "string", "description": "New end time ISO or HH:MM"},
+                            "shift_minutes": {
+                                "type": "integer",
+                                "description": (
+                                    "Move the whole block by this many minutes, negative to "
+                                    "move earlier. Use this for 'move gym -30m' — setting "
+                                    "start_time alone stretches the block instead of moving it."
+                                ),
+                            },
                             "location": {
                                 "type": "object",
                                 "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}, "name": {"type": "string"}},
@@ -997,10 +1024,17 @@ class AgentService:
                                     "Not the event's life category."
                                 ),
                             },
+                            "revert_fields": {
+                                "type": "array", "items": {"type": "string"},
+                                "description": (
+                                    "Stop pinning these fields, so they track their source "
+                                    "again. For 'use the calendar's name for that'."
+                                ),
+                            },
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
-                        "required": ["event_id"],
+                        "required": [],
                     },
                 },
                 "handler": self._tool_update_event,
@@ -1020,6 +1054,14 @@ class AgentService:
                         "type": "object",
                         "properties": {
                             "event_id": {"type": "string", "description": "Event ID from list_events"},
+                            "block_reference": {
+                                "type": "string",
+                                "description": (
+                                    "Name the block instead of its ID — 'the gym block', "
+                                    "'dog walk'. Searched across the day being viewed and "
+                                    "today. Use this OR event_id."
+                                ),
+                            },
                             "date": {
                                 "type": "string",
                                 "description": (
@@ -1030,7 +1072,7 @@ class AgentService:
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
-                        "required": ["event_id"],
+                        "required": [],
                     },
                 },
                 "handler": self._tool_delete_event,
@@ -2795,22 +2837,85 @@ class AgentService:
         items = [str(self.events._file_path(resolved_date))] if resolved_date else []
         return ok(result, items=items)
 
+    def _resolve_reference(self, params: dict) -> dict:
+        """Turn `event_id` or `block_reference` into a concrete event id.
+
+        A `block_reference` is resolved against the reconciled view of the
+        day being viewed and today — an inferred block has no persisted row
+        yet, so the day is materialised (`refresh_events`) before the write
+        proceeds. Persisting here is correct: an explicit edit is write
+        intent, unlike navigation, which Ship 2 deliberately made read-only.
+        """
+        import datetime as dt
+        from src.services.block_resolver import resolve_block
+
+        event_id = params.get("event_id")
+        if event_id:
+            date = self.events.resolve_event_date(event_id, params.get("date"))
+            if date is None:
+                return err(
+                    ErrorCode.PATH_NOT_FOUND,
+                    f"Event {event_id} not found",
+                    details={"event_id": event_id},
+                )
+            return ok({"event_id": event_id, "date": date})
+
+        reference = params.get("block_reference")
+        if not reference:
+            return err(
+                ErrorCode.SCHEMA_INVALID,
+                "Supply either event_id or block_reference",
+            )
+
+        today = dt.date.today().isoformat()
+        dates = [d for d in dict.fromkeys([params.get("selected_date"), today]) if d]
+
+        candidates: list[dict] = []
+        for date in dates:
+            events, _ = self._reconciled_events(date)
+            candidates.extend(events)
+
+        resolved = resolve_block(reference, candidates)
+        if not resolved["ok"]:
+            return resolved
+
+        # Materialise: the resolved block may exist only as inference.
+        target_date = resolved["data"]["date"]
+        try:
+            from src.services.async_bridge import maybe_await
+            import src.services.day_assembly as day_assembly
+            fresh, available = maybe_await(
+                day_assembly.merge_from_sources(dt.date.fromisoformat(target_date))
+            )
+            self.events.refresh_events(target_date, fresh, available)
+        except Exception as e:
+            logger.warning(f"Could not materialise {target_date} before editing: {e}")
+
+        return ok({"event_id": resolved["data"]["id"], "date": target_date})
+
     def _tool_create_event(self, params: dict) -> dict:
         import datetime as dt
         if not self.events:
             return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
         date = params.get("date", dt.date.today().isoformat())
 
-        def _normalize_time(t: str | None) -> str | None:
-            if not t:
-                return t
-            # Time-only like "18:34" → "2026-03-06T18:34:00"
-            if "T" not in t and len(t) <= 5:
-                return f"{date}T{t}:00"
-            return t
+        from src.services.interval import (
+            crosses_midnight, derive_interval, split_at_midnight,
+        )
 
-        start_time = _normalize_time(params["start_time"])
-        end_time = _normalize_time(params.get("end_time"))
+        derived = derive_interval(
+            params.get("start_time"),
+            params.get("end_time"),
+            params.get("duration_minutes"),
+            date,
+        )
+        if not derived["ok"]:
+            return err(ErrorCode.SCHEMA_INVALID, derived["error"])
+
+        start_time = derived["start_time"]
+        end_time = derived["end_time"]
+        complete = bool(start_time and end_time)
+        spans_midnight = complete and crosses_midnight(start_time, end_time)
 
         # Extract HH:MM for GCal (strip date prefix if present)
         def _extract_hhmm(iso_time: str | None) -> str | None:
@@ -2830,7 +2935,14 @@ class AgentService:
         source_ids: dict | None = None
         calendar_synced = False
         calendar_sync: dict
-        if params.get("photo_path"):
+        if not complete:
+            calendar_sync = {"ok": False, "attempted": False, "reason": "incomplete"}
+        elif spans_midnight:
+            # Google stores this natively as one event, which would then hand
+            # a single fresh event to two per-day fragments on the next
+            # merge. Deferred rather than guessed at.
+            calendar_sync = {"ok": False, "attempted": False, "reason": "crosses_midnight"}
+        elif params.get("photo_path"):
             # Photo events are deliberately never pushed to the calendar.
             calendar_sync = {"ok": False, "attempted": False, "reason": "not_applicable"}
         elif not self.calendar:
@@ -2880,20 +2992,39 @@ class AgentService:
                 logger.warning(f"Failed to sync event to Google Calendar: {e}")
                 calendar_sync = {"ok": False, "attempted": True, "reason": str(e)}
 
-        result = self.events.create_event(
-            date=date,
-            name=params["name"],
-            start_time=start_time,
-            end_time=end_time,
-            location=params.get("location"),
-            activity=_event_activity(params),
-            photo_path=params.get("photo_path"),
-            caption=params.get("caption"),
-            wikilinks=params.get("wikilinks"),
-            source_ids=source_ids,
-        )
+        from uuid import uuid4
+        fragments = split_at_midnight(start_time, end_time) if spans_midnight else [(start_time, end_time)]
+        # A shared id so Ship 5 can approve both halves of one night's sleep
+        # at once. Written now because the link is unrecoverable later;
+        # nothing in this ship branches on it.
+        logical_id = uuid4().hex[:8] if len(fragments) > 1 else None
+
+        created = []
+        items = []
+        for frag_start, frag_end in fragments:
+            frag_date = (frag_start or frag_end or f"{date}T00:00:00")[:10]
+            frag = self.events.create_event(
+                date=frag_date,
+                name=params["name"],
+                start_time=frag_start,
+                end_time=frag_end,
+                location=params.get("location"),
+                activity=_event_activity(params),
+                photo_path=params.get("photo_path"),
+                caption=params.get("caption"),
+                wikilinks=params.get("wikilinks"),
+                source_ids=source_ids,
+                logical_id=logical_id,
+            )
+            created.append(frag)
+            items.append(frag["path"])
+
+        result = dict(created[0])
         result["event_id"] = result.pop("id")
-        items = [result["path"]]
+        result["complete"] = complete
+        if len(created) > 1:
+            result["fragments"] = [c["id"] for c in created]
+            result["logical_id"] = logical_id
         result["calendar_sync"] = calendar_sync
         if calendar_synced:
             # Legacy key, kept for the existing tests that read it. New
@@ -2943,22 +3074,34 @@ class AgentService:
         if not self.events:
             return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
 
-        # `date` is only a hint about where the event is stored now, and the
-        # event may well be on another day — the agent is given IDs by
-        # `list_events`, which can list any date. Resolve the real one before
-        # doing anything, both to find the event and to know what day a bare
-        # `HH:MM` belongs to. Defaulting the hint to today used to make every
-        # update to a non-today event fail with PATH_NOT_FOUND.
-        event_id = params["event_id"]
+        from src.services.events_service import USER_SETTABLE_FIELDS
+
+        resolved = self._resolve_reference(params)
+        if not resolved["ok"]:
+            return resolved
+        event_id = resolved["data"]["event_id"]
+        current_date = resolved["data"]["date"]
+
         new_date = params.get("new_date")
-        current_date = self.events.resolve_event_date(event_id, params.get("date"))
-        if current_date is None:
-            return err(
-                ErrorCode.PATH_NOT_FOUND,
-                f"Event {event_id} not found",
-                details={"event_id": event_id},
-            )
         date = new_date or current_date
+
+        shift = params.get("shift_minutes")
+        if shift:
+            import datetime as _dt
+            from src.services.events_service import is_complete
+            event = next(
+                (e for e in self.events.get_events(current_date) if e["id"] == event_id), {}
+            )
+            if not is_complete(event):
+                return err(
+                    ErrorCode.SCHEMA_INVALID,
+                    "Cannot shift a block that is missing a start or end time",
+                    details={"event_id": event_id},
+                )
+            delta = _dt.timedelta(minutes=shift)
+            for field in ("start_time", "end_time"):
+                moved = _dt.datetime.fromisoformat(event[field]) + delta
+                params[field] = moved.strftime("%Y-%m-%dT%H:%M:%S")
 
         def _normalize_time(t: str | None) -> str | None:
             if not t:
@@ -2983,11 +3126,18 @@ class AgentService:
         elif "category" in params:
             updates["activity"] = params["category"]
 
+        # Every field the user names in an edit is a field they have now
+        # claimed: without pinning, the next merge puts the source's value
+        # back and the edit silently disappears.
+        user_set_fields = [f for f in updates if f in USER_SETTABLE_FIELDS]
+
         result = self.events.update_event(
             date=current_date,
             event_id=event_id,
             updates=updates,
             new_date=new_date,
+            user_set_fields=user_set_fields,
+            revert_fields=params.get("revert_fields"),
         )
         if "error" in result:
             return err(ErrorCode.PATH_NOT_FOUND, result["error"], details={"event_id": event_id})
@@ -3025,16 +3175,11 @@ class AgentService:
         if not self.events:
             return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
 
-        event_id = params["event_id"]
-        # Same hint semantics as update_event: `date` narrows the search, it
-        # does not constrain it.
-        date = self.events.resolve_event_date(event_id, params.get("date"))
-        if date is None:
-            return err(
-                ErrorCode.PATH_NOT_FOUND,
-                f"Event {event_id} not found",
-                details={"event_id": event_id},
-            )
+        resolved = self._resolve_reference(params)
+        if not resolved["ok"]:
+            return resolved
+        event_id = resolved["data"]["event_id"]
+        date = resolved["data"]["date"]
 
         event = next((e for e in self.events.get_events(date) if e["id"] == event_id), {})
         source_ids = event.get("source_ids") or {}

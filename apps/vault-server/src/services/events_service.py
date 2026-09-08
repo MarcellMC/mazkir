@@ -198,7 +198,7 @@ class EventsService:
         self,
         date: str,
         name: str,
-        start_time: str,
+        start_time: str | None,
         end_time: str | None = None,
         location: dict | None = None,
         activity: str | None = None,
@@ -208,6 +208,7 @@ class EventsService:
         event_type: str | None = None,
         source_ids: dict | None = None,
         category: str | None = None,
+        logical_id: str | None = None,
     ) -> dict:
         """Create a new event and persist it.
 
@@ -255,6 +256,7 @@ class EventsService:
             "photos": [],
             "assets": None,
             "tokens_earned": 0,
+            "logical_id": logical_id,
         }
 
         if photo_path:
