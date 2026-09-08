@@ -40,6 +40,13 @@ def test_time_management_has_event_and_task_tools():
     assert t is not None
     assert "create_event" in t.tools
     assert "create_task" in t.tools
+    # A tool registered in AgentService but absent from every skill's
+    # `tools:` frontmatter is unreachable through the skill loop, which is
+    # the live dispatch path. `delete_event` shipped in exactly that state
+    # because the container that added it could not mount the vault.
+    assert "update_event" in t.tools
+    assert "delete_event" in t.tools
+    assert "list_events" in t.tools
 
 
 def test_knowledge_management_can_read_and_save():
