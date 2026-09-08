@@ -3214,9 +3214,23 @@ class AgentService:
         calendar_id = (stored.get("source_ids") or {}).get("calendar_id")
         owning = stored.get("calendar")
         from src.services.events_service import is_complete
+        from src.services.interval import crosses_midnight
 
-        if not is_complete(stored):
+        # A cross-date move is out of scope for this ship: EventsService has
+        # detached source_ids, so this block would read the event as "not in
+        # the calendar yet" and create a duplicate at the new date — which
+        # the moved_from branch below would then report as having not
+        # happened. Leave the calendar alone and let that branch speak.
+        if result.get("moved_from"):
+            pass
+        elif not is_complete(stored):
             result["calendar_sync"] = {"ok": False, "attempted": False, "reason": "incomplete"}
+        elif crosses_midnight(stored.get("start_time"), stored.get("end_time")):
+            result["calendar_sync"] = {
+                "ok": False, "attempted": False, "reason": "crosses_midnight",
+            }
+        elif stored.get("source") == "photo":
+            result["calendar_sync"] = {"ok": False, "attempted": False, "reason": "not_applicable"}
         elif not self.calendar or not getattr(self.calendar, "is_initialized", False):
             result["calendar_sync"] = {
                 "ok": False, "attempted": False, "reason": "calendar_not_configured",
@@ -3238,6 +3252,8 @@ class AgentService:
                     result["calendar_sync"] = {
                         "ok": bool(pushed), "attempted": True, "event_id": calendar_id,
                     }
+                    if not pushed:
+                        result["calendar_sync"]["reason"] = "update_failed"
                 else:
                     gcal_id = maybe_await(self.calendar.create_event(
                         name=stored.get("name"),
@@ -3248,6 +3264,24 @@ class AgentService:
                     result["calendar_sync"] = {
                         "ok": bool(gcal_id), "attempted": True, "event_id": gcal_id,
                     }
+                    if gcal_id:
+                        # "Sync it once it's complete" relies on calendar_id
+                        # recording membership with no flag to remember — so
+                        # the id this create just returned has to land in
+                        # source_ids, or the next edit still reads calendar_id
+                        # as missing and creates a second Google entry.
+                        self.events.update_event(
+                            date=stored_date,
+                            event_id=event_id,
+                            updates={
+                                "source_ids": {
+                                    **(stored.get("source_ids") or {}),
+                                    "calendar_id": gcal_id,
+                                },
+                            },
+                        )
+                    else:
+                        result["calendar_sync"]["reason"] = "create_failed"
             except Exception as e:
                 logger.warning(f"Failed to sync event edit to Google Calendar: {e}")
                 result["calendar_sync"] = {"ok": False, "attempted": True, "reason": str(e)}

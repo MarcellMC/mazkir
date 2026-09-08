@@ -1047,26 +1047,43 @@ class TestEventTools:
         """CalendarService has no move call, so the upstream entry stays put.
 
         Reporting a clean move would be a lie the user only discovers when
-        the old day re-merges the event back.
+        the old day re-merges the event back. The moved event carries real
+        start/end times — a moved event stays complete, EventsService only
+        detaches its source_ids — so `is_complete` is True and calendar_id
+        reads as empty; without a guard for `moved_from` the sync block
+        would read that as "not in the calendar yet" and issue a real
+        create_event call, leaving an orphaned duplicate at the new date
+        while still reporting cross_date_move_not_supported.
         """
+        from unittest.mock import AsyncMock
         events_mock = mock_services[4]
         events_mock.resolve_event_date.return_value = "2026-09-08"
         events_mock.update_event.return_value = {
             "updated": True,
             "date": "2026-09-07",
             "moved_from": "2026-09-08",
-            "event": {"moved_from_source_ids": {"calendar_id": "gcal_123"}},
+            "event": {
+                "start_time": "2026-09-07T10:00:00",
+                "end_time": "2026-09-07T10:30:00",
+                "moved_from_source_ids": {"calendar_id": "gcal_123"},
+            },
         }
         events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+        agent.calendar.update_event = AsyncMock(return_value=True)
 
         result = agent._tool_update_event({"event_id": "evt_abc", "new_date": "2026-09-07"})
 
+        agent.calendar.create_event.assert_not_awaited()
+        agent.calendar.update_event.assert_not_awaited()
         sync = result["data"]["calendar_sync"]
         assert sync["ok"] is False
         # attempted: True — the prompt tells the agent to stay quiet about
         # attempted: false, and this is something the user has to hear.
         assert sync["attempted"] is True
         assert sync["event_id"] == "gcal_123"
+        assert sync["reason"] == "cross_date_move_not_supported"
         assert "2026-09-08" in sync["detail"]
 
     def test_same_day_update_of_an_incomplete_block_reports_incomplete(self, agent, mock_services):
@@ -2851,3 +2868,128 @@ class TestUpdateEventCalendarSync:
 
         agent.calendar.create_event.assert_awaited_once()
         assert result["data"]["calendar_sync"]["event_id"] == "gcal_new"
+
+    def test_completing_a_block_persists_the_new_calendar_id(self, agent, mock_services):
+        """Without this, the presence of calendar_id never comes to be true,
+        so every later edit re-takes the create branch and produces another
+        duplicate Google Calendar entry."""
+        from unittest.mock import AsyncMock
+        stored = self._stored(source_ids={}, calendar=None)
+        events_mock = self._wire(mock_services, stored)
+        events_mock.update_event.return_value = {
+            "updated": True, "event": stored, "date": "2026-09-08",
+        }
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        agent._tool_update_event({
+            "event_id": "evt_1", "end_time": "2026-09-08T10:30:00",
+        })
+
+        # The first call is the ledger write itself; the second is this
+        # sync block persisting the new calendar_id back into source_ids.
+        assert events_mock.update_event.call_count == 2
+        persist_updates = events_mock.update_event.call_args_list[-1].kwargs["updates"]
+        assert persist_updates["source_ids"]["calendar_id"] == "gcal_new"
+
+    def test_second_edit_after_completion_takes_the_patch_branch(self, agent, mock_services):
+        """'Sync it once it's complete' must not repeat on every later edit
+        — the completion write has to leave calendar_id behind for the next
+        lookup to see, or every edit after the first creates a duplicate."""
+        from unittest.mock import AsyncMock
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+        agent.calendar.update_event = AsyncMock(return_value=True)
+
+        # The block is completed by this edit — no calendar_id yet.
+        incomplete = self._stored(source_ids={}, calendar=None)
+        events_mock.get_events.return_value = [incomplete]
+        events_mock.update_event.return_value = {
+            "updated": True, "event": incomplete, "date": "2026-09-08",
+        }
+        agent._tool_update_event({
+            "event_id": "evt_1", "end_time": "2026-09-08T10:30:00",
+        })
+        agent.calendar.create_event.assert_awaited_once()
+        agent.calendar.update_event.assert_not_awaited()
+
+        # A second edit now finds calendar_id already present (what the
+        # first call's persistence should have produced) and must patch.
+        now_complete = self._stored(source_ids={"calendar_id": "gcal_new"}, calendar="Mazkir")
+        events_mock.get_events.return_value = [now_complete]
+        events_mock.update_event.return_value = {
+            "updated": True, "event": now_complete, "date": "2026-09-08",
+        }
+        agent._tool_update_event({"event_id": "evt_1", "name": "Renamed"})
+
+        agent.calendar.update_event.assert_awaited_once()
+        assert agent.calendar.create_event.await_count == 1
+
+    def test_photo_event_is_never_synced(self, agent, mock_services):
+        """The update ladder must skip photo events for the same reason
+        create_event does — they are deliberately never pushed to Google."""
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(source="photo"))
+        agent.calendar.is_initialized = True
+        agent.calendar.update_event = AsyncMock(return_value=True)
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        agent.calendar.update_event.assert_not_awaited()
+        agent.calendar.create_event.assert_not_awaited()
+        assert result["data"]["calendar_sync"]["reason"] == "not_applicable"
+
+    def test_midnight_crossing_block_is_not_synced(self, agent, mock_services):
+        """Google stores a midnight-spanning interval as one event; the
+        create path already refuses this, and an edit that produces one
+        must refuse it too rather than push a value the day-fragmenting
+        split can't represent."""
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(
+            start_time="2026-09-08T23:30:00", end_time="2026-09-09T00:30:00",
+            source_ids={}, calendar=None,
+        ))
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        agent.calendar.create_event.assert_not_awaited()
+        assert result["data"]["calendar_sync"]["reason"] == "crosses_midnight"
+
+    def test_patch_failure_without_exception_carries_a_reason(self, agent, mock_services):
+        """attempted: true means the user has to be told something did not
+        happen — a bare ok: False with no reason gives the agent nothing to
+        say."""
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored())
+        agent.calendar.is_initialized = True
+        agent.calendar.update_event = AsyncMock(return_value=False)
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        sync = result["data"]["calendar_sync"]
+        assert sync["ok"] is False
+        assert sync["reason"] == "update_failed"
+
+    def test_create_failure_without_exception_carries_a_reason(self, agent, mock_services):
+        from unittest.mock import AsyncMock
+        stored = self._stored(source_ids={}, calendar=None)
+        events_mock = self._wire(mock_services, stored)
+        events_mock.update_event.return_value = {
+            "updated": True, "event": stored, "date": "2026-09-08",
+        }
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value=None)
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "end_time": "2026-09-08T10:30:00",
+        })
+
+        sync = result["data"]["calendar_sync"]
+        assert sync["ok"] is False
+        assert sync["reason"] == "create_failed"

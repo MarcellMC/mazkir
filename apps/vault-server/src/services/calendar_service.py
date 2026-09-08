@@ -513,7 +513,6 @@ class CalendarService:
         self,
         event_id: str,
         name: str | None = None,
-        date: str | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
     ) -> bool:
