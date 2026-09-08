@@ -960,3 +960,188 @@ def test_a_habit_shadowed_by_a_calendar_event_keeps_its_persisted_block(tmp_path
     survivor = [e for e in result if e["source"] == "habit"]
     assert len(survivor) == 1
     assert survivor[0]["photos"] == [{"path": "dog.jpg", "caption": None, "wikilinks": []}]
+
+
+class TestUserSet:
+    """Per-field provenance: a merge must not undo what the user said.
+
+    `reconcile` re-derives name/start/end/location from the source on every
+    read. Before `user_set`, renaming a calendar block worked and then
+    silently reverted the next time the day was opened.
+    """
+
+    def _calendar_event(self):
+        return {
+            "id": "evt_1",
+            "name": "Daily sync",
+            "start_time": "2026-09-08T10:00:00",
+            "end_time": "2026-09-08T10:30:00",
+            "source": "calendar",
+            "source_ids": {"calendar_id": "gcal_1"},
+        }
+
+    def _fresh(self):
+        return [{
+            "name": "Daily sync",
+            "start_time": "2026-09-08T10:00:00",
+            "end_time": "2026-09-08T10:30:00",
+            "source": "calendar",
+            "source_ids": {"calendar_id": "gcal_1"},
+        }]
+
+    def test_save_events_defaults_user_set_to_empty(self, events_service):
+        events_service.save_events("2026-09-08", [self._calendar_event()])
+        assert events_service.get_events("2026-09-08")[0]["user_set"] == {}
+
+    def test_pinned_name_survives_reconcile(self, events_service):
+        """The exact 2026-09-08 regression, asserted directly."""
+        events_service.save_events("2026-09-08", [self._calendar_event()])
+        events_service.update_event(
+            "2026-09-08", "evt_1", {"name": "Standup"}, user_set_fields=["name"],
+        )
+        result = events_service.reconcile(
+            "2026-09-08", self._fresh(), available_sources={"calendar"},
+        )
+        assert result[0]["name"] == "Standup"
+
+    def test_unpinned_fields_still_track_the_source(self, events_service):
+        events_service.save_events("2026-09-08", [self._calendar_event()])
+        events_service.update_event(
+            "2026-09-08", "evt_1", {"name": "Standup"}, user_set_fields=["name"],
+        )
+        fresh = self._fresh()
+        fresh[0]["start_time"] = "2026-09-08T11:00:00"
+        fresh[0]["end_time"] = "2026-09-08T11:30:00"
+
+        result = events_service.reconcile(
+            "2026-09-08", fresh, available_sources={"calendar"},
+        )
+
+        assert result[0]["name"] == "Standup"          # pinned
+        assert result[0]["start_time"] == "2026-09-08T11:00:00"  # not pinned
+
+    def test_pinned_times_recompute_duration_after_reconcile(self, events_service):
+        events_service.save_events("2026-09-08", [self._calendar_event()])
+        events_service.update_event(
+            "2026-09-08", "evt_1",
+            {"end_time": "2026-09-08T11:00:00"},
+            user_set_fields=["end_time"],
+        )
+        result = events_service.reconcile(
+            "2026-09-08", self._fresh(), available_sources={"calendar"},
+        )
+        assert result[0]["end_time"] == "2026-09-08T11:00:00"
+        assert result[0]["duration_minutes"] == 60
+
+    def test_non_settable_keys_are_ignored(self, events_service):
+        """A stray key must not become a way to pin `completed`, which
+        reconcile re-derives from vault state every merge."""
+        event = self._calendar_event()
+        event["user_set"] = {"completed": True, "source_ids": {"calendar_id": "hijacked"}}
+        events_service.save_events("2026-09-08", [event])
+
+        result = events_service.reconcile(
+            "2026-09-08", self._fresh(), available_sources={"calendar"},
+        )
+
+        assert result[0]["completed"] is False
+        assert result[0]["source_ids"] == {"calendar_id": "gcal_1"}
+
+    def test_empty_user_set_is_a_no_op(self, events_service):
+        events_service.save_events("2026-09-08", [self._calendar_event()])
+        result = events_service.reconcile(
+            "2026-09-08", self._fresh(), available_sources={"calendar"},
+        )
+        assert result[0]["name"] == "Daily sync"
+
+    def test_revert_fields_restores_source_tracking(self, events_service):
+        events_service.save_events("2026-09-08", [self._calendar_event()])
+        events_service.update_event(
+            "2026-09-08", "evt_1", {"name": "Standup"}, user_set_fields=["name"],
+        )
+        events_service.update_event("2026-09-08", "evt_1", {}, revert_fields=["name"])
+
+        result = events_service.reconcile(
+            "2026-09-08", self._fresh(), available_sources={"calendar"},
+        )
+        assert result[0]["name"] == "Daily sync"
+
+    def test_revert_is_applied_before_the_calls_own_updates(self, events_service):
+        """Naming a field in both reverts it and then pins the new value —
+        the only reading under which one call cannot contradict itself."""
+        events_service.save_events("2026-09-08", [self._calendar_event()])
+        events_service.update_event(
+            "2026-09-08", "evt_1", {"name": "Standup"}, user_set_fields=["name"],
+        )
+        events_service.update_event(
+            "2026-09-08", "evt_1", {"name": "Morning sync"},
+            user_set_fields=["name"], revert_fields=["name"],
+        )
+        result = events_service.reconcile(
+            "2026-09-08", self._fresh(), available_sources={"calendar"},
+        )
+        assert result[0]["name"] == "Morning sync"
+
+
+class TestIsComplete:
+    def test_both_ends_is_complete(self):
+        from src.services.events_service import is_complete
+        assert is_complete({"start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T11:00:00"}) is True
+
+    def test_missing_end_is_incomplete(self):
+        from src.services.events_service import is_complete
+        assert is_complete({"start_time": "2026-09-08T10:00:00", "end_time": None}) is False
+
+    def test_missing_start_is_incomplete(self):
+        from src.services.events_service import is_complete
+        assert is_complete({"start_time": None, "end_time": "2026-09-08T11:00:00"}) is False
+
+    def test_neither_is_incomplete(self):
+        from src.services.events_service import is_complete
+        assert is_complete({}) is False
+
+
+class TestUpdateEventGuards:
+    def test_inverted_interval_is_rejected_and_nothing_is_written(self, events_service):
+        """Verified on c3ffcee: this used to persist start 21:00 / end 19:00
+        / duration 0, which renders as `21:00–19:00` and counts for nothing."""
+        events_service.create_event(
+            date="2026-09-08", name="Gym",
+            start_time="2026-09-08T18:00:00", end_time="2026-09-08T19:00:00",
+        )
+        event_id = events_service.get_events("2026-09-08")[0]["id"]
+
+        result = events_service.update_event(
+            "2026-09-08", event_id, {"start_time": "2026-09-08T21:00:00"},
+        )
+
+        assert "error" in result
+        stored = events_service.get_events("2026-09-08")[0]
+        assert stored["start_time"] == "2026-09-08T18:00:00"
+
+    def test_zero_length_update_is_allowed(self, events_service):
+        events_service.create_event(
+            date="2026-09-08", name="Gym",
+            start_time="2026-09-08T18:00:00", end_time="2026-09-08T19:00:00",
+        )
+        event_id = events_service.get_events("2026-09-08")[0]["id"]
+
+        result = events_service.update_event(
+            "2026-09-08", event_id, {"end_time": "2026-09-08T18:00:00"},
+        )
+
+        assert result.get("updated") is True
+
+    def test_updates_dict_is_not_mutated(self, events_service):
+        """A side effect on an argument. Harmless today because every caller
+        builds the dict locally, which is exactly why it would surprise the
+        first caller that does not."""
+        events_service.create_event(
+            date="2026-09-08", name="Gym", start_time="2026-09-08T18:00:00",
+        )
+        event_id = events_service.get_events("2026-09-08")[0]["id"]
+        updates = {"end_time": "2026-09-08T19:00:00"}
+
+        events_service.update_event("2026-09-08", event_id, updates)
+
+        assert updates == {"end_time": "2026-09-08T19:00:00"}
