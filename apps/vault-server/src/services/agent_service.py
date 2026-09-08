@@ -2997,7 +2997,7 @@ class AgentService:
             calendar_sync = {"ok": False, "attempted": False, "reason": "calendar_not_configured"}
         else:
             try:
-                from src.services.hooks.sync_to_calendar import _maybe_await
+                from src.services.async_bridge import maybe_await as _maybe_await
                 deleted = _maybe_await(self.calendar.delete_event(calendar_id))
                 calendar_sync = {
                     "ok": bool(deleted),
