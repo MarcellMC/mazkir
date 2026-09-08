@@ -1217,6 +1217,39 @@ class TestDeleteEventTool:
 
         assert "evt_dup" in text
 
+    def test_delete_event_preview_resolves_a_block_reference(self, agent, mock_services):
+        """block_reference is reachable on delete_event now that the schema
+        allows it — the preview must not fall back to a bare `?` for it."""
+        from src.services.preview import render_preview
+
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.get_events.return_value = [{
+            "id": "evt_dup",
+            "name": "Lunch",
+            "start_time": "2026-09-08T13:00:00",
+            "source_ids": {},
+        }]
+
+        text = render_preview(
+            "delete_event", {"block_reference": "lunch"}, ctx={"events": events_mock},
+        )
+
+        assert "Lunch" in text
+        assert "2026-09-08 13:00" in text
+
+    def test_delete_event_preview_names_the_reference_when_unresolvable(self, agent):
+        """A destructive action's confirmation must never say only `?` —
+        naming what the user typed is strictly more information, even when
+        nothing could be matched to it."""
+        from src.services.preview import render_preview
+
+        text = render_preview(
+            "delete_event", {"block_reference": "gym"}, ctx={"events": None},
+        )
+
+        assert "gym" in text
+
     def test_attach_photo_calls_service(self, agent, mock_services):
         events_mock = mock_services[4]
         events_mock.attach_photo.return_value = {"attached": True, "event_id": "evt_abc"}
@@ -2497,6 +2530,25 @@ class TestCreateEventIntervals:
         assert schema["required"] == ["name"]
         assert "duration_minutes" in schema["properties"]
 
+    def test_photo_with_only_a_start_is_a_complete_moment_not_a_block(self, agent, mock_services):
+        """A photo is a moment with a known time, not an unfinished block —
+        the one place a zero-length event is deliberately synthesised
+        rather than stated. Without this it would land in the same 'needs
+        a time' list as a genuinely incomplete capture."""
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_1", "path": "p"}
+        agent.calendar = None
+
+        result = agent._tool_create_event({
+            "name": "Sunset", "date": "2026-09-08", "start_time": "20:00",
+            "photo_path": "media/2026-09-08/sunset.jpg",
+        })
+
+        kwargs = events_mock.create_event.call_args.kwargs
+        assert kwargs["start_time"] == "2026-09-08T20:00:00"
+        assert kwargs["end_time"] == "2026-09-08T20:00:00"
+        assert result["data"]["complete"] is True
+
 
 class TestCreateEventMidnight:
     def test_sleep_splits_into_two_fragments(self, agent, mock_services):
@@ -2669,3 +2721,55 @@ class TestUpdateEventShiftAndReference:
 
         assert result["ok"] is True
         assert events_mock.delete_event.call_args.kwargs["event_id"] == "evt_dup"
+
+
+class TestResolveReferenceMaterializesWithStableId:
+    def test_block_reference_resolves_to_the_id_the_store_actually_holds(self, tmp_path):
+        """`resolve_block` sees the id from the search-phase merge; the
+        materialise phase re-merges independently and `MergerService`
+        assigns a fresh random id to the same logical event (`id: str =
+        Field(default_factory=lambda: str(uuid.uuid4())[:8])` — no builder
+        overrides it). Returning the search-phase id is a PATH_NOT_FOUND
+        waiting on the very next call, since that id was never persisted.
+        `source_ids` is the stable identity reconcile itself matches on, so
+        resolution must re-find by that after materialising — a real
+        `EventsService` against `tmp_path` is required here because a mock
+        with a fixed `reconcile.return_value` never generates a second,
+        different id and so cannot see this bug."""
+        from unittest.mock import MagicMock, patch
+        from uuid import uuid4
+        import datetime as dt
+        from src.services.events_service import EventsService
+
+        events = EventsService(events_path=tmp_path / "events")
+        agent = AgentService(
+            claude=MagicMock(), vault=MagicMock(), memory=MagicMock(),
+            calendar=None, events=events, media_path=tmp_path / "media",
+        )
+
+        today = dt.date.today().isoformat()
+
+        def _fresh_gym_event():
+            return {
+                "id": uuid4().hex[:8],
+                "name": "Gym",
+                "type": "habit",
+                "start_time": f"{today}T18:00:00",
+                "end_time": f"{today}T19:00:00",
+                "duration_minutes": 60,
+                "source": "habit",
+                "source_ids": {"habit_slug": "gym"},
+            }
+
+        async def fake_merge(date):
+            return [_fresh_gym_event()], {"habit"}
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            result = agent._resolve_reference({"block_reference": "gym"})
+
+        assert result["ok"] is True
+        event_id = result["data"]["event_id"]
+        stored_ids = {e["id"] for e in events.get_events(today)}
+        assert event_id in stored_ids, (
+            f"resolved id {event_id!r} was never persisted; store holds {stored_ids!r}"
+        )

@@ -93,15 +93,49 @@ def _register_destructive_previews() -> None:
         `evt_7a8857a4` tells the user nothing about what they are approving,
         and an event ID is exactly the kind of thing an agent can mix up
         between two similar rows. Look the event up so the confirmation
-        names it; fall back to the ID when the store can't be reached.
+        names it; fall back to the ID — or, for a `block_reference` delete
+        with no ID, to the reference itself — when the store can't be
+        reached, rather than the bare `?` that names nothing at all.
+
+        Read-only, unlike `_resolve_reference`: a preview must not write
+        before the user has approved anything, so a `block_reference` here
+        is matched only against what is already persisted, never
+        materialised. Good enough to name the block in the common case; the
+        real resolution (with materialisation) runs again at execution time
+        regardless of what this renders.
         """
-        event_id = params.get("event_id", "?")
         events = (ctx or {}).get("events")
+        event_id = params.get("event_id")
+        reference = params.get("block_reference")
+
+        if not event_id and reference and events:
+            try:
+                import datetime as _dt
+                from src.services.block_resolver import resolve_block
+
+                today = _dt.date.today().isoformat()
+                dates = [d for d in dict.fromkeys([params.get("date"), today]) if d]
+                candidates = []
+                for date in dates:
+                    for e in events.get_events(date):
+                        e = dict(e)
+                        e["date"] = date
+                        candidates.append(e)
+                resolved = resolve_block(reference, candidates)
+                if resolved["ok"]:
+                    event_id = resolved["data"]["id"]
+            except Exception:
+                pass
+
         try:
             date = events.resolve_event_date(event_id, params.get("date"))
             event = next(e for e in events.get_events(date) if e["id"] == event_id)
         except Exception:
-            return f"Would delete event `{event_id}`"
+            if event_id:
+                return f"Would delete event `{event_id}`"
+            if reference:
+                return f'Would delete the block matching "{reference}"'
+            return "Would delete event `?`"
 
         when = (event.get("start_time") or "").replace("T", " ")[:16]
         line = f"Would delete event: **{event.get('name', event_id)}**"
@@ -2879,19 +2913,38 @@ class AgentService:
         if not resolved["ok"]:
             return resolved
 
-        # Materialise: the resolved block may exist only as inference.
         target_date = resolved["data"]["date"]
+        # The resolved id came from a merge that was never persisted, and
+        # MergerService assigns a fresh uuid on every construction — so it is
+        # not the id the store will end up holding. `source_ids` is the stable
+        # identity (exactly one entry per merged event) and is what reconcile
+        # itself matches on, so re-find by that after materialising. An empty
+        # `source_ids` means a manual event, which was already persisted and
+        # whose id therefore is stable.
+        matched = next(
+            (c for c in candidates if c.get("id") == resolved["data"]["id"]), {}
+        )
+        source_ids = matched.get("source_ids") or {}
+
+        event_id = resolved["data"]["id"]
         try:
             from src.services.async_bridge import maybe_await
             import src.services.day_assembly as day_assembly
             fresh, available = maybe_await(
                 day_assembly.merge_from_sources(dt.date.fromisoformat(target_date))
             )
-            self.events.refresh_events(target_date, fresh, available)
+            persisted = self.events.refresh_events(target_date, fresh, available)
         except Exception as e:
             logger.warning(f"Could not materialise {target_date} before editing: {e}")
+            persisted = self.events.get_events(target_date)
 
-        return ok({"event_id": resolved["data"]["id"], "date": target_date})
+        if source_ids:
+            for evt in persisted:
+                if (evt.get("source_ids") or {}) == source_ids:
+                    event_id = evt["id"]
+                    break
+
+        return ok({"event_id": event_id, "date": target_date})
 
     def _tool_create_event(self, params: dict) -> dict:
         import datetime as dt
@@ -2914,6 +2967,16 @@ class AgentService:
 
         start_time = derived["start_time"]
         end_time = derived["end_time"]
+
+        if params.get("photo_path") and start_time and not end_time:
+            # The one place a zero-length event is deliberately synthesised
+            # rather than stated: a photo is a moment with a known time, not
+            # an unfinished block, so a bare start_time for a photo is a
+            # complete point in time, not a missing end. Without this, every
+            # photo event with only a start would land in the "needs a time"
+            # list a later task renders for genuinely incomplete blocks.
+            end_time = start_time
+
         complete = bool(start_time and end_time)
         spans_midnight = complete and crosses_midnight(start_time, end_time)
 

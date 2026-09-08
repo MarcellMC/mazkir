@@ -79,6 +79,20 @@ class TestCreateEvent:
         events = events_service.get_events("2026-03-04")
         assert events[0]["location"]["name"] == "Tel Aviv"
 
+    def test_start_only_persists_as_genuinely_incomplete(self, events_service):
+        """`end_time or start_time` used to complete a bare start into a
+        zero-duration event, so `is_complete()` returned True forever and
+        the block never surfaced for the follow-up partial capture exists
+        to prompt."""
+        from src.services.events_service import is_complete
+
+        events_service.create_event(
+            date="2026-03-04", name="Gym", start_time="2026-03-04T18:00:00",
+        )
+        stored = events_service.get_events("2026-03-04")[0]
+        assert stored["end_time"] is None
+        assert is_complete(stored) is False
+
 
 class TestCreateEventDefaults:
     def test_type_defaults_to_calendar_without_photo(self, events_service):

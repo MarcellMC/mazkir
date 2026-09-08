@@ -246,7 +246,13 @@ class EventsService:
             "name": name,
             "type": resolved_type,
             "start_time": start_time,
-            "end_time": end_time or start_time,
+            # No `or start_time` fallback: a caller that gives only a start
+            # means "incomplete", and silently completing it as a
+            # zero-duration event would make `is_complete()` return True
+            # forever, hiding the block from the follow-up incomplete
+            # capture exists to prompt. A caller that wants a real instant
+            # (a photo, say) says so explicitly by passing both.
+            "end_time": end_time,
             "duration_minutes": duration,
             "location": location,
             "activity": activity if activity is not None else category,
