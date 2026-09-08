@@ -12,11 +12,11 @@
 
 ## Global Constraints
 
-- **Worktree setup, once, before Task 1.** A worktree has no venv (venvs hold absolute paths) and no vault:
+- **Worktree setup, once, before Task 1.** A worktree has no venv (venvs hold absolute paths):
   ```bash
   ln -sfn /home/marcellmc/dev/mazkir/apps/vault-server/venv apps/vault-server/venv
-  ln -sfn /home/marcellmc/dev/mazkir/memory memory
   ```
+  Do **not** symlink `memory/` into the worktree. The suite resolves the vault from config, verified at 937 passing without it, and a symlink at the repo root is not matched by `.gitignore`'s `memory/` pattern — so it shows as untracked and a `git add -A` would commit it.
 - **Baseline is 937 server tests passing**, verified in this worktree. Run `./venv/bin/python -m pytest tests/ -q` from `apps/vault-server`. Never accept a task that reduces this number.
 - **The bot suite needs environment variables** or `tests/formatters/day-rich.test.ts` fails to *collect* — `day-rich.ts` imports `config.ts`, which throws without them. Always run it as `TELEGRAM_BOT_TOKEN=x AUTHORIZED_USER_ID=1 npx vitest run`. A bare `npx vitest run` reports `1 failed | 19 passed`, `107 passed`, and that is the environment, not your change. With the variables set the baseline is **147 passing across 20 files**.
 - **`user_set` settable keys are exactly these five:** `name`, `start_time`, `end_time`, `location`, `activity`. Any other key present in the map is ignored on re-application.
@@ -2190,12 +2190,11 @@ class TestIncompleteBlocks:
     """
 
     def test_block_missing_an_end_is_reported_not_dropped(self):
-        from src.api.routes.daily import _build_blocks_and_coverage
-        blocks, gaps, coverage, incomplete = _build_blocks_and_coverage(
-            [{"id": "evt_1", "name": "Dog walk", "start_time": "2026-09-08T16:00:00",
-              "end_time": None, "source": "manual", "type": "manual"}],
-            "2026-09-08", 1440,
-        )
+        from src.api.routes.daily import _build_blocks_and_coverage, _build_incomplete
+        events = [{"id": "evt_1", "name": "Dog walk", "start_time": "2026-09-08T16:00:00",
+                   "end_time": None, "source": "manual", "type": "manual"}]
+        blocks, _, _ = _build_blocks_and_coverage(events, "2026-09-08", 1440)
+        incomplete = _build_incomplete(events, "2026-09-08")
         assert blocks == []
         assert len(incomplete) == 1
         assert incomplete[0].title == "Dog walk"
@@ -2203,11 +2202,11 @@ class TestIncompleteBlocks:
         assert incomplete[0].start == "16:00"
 
     def test_block_missing_a_start_reports_its_end(self):
-        from src.api.routes.daily import _build_blocks_and_coverage
-        _, _, _, incomplete = _build_blocks_and_coverage(
+        from src.api.routes.daily import _build_incomplete
+        incomplete = _build_incomplete(
             [{"id": "evt_1", "name": "Dog walk", "start_time": None,
               "end_time": "2026-09-08T16:40:00", "source": "manual", "type": "manual"}],
-            "2026-09-08", 1440,
+            "2026-09-08",
         )
         assert incomplete[0].missing == ["start_time"]
         assert incomplete[0].end == "16:40"
@@ -2217,12 +2216,12 @@ class TestIncompleteBlocks:
         """The gap is the reason to finish the block. A half-block that
         quietly claimed the span would hide the very hole it represents."""
         from src.api.routes.daily import _build_blocks_and_coverage
-        _, gaps_with, coverage_with, _ = _build_blocks_and_coverage(
+        _, gaps_with, coverage_with = _build_blocks_and_coverage(
             [{"id": "evt_1", "name": "Dog walk", "start_time": "2026-09-08T16:00:00",
               "end_time": None, "source": "manual", "type": "manual"}],
             "2026-09-08", 1440,
         )
-        _, gaps_without, coverage_without, _ = _build_blocks_and_coverage(
+        _, gaps_without, coverage_without = _build_blocks_and_coverage(
             [], "2026-09-08", 1440,
         )
         assert coverage_with.covered_minutes == coverage_without.covered_minutes
@@ -2231,12 +2230,11 @@ class TestIncompleteBlocks:
     def test_event_belonging_to_another_day_is_still_dropped(self):
         """Present-but-elsewhere and genuinely-absent both make
         `minutes_into_day` return None; only the second is incomplete."""
-        from src.api.routes.daily import _build_blocks_and_coverage
-        blocks, _, _, incomplete = _build_blocks_and_coverage(
-            [{"id": "evt_1", "name": "Yesterday", "start_time": "2026-09-07T16:00:00",
-              "end_time": "2026-09-07T17:00:00", "source": "manual", "type": "manual"}],
-            "2026-09-08", 1440,
-        )
+        from src.api.routes.daily import _build_blocks_and_coverage, _build_incomplete
+        events = [{"id": "evt_1", "name": "Yesterday", "start_time": "2026-09-07T16:00:00",
+                   "end_time": "2026-09-07T17:00:00", "source": "manual", "type": "manual"}]
+        blocks, _, _ = _build_blocks_and_coverage(events, "2026-09-08", 1440)
+        incomplete = _build_incomplete(events, "2026-09-08")
         assert blocks == []
         assert incomplete == []
 ```
@@ -2247,7 +2245,7 @@ class TestIncompleteBlocks:
 cd apps/vault-server && ./venv/bin/python -m pytest tests/test_daily_route.py -q -k TestIncompleteBlocks
 ```
 
-Expected: FAIL — `_build_blocks_and_coverage` returns a 3-tuple.
+Expected: FAIL — `ImportError: cannot import name '_build_incomplete'`.
 
 - [ ] **Step 3: Add the model**
 
@@ -2276,34 +2274,76 @@ and on `DailyResponse`, beside `gaps`:
     incomplete: list[DailyIncomplete] = []
 ```
 
-- [ ] **Step 4: Route incomplete events instead of dropping them**
+- [ ] **Step 4: Collect incomplete events in their own function**
 
-In `_build_blocks_and_coverage`, change the return annotation to include `list[DailyIncomplete]`, initialise `incomplete: list[DailyIncomplete] = []`, and replace the drop:
+**Do not change `_build_blocks_and_coverage`'s arity.** Thirteen existing tests in `test_daily_route.py` unpack its 3-tuple (`blocks, gaps, coverage = …`, `blocks, _, _ = …`); returning a 4-tuple breaks every one of them for no benefit. Add a sibling function instead, and share the timestamp reading so the two cannot drift.
+
+Above `_build_blocks_and_coverage` in `apps/vault-server/src/api/routes/daily.py`:
+
+```python
+def _block_times(e: dict, date: str) -> tuple[int | None, int | None, str | None, str | None]:
+    """Minute offsets for one event, alongside the raw timestamps.
+
+    The raw values are returned too because `minutes_into_day` answers None
+    for two different questions — "there is no timestamp" and "the timestamp
+    belongs to another day" — and the callers need to tell those apart.
+    """
+    start_raw = e.get("start_time")
+    end_raw = e.get("end_time")
+    return (
+        minutes_into_day(start_raw or "", date),
+        _end_minutes(end_raw or "", date),
+        start_raw,
+        end_raw,
+    )
+
+
+def _build_incomplete(events: list[dict], date: str) -> list[DailyIncomplete]:
+    """Events that belong to `date` but cannot be drawn as blocks.
+
+    `_build_blocks_and_coverage` drops these with a bare `continue`, which is
+    Bug A's exact shape: written correctly, parsed correctly, invisible. They
+    are reported separately rather than as blocks with null fields because
+    they have no interval — nothing to sort by, nothing to measure.
+    """
+    out: list[DailyIncomplete] = []
+    for e in events:
+        start, end, start_raw, end_raw = _block_times(e, date)
+        if start is not None and end is not None:
+            continue
+        # A timestamp that is present but belongs to another day is a
+        # neighbouring fragment, not an incomplete block — it stays out, or
+        # it would appear on a day it does not belong to.
+        if start_raw and end_raw:
+            continue
+        out.append(DailyIncomplete(
+            id=e.get("id", ""),
+            title=e.get("name", ""),
+            start=f"{start // 60:02d}:{start % 60:02d}" if start is not None else None,
+            end=f"{end // 60:02d}:{end % 60:02d}" if end is not None else None,
+            missing=[f for f, v in (("start_time", start_raw), ("end_time", end_raw)) if not v],
+            source=e.get("source") or "",
+        ))
+    return out
+```
+
+Then in `_build_blocks_and_coverage`, replace only the first four lines of its loop body so it reads its timestamps through the shared helper — its `continue` and everything after are unchanged:
 
 ```python
     for e in events:
-        start_raw = e.get("start_time")
-        end_raw = e.get("end_time")
-        start = minutes_into_day(start_raw or "", date)
-        end = _end_minutes(end_raw or "", date)
+        start, end, _, _ = _block_times(e, date)
         if start is None or end is None:
-            # `minutes_into_day` returns None both for a missing timestamp
-            # and for one belonging to another day. Only the first is an
-            # incomplete block; the second is a neighbouring day's fragment
-            # and stays dropped, or it would distort this day's arithmetic.
-            if not start_raw or not end_raw:
-                incomplete.append(DailyIncomplete(
-                    id=e.get("id", ""),
-                    title=e.get("name", ""),
-                    start=f"{start // 60:02d}:{start % 60:02d}" if start is not None else None,
-                    end=f"{end // 60:02d}:{end % 60:02d}" if end is not None else None,
-                    missing=[f for f, v in (("start_time", start_raw), ("end_time", end_raw)) if not v],
-                    source=e.get("source") or "",
-                ))
             continue
 ```
 
-Return `blocks, gaps, coverage, incomplete`, update the call site (`blocks, gaps, coverage, incomplete = _build_blocks_and_coverage(...)`), and pass `incomplete=incomplete` into `DailyResponse`.
+At the route's call site (`daily.py:292`), leave the existing unpacking alone and add one line after it:
+
+```python
+    blocks, gaps, coverage = _build_blocks_and_coverage(events, target, elapsed)
+    incomplete = _build_incomplete(events, target)
+```
+
+and pass `incomplete=incomplete` into `DailyResponse`.
 
 - [ ] **Step 5: Mirror the type in shared-types**
 
@@ -2418,6 +2458,12 @@ class TestIncompleteBlocksInContext:
             {"id": "e2", "name": "Standup", "start_time": "2026-09-08T10:00:00",
              "end_time": "2026-09-08T10:30:00"},
         ]
+        # test_agent_service.py defines its OWN mock_services fixture, and
+        # unlike conftest.py's it does not set `tz` — leaving `vault.tz` a
+        # MagicMock that `datetime.now()` would silently accept, making the
+        # test pass for the wrong reason.
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
         ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
 
         prompt = agent._build_system_prompt(ctx)
@@ -2434,12 +2480,16 @@ class TestIncompleteBlocksInContext:
             {"id": "e2", "name": "Standup", "start_time": "2026-09-08T10:00:00",
              "end_time": "2026-09-08T10:30:00"},
         ]
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
         ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
 
         assert "Incomplete blocks" not in agent._build_system_prompt(ctx)
 
     def test_a_failing_read_costs_the_line_not_the_turn(self, agent, mock_services):
         from types import SimpleNamespace
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
         mock_services[4].get_events.side_effect = OSError("disk gone")
         ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
 
@@ -2873,4 +2923,4 @@ git commit -m "docs(ship4): record the provenance, completeness and sync decisio
 | 9 | 1015 | 151 |
 | 10 | 1019 | 156 |
 
-These are targets, not contracts — a task that lands more tests than listed is fine. A task that lands **fewer** means a test from its step 1 was dropped, which is not.
+**These numbers are advisory and were counted by hand — treat a small discrepancy as an arithmetic slip in this table, not a defect.** Two rules bind instead, and both are checkable: the count must never *decrease*, and every test written in a task's step 1 must be present and passing at that task's end. A task that lands more tests than listed is fine.
