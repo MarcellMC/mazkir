@@ -77,3 +77,67 @@ def test_calendar_include_skips_non_listed_calendars():
     assert "mazkir-cal-id" in called_calendar_ids
     assert "holidays-cal-id" not in called_calendar_ids
     assert "work-cal-id" not in called_calendar_ids
+
+
+class TestUpdateEvent:
+    """`CalendarService.update_event` — the write the class was missing.
+
+    Exercised directly against a mocked `_service`, not just through the
+    `AsyncMock` standing in for it in the agent tests, which proves nothing
+    about the method's own body.
+    """
+
+    def _service(self, calendar_id="cal_123"):
+        from src.services.calendar_service import CalendarService
+
+        cs = CalendarService(
+            credentials_path=MagicMock(),
+            token_path=MagicMock(),
+            timezone="Asia/Jerusalem",
+        )
+        cs._initialized = True
+        cs._calendar_id = calendar_id
+        cs._service = MagicMock()
+        return cs
+
+    def test_only_supplied_fields_appear_in_the_body(self):
+        cs = self._service()
+        patch_mock = cs._service.events.return_value.patch
+        patch_mock.return_value.execute.return_value = {}
+
+        asyncio.run(cs.update_event(event_id="evt_1", name="Morning sync"))
+
+        body = patch_mock.call_args.kwargs["body"]
+        assert body == {"summary": "Morning sync"}
+
+    def test_all_none_call_issues_no_request_and_returns_true(self):
+        cs = self._service()
+
+        result = asyncio.run(cs.update_event(event_id="evt_1"))
+
+        assert result is True
+        cs._service.events.return_value.patch.assert_not_called()
+
+    def test_patch_targets_the_configured_calendar(self):
+        cs = self._service(calendar_id="cal_999")
+        patch_mock = cs._service.events.return_value.patch
+        patch_mock.return_value.execute.return_value = {}
+
+        asyncio.run(cs.update_event(event_id="evt_1", start_time="2026-09-08T10:00:00"))
+
+        assert patch_mock.call_args.kwargs["calendarId"] == "cal_999"
+        assert patch_mock.call_args.kwargs["eventId"] == "evt_1"
+
+    def test_http_error_returns_false_rather_than_raising(self):
+        import httplib2
+        from googleapiclient.errors import HttpError
+
+        cs = self._service()
+        resp = httplib2.Response({"status": 404})
+        cs._service.events.return_value.patch.return_value.execute.side_effect = HttpError(
+            resp, b"not found"
+        )
+
+        result = asyncio.run(cs.update_event(event_id="evt_1", name="X"))
+
+        assert result is False

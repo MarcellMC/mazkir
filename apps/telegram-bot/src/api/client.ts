@@ -18,6 +18,7 @@ import { logger } from "../logger.js";
 export interface StreamMessagePayload {
   text: string;
   chat_id: number;
+  selected_date?: string;
   attachments?: Attachment[];
   reply_to?: ReplyContext;
   forwarded_from?: ForwardContext;

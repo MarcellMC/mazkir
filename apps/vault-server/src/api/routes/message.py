@@ -44,6 +44,7 @@ class ForwardContextModel(BaseModel):
 class MessageRequest(BaseModel):
     text: str = ""
     chat_id: int = 0
+    selected_date: str | None = None
     attachments: list[AttachmentModel] | None = None
     reply_to: ReplyContextModel | None = None
     forwarded_from: ForwardContextModel | None = None
@@ -72,6 +73,7 @@ def _prepare_agent_kwargs(body: MessageRequest) -> dict:
     return {
         "text": body.text,
         "chat_id": body.chat_id,
+        "selected_date": body.selected_date,
         "attachments": attachments,
         "reply_to": reply_to,
         "forwarded_from": forwarded_from,

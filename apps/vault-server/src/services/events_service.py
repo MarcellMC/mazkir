@@ -46,6 +46,58 @@ _SOURCE_SYSTEM_BY_ID_KEY = {
 # That is visible clutter; the alternative is silent loss.
 _DELETABLE_SOURCE_SYSTEMS = frozenset({"calendar", "timeline"})
 
+# The only fields a user can pin against re-inference.
+#
+# `completed` and `habit` are deliberately absent: `reconcile` re-derives
+# both from checkbox and habit-log state on every merge, so a pinned value
+# would be stale the instant the vault changed. `id`, `source_ids`, `state`,
+# `photos` and `assets` are absent because they are already preserved by
+# other means, and letting `user_set` reach them would turn a stray key into
+# a way to rewrite reconciliation's own bookkeeping.
+USER_SETTABLE_FIELDS = frozenset({
+    "name", "start_time", "end_time", "location", "activity",
+})
+
+
+def is_complete(event: dict[str, Any]) -> bool:
+    """Whether the event has enough to be drawn as a block.
+
+    Derived, never stored: a status field that restates what the timestamps
+    already say is a status field that goes stale, and the timestamps are
+    right here.
+    """
+    return bool(event.get("start_time")) and bool(event.get("end_time"))
+
+
+def apply_user_set(event: dict[str, Any]) -> None:
+    """Re-apply the user's pinned fields over freshly merged values.
+
+    Called at the end of `reconcile`'s matched branch, so the user gets the
+    last word on the fields they set while every other field keeps tracking
+    its source. Mutates in place.
+    """
+    pinned = event.get("user_set") or {}
+    if not isinstance(pinned, dict):
+        return
+
+    moved_an_end = False
+    for field, value in pinned.items():
+        if field not in USER_SETTABLE_FIELDS:
+            continue
+        event[field] = value
+        if field in ("start_time", "end_time"):
+            moved_an_end = True
+
+    if moved_an_end:
+        start, end = event.get("start_time"), event.get("end_time")
+        if start and end:
+            try:
+                from datetime import datetime as _dt
+                delta = (_dt.fromisoformat(end) - _dt.fromisoformat(start)).total_seconds()
+                event["duration_minutes"] = max(0, int(delta / 60))
+            except (ValueError, TypeError):
+                pass
+
 
 def _date_part(timestamp: str | None) -> str | None:
     """The YYYY-MM-DD prefix of an ISO timestamp, or None if there isn't one.
@@ -135,6 +187,7 @@ class EventsService:
             event.setdefault("category", None)
             event.setdefault("tags", [])
             event.setdefault("state", "suggested")
+            event.setdefault("user_set", {})
         path = self._file_path(date)
         payload = json.dumps(events, indent=2)
         with fs_span("write", path, "events") as span:
@@ -145,7 +198,7 @@ class EventsService:
         self,
         date: str,
         name: str,
-        start_time: str,
+        start_time: str | None,
         end_time: str | None = None,
         location: dict | None = None,
         activity: str | None = None,
@@ -155,6 +208,7 @@ class EventsService:
         event_type: str | None = None,
         source_ids: dict | None = None,
         category: str | None = None,
+        logical_id: str | None = None,
     ) -> dict:
         """Create a new event and persist it.
 
@@ -192,7 +246,13 @@ class EventsService:
             "name": name,
             "type": resolved_type,
             "start_time": start_time,
-            "end_time": end_time or start_time,
+            # No `or start_time` fallback: a caller that gives only a start
+            # means "incomplete", and silently completing it as a
+            # zero-duration event would make `is_complete()` return True
+            # forever, hiding the block from the follow-up incomplete
+            # capture exists to prompt. A caller that wants a real instant
+            # (a photo, say) says so explicitly by passing both.
+            "end_time": end_time,
             "duration_minutes": duration,
             "location": location,
             "activity": activity if activity is not None else category,
@@ -202,6 +262,7 @@ class EventsService:
             "photos": [],
             "assets": None,
             "tokens_earned": 0,
+            "logical_id": logical_id,
         }
 
         if photo_path:
@@ -219,6 +280,8 @@ class EventsService:
         event_id: str,
         updates: dict,
         new_date: str | None = None,
+        user_set_fields: list[str] | None = None,
+        revert_fields: list[str] | None = None,
     ) -> dict:
         """Update fields on an existing event, relocating it when its day changes.
 
@@ -241,6 +304,10 @@ class EventsService:
         source_date = self.resolve_event_date(event_id, date)
         if source_date is None:
             return {"error": f"Event {event_id} not found"}
+        # Copy: this function re-dates timestamps and writes duration into
+        # the mapping, and doing that to the caller's dict is a side effect
+        # on an argument.
+        updates = dict(updates)
         events = self.get_events(source_date)
 
         for index, event in enumerate(events):
@@ -257,9 +324,25 @@ class EventsService:
                         if moved is not None:
                             updates[field] = moved
 
-            # Recalculate duration if times changed
+            # Reject an interval that ends before it starts. This used to
+            # persist silently: `day_coverage` drops such a span so the
+            # numbers stayed right, but `/day` rendered `21:00–19:00` and
+            # the block counted for nothing.
             start = updates.get("start_time", event.get("start_time"))
             end = updates.get("end_time", event.get("end_time"))
+            if start and end:
+                from datetime import datetime as _dt
+                try:
+                    if _dt.fromisoformat(end) < _dt.fromisoformat(start):
+                        return {
+                            "error": (
+                                f"End {end} is before start {start} — refusing to "
+                                "write an inverted interval"
+                            )
+                        }
+                except (ValueError, TypeError):
+                    pass
+
             if "start_time" in updates or "end_time" in updates:
                 if start and end and start != end:
                     from datetime import datetime as _dt
@@ -271,6 +354,17 @@ class EventsService:
                         pass
 
             event.update(updates)
+
+            # Provenance. Revert first, then pin: naming a field in both
+            # reverts it and pins the new value, which is the only reading
+            # under which a single call cannot contradict itself.
+            pinned = dict(event.get("user_set") or {})
+            for field in revert_fields or []:
+                pinned.pop(field, None)
+            for field in user_set_fields or []:
+                if field in USER_SETTABLE_FIELDS and field in updates:
+                    pinned[field] = updates[field]
+            event["user_set"] = pinned
 
             target_date = _date_part(event.get("start_time")) or new_date or source_date
             if target_date == source_date:
@@ -469,6 +563,16 @@ class EventsService:
                     break
 
             if matched_existing:
+                # Claiming a persisted event retires *all* of its lookup
+                # keys, not just the one that matched. An event reachable
+                # under two keys (say `note_line` and `calendar_id`) would
+                # otherwise be handed back a second time to whichever fresh
+                # event matches the other key, and reconcile would return
+                # the same dict — same `id` — twice: `/day` renders the
+                # block twice and it never settles.
+                for _key, _val in (matched_existing.get("source_ids") or {}).items():
+                    existing_by_source.pop(f"{_key}:{_val}", None)
+
                 # Update from fresh source, keep persisted data. These
                 # fields are re-derived from the vault on every merge —
                 # `completed` and `habit` (streak/tokens_earned/etc.) are
@@ -484,9 +588,21 @@ class EventsService:
                 matched_existing["end_time"] = fresh.get("end_time", matched_existing.get("end_time"))
                 matched_existing["location"] = fresh.get("location", matched_existing.get("location"))
                 matched_existing["source"] = fresh.get("source", matched_existing.get("source"))
+                # `calendar` says which Google calendar the event came from,
+                # and ownership is decided from it. It is re-derived every
+                # merge like `name`/`start_time`, so it belongs here and not
+                # among the preserved enrichment — without this, an event
+                # persisted before the field existed never acquires one and
+                # every edit fails open into a doomed patch reported as
+                # `update_failed` rather than `not_in_mazkir_calendar`.
+                matched_existing["calendar"] = fresh.get("calendar", matched_existing.get("calendar"))
                 matched_existing["source_ids"] = fresh_source_ids
                 matched_existing["completed"] = fresh.get("completed", False)
                 matched_existing["habit"] = fresh.get("habit")
+                # The user gets the last word. Everything above re-derives
+                # from the source; this puts back the fields the user
+                # explicitly set, and only those.
+                apply_user_set(matched_existing)
                 result.append(matched_existing)
             else:
                 result.append(fresh)

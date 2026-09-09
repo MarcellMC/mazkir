@@ -219,9 +219,12 @@ class TestDailyBlocks:
 
         fields = set(DailyResponse.model_fields)
         assert "schedule" not in fields
+        # Exact set, deliberately: this is the tripwire that catches a field
+        # arriving without anyone deciding it should. Extend it only when the
+        # design doc calls for the new field, never to make a run go green.
         assert fields == {
             "date", "tokens_today", "tokens_total",
-            "blocks", "gaps", "coverage", "todos", "notes",
+            "blocks", "gaps", "coverage", "incomplete", "todos", "notes",
         }
 
     def test_builds_blocks_and_gaps_from_events(self):
@@ -408,6 +411,37 @@ class TestGetDailyRoute:
         assert today.elapsed_minutes == 600
         assert 0 < today.elapsed_minutes < 1440
 
+    def test_incomplete_blocks_reach_the_response(self):
+        """The builders are covered in isolation, but the wiring was not:
+        deleting `incomplete=incomplete` from `get_daily` left every server
+        test passing, because the pydantic field defaults to []. A feature
+        that ships invisible is Bug A's shape again — which is the very bug
+        this array exists to fix."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        async def _one_incomplete(target_date):
+            return {
+                "date": target_date.isoformat(),
+                "events": [{
+                    "id": "evt_1", "name": "Dog walk",
+                    "start_time": "2026-09-08T16:00:00", "end_time": None,
+                    "source": "manual", "type": "manual",
+                }],
+                "summary": {},
+            }
+
+        with patch("src.main.get_vault", return_value=self._vault()), \
+                patch("src.api.routes.events.get_events_preview", side_effect=_one_incomplete):
+            body = TestClient(app).get("/daily", params={"date": "2026-09-08"}).json()
+
+        assert body["blocks"] == []
+        assert len(body["incomplete"]) == 1
+        assert body["incomplete"][0]["title"] == "Dog walk"
+        assert body["incomplete"][0]["missing"] == ["end_time"]
+        assert body["incomplete"][0]["start"] == "16:00"
+
     def test_traversal_date_is_rejected(self):
         from fastapi.testclient import TestClient
         from src.main import app
@@ -453,3 +487,61 @@ class TestBlockCompletion:
                          habit={"name": "Dog walk", "completed": True})],
             "2026-08-29", elapsed_minutes=1440)
         assert blocks[0].completed is True
+
+
+class TestIncompleteBlocks:
+    """A block missing an end used to be dropped by `continue`.
+
+    That is Bug A's exact shape — written correctly, parsed correctly,
+    invisible — and it is why partial capture needs its own array rather
+    than relying on the timeline.
+    """
+
+    def test_block_missing_an_end_is_reported_not_dropped(self):
+        from src.api.routes.daily import _build_blocks_and_coverage, _build_incomplete
+        events = [{"id": "evt_1", "name": "Dog walk", "start_time": "2026-09-08T16:00:00",
+                   "end_time": None, "source": "manual", "type": "manual"}]
+        blocks, _, _ = _build_blocks_and_coverage(events, "2026-09-08", 1440)
+        incomplete = _build_incomplete(events, "2026-09-08")
+        assert blocks == []
+        assert len(incomplete) == 1
+        assert incomplete[0].title == "Dog walk"
+        assert incomplete[0].missing == ["end_time"]
+        assert incomplete[0].start == "16:00"
+
+    def test_block_missing_a_start_reports_its_end(self):
+        from src.api.routes.daily import _build_incomplete
+        incomplete = _build_incomplete(
+            [{"id": "evt_1", "name": "Dog walk", "start_time": None,
+              "end_time": "2026-09-08T16:40:00", "source": "manual", "type": "manual"}],
+            "2026-09-08",
+        )
+        assert incomplete[0].missing == ["start_time"]
+        assert incomplete[0].end == "16:40"
+        assert incomplete[0].start is None
+
+    def test_incomplete_blocks_do_not_change_coverage(self):
+        """The gap is the reason to finish the block. A half-block that
+        quietly claimed the span would hide the very hole it represents."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+        _, gaps_with, coverage_with = _build_blocks_and_coverage(
+            [{"id": "evt_1", "name": "Dog walk", "start_time": "2026-09-08T16:00:00",
+              "end_time": None, "source": "manual", "type": "manual"}],
+            "2026-09-08", 1440,
+        )
+        _, gaps_without, coverage_without = _build_blocks_and_coverage(
+            [], "2026-09-08", 1440,
+        )
+        assert coverage_with.covered_minutes == coverage_without.covered_minutes
+        assert len(gaps_with) == len(gaps_without)
+
+    def test_event_belonging_to_another_day_is_still_dropped(self):
+        """Present-but-elsewhere and genuinely-absent both make
+        `minutes_into_day` return None; only the second is incomplete."""
+        from src.api.routes.daily import _build_blocks_and_coverage, _build_incomplete
+        events = [{"id": "evt_1", "name": "Yesterday", "start_time": "2026-09-07T16:00:00",
+                   "end_time": "2026-09-07T17:00:00", "source": "manual", "type": "manual"}]
+        blocks, _, _ = _build_blocks_and_coverage(events, "2026-09-08", 1440)
+        incomplete = _build_incomplete(events, "2026-09-08")
+        assert blocks == []
+        assert incomplete == []

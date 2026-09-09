@@ -720,7 +720,9 @@ class TestEventTools:
         events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
         calendar_mock.create_event = AsyncMock(return_value="gcal_event_123")
 
-        result = agent._tool_create_event({"name": "Lunch", "start_time": "12:30"})
+        result = agent._tool_create_event({
+            "name": "Lunch", "start_time": "12:30", "end_time": "13:00",
+        })
 
         assert result["data"]["calendar_sync"] == {
             "ok": True,
@@ -737,7 +739,9 @@ class TestEventTools:
         events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
         calendar_mock.create_event = MagicMock(side_effect=Exception("GCal error"))
 
-        result = agent._tool_create_event({"name": "Dinner", "start_time": "19:00"})
+        result = agent._tool_create_event({
+            "name": "Dinner", "start_time": "19:00", "end_time": "20:00",
+        })
 
         sync = result["data"]["calendar_sync"]
         assert sync["ok"] is False
@@ -751,7 +755,9 @@ class TestEventTools:
         events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
         calendar_mock.create_event = AsyncMock(return_value=None)
 
-        result = agent._tool_create_event({"name": "Walk", "start_time": "10:00"})
+        result = agent._tool_create_event({
+            "name": "Walk", "start_time": "10:00", "end_time": "10:30",
+        })
 
         sync = result["data"]["calendar_sync"]
         assert sync["ok"] is False
@@ -763,7 +769,9 @@ class TestEventTools:
         events_mock.create_event.return_value = {"id": "evt_new", "path": "p.json"}
         agent.calendar = None
 
-        result = agent._tool_create_event({"name": "Walk", "start_time": "10:00"})
+        result = agent._tool_create_event({
+            "name": "Walk", "start_time": "10:00", "end_time": "10:30",
+        })
 
         assert result["data"]["calendar_sync"] == {
             "ok": False,
@@ -779,6 +787,7 @@ class TestEventTools:
         result = agent._tool_create_event({
             "name": "Sunset",
             "start_time": "20:00",
+            "end_time": "20:15",
             "photo_path": "media/2026-08-17/sunset.jpg",
         })
 
@@ -901,12 +910,46 @@ class TestEventTools:
             "name": "Afternoon walk",
             "date": "2026-06-07",
             "start_time": "15:00",
+            "end_time": "15:45",
         })
 
         assert result["ok"] is True
         _, written_body = vault.write_daily_note.call_args[0]
+        # The existing start-only line round-trips untouched — an end is
+        # optional in the *format*; it is only a newly created block that
+        # has to be complete before it earns a line.
         assert "- 09:00 Standup" in written_body
-        assert "- 15:00 Afternoon walk" in written_body
+        assert "- 15:00–15:45 Afternoon walk" in written_body
+
+    def test_create_event_skips_schedule_for_an_incomplete_block(self, agent, mock_services):
+        """'Just got back from the dog walk' records an end and no start.
+        `render_schedule_section` has no null handling, so writing one
+        anyway appended `- None-16:40 Dog walk`, which `parse_schedule_section`
+        cannot re-parse and which is therefore silently dropped the next
+        time anything rewrites the section: written wrong, then lost."""
+        vault = mock_services[1]
+        events_mock = mock_services[4]
+        agent.calendar = None
+        events_mock.create_event.return_value = {"id": "evt_i", "path": "data/events/2026-09-08.json"}
+        vault.read_daily_note.return_value = {"content": "## Schedule\n- 09:00 Standup\n"}
+
+        result = agent._tool_create_event({
+            "name": "Dog walk", "date": "2026-09-08", "end_time": "16:40",
+        })
+
+        assert result["ok"] is True
+        vault.write_daily_note.assert_not_called()
+
+    def test_create_event_skips_schedule_when_there_is_no_time_at_all(self, agent, mock_services):
+        vault = mock_services[1]
+        events_mock = mock_services[4]
+        agent.calendar = None
+        events_mock.create_event.return_value = {"id": "evt_n", "path": "data/events/2026-09-08.json"}
+
+        result = agent._tool_create_event({"name": "Nap", "date": "2026-09-08"})
+
+        assert result["ok"] is True
+        vault.write_daily_note.assert_not_called()
 
     def test_create_event_skips_schedule_for_photo(self, agent, mock_services):
         vault = mock_services[1]
@@ -1038,29 +1081,49 @@ class TestEventTools:
         """CalendarService has no move call, so the upstream entry stays put.
 
         Reporting a clean move would be a lie the user only discovers when
-        the old day re-merges the event back.
+        the old day re-merges the event back. The moved event carries real
+        start/end times — a moved event stays complete, EventsService only
+        detaches its source_ids — so `is_complete` is True and calendar_id
+        reads as empty; without a guard for `moved_from` the sync block
+        would read that as "not in the calendar yet" and issue a real
+        create_event call, leaving an orphaned duplicate at the new date
+        while still reporting cross_date_move_not_supported.
         """
+        from unittest.mock import AsyncMock
         events_mock = mock_services[4]
         events_mock.resolve_event_date.return_value = "2026-09-08"
         events_mock.update_event.return_value = {
             "updated": True,
             "date": "2026-09-07",
             "moved_from": "2026-09-08",
-            "event": {"moved_from_source_ids": {"calendar_id": "gcal_123"}},
+            "event": {
+                "start_time": "2026-09-07T10:00:00",
+                "end_time": "2026-09-07T10:30:00",
+                "moved_from_source_ids": {"calendar_id": "gcal_123"},
+            },
         }
         events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+        agent.calendar.update_event = AsyncMock(return_value=True)
 
         result = agent._tool_update_event({"event_id": "evt_abc", "new_date": "2026-09-07"})
 
+        agent.calendar.create_event.assert_not_awaited()
+        agent.calendar.update_event.assert_not_awaited()
         sync = result["data"]["calendar_sync"]
         assert sync["ok"] is False
         # attempted: True — the prompt tells the agent to stay quiet about
         # attempted: false, and this is something the user has to hear.
         assert sync["attempted"] is True
         assert sync["event_id"] == "gcal_123"
+        assert sync["reason"] == "cross_date_move_not_supported"
         assert "2026-09-08" in sync["detail"]
 
-    def test_same_day_update_reports_no_calendar_verdict(self, agent, mock_services):
+    def test_same_day_update_of_an_incomplete_block_reports_incomplete(self, agent, mock_services):
+        """A same-day edit now always carries a calendar_sync verdict — an
+        empty stored event has no start/end, so the verdict is 'incomplete'
+        rather than silence."""
         events_mock = mock_services[4]
         events_mock.resolve_event_date.return_value = "2026-09-08"
         events_mock.update_event.return_value = {
@@ -1070,7 +1133,7 @@ class TestEventTools:
 
         result = agent._tool_update_event({"event_id": "evt_abc", "start_time": "16:30"})
 
-        assert "calendar_sync" not in result["data"]
+        assert result["data"]["calendar_sync"]["reason"] == "incomplete"
 
 
 class TestDeleteEventTool:
@@ -1207,6 +1270,39 @@ class TestDeleteEventTool:
         text = render_preview("delete_event", {"event_id": "evt_dup"}, ctx={"events": None})
 
         assert "evt_dup" in text
+
+    def test_delete_event_preview_resolves_a_block_reference(self, agent, mock_services):
+        """block_reference is reachable on delete_event now that the schema
+        allows it — the preview must not fall back to a bare `?` for it."""
+        from src.services.preview import render_preview
+
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.get_events.return_value = [{
+            "id": "evt_dup",
+            "name": "Lunch",
+            "start_time": "2026-09-08T13:00:00",
+            "source_ids": {},
+        }]
+
+        text = render_preview(
+            "delete_event", {"block_reference": "lunch"}, ctx={"events": events_mock},
+        )
+
+        assert "Lunch" in text
+        assert "2026-09-08 13:00" in text
+
+    def test_delete_event_preview_names_the_reference_when_unresolvable(self, agent):
+        """A destructive action's confirmation must never say only `?` —
+        naming what the user typed is strictly more information, even when
+        nothing could be matched to it."""
+        from src.services.preview import render_preview
+
+        text = render_preview(
+            "delete_event", {"block_reference": "gym"}, ctx={"events": None},
+        )
+
+        assert "gym" in text
 
     def test_attach_photo_calls_service(self, agent, mock_services):
         events_mock = mock_services[4]
@@ -2311,3 +2407,981 @@ class TestMirrorInvariantGuidelines:
     def test_static_prefix_forbids_reasoning_from_absence(self, agent):
         prefix = agent._build_static_prefix()
         assert "no record, not proof of inaction" in prefix
+
+
+class TestListEventsReconciles:
+    """`list_events` must show the day `/day` shows.
+
+    It used to read `EventsService.get_events` — the raw persisted file —
+    while `/day` rendered a reconciled view that is deliberately not
+    persisted. A calendar block the user was looking at could be entirely
+    absent from what the agent saw.
+    """
+
+    def test_list_events_uses_the_reconciled_view(self, agent, mock_services):
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.return_value = [{
+            "id": "evt_1", "name": "Standup",
+            "start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T10:30:00",
+            "source": "calendar", "source_ids": {"calendar_id": "gcal_1"},
+        }]
+
+        async def fake_merge(date):
+            return [], {"calendar"}
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            result = agent._tool_list_events({"date": "2026-09-08"})
+
+        assert result["ok"] is True
+        assert result["data"]["events"][0]["name"] == "Standup"
+        events_mock.reconcile.assert_called_once()
+        # Reading must not write: `/day` navigation relies on that, and the
+        # agent listing a day is the same kind of read.
+        events_mock.refresh_events.assert_not_called()
+
+    def test_listed_events_report_completeness(self, agent, mock_services):
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.return_value = [
+            {"id": "evt_1", "name": "Standup",
+             "start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T10:30:00"},
+            {"id": "evt_2", "name": "Dog walk",
+             "start_time": None, "end_time": "2026-09-08T16:40:00"},
+        ]
+
+        async def fake_merge(date):
+            return [], set()
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            result = agent._tool_list_events({"date": "2026-09-08"})
+
+        by_id = {e["id"]: e for e in result["data"]["events"]}
+        assert by_id["evt_1"]["complete"] is True
+        assert by_id["evt_2"]["complete"] is False
+
+    def test_listed_events_carry_their_date(self, agent, mock_services):
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.return_value = [
+            {"id": "evt_1", "name": "Standup", "start_time": "2026-09-08T10:00:00",
+             "end_time": "2026-09-08T10:30:00"},
+        ]
+
+        async def fake_merge(date):
+            return [], set()
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            result = agent._tool_list_events({"date": "2026-09-08"})
+
+        assert result["data"]["events"][0]["date"] == "2026-09-08"
+
+    def test_merge_failure_falls_back_to_the_persisted_store(self, agent, mock_services):
+        """A source outage must degrade to the stored day, never to nothing:
+        an empty list would read to the agent as 'that block does not
+        exist', which is the shape of the denial bug Ship 3 fixed."""
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.get_events.return_value = [
+            {"id": "evt_1", "name": "Standup",
+             "start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T10:30:00"},
+        ]
+
+        async def boom(date):
+            raise RuntimeError("calendar unreachable")
+
+        with patch("src.services.day_assembly.merge_from_sources", boom):
+            result = agent._tool_list_events({"date": "2026-09-08"})
+
+        assert result["ok"] is True
+        assert result["data"]["events"][0]["id"] == "evt_1"
+        assert result["data"]["degraded"] is True
+
+    def test_reconcile_bug_propagates_rather_than_reading_as_degraded(self, agent, mock_services):
+        """A bug in `reconcile` itself — pure local logic, not a source call —
+        must surface as a real error, not be laundered into "the calendar was
+        unavailable". Only `merge_from_sources` failures may degrade."""
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.side_effect = KeyError("logical_id")
+
+        async def fake_merge(date):
+            return [], set()
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            with pytest.raises(KeyError):
+                agent._tool_list_events({"date": "2026-09-08"})
+
+    def test_reconciled_events_with_no_events_service_is_degraded_not_a_crash(self, agent):
+        agent.events = None
+        events, degraded = agent._reconciled_events("2026-09-08")
+        assert events == []
+        assert degraded is True
+
+
+class TestCreateEventIntervals:
+    def test_start_and_duration_derives_the_end(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_1", "path": "data/events/2026-09-08.json"}
+        agent.calendar = None
+
+        agent._tool_create_event({
+            "name": "Dog walk", "date": "2026-09-08",
+            "start_time": "16:00", "duration_minutes": 40,
+        })
+
+        kwargs = events_mock.create_event.call_args.kwargs
+        assert kwargs["start_time"] == "2026-09-08T16:00:00"
+        assert kwargs["end_time"] == "2026-09-08T16:40:00"
+
+    def test_end_and_duration_derives_the_start(self, agent, mock_services):
+        """'Just got back from the 40-minute dog walk.'"""
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_1", "path": "p"}
+        agent.calendar = None
+
+        agent._tool_create_event({
+            "name": "Dog walk", "date": "2026-09-08",
+            "end_time": "16:40", "duration_minutes": 40,
+        })
+
+        kwargs = events_mock.create_event.call_args.kwargs
+        assert kwargs["start_time"] == "2026-09-08T16:00:00"
+
+    def test_contradictory_values_are_rejected(self, agent, mock_services):
+        events_mock = mock_services[4]
+        agent.calendar = None
+
+        result = agent._tool_create_event({
+            "name": "Gym", "date": "2026-09-08",
+            "start_time": "18:00", "end_time": "19:00", "duration_minutes": 90,
+        })
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "SCHEMA_INVALID"
+        events_mock.create_event.assert_not_called()
+
+    def test_one_endpoint_creates_an_incomplete_block(self, agent, mock_services):
+        """'Just got back from the dog walk' — the end is now, the start is
+        unknown, and inventing one is how a block gets shifted by its own
+        length."""
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_1", "path": "p"}
+        agent.calendar = None
+
+        result = agent._tool_create_event({
+            "name": "Dog walk", "date": "2026-09-08", "end_time": "16:40",
+        })
+
+        kwargs = events_mock.create_event.call_args.kwargs
+        assert kwargs["start_time"] is None
+        assert kwargs["end_time"] == "2026-09-08T16:40:00"
+        assert result["data"]["complete"] is False
+        assert result["data"]["calendar_sync"]["reason"] == "incomplete"
+
+    def test_date_description_explains_the_overnight_anchor(self, agent):
+        """`date` defaults to today and derive_interval reads a reversed pair
+        as "the end is the next day", so "slept 23:30 to 07:15" said at 08:00
+        logs *tonight* unless the model knows to pass yesterday. Nothing said
+        so; the description is half of where it now does (the other half is
+        the rule in memory/00-system/skills/time-management.md)."""
+        desc = agent.tools["create_event"]["schema"]["input_schema"]["properties"]["date"]["description"]
+        assert "midnight" in desc.lower()
+        assert "started" in desc.lower()
+
+    def test_name_is_the_only_required_field(self, agent):
+        schema = agent.tools["create_event"]["schema"]["input_schema"]
+        assert schema["required"] == ["name"]
+        assert "duration_minutes" in schema["properties"]
+
+    def test_photo_with_only_a_start_is_a_complete_moment_not_a_block(self, agent, mock_services):
+        """A photo is a moment with a known time, not an unfinished block —
+        the one place a zero-length event is deliberately synthesised
+        rather than stated. Without this it would land in the same 'needs
+        a time' list as a genuinely incomplete capture."""
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_1", "path": "p"}
+        agent.calendar = None
+
+        result = agent._tool_create_event({
+            "name": "Sunset", "date": "2026-09-08", "start_time": "20:00",
+            "photo_path": "media/2026-09-08/sunset.jpg",
+        })
+
+        kwargs = events_mock.create_event.call_args.kwargs
+        assert kwargs["start_time"] == "2026-09-08T20:00:00"
+        assert kwargs["end_time"] == "2026-09-08T20:00:00"
+        assert result["data"]["complete"] is True
+
+
+class TestCreateEventMidnight:
+    def test_sleep_splits_into_two_fragments(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.create_event.side_effect = [
+            {"id": "evt_a", "path": "data/events/2026-09-08.json"},
+            {"id": "evt_b", "path": "data/events/2026-09-09.json"},
+        ]
+        agent.calendar = None
+
+        result = agent._tool_create_event({
+            "name": "Sleep", "date": "2026-09-08",
+            "start_time": "23:30", "end_time": "07:15",
+        })
+
+        assert events_mock.create_event.call_count == 2
+        first, second = [c.kwargs for c in events_mock.create_event.call_args_list]
+        assert first["date"] == "2026-09-08"
+        assert first["start_time"] == "2026-09-08T23:30:00"
+        assert first["end_time"] == "2026-09-08T23:59:59"
+        assert second["date"] == "2026-09-09"
+        assert second["start_time"] == "2026-09-09T00:00:00"
+        assert second["end_time"] == "2026-09-09T07:15:00"
+        assert first["logical_id"] == second["logical_id"]
+        assert result["data"]["calendar_sync"]["reason"] == "crosses_midnight"
+        assert result["data"]["calendar_sync"]["attempted"] is False
+
+
+class TestUpdateEventDuration:
+    """The second half of a partial capture.
+
+    "Just got back from the dog walk" writes an end and no start; "it was 40
+    minutes" is the sentence that finishes it, and before this it had nowhere
+    to land — the model had to compute 16:40 minus 40 itself, the exact
+    arithmetic §3.1 moved into Python after it shifted a block by its own
+    length on 2026-08-16.
+    """
+
+    @staticmethod
+    def _wire(mock_services, stored):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.get_events.return_value = [stored]
+        events_mock.update_event.return_value = {
+            "updated": True, "event": {}, "date": "2026-09-08",
+        }
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        return events_mock
+
+    def test_duration_against_a_known_end_derives_the_start(self, agent, mock_services):
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Dog walk",
+            "start_time": None, "end_time": "2026-09-08T16:40:00",
+        })
+        agent.calendar = None
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "duration_minutes": 40,
+        })
+
+        assert result["ok"] is True
+        updates = events_mock.update_event.call_args.kwargs["updates"]
+        assert updates["start_time"] == "2026-09-08T16:00:00"
+        assert updates["end_time"] == "2026-09-08T16:40:00"
+
+    def test_duration_against_a_known_start_derives_the_end(self, agent, mock_services):
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Nap",
+            "start_time": "2026-09-08T14:00:00", "end_time": None,
+        })
+        agent.calendar = None
+
+        agent._tool_update_event({"event_id": "evt_1", "duration_minutes": 25})
+
+        updates = events_mock.update_event.call_args.kwargs["updates"]
+        assert updates["end_time"] == "2026-09-08T14:25:00"
+
+    def test_an_endpoint_supplied_in_the_same_call_counts_as_known(self, agent, mock_services):
+        """Both halves can arrive in one sentence: 'the dog walk ended at
+        16:40 and took 40 minutes'."""
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Dog walk", "start_time": None, "end_time": None,
+        })
+        agent.calendar = None
+
+        agent._tool_update_event({
+            "event_id": "evt_1", "end_time": "16:40", "duration_minutes": 40,
+        })
+
+        updates = events_mock.update_event.call_args.kwargs["updates"]
+        assert updates["start_time"] == "2026-09-08T16:00:00"
+
+    def test_an_endpoint_named_in_the_call_outranks_a_stored_one(self, agent, mock_services):
+        """"It ended at 16:40 and took 40 minutes" on a block that already
+        has a start must move the start. Anchoring on the stored start would
+        recompute the end the user had just stated."""
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Dog walk",
+            "start_time": "2026-09-08T15:00:00", "end_time": "2026-09-08T15:30:00",
+        })
+        agent.calendar = None
+
+        agent._tool_update_event({
+            "event_id": "evt_1", "end_time": "16:40", "duration_minutes": 40,
+        })
+
+        updates = events_mock.update_event.call_args.kwargs["updates"]
+        assert updates["end_time"] == "2026-09-08T16:40:00"
+        assert updates["start_time"] == "2026-09-08T16:00:00"
+
+    def test_a_bare_duration_on_a_complete_block_keeps_the_start(self, agent, mock_services):
+        """"Actually it was 90 minutes" with nothing else named: the start
+        stays put and the end moves."""
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Gym",
+            "start_time": "2026-09-08T18:00:00", "end_time": "2026-09-08T19:00:00",
+        })
+        agent.calendar = None
+
+        agent._tool_update_event({"event_id": "evt_1", "duration_minutes": 90})
+
+        updates = events_mock.update_event.call_args.kwargs["updates"]
+        assert updates["start_time"] == "2026-09-08T18:00:00"
+        assert updates["end_time"] == "2026-09-08T19:30:00"
+
+    def test_a_block_with_neither_endpoint_is_rejected(self, agent, mock_services):
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Nap", "start_time": None, "end_time": None,
+        })
+        agent.calendar = None
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "duration_minutes": 25,
+        })
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "SCHEMA_INVALID"
+        assert "start_time" in result["error"]["message"]
+        assert "end_time" in result["error"]["message"]
+        events_mock.update_event.assert_not_called()
+
+    def test_three_disagreeing_values_are_rejected(self, agent, mock_services):
+        """Same rule as create_event: two of the three are wrong and nothing
+        here can tell which, so guessing would corrupt the day silently."""
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Gym", "start_time": None, "end_time": None,
+        })
+        agent.calendar = None
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "start_time": "18:00", "end_time": "19:00",
+            "duration_minutes": 90,
+        })
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "SCHEMA_INVALID"
+        events_mock.update_event.assert_not_called()
+
+    def test_derived_endpoints_are_pinned(self, agent, mock_services):
+        """An unpinned endpoint is put back by the very next merge — the
+        §1.2 revert, arriving via the duration path instead of the name."""
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Dog walk",
+            "start_time": None, "end_time": "2026-09-08T16:40:00",
+        })
+        agent.calendar = None
+
+        agent._tool_update_event({"event_id": "evt_1", "duration_minutes": 40})
+
+        pinned = events_mock.update_event.call_args.kwargs["user_set_fields"]
+        assert set(pinned) == {"start_time", "end_time"}
+
+    def test_new_date_with_a_duration_is_refused(self, agent, mock_services):
+        """"That dog walk was yesterday, and it was 40 minutes."
+
+        Both derived endpoints land in `updates`, anchored on a stored
+        timestamp that still carries the OLD date, and
+        `EventsService.update_event` re-dates for `new_date` only the fields
+        `updates` does not already carry — so nothing is re-dated, the row
+        never leaves its original file, and the tool returns ok with no
+        `moved_from` for the agent to notice. It would report a move that
+        did not happen.
+        """
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Dog walk",
+            "start_time": "2026-09-08T16:00:00", "end_time": "2026-09-08T16:40:00",
+        })
+        agent.calendar = None
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "new_date": "2026-09-07", "duration_minutes": 40,
+        })
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "SCHEMA_INVALID"
+        events_mock.update_event.assert_not_called()
+
+    def test_a_bare_new_date_still_moves_the_event(self, agent, mock_services):
+        """The guard must refuse only the combination — a move on its own
+        re-dates correctly and still reports `moved_from`."""
+        events_mock = self._wire(mock_services, {
+            "id": "evt_1", "name": "Dog walk",
+            "start_time": "2026-09-08T16:00:00", "end_time": "2026-09-08T16:40:00",
+        })
+        events_mock.update_event.return_value = {
+            "updated": True, "event": {}, "date": "2026-09-07",
+            "moved_from": "2026-09-08",
+        }
+        agent.calendar = None
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "new_date": "2026-09-07",
+        })
+
+        assert result["ok"] is True
+        assert events_mock.update_event.call_args.kwargs["new_date"] == "2026-09-07"
+        assert result["data"]["moved_from"] == "2026-09-08"
+
+    def test_duration_is_in_the_schema(self, agent):
+        props = agent.tools["update_event"]["schema"]["input_schema"]["properties"]
+        assert "duration_minutes" in props
+
+
+class TestUpdateEventShiftAndReference:
+    def test_shift_minutes_moves_both_ends(self, agent, mock_services):
+        """'Move gym -30m'. A start-only update stretches the block instead
+        — verified on c3ffcee: 18:00-19:00 became 17:30-19:00, 90 minutes."""
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.get_events.return_value = [{
+            "id": "evt_1", "name": "Gym",
+            "start_time": "2026-09-08T18:00:00", "end_time": "2026-09-08T19:00:00",
+        }]
+        events_mock.update_event.return_value = {"updated": True, "event": {}, "date": "2026-09-08"}
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        agent.calendar = None
+
+        agent._tool_update_event({"event_id": "evt_1", "shift_minutes": -30})
+
+        updates = events_mock.update_event.call_args.kwargs["updates"]
+        assert updates["start_time"] == "2026-09-08T17:30:00"
+        assert updates["end_time"] == "2026-09-08T18:30:00"
+
+    def test_shift_on_an_incomplete_block_is_rejected(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.get_events.return_value = [{
+            "id": "evt_1", "name": "Dog walk",
+            "start_time": None, "end_time": "2026-09-08T16:40:00",
+        }]
+        agent.calendar = None
+
+        result = agent._tool_update_event({"event_id": "evt_1", "shift_minutes": -30})
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "SCHEMA_INVALID"
+        events_mock.update_event.assert_not_called()
+
+    def test_edited_fields_are_pinned(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.get_events.return_value = [{"id": "evt_1", "name": "Daily sync"}]
+        events_mock.update_event.return_value = {"updated": True, "event": {}, "date": "2026-09-08"}
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        agent.calendar = None
+
+        agent._tool_update_event({"event_id": "evt_1", "name": "Standup"})
+
+        assert events_mock.update_event.call_args.kwargs["user_set_fields"] == ["name"]
+
+    def test_revert_fields_are_forwarded(self, agent, mock_services):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.get_events.return_value = [{"id": "evt_1", "name": "Standup"}]
+        events_mock.update_event.return_value = {"updated": True, "event": {}, "date": "2026-09-08"}
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        agent.calendar = None
+
+        agent._tool_update_event({"event_id": "evt_1", "revert_fields": ["name"]})
+
+        assert events_mock.update_event.call_args.kwargs["revert_fields"] == ["name"]
+
+    def test_block_reference_materialises_the_day(self, agent, mock_services):
+        """An inferred block has no row to update. The edit is explicit
+        write intent, so persisting the reconciled day here is correct —
+        unlike navigation, which must never write."""
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.return_value = [{
+            "id": "evt_gym", "name": "Gym",
+            "start_time": "2026-09-08T18:00:00", "end_time": "2026-09-08T19:00:00",
+        }]
+        events_mock.update_event.return_value = {"updated": True, "event": {}, "date": "2026-09-08"}
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        agent.calendar = None
+
+        async def fake_merge(date):
+            return [], {"calendar"}
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            agent._tool_update_event({"block_reference": "gym", "name": "Workout"})
+
+        events_mock.refresh_events.assert_called_once()
+        assert events_mock.update_event.call_args.kwargs["event_id"] == "evt_gym"
+
+    def test_ambiguous_reference_surfaces_candidates(self, agent, mock_services):
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.return_value = [
+            {"id": "evt_1", "name": "Dog walk", "start_time": "2026-09-08T08:00:00"},
+            {"id": "evt_2", "name": "Evening walk", "start_time": "2026-09-08T19:00:00"},
+        ]
+
+        async def fake_merge(date):
+            return [], set()
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            result = agent._tool_update_event({"block_reference": "walk", "name": "X"})
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "AMBIGUOUS_MATCH"
+        events_mock.update_event.assert_not_called()
+
+    def test_reference_searches_the_selected_date_and_today(self, agent, mock_services):
+        """A stale hint only matters when the block exists on that day and
+        nowhere else, because both days are searched."""
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.return_value = []
+
+        async def fake_merge(date):
+            return [], set()
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            agent._tool_update_event({
+                "block_reference": "gym", "name": "X", "selected_date": "2026-08-20",
+            })
+
+        searched = {c.args[0] for c in events_mock.reconcile.call_args_list}
+        assert "2026-08-20" in searched
+        assert len(searched) == 2
+
+    def test_selected_date_reaches_the_resolver_via_handle_message(self, agent, mock_services):
+        """`handle_message(selected_date=...)` stores it as `self._selected_date`;
+        `_resolve_reference` must fall back to that when the tool call itself
+        carries no `selected_date` param — the model never sets that param,
+        so this fallback is the only way the hint actually reaches a tool
+        call in production."""
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.return_value = []
+
+        # Simulate what handle_message does at the top of the method,
+        # without driving the full agent/Claude loop.
+        agent._selected_date = "2026-08-20"
+
+        async def fake_merge(date):
+            return [], set()
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            agent._tool_update_event({"block_reference": "gym", "name": "X"})
+
+        searched = {c.args[0] for c in events_mock.reconcile.call_args_list}
+        assert "2026-08-20" in searched
+        assert len(searched) == 2
+
+    def test_delete_event_accepts_a_reference(self, agent, mock_services):
+        from unittest.mock import patch
+        events_mock = mock_services[4]
+        events_mock.reconcile.return_value = [
+            {"id": "evt_dup", "name": "Lunch", "start_time": "2026-09-08T13:00:00",
+             "source_ids": {}},
+        ]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.get_events.return_value = [
+            {"id": "evt_dup", "name": "Lunch", "source_ids": {}},
+        ]
+        events_mock.delete_event.return_value = {
+            "deleted": True, "event": {"name": "Lunch"}, "date": "2026-09-08",
+        }
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        agent.calendar = None
+
+        async def fake_merge(date):
+            return [], set()
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            result = agent._tool_delete_event({"block_reference": "lunch"})
+
+        assert result["ok"] is True
+        assert events_mock.delete_event.call_args.kwargs["event_id"] == "evt_dup"
+
+
+class TestResolveReferenceMaterializesWithStableId:
+    def test_block_reference_resolves_to_the_id_the_store_actually_holds(self, tmp_path):
+        """`resolve_block` sees the id from the search-phase merge; the
+        materialise phase re-merges independently and `MergerService`
+        assigns a fresh random id to the same logical event (`id: str =
+        Field(default_factory=lambda: str(uuid.uuid4())[:8])` — no builder
+        overrides it). Returning the search-phase id is a PATH_NOT_FOUND
+        waiting on the very next call, since that id was never persisted.
+        `source_ids` is the stable identity reconcile itself matches on, so
+        resolution must re-find by that after materialising — a real
+        `EventsService` against `tmp_path` is required here because a mock
+        with a fixed `reconcile.return_value` never generates a second,
+        different id and so cannot see this bug."""
+        from unittest.mock import MagicMock, patch
+        from uuid import uuid4
+        import datetime as dt
+        from src.services.events_service import EventsService
+
+        events = EventsService(events_path=tmp_path / "events")
+        agent = AgentService(
+            claude=MagicMock(), vault=MagicMock(), memory=MagicMock(),
+            calendar=None, events=events, media_path=tmp_path / "media",
+        )
+
+        today = dt.date.today().isoformat()
+
+        def _fresh_gym_event():
+            return {
+                "id": uuid4().hex[:8],
+                "name": "Gym",
+                "type": "habit",
+                "start_time": f"{today}T18:00:00",
+                "end_time": f"{today}T19:00:00",
+                "duration_minutes": 60,
+                "source": "habit",
+                "source_ids": {"habit_slug": "gym"},
+            }
+
+        async def fake_merge(date):
+            return [_fresh_gym_event()], {"habit"}
+
+        with patch("src.services.day_assembly.merge_from_sources", fake_merge):
+            result = agent._resolve_reference({"block_reference": "gym"})
+
+        assert result["ok"] is True
+        event_id = result["data"]["event_id"]
+        stored_ids = {e["id"] for e in events.get_events(today)}
+        assert event_id in stored_ids, (
+            f"resolved id {event_id!r} was never persisted; store holds {stored_ids!r}"
+        )
+
+
+class TestUpdateEventCalendarSync:
+    def _stored(self, **over):
+        base = {
+            "id": "evt_1", "name": "Standup",
+            "start_time": "2026-09-08T10:00:00", "end_time": "2026-09-08T10:30:00",
+            "source_ids": {"calendar_id": "gcal_1"}, "calendar": "Mazkir",
+        }
+        base.update(over)
+        return base
+
+    def _wire(self, mock_services, stored):
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock.get_events.return_value = [stored]
+        events_mock.update_event.return_value = {
+            "updated": True, "event": stored, "date": "2026-09-08",
+        }
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        return events_mock
+
+    def test_edit_patches_the_google_entry(self, agent, mock_services):
+        """Without this the ledger changes, Google does not, and the next
+        merge puts the old value back."""
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored())
+        agent.calendar.is_initialized = True
+        agent.calendar.update_event = AsyncMock(return_value=True)
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "Morning sync"})
+
+        agent.calendar.update_event.assert_awaited_once()
+        assert result["data"]["calendar_sync"]["ok"] is True
+
+    def test_event_in_another_calendar_is_not_patched(self, agent, mock_services):
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(calendar="Work"))
+        agent.calendar.is_initialized = True
+        agent.calendar.update_event = AsyncMock(return_value=True)
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        agent.calendar.update_event.assert_not_awaited()
+        assert result["data"]["calendar_sync"]["reason"] == "not_in_mazkir_calendar"
+
+    def test_incomplete_block_is_not_synced(self, agent, mock_services):
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(end_time=None, source_ids={}))
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        agent.calendar.create_event.assert_not_awaited()
+        assert result["data"]["calendar_sync"]["reason"] == "incomplete"
+
+    def test_completing_a_block_creates_its_calendar_entry(self, agent, mock_services):
+        """'Sync it once it's complete' needs no flag: the absence of a
+        calendar_id already records that it is not in the calendar yet."""
+        from unittest.mock import AsyncMock
+        stored = self._stored(source_ids={}, calendar=None)
+        events_mock = self._wire(mock_services, stored)
+        events_mock.update_event.return_value = {
+            "updated": True, "event": stored, "date": "2026-09-08",
+        }
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "end_time": "2026-09-08T10:30:00",
+        })
+
+        agent.calendar.create_event.assert_awaited_once()
+        assert result["data"]["calendar_sync"]["event_id"] == "gcal_new"
+
+    def test_completing_a_block_persists_the_new_calendar_id(self, agent, mock_services):
+        """Without this, the presence of calendar_id never comes to be true,
+        so every later edit re-takes the create branch and produces another
+        duplicate Google Calendar entry."""
+        from unittest.mock import AsyncMock
+        stored = self._stored(source_ids={}, calendar=None)
+        events_mock = self._wire(mock_services, stored)
+        events_mock.update_event.return_value = {
+            "updated": True, "event": stored, "date": "2026-09-08",
+        }
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        agent._tool_update_event({
+            "event_id": "evt_1", "end_time": "2026-09-08T10:30:00",
+        })
+
+        # The first call is the ledger write itself; the second is this
+        # sync block persisting the new calendar_id back into source_ids.
+        assert events_mock.update_event.call_count == 2
+        persist_updates = events_mock.update_event.call_args_list[-1].kwargs["updates"]
+        assert persist_updates["source_ids"]["calendar_id"] == "gcal_new"
+
+    def test_second_edit_after_completion_takes_the_patch_branch(self, agent, mock_services):
+        """'Sync it once it's complete' must not repeat on every later edit
+        — the completion write has to leave calendar_id behind for the next
+        lookup to see, or every edit after the first creates a duplicate."""
+        from unittest.mock import AsyncMock
+        events_mock = mock_services[4]
+        events_mock.resolve_event_date.return_value = "2026-09-08"
+        events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+        agent.calendar.update_event = AsyncMock(return_value=True)
+
+        # The block is completed by this edit — no calendar_id yet.
+        incomplete = self._stored(source_ids={}, calendar=None)
+        events_mock.get_events.return_value = [incomplete]
+        events_mock.update_event.return_value = {
+            "updated": True, "event": incomplete, "date": "2026-09-08",
+        }
+        agent._tool_update_event({
+            "event_id": "evt_1", "end_time": "2026-09-08T10:30:00",
+        })
+        agent.calendar.create_event.assert_awaited_once()
+        agent.calendar.update_event.assert_not_awaited()
+
+        # A second edit now finds calendar_id already present (what the
+        # first call's persistence should have produced) and must patch.
+        now_complete = self._stored(source_ids={"calendar_id": "gcal_new"}, calendar="Mazkir")
+        events_mock.get_events.return_value = [now_complete]
+        events_mock.update_event.return_value = {
+            "updated": True, "event": now_complete, "date": "2026-09-08",
+        }
+        agent._tool_update_event({"event_id": "evt_1", "name": "Renamed"})
+
+        agent.calendar.update_event.assert_awaited_once()
+        assert agent.calendar.create_event.await_count == 1
+
+    def test_photo_event_is_never_synced(self, agent, mock_services):
+        """The update ladder must skip photo events for the same reason
+        create_event does — they are deliberately never pushed to Google."""
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(source="photo"))
+        agent.calendar.is_initialized = True
+        agent.calendar.update_event = AsyncMock(return_value=True)
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        agent.calendar.update_event.assert_not_awaited()
+        agent.calendar.create_event.assert_not_awaited()
+        assert result["data"]["calendar_sync"]["reason"] == "not_applicable"
+
+    def test_midnight_crossing_block_is_not_synced(self, agent, mock_services):
+        """Google stores a midnight-spanning interval as one event; the
+        create path already refuses this, and an edit that produces one
+        must refuse it too rather than push a value the day-fragmenting
+        split can't represent."""
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(
+            start_time="2026-09-08T23:30:00", end_time="2026-09-09T00:30:00",
+            source_ids={}, calendar=None,
+        ))
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        agent.calendar.create_event.assert_not_awaited()
+        assert result["data"]["calendar_sync"]["reason"] == "crosses_midnight"
+
+    def test_patch_failure_without_exception_carries_a_reason(self, agent, mock_services):
+        """attempted: true means the user has to be told something did not
+        happen — a bare ok: False with no reason gives the agent nothing to
+        say."""
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored())
+        agent.calendar.is_initialized = True
+        agent.calendar.update_event = AsyncMock(return_value=False)
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        sync = result["data"]["calendar_sync"]
+        assert sync["ok"] is False
+        assert sync["reason"] == "update_failed"
+
+    def test_a_source_derived_block_is_never_created_in_the_calendar(self, agent, mock_services):
+        """The create branch exists for blocks Mazkir owns. An inferred
+        block — a timed checkbox, a habit, a location visit — is regenerated
+        from its source on every merge, so creating a Google entry for it
+        both duplicates the entry and gives the persisted event a second
+        source_ids key, after which two fresh events match the one
+        persisted row and the block renders twice forever.
+        """
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(
+            source_ids={"note_line": "h"}, calendar=None,
+        ))
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        agent.calendar.create_event.assert_not_awaited()
+        assert result["data"]["calendar_sync"] == {
+            "ok": False, "attempted": False, "reason": "derived_from_source",
+        }
+
+    def test_a_source_derived_block_with_a_calendar_id_is_still_patched(self, agent, mock_services):
+        """The gate is on *creating*, not on syncing: a block that already
+        carries a calendar_id genuinely is a calendar event, whatever else
+        its source_ids say."""
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(
+            source_ids={"note_line": "h", "calendar_id": "gcal_1"}, calendar="Mazkir",
+        ))
+        agent.calendar.is_initialized = True
+        agent.calendar.update_event = AsyncMock(return_value=True)
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
+        agent.calendar.update_event.assert_awaited_once()
+        assert result["data"]["calendar_sync"]["ok"] is True
+
+    def test_create_failure_without_exception_carries_a_reason(self, agent, mock_services):
+        from unittest.mock import AsyncMock
+        stored = self._stored(source_ids={}, calendar=None)
+        events_mock = self._wire(mock_services, stored)
+        events_mock.update_event.return_value = {
+            "updated": True, "event": stored, "date": "2026-09-08",
+        }
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value=None)
+
+        result = agent._tool_update_event({
+            "event_id": "evt_1", "end_time": "2026-09-08T10:30:00",
+        })
+
+        sync = result["data"]["calendar_sync"]
+        assert sync["ok"] is False
+        assert sync["reason"] == "create_failed"
+
+
+class TestIncompleteBlocksInContext:
+    """Push, not pull.
+
+    Ship 3's lesson: the agent will not call a tool to discover something
+    it does not know to look for. Bug B was one iteration and zero tool
+    calls with two read tools in hand.
+    """
+
+    def test_incomplete_blocks_appear_in_the_prompt_tail(self, agent, mock_services):
+        from types import SimpleNamespace
+        events_mock = mock_services[4]
+        events_mock.get_events.return_value = [
+            {"id": "e1", "name": "Dog walk", "start_time": None,
+             "end_time": "2026-09-08T16:40:00"},
+            {"id": "e2", "name": "Standup", "start_time": "2026-09-08T10:00:00",
+             "end_time": "2026-09-08T10:30:00"},
+        ]
+        # test_agent_service.py defines its OWN mock_services fixture, and
+        # unlike conftest.py's it does not set `tz` — leaving `vault.tz` a
+        # MagicMock that `datetime.now()` would silently accept, making the
+        # test pass for the wrong reason.
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
+        ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
+
+        prompt = agent._build_system_prompt(ctx)
+
+        assert "Incomplete blocks today: 1" in prompt
+        assert "Dog walk" in prompt
+        assert "no start time" in prompt
+        assert "Standup" not in prompt
+
+    def test_no_line_when_every_block_is_complete(self, agent, mock_services):
+        from types import SimpleNamespace
+        events_mock = mock_services[4]
+        events_mock.get_events.return_value = [
+            {"id": "e2", "name": "Standup", "start_time": "2026-09-08T10:00:00",
+             "end_time": "2026-09-08T10:30:00"},
+        ]
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
+        ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
+
+        assert "Incomplete blocks" not in agent._build_system_prompt(ctx)
+
+    def test_a_failing_read_costs_the_line_not_the_turn(self, agent, mock_services):
+        from types import SimpleNamespace
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
+        mock_services[4].get_events.side_effect = OSError("disk gone")
+        ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
+
+        prompt = agent._build_system_prompt(ctx)
+
+        assert "Current date/time" in prompt
+        assert "Incomplete blocks" not in prompt
+
+
+class TestSelectedDateInPromptTail:
+    """The hint is almost always redundant with 'Current date/time' — a
+    plain /day with no argument returns today, so it must be suppressed
+    exactly then, or the one time it is informative gets skimmed past."""
+
+    def test_absent_when_selected_date_is_today(self, agent, mock_services):
+        from types import SimpleNamespace
+        import datetime
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
+        mock_services[4].get_events.return_value = []
+        ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
+        agent._selected_date = datetime.datetime.now().strftime("%Y-%m-%d")
+
+        prompt = agent._build_system_prompt(ctx)
+
+        assert "currently viewing" not in prompt
+
+    def test_present_when_selected_date_differs_from_today(self, agent, mock_services):
+        from types import SimpleNamespace
+        import datetime
+        import pytz
+        mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
+        mock_services[4].get_events.return_value = []
+        ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
+        yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        agent._selected_date = yesterday
+
+        prompt = agent._build_system_prompt(ctx)
+
+        assert f"The user is currently viewing {yesterday}." in prompt

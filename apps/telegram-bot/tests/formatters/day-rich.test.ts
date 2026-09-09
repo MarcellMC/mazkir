@@ -544,3 +544,39 @@ describe("buildDayRich", () => {
     expect(spacerAt).toBeLessThan(navAt);
   });
 });
+
+describe("incomplete blocks", () => {
+  it("renders a needs-a-time section", () => {
+    const out = html({
+      ...base,
+      incomplete: [
+        { id: "e1", title: "Dog walk", start: null, end: "16:40",
+          missing: ["start_time"], source: "manual" },
+      ],
+    });
+    expect(out).toContain("Needs a time");
+    expect(out).toContain("Dog walk");
+    expect(out).toContain("16:40");
+  });
+
+  it("omits the section entirely when there are none", () => {
+    expect(html({ ...base, incomplete: [] })).not.toContain("Needs a time");
+  });
+
+  it("survives a payload with no incomplete field at all", () => {
+    // `base` predates this feature and has no `incomplete` key, which is
+    // exactly the shape an older server sends.
+    expect(html(base)).not.toContain("Needs a time");
+  });
+
+  it("escapes the title", () => {
+    const out = html({
+      ...base,
+      incomplete: [
+        { id: "e1", title: "Dog & <walk>", start: null, end: "16:40",
+          missing: ["start_time"], source: "manual" },
+      ],
+    });
+    expect(out).toContain("Dog &amp; &lt;walk&gt;");
+  });
+});

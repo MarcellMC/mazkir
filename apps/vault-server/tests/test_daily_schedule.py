@@ -55,3 +55,29 @@ def test_parse_schedule_at_end_of_file():
     body = "## Tasks\n- [ ] Walk dog\n\n## Schedule\n- 09:00 Standup\n"
     entries = parse_schedule_section(body)
     assert entries == [ScheduleEntry(start="09:00", end=None, text="Standup")]
+
+
+class TestRenderSkipsUnrepresentableEntries:
+    """`- HH:MM ...` is the only shape `parse_schedule_section` can read.
+
+    An entry with no start has no representation in this format at all, and
+    the naive f-string wrote `- None-16:40 Dog walk` — unparseable, so
+    silently discarded by the next rewrite of the section. Dropping it here
+    is the renderer's own guard; the caller in `_tool_create_event` also
+    declines to write incomplete blocks in the first place.
+    """
+
+    def test_entry_with_no_start_is_dropped(self):
+        from src.services.daily_schedule import (
+            ScheduleEntry, parse_schedule_section, render_schedule_section,
+        )
+
+        out = render_schedule_section([
+            ScheduleEntry(start="09:00", text="Standup"),
+            ScheduleEntry(start=None, end="16:40", text="Dog walk"),
+        ])
+
+        assert "None" not in out
+        assert "Dog walk" not in out
+        assert "- 09:00 Standup" in out
+        assert [e.text for e in parse_schedule_section(out)] == ["Standup"]

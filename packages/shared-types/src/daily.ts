@@ -18,6 +18,19 @@ export interface DailyGap {
   minutes: number;
 }
 
+/** A block with no drawable interval — missing a start or an end time.
+ *  Kept out of `blocks` deliberately: it has no interval, contributes
+ *  nothing to coverage, and the gap it sits inside is what prompts you to
+ *  finish it. */
+export interface DailyIncomplete {
+  id: string;
+  title: string;
+  start?: string | null;
+  end?: string | null;
+  missing: string[];
+  source: string;
+}
+
 export interface DayCoverage {
   covered_minutes: number;
   unaccounted_minutes: number;
@@ -49,6 +62,9 @@ export interface DailyResponse {
   blocks: DailyBlock[];
   gaps: DailyGap[];
   coverage: DayCoverage;
+  /** Absent when talking to a vault-server from before this ship; the bot
+   * falls back to an empty list rather than throwing. */
+  incomplete?: DailyIncomplete[];
   /** Absent when talking to a vault-server from before Ship 1; the bot
    * falls back to an empty list rather than throwing. */
   todos?: DailyTodo[];

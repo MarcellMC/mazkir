@@ -11,6 +11,7 @@ import {
   setPendingConfirmation,
   clearPendingConfirmation,
 } from "../state/pending-confirmations.js";
+import { getSelectedDate } from "../state/selected-date.js";
 
 /** Inline keyboard for a confirmation that names its options, or undefined
  *  for a plain yes/no gate (which is still answered as free text). The bot
@@ -95,9 +96,12 @@ export function buildMessagePayload(msg: Message, chatId: number) {
     };
   }
 
+  const selected_date = getSelectedDate(chatId);
+
   return {
     text,
     chat_id: chatId,
+    ...(selected_date ? { selected_date } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(reply_to ? { reply_to } : {}),
     ...(forwarded_from ? { forwarded_from } : {}),

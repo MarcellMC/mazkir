@@ -93,15 +93,49 @@ def _register_destructive_previews() -> None:
         `evt_7a8857a4` tells the user nothing about what they are approving,
         and an event ID is exactly the kind of thing an agent can mix up
         between two similar rows. Look the event up so the confirmation
-        names it; fall back to the ID when the store can't be reached.
+        names it; fall back to the ID — or, for a `block_reference` delete
+        with no ID, to the reference itself — when the store can't be
+        reached, rather than the bare `?` that names nothing at all.
+
+        Read-only, unlike `_resolve_reference`: a preview must not write
+        before the user has approved anything, so a `block_reference` here
+        is matched only against what is already persisted, never
+        materialised. Good enough to name the block in the common case; the
+        real resolution (with materialisation) runs again at execution time
+        regardless of what this renders.
         """
-        event_id = params.get("event_id", "?")
         events = (ctx or {}).get("events")
+        event_id = params.get("event_id")
+        reference = params.get("block_reference")
+
+        if not event_id and reference and events:
+            try:
+                import datetime as _dt
+                from src.services.block_resolver import resolve_block
+
+                today = _dt.date.today().isoformat()
+                dates = [d for d in dict.fromkeys([params.get("date"), today]) if d]
+                candidates = []
+                for date in dates:
+                    for e in events.get_events(date):
+                        e = dict(e)
+                        e["date"] = date
+                        candidates.append(e)
+                resolved = resolve_block(reference, candidates)
+                if resolved["ok"]:
+                    event_id = resolved["data"]["id"]
+            except Exception:
+                pass
+
         try:
             date = events.resolve_event_date(event_id, params.get("date"))
             event = next(e for e in events.get_events(date) if e["id"] == event_id)
         except Exception:
-            return f"Would delete event `{event_id}`"
+            if event_id:
+                return f"Would delete event `{event_id}`"
+            if reference:
+                return f'Would delete the block matching "{reference}"'
+            return "Would delete event `?`"
 
         when = (event.get("start_time") or "").replace("T", " ")[:16]
         line = f"Would delete event: **{event.get('name', event_id)}**"
@@ -867,7 +901,12 @@ class AgentService:
             "list_events": {
                 "schema": {
                     "name": "list_events",
-                    "description": "List today's events (calendar, timeline, manual). Returns event IDs, names, times, locations, and photo counts.",
+                    "description": (
+                        "List a day's events exactly as /day shows them — calendar, "
+                        "timeline, timed checkboxes and scheduled habits, merged. "
+                        "Each row carries `complete`: false means the block is missing "
+                        "a start or an end time. Reaches the calendar, so it is not free."
+                    ),
                     "input_schema": {
                         "type": "object",
                         "properties": {
@@ -924,9 +963,29 @@ class AgentService:
                         "type": "object",
                         "properties": {
                             "name": {"type": "string", "description": "Event name"},
-                            "date": {"type": "string", "description": "Event date YYYY-MM-DD (defaults to today)"},
+                            "date": {
+                                "type": "string",
+                                "description": (
+                                    "Event date YYYY-MM-DD (defaults to today). For a span "
+                                    "that crossed midnight, this is the date it STARTED on: "
+                                    "'slept 23:30 to 07:15' said on the morning of the 9th "
+                                    "is date=2026-09-08, not the 9th. Defaulting it would "
+                                    "log tonight's sleep instead of last night's."
+                                ),
+                            },
                             "start_time": {"type": "string", "description": "Start time ISO or HH:MM"},
-                            "end_time": {"type": "string", "description": "End time (optional, defaults to start_time)"},
+                            "end_time": {"type": "string", "description": "End time ISO or HH:MM"},
+                            "duration_minutes": {
+                                "type": "integer",
+                                "description": (
+                                    "How long it lasted, in minutes. Supply any TWO of "
+                                    "start_time / end_time / duration_minutes and the third "
+                                    "is computed — never work it out yourself. Supply only "
+                                    "one and the block is created incomplete, which is the "
+                                    "right outcome for 'just got back from the dog walk': "
+                                    "record the end, leave the start empty, and ask."
+                                ),
+                            },
                             "location": {
                                 "type": "object",
                                 "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}, "name": {"type": "string"}},
@@ -945,7 +1004,7 @@ class AgentService:
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
-                        "required": ["name", "start_time"],
+                        "required": ["name"],
                     },
                 },
                 "handler": self._tool_create_event,
@@ -963,6 +1022,14 @@ class AgentService:
                         "type": "object",
                         "properties": {
                             "event_id": {"type": "string", "description": "Event ID from list_events"},
+                            "block_reference": {
+                                "type": "string",
+                                "description": (
+                                    "Name the block instead of its ID — 'the gym block', "
+                                    "'dog walk'. Searched across the day being viewed and "
+                                    "today. Use this OR event_id."
+                                ),
+                            },
                             "date": {
                                 "type": "string",
                                 "description": (
@@ -980,6 +1047,25 @@ class AgentService:
                             "name": {"type": "string", "description": "New event name"},
                             "start_time": {"type": "string", "description": "New start time ISO or HH:MM"},
                             "end_time": {"type": "string", "description": "New end time ISO or HH:MM"},
+                            "duration_minutes": {
+                                "type": "integer",
+                                "description": (
+                                    "How long the block lasted, in minutes. The other "
+                                    "endpoint is computed from whichever one is already "
+                                    "known — never work it out yourself. This is the second "
+                                    "half of a partial capture: 'just got back from the dog "
+                                    "walk' records an end, and 'it was 40 minutes' lands "
+                                    "here to fill in the start."
+                                ),
+                            },
+                            "shift_minutes": {
+                                "type": "integer",
+                                "description": (
+                                    "Move the whole block by this many minutes, negative to "
+                                    "move earlier. Use this for 'move gym -30m' — setting "
+                                    "start_time alone stretches the block instead of moving it."
+                                ),
+                            },
                             "location": {
                                 "type": "object",
                                 "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}, "name": {"type": "string"}},
@@ -992,10 +1078,17 @@ class AgentService:
                                     "Not the event's life category."
                                 ),
                             },
+                            "revert_fields": {
+                                "type": "array", "items": {"type": "string"},
+                                "description": (
+                                    "Stop pinning these fields, so they track their source "
+                                    "again. For 'use the calendar's name for that'."
+                                ),
+                            },
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
-                        "required": ["event_id"],
+                        "required": [],
                     },
                 },
                 "handler": self._tool_update_event,
@@ -1015,6 +1108,14 @@ class AgentService:
                         "type": "object",
                         "properties": {
                             "event_id": {"type": "string", "description": "Event ID from list_events"},
+                            "block_reference": {
+                                "type": "string",
+                                "description": (
+                                    "Name the block instead of its ID — 'the gym block', "
+                                    "'dog walk'. Searched across the day being viewed and "
+                                    "today. Use this OR event_id."
+                                ),
+                            },
                             "date": {
                                 "type": "string",
                                 "description": (
@@ -1025,7 +1126,7 @@ class AgentService:
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
-                        "required": ["event_id"],
+                        "required": [],
                     },
                 },
                 "handler": self._tool_delete_event,
@@ -1093,6 +1194,7 @@ class AgentService:
         reply_to: dict | None = None,
         forwarded_from: dict | None = None,
         stream_callback: "Callable[[str], None] | None" = None,
+        selected_date: str | None = None,
     ) -> AgentResponse:
         """Main entry point: process a user message through the agent loop.
 
@@ -1102,9 +1204,14 @@ class AgentService:
                 chunks are forwarded (i.e. after all tool calls complete).
                 Intermediate tool-use iterations are buffered and discarded so
                 that internal reasoning steps are not surfaced to the caller.
+            selected_date: The day the user's client is currently displaying,
+                if any. A hint, not a target — it only steers which days
+                `_resolve_reference` searches for a `block_reference`, never
+                the day a write lands on by itself.
         """
         self._stream_callback = stream_callback
         self._current_chat_id = chat_id
+        self._selected_date = selected_date
         session_id = str(chat_id)
         user_id = str(chat_id)
         try:
@@ -1911,6 +2018,12 @@ class AgentService:
             "- Use list_events to check today's events before deciding how to handle a photo",
             "- Use attach_photo_to_event to link a photo to an existing event, or create_event for a new one",
             "- Use attach_to_daily only for simple logging (screenshots, memes, non-event photos)",
+            "- Logging time: supply any TWO of start_time / end_time / duration_minutes to create_event and the third is computed. Never compute one yourself.",
+            "- Which end does the utterance anchor? 'just got back from X' / 'finished X' gives the END; 'starting X' gives the START; 'X from A to B' gives both.",
+            "- Never invent a missing time. Create the block with what you were told, leave the rest empty, and ask. An incomplete block is a correct record of an incomplete statement.",
+            "- To move a block, use update_event's shift_minutes. Setting start_time alone stretches the block rather than moving it.",
+            "- If the context lists incomplete blocks, you may mention them once when it fits the conversation. Do not raise them every turn.",
+            "- When you write to a day that is not today, say which day in your reply.",
             "- To move an event to another day, call update_event with new_date. Its `date` argument only says where the event is stored now, and it is optional — an event ID from list_events is found whatever day it is on.",
             "- Use delete_event for a duplicate or an event that never happened. If the result carries reappears_from_source, say so: the event will come back on the next refresh unless the checkbox, habit or calendar entry behind it changes.",
             "- When a location is provided, include it when attaching to daily note",
@@ -1959,6 +2072,33 @@ class AgentService:
 
         if context.knowledge:
             parts.extend(["", "## Relevant knowledge", context.knowledge])
+
+        # Push, not pull. The agent will not call a tool to discover
+        # something it does not know to look for — that is Bug B — so
+        # unfinished blocks arrive in the prompt rather than waiting to be
+        # queried. Cheap: an incomplete block is always user-created, so it
+        # is always in the persisted store. A local read, never a merge.
+        try:
+            from src.services.events_service import is_complete
+            import datetime as _dt
+            today = _dt.datetime.now(self.vault.tz).strftime("%Y-%m-%d")
+            unfinished = [e for e in self.events.get_events(today) if not is_complete(e)]
+            if unfinished:
+                described = "; ".join(
+                    f"{e.get('name', '?')} — "
+                    f"{'no start time' if not e.get('start_time') else 'no end time'}"
+                    for e in unfinished[:5]
+                )
+                parts.extend([
+                    "",
+                    f"Incomplete blocks today: {len(unfinished)} ({described})",
+                ])
+        except Exception as e:
+            logger.debug(f"Could not list incomplete blocks: {e}")
+
+        selected = getattr(self, "_selected_date", None)
+        if selected and selected != now.strftime("%Y-%m-%d"):
+            parts.extend(["", f"The user is currently viewing {selected}."])
 
         return "\n".join(parts)
 
@@ -2701,25 +2841,75 @@ class AgentService:
         from src.services.tool_handlers.daily import promote_daily_task
         return promote_daily_task(self.vault, params)
 
+    def _reconciled_events(self, date: str) -> tuple[list[dict], bool]:
+        """The day as `/day` renders it, plus whether it is degraded.
+
+        Merges from every source and reconciles against the persisted
+        store — but does not persist. Reading a day must not rewrite it;
+        that is Ship 2's rule and it applies to the agent looking at a day
+        exactly as it applies to the user browsing one.
+
+        On a source failure this falls back to the persisted store rather
+        than to an empty list. An empty list would read to the agent as
+        "that block does not exist", which is the shape of the 2026-08-20
+        denial bug — a temporary outage must not become a confident denial.
+        Every event carries a `date` key, which `resolve_block` needs.
+        """
+        import datetime as dt
+
+        if not self.events:
+            return [], True
+
+        degraded = False
+        try:
+            from src.services.async_bridge import maybe_await
+            import src.services.day_assembly as day_assembly
+            fresh, available = maybe_await(
+                day_assembly.merge_from_sources(dt.date.fromisoformat(date))
+            )
+        except Exception as e:
+            # Only source failures degrade. `reconcile` below is pure local
+            # logic (see its docstring) — a bug there must surface as an
+            # error, not be laundered into "the calendar was unavailable".
+            logger.warning(f"Falling back to the persisted store for {date}: {e}")
+            events = self.events.get_events(date)
+            degraded = True
+        else:
+            events = self.events.reconcile(date, fresh, available)
+
+        for event in events:
+            event["date"] = date
+        return events, degraded
+
     def _tool_list_events(self, params: dict) -> dict:
         import datetime as dt
+        from src.services.events_service import is_complete
+
         date = params.get("date", dt.date.today().isoformat())
         if not self.events:
             return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
-        events = self.events.get_events(date)
+
+        events, degraded = self._reconciled_events(date)
         summary = []
         for e in events:
             summary.append({
                 "id": e["id"],
+                "date": date,
                 "name": e["name"],
                 "type": e.get("type", "unknown"),
                 "start_time": e.get("start_time"),
                 "end_time": e.get("end_time"),
                 "location": e.get("location"),
+                "activity": e.get("activity"),
+                "complete": is_complete(e),
+                "logical_id": e.get("logical_id"),
                 "photo_count": len(e.get("photos", [])),
                 "source": e.get("source"),
             })
-        return ok({"events": summary, "date": date})
+        result = {"events": summary, "date": date}
+        if degraded:
+            result["degraded"] = True
+        return ok(result)
 
     def _tool_attach_photo_to_event(self, params: dict) -> dict:
         if not self.events:
@@ -2740,22 +2930,115 @@ class AgentService:
         items = [str(self.events._file_path(resolved_date))] if resolved_date else []
         return ok(result, items=items)
 
+    def _resolve_reference(self, params: dict) -> dict:
+        """Turn `event_id` or `block_reference` into a concrete event id.
+
+        A `block_reference` is resolved against the reconciled view of the
+        day being viewed and today — an inferred block has no persisted row
+        yet, so the day is materialised (`refresh_events`) before the write
+        proceeds. Persisting here is correct: an explicit edit is write
+        intent, unlike navigation, which Ship 2 deliberately made read-only.
+        """
+        import datetime as dt
+        from src.services.block_resolver import resolve_block
+
+        event_id = params.get("event_id")
+        if event_id:
+            date = self.events.resolve_event_date(event_id, params.get("date"))
+            if date is None:
+                return err(
+                    ErrorCode.PATH_NOT_FOUND,
+                    f"Event {event_id} not found",
+                    details={"event_id": event_id},
+                )
+            return ok({"event_id": event_id, "date": date})
+
+        reference = params.get("block_reference")
+        if not reference:
+            return err(
+                ErrorCode.SCHEMA_INVALID,
+                "Supply either event_id or block_reference",
+            )
+
+        today = dt.date.today().isoformat()
+        selected_date = params.get("selected_date") or getattr(self, "_selected_date", None)
+        dates = [d for d in dict.fromkeys([selected_date, today]) if d]
+
+        candidates: list[dict] = []
+        for date in dates:
+            events, _ = self._reconciled_events(date)
+            candidates.extend(events)
+
+        resolved = resolve_block(reference, candidates)
+        if not resolved["ok"]:
+            return resolved
+
+        target_date = resolved["data"]["date"]
+        # The resolved id came from a merge that was never persisted, and
+        # MergerService assigns a fresh uuid on every construction — so it is
+        # not the id the store will end up holding. `source_ids` is the stable
+        # identity (exactly one entry per merged event) and is what reconcile
+        # itself matches on, so re-find by that after materialising. An empty
+        # `source_ids` means a manual event, which was already persisted and
+        # whose id therefore is stable.
+        matched = next(
+            (c for c in candidates if c.get("id") == resolved["data"]["id"]), {}
+        )
+        source_ids = matched.get("source_ids") or {}
+
+        event_id = resolved["data"]["id"]
+        try:
+            from src.services.async_bridge import maybe_await
+            import src.services.day_assembly as day_assembly
+            fresh, available = maybe_await(
+                day_assembly.merge_from_sources(dt.date.fromisoformat(target_date))
+            )
+            persisted = self.events.refresh_events(target_date, fresh, available)
+        except Exception as e:
+            logger.warning(f"Could not materialise {target_date} before editing: {e}")
+            persisted = self.events.get_events(target_date)
+
+        if source_ids:
+            for evt in persisted:
+                if (evt.get("source_ids") or {}) == source_ids:
+                    event_id = evt["id"]
+                    break
+
+        return ok({"event_id": event_id, "date": target_date})
+
     def _tool_create_event(self, params: dict) -> dict:
         import datetime as dt
         if not self.events:
             return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
         date = params.get("date", dt.date.today().isoformat())
 
-        def _normalize_time(t: str | None) -> str | None:
-            if not t:
-                return t
-            # Time-only like "18:34" → "2026-03-06T18:34:00"
-            if "T" not in t and len(t) <= 5:
-                return f"{date}T{t}:00"
-            return t
+        from src.services.interval import (
+            crosses_midnight, derive_interval, split_at_midnight,
+        )
 
-        start_time = _normalize_time(params["start_time"])
-        end_time = _normalize_time(params.get("end_time"))
+        derived = derive_interval(
+            params.get("start_time"),
+            params.get("end_time"),
+            params.get("duration_minutes"),
+            date,
+        )
+        if not derived["ok"]:
+            return err(ErrorCode.SCHEMA_INVALID, derived["error"])
+
+        start_time = derived["start_time"]
+        end_time = derived["end_time"]
+
+        if params.get("photo_path") and start_time and not end_time:
+            # The one place a zero-length event is deliberately synthesised
+            # rather than stated: a photo is a moment with a known time, not
+            # an unfinished block, so a bare start_time for a photo is a
+            # complete point in time, not a missing end. Without this, every
+            # photo event with only a start would land in the "needs a time"
+            # list a later task renders for genuinely incomplete blocks.
+            end_time = start_time
+
+        complete = bool(start_time and end_time)
+        spans_midnight = complete and crosses_midnight(start_time, end_time)
 
         # Extract HH:MM for GCal (strip date prefix if present)
         def _extract_hhmm(iso_time: str | None) -> str | None:
@@ -2775,7 +3058,14 @@ class AgentService:
         source_ids: dict | None = None
         calendar_synced = False
         calendar_sync: dict
-        if params.get("photo_path"):
+        if not complete:
+            calendar_sync = {"ok": False, "attempted": False, "reason": "incomplete"}
+        elif spans_midnight:
+            # Google stores this natively as one event, which would then hand
+            # a single fresh event to two per-day fragments on the next
+            # merge. Deferred rather than guessed at.
+            calendar_sync = {"ok": False, "attempted": False, "reason": "crosses_midnight"}
+        elif params.get("photo_path"):
             # Photo events are deliberately never pushed to the calendar.
             calendar_sync = {"ok": False, "attempted": False, "reason": "not_applicable"}
         elif not self.calendar:
@@ -2825,20 +3115,39 @@ class AgentService:
                 logger.warning(f"Failed to sync event to Google Calendar: {e}")
                 calendar_sync = {"ok": False, "attempted": True, "reason": str(e)}
 
-        result = self.events.create_event(
-            date=date,
-            name=params["name"],
-            start_time=start_time,
-            end_time=end_time,
-            location=params.get("location"),
-            activity=_event_activity(params),
-            photo_path=params.get("photo_path"),
-            caption=params.get("caption"),
-            wikilinks=params.get("wikilinks"),
-            source_ids=source_ids,
-        )
+        from uuid import uuid4
+        fragments = split_at_midnight(start_time, end_time) if spans_midnight else [(start_time, end_time)]
+        # A shared id so Ship 5 can approve both halves of one night's sleep
+        # at once. Written now because the link is unrecoverable later;
+        # nothing in this ship branches on it.
+        logical_id = uuid4().hex[:8] if len(fragments) > 1 else None
+
+        created = []
+        items = []
+        for frag_start, frag_end in fragments:
+            frag_date = (frag_start or frag_end or f"{date}T00:00:00")[:10]
+            frag = self.events.create_event(
+                date=frag_date,
+                name=params["name"],
+                start_time=frag_start,
+                end_time=frag_end,
+                location=params.get("location"),
+                activity=_event_activity(params),
+                photo_path=params.get("photo_path"),
+                caption=params.get("caption"),
+                wikilinks=params.get("wikilinks"),
+                source_ids=source_ids,
+                logical_id=logical_id,
+            )
+            created.append(frag)
+            items.append(frag["path"])
+
+        result = dict(created[0])
         result["event_id"] = result.pop("id")
-        items = [result["path"]]
+        result["complete"] = complete
+        if len(created) > 1:
+            result["fragments"] = [c["id"] for c in created]
+            result["logical_id"] = logical_id
         result["calendar_sync"] = calendar_sync
         if calendar_synced:
             # Legacy key, kept for the existing tests that read it. New
@@ -2847,7 +3156,16 @@ class AgentService:
 
         # Unified record: also log the event in the daily note's ## Schedule section.
         # Best-effort — a failure here never invalidates the events-store write.
-        if not params.get("photo_path"):
+        #
+        # Incomplete blocks are deliberately skipped and must stay skipped.
+        # `- HH:MM[-HH:MM] text` is the only shape `parse_schedule_section`
+        # can read, so a block with no start has no line to write: the
+        # renderer used to emit `- None-16:40 Dog walk`, which nothing could
+        # parse and which the next rewrite of the section therefore silently
+        # dropped — written wrong, then lost, with no error anywhere. An
+        # unfinished block is not a schedule line yet; the edit that
+        # completes it is the natural moment for one.
+        if not params.get("photo_path") and complete:
             try:
                 from src.services.daily_schedule import (
                     ScheduleEntry,
@@ -2888,22 +3206,61 @@ class AgentService:
         if not self.events:
             return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
 
-        # `date` is only a hint about where the event is stored now, and the
-        # event may well be on another day — the agent is given IDs by
-        # `list_events`, which can list any date. Resolve the real one before
-        # doing anything, both to find the event and to know what day a bare
-        # `HH:MM` belongs to. Defaulting the hint to today used to make every
-        # update to a non-today event fail with PATH_NOT_FOUND.
-        event_id = params["event_id"]
+        from src.services.events_service import USER_SETTABLE_FIELDS
+
+        resolved = self._resolve_reference(params)
+        if not resolved["ok"]:
+            return resolved
+        event_id = resolved["data"]["event_id"]
+        current_date = resolved["data"]["date"]
+
         new_date = params.get("new_date")
-        current_date = self.events.resolve_event_date(event_id, params.get("date"))
-        if current_date is None:
-            return err(
-                ErrorCode.PATH_NOT_FOUND,
-                f"Event {event_id} not found",
-                details={"event_id": event_id},
-            )
         date = new_date or current_date
+
+        # A move and a duration in one call are refused, not reconciled.
+        # Deriving an endpoint anchors on whichever timestamp is known, and
+        # with no endpoint named that is the stored one — which still carries
+        # the OLD date. Both derived values would then land in `updates`,
+        # `EventsService.update_event` re-dates only the fields `updates`
+        # does NOT already carry, and so nothing moves: the row stays in its
+        # original file and the tool returns ok with no `moved_from`, leaving
+        # the agent free to report a move that never happened.
+        #
+        # This is deliberately a refusal rather than a derivation. Making it
+        # work means re-dating the anchor before deriving, inside the
+        # trickiest function on this branch; a guard's worst failure is
+        # refusing something it could have accepted, which the user fixes
+        # with a second sentence. The ship already refuses ambiguous input
+        # this way — three mutually inconsistent values are rejected rather
+        # than resolved by guesswork. Do not "fix" this into the version that
+        # writes silently to the wrong day.
+        if new_date and params.get("duration_minutes") is not None:
+            return err(
+                ErrorCode.SCHEMA_INVALID,
+                "new_date and duration_minutes cannot be combined: the duration "
+                "would be measured from a time on the old date and the move would "
+                "silently not happen. Move the event in one call, then set its "
+                "duration in another.",
+                details={"event_id": event_id, "new_date": new_date},
+            )
+
+        shift = params.get("shift_minutes")
+        if shift:
+            import datetime as _dt
+            from src.services.events_service import is_complete
+            event = next(
+                (e for e in self.events.get_events(current_date) if e["id"] == event_id), {}
+            )
+            if not is_complete(event):
+                return err(
+                    ErrorCode.SCHEMA_INVALID,
+                    "Cannot shift a block that is missing a start or end time",
+                    details={"event_id": event_id},
+                )
+            delta = _dt.timedelta(minutes=shift)
+            for field in ("start_time", "end_time"):
+                moved = _dt.datetime.fromisoformat(event[field]) + delta
+                params[field] = moved.strftime("%Y-%m-%dT%H:%M:%S")
 
         def _normalize_time(t: str | None) -> str | None:
             if not t:
@@ -2928,16 +3285,183 @@ class AgentService:
         elif "category" in params:
             updates["activity"] = params["category"]
 
+        # A duration is the second half of a partial capture: "just got back
+        # from the dog walk" writes an end and no start, and "it was 40
+        # minutes" has to land somewhere. Deriving the missing endpoint here
+        # rather than asking the model for it is the same reason create_event
+        # takes any two of three — this is precisely the arithmetic that
+        # shifted a block by its own length on 2026-08-16.
+        duration = params.get("duration_minutes")
+        if duration is not None:
+            from src.services.interval import derive_interval
+            stored_now = next(
+                (e for e in self.events.get_events(current_date) if e["id"] == event_id),
+                {},
+            )
+            said_start = updates.get("start_time")
+            said_end = updates.get("end_time")
+            start_known = said_start or stored_now.get("start_time")
+            end_known = said_end or stored_now.get("end_time")
+
+            if said_start and said_end:
+                # Both endpoints named in this call: three values were
+                # supplied, so let derive_interval reject them when they
+                # disagree rather than silently picking two.
+                args = (said_start, said_end, duration)
+            elif said_end:
+                # An endpoint named in this call anchors, ahead of a stored
+                # one: "it ended at 16:40 and took 40 minutes" must move the
+                # start, not recompute the end that was just stated.
+                args = (None, said_end, duration)
+            elif said_start:
+                args = (said_start, None, duration)
+            elif start_known:
+                # Nothing named — the stored start anchors: "it lasted 40
+                # minutes" keeps where it began and moves where it ended.
+                args = (start_known, None, duration)
+            elif end_known:
+                args = (None, end_known, duration)
+            else:
+                return err(
+                    ErrorCode.SCHEMA_INVALID,
+                    "duration_minutes needs a start_time or an end_time to measure "
+                    "from — this block has neither. Supply one of them in the same "
+                    "call, or ask.",
+                    details={"event_id": event_id},
+                )
+
+            try:
+                derived = derive_interval(*args, date)
+            except (ValueError, TypeError) as exc:
+                # A stored timestamp we cannot parse is not the user's error
+                # to be raised at — report it as a rejected edit.
+                return err(
+                    ErrorCode.SCHEMA_INVALID,
+                    f"Could not compute the interval: {exc}",
+                    details={"event_id": event_id},
+                )
+            if not derived["ok"]:
+                return err(
+                    ErrorCode.SCHEMA_INVALID, derived["error"],
+                    details={"event_id": event_id},
+                )
+            updates["start_time"] = derived["start_time"]
+            updates["end_time"] = derived["end_time"]
+
+        # Every field the user names in an edit is a field they have now
+        # claimed: without pinning, the next merge puts the source's value
+        # back and the edit silently disappears. A derived endpoint counts —
+        # the user supplied the duration that produced it, and an unpinned
+        # endpoint is undone by the next merge.
+        user_set_fields = [f for f in updates if f in USER_SETTABLE_FIELDS]
+
         result = self.events.update_event(
             date=current_date,
             event_id=event_id,
             updates=updates,
             new_date=new_date,
+            user_set_fields=user_set_fields,
+            revert_fields=params.get("revert_fields"),
         )
         if "error" in result:
             return err(ErrorCode.PATH_NOT_FOUND, result["error"], details={"event_id": event_id})
 
         stored_date = result.get("date", current_date)
+
+        # Push the edit upstream. The ledger holding the change is only half
+        # of it: an un-propagated source value gets merged back over the
+        # edit on the very next read.
+        stored = result.get("event") or {}
+        calendar_id = (stored.get("source_ids") or {}).get("calendar_id")
+        owning = stored.get("calendar")
+        from src.services.events_service import is_complete
+        from src.services.interval import crosses_midnight
+
+        # A cross-date move is out of scope for this ship: EventsService has
+        # detached source_ids, so this block would read the event as "not in
+        # the calendar yet" and create a duplicate at the new date — which
+        # the moved_from branch below would then report as having not
+        # happened. Leave the calendar alone and let that branch speak.
+        if result.get("moved_from"):
+            pass
+        elif not is_complete(stored):
+            result["calendar_sync"] = {"ok": False, "attempted": False, "reason": "incomplete"}
+        elif crosses_midnight(stored.get("start_time"), stored.get("end_time")):
+            result["calendar_sync"] = {
+                "ok": False, "attempted": False, "reason": "crosses_midnight",
+            }
+        elif stored.get("source") == "photo":
+            result["calendar_sync"] = {"ok": False, "attempted": False, "reason": "not_applicable"}
+        elif not self.calendar or not getattr(self.calendar, "is_initialized", False):
+            result["calendar_sync"] = {
+                "ok": False, "attempted": False, "reason": "calendar_not_configured",
+            }
+        elif calendar_id and owning not in (None, "Mazkir"):
+            result["calendar_sync"] = {
+                "ok": False, "attempted": False, "reason": "not_in_mazkir_calendar",
+            }
+        elif not calendar_id and (stored.get("source_ids") or {}):
+            # The create branch below exists for blocks Mazkir owns. A block
+            # that carries source_ids but no calendar_id is *inferred* — a
+            # timed checkbox, a scheduled habit, a location visit — and is
+            # regenerated from that source on every merge. Creating a Google
+            # entry for it duplicates the thing in the calendar, and writing
+            # the new id back gives the persisted event a second source_ids
+            # key, after which two fresh events (the note one and the
+            # calendar one) both match the same persisted row and the block
+            # renders twice forever. An empty source_ids — a manual block, or
+            # one created while the calendar was unreachable — is the only
+            # case where the create is ours to make.
+            result["calendar_sync"] = {
+                "ok": False, "attempted": False, "reason": "derived_from_source",
+            }
+        else:
+            from src.services.async_bridge import maybe_await
+            try:
+                if calendar_id:
+                    pushed = maybe_await(self.calendar.update_event(
+                        event_id=calendar_id,
+                        name=stored.get("name"),
+                        start_time=stored.get("start_time"),
+                        end_time=stored.get("end_time"),
+                    ))
+                    result["calendar_sync"] = {
+                        "ok": bool(pushed), "attempted": True, "event_id": calendar_id,
+                    }
+                    if not pushed:
+                        result["calendar_sync"]["reason"] = "update_failed"
+                else:
+                    gcal_id = maybe_await(self.calendar.create_event(
+                        name=stored.get("name"),
+                        date=stored_date,
+                        start_time=(stored.get("start_time") or "")[11:16],
+                        end_time=(stored.get("end_time") or "")[11:16] or None,
+                    ))
+                    result["calendar_sync"] = {
+                        "ok": bool(gcal_id), "attempted": True, "event_id": gcal_id,
+                    }
+                    if gcal_id:
+                        # "Sync it once it's complete" relies on calendar_id
+                        # recording membership with no flag to remember — so
+                        # the id this create just returned has to land in
+                        # source_ids, or the next edit still reads calendar_id
+                        # as missing and creates a second Google entry.
+                        self.events.update_event(
+                            date=stored_date,
+                            event_id=event_id,
+                            updates={
+                                "source_ids": {
+                                    **(stored.get("source_ids") or {}),
+                                    "calendar_id": gcal_id,
+                                },
+                            },
+                        )
+                    else:
+                        result["calendar_sync"]["reason"] = "create_failed"
+            except Exception as e:
+                logger.warning(f"Failed to sync event edit to Google Calendar: {e}")
+                result["calendar_sync"] = {"ok": False, "attempted": True, "reason": str(e)}
+
         items = [str(self.events._file_path(stored_date))]
         moved_from = result.get("moved_from")
         if moved_from:
@@ -2970,16 +3494,11 @@ class AgentService:
         if not self.events:
             return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
 
-        event_id = params["event_id"]
-        # Same hint semantics as update_event: `date` narrows the search, it
-        # does not constrain it.
-        date = self.events.resolve_event_date(event_id, params.get("date"))
-        if date is None:
-            return err(
-                ErrorCode.PATH_NOT_FOUND,
-                f"Event {event_id} not found",
-                details={"event_id": event_id},
-            )
+        resolved = self._resolve_reference(params)
+        if not resolved["ok"]:
+            return resolved
+        event_id = resolved["data"]["event_id"]
+        date = resolved["data"]["date"]
 
         event = next((e for e in self.events.get_events(date) if e["id"] == event_id), {})
         source_ids = event.get("source_ids") or {}
@@ -2997,7 +3516,7 @@ class AgentService:
             calendar_sync = {"ok": False, "attempted": False, "reason": "calendar_not_configured"}
         else:
             try:
-                from src.services.hooks.sync_to_calendar import _maybe_await
+                from src.services.async_bridge import maybe_await as _maybe_await
                 deleted = _maybe_await(self.calendar.delete_event(calendar_id))
                 calendar_sync = {
                     "ok": bool(deleted),

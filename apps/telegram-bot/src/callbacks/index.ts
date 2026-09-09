@@ -13,6 +13,7 @@ import {
   setPendingConfirmation,
   clearPendingConfirmation,
 } from "../state/pending-confirmations.js";
+import { setSelectedDate, noteDayView } from "../state/selected-date.js";
 
 export const callbackHandlers = new Composer();
 
@@ -124,7 +125,9 @@ callbackHandlers.callbackQuery(/^day:(.+)$/, async (ctx) => {
   const date = arg === "today" ? undefined : arg;
   try {
     const data = await api.getDaily(date);
+    setSelectedDate(ctx.chat!.id, data.date);
     await editRich(ctx, buildDayRich(data), { reply_markup: buildNavKeyboard("day") });
+    noteDayView(ctx.chat!.id);
   } catch (err) {
     markActiveSpanError(err);
     // The error report is itself an edit and can itself be rejected (e.g.

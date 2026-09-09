@@ -14,6 +14,8 @@ import asyncio
 import logging
 from typing import Any
 
+from src.services.async_bridge import maybe_await as _maybe_await
+
 logger = logging.getLogger(__name__)
 
 _DELETE_TOOLS = {"delete_task", "delete_habit", "archive_task", "archive_goal"}
@@ -40,19 +42,6 @@ def _record(output: dict, **fields) -> None:
     data = output.get("data")
     if isinstance(data, dict):
         data["calendar_sync"] = fields
-
-
-def _maybe_await(value):
-    """If `value` is a coroutine, run it; otherwise return as-is."""
-    if asyncio.iscoroutine(value):
-        try:
-            return asyncio.run(value)
-        except RuntimeError:
-            # Already inside an event loop — run in a worker thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                return ex.submit(asyncio.run, value).result()
-    return value
 
 
 def sync_to_calendar(params: dict, output: dict, ctx: Any) -> None:
