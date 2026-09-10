@@ -104,18 +104,18 @@ system, and mostly onto write paths that already exist.
 |---|---|---|
 | calendar | store `approved` | store `dismissed` |
 | timeline visit / transit | store `approved` | store `dismissed` |
-| habit, ticked | derived-approved; no buttons shown | untick the habit |
+| habit, ticked | derived-approved; no buttons shown | — (§2.4) |
 | habit, not fired | **tick the habit** → derived-approved | store `dismissed` |
-| checkbox, checked | derived-approved; no buttons shown | uncheck it |
+| checkbox, checked | derived-approved; no buttons shown | — (§2.4) |
 | checkbox, timed, unchecked | **check it** → derived-approved | store `dismissed` |
 | manual / spoken (`create_event`) | born approved | `delete_event` |
-| gap proposal | `create_event` → born approved | create it, then store `dismissed` (§4.3) |
+| gap proposal | `create_event` → born approved | nothing stored; reappears (§4.3) |
 
-**Rows that are already approved carry no buttons** (§5.2), so the `✕`
-column above describes what dismissal *means* for each source, not
-something reachable from every row. In this ship, un-confirming an approved
-block is done by talking — *"that standup didn't happen"* — or by unticking
-in `/habits`. See §9.
+**Rows that are already approved carry no buttons** (§5.2), which is why
+the three `—` entries cost nothing: a ticked habit and a checked checkbox
+are already approved, so no `✕` is reachable for them from `/day` in the
+first place. Un-confirming is done by talking — *"that standup didn't
+happen"* — or by unticking in `/habits`. See §2.4 and §9.
 
 The derivation keys on the **source system**, not on `completed`. Calendar
 events carry `completed` too — `merger_service.py:279,297` set it from
@@ -148,9 +148,19 @@ streak. That is intended, not incidental: the parent design's first stated
 goal is that "motivation is an output, not a side effect", and confirming
 you did the thing is when payment is due.
 
-`✕` on a ticked habit block unticks it, which reverses the streak and the
-tokens. Symmetry is the point — a `✓` you can't take back is a `✓` you
-hesitate over.
+**Nothing in this ship unticks a habit or retracts tokens.** The symmetric
+case — `✕` reversing a streak and clawing back tokens — was considered and
+dropped as too rare to build: decided 2026-09-10, *"I don't see unchecking
+habits and retracting tokens as a common task."*
+
+It costs nothing on the surface, because a ticked habit is already approved
+and an approved row carries no buttons (§5.2). Untick where unticking
+already lives: `/habits`, or by talking.
+
+Consequence to accept: an approval is one-way from `/day`. Approving the
+wrong habit block pays tokens that only `/habits` can take back, and
+approving one on a past date advances a streak from that date. Both are
+recoverable, neither is recoverable *here*.
 
 ### 2.5 Dismissed blocks vanish and their time reopens
 
@@ -232,20 +242,28 @@ and **the server recomputes the proposal for that interval** before
 creating the block. Deterministic, because the history it reads is the
 same. Callback shape: `prop:<date>:<start_min>:<end_min>`.
 
-### 4.3 Dismissing a proposal must silence it
+### 4.3 A refused proposal reappears, and that is accepted
 
-A proposal is recomputed on every open, so `✕` on one would be undone by
-the next render — it would propose `Sleep` again, forever. That contradicts
-the whole reason dismissal persists.
+A proposal is recomputed on every open, so `✕` on one writes nothing and
+the next render offers it again.
 
-So `✕` on a proposal **creates the block and immediately stores it
-`dismissed`**: a `manual` row, rendering nothing, counting nothing, with
-its span reopened as a `░` gap. The proposal step in §4.1 then skips any
-gap overlapped by a dismissed row.
+An earlier draft of this spec suppressed it by creating the block and
+immediately marking it `dismissed`, so the proposal step could skip any gap
+a dismissed row overlapped. That was rejected on 2026-09-10: *"I don't want
+tombstones, and it's okay that the proposal would reappear for now."*
 
-This reuses the events store as its own tombstone rather than introducing a
-per-date list of refused intervals. The row *is* the record that this span
-was offered and refused.
+The distinction being drawn matters, because dismissal *does* persist
+elsewhere (§2.3):
+
+- A `dismissed` state on a **calendar or timeline row** annotates a row
+  that exists in the store anyway. Kept.
+- A row created **only** to record a refusal is a dead record whose sole
+  purpose is suppression. That is the tombstone the phase doc's §4 rejected
+  for "accumulating dead records indefinitely", and it stays rejected.
+
+Cost, accepted: a gap you have refused a guess for keeps offering it every
+time you open that day. Bounded, because approving anything over that span
+removes the gap and the proposal with it.
 
 ### 4.4 What a fill does
 
@@ -487,6 +505,8 @@ timezone-aware.
 | Proposals from EXIF or coordinates | §4.1. History subsumes them. |
 | Yesterday's pending blocks expiring | They sit unconfirmed and never count until that day is opened. Honest, and nothing to undo when nudging lands. |
 | Un-confirming from a `/day` row | An approved row has no buttons (§5.2). Undo by talking, or by unticking in `/habits`. A dedicated control needs a fourth column or an evicted facet label, and neither is worth it before Ship 6 fills that cell. |
+| Unticking habits / retracting tokens | §2.4. Judged too rare to build; approval is one-way from `/day`. |
+| Suppressing a refused proposal | §4.3. It reappears on the next open, deliberately, rather than leaving a dead row behind. |
 
 **Size note.** This is at the upper end of one plan — a state model, two
 coverage unions, a proposal engine, a re-rendered `/day`, a new edit view
@@ -509,7 +529,11 @@ nothing else depends on it.
 - `✓` on an unfired habit block must assert the completion lands on the
   **block's** date, not today. Freeze the clock to a different day than the
   block's, or the test passes for the wrong reason.
-- Dismissing a block must assert a gap opens over its span.
+- Dismissing a calendar block must assert a gap opens over its span.
+- `✕` on a **proposal** must assert nothing is written — no new row, no
+  state change — and that the next render offers the same proposal again.
+  This is the behaviour §4.3 chose on purpose, so it needs a test saying so;
+  otherwise a later reader will "fix" it.
 - Bot-side, assert the rendered HTML puts button rows inside `<td>`
   elements. A regression that moves them to top level is invisible to a
   string-contains assertion but ruins the layout.
