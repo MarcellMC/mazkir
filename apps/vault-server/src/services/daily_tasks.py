@@ -206,9 +206,14 @@ def set_todo_checked(body: str, text: str, checked: bool = True) -> tuple[str | 
     ordering, indentation or annotations can be disturbed by approving a
     block. `moved` lines are skipped: they have been rolled to another day
     and are no longer this day's checkbox to tick.
+
+    The match is a case-insensitive substring with no other constraint, so a
+    needle shorter than 3 characters is refused as `"not_found"` rather than
+    risking a degenerate match against an unrelated line — "ok" would match
+    inside "Book flight" just as readily as inside "ok, done".
     """
     needle = text.strip().lower()
-    if not needle:
+    if len(needle) < 3:
         return None, "not_found"
 
     lines = body.splitlines(keepends=True)

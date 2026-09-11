@@ -475,3 +475,13 @@ def test_set_todo_checked_skips_moved_items():
     new_body, reason = set_todo_checked(body, "Order phone")
     assert new_body is None
     assert reason == "not_found"
+
+
+def test_set_todo_checked_refuses_a_degenerate_short_needle():
+    """The match is a case-insensitive substring with no length floor
+    otherwise — a two-character needle like "ok" would match inside
+    "Book flight" just as readily as a real checkbox named "ok"."""
+    body = "## Tasks\n- [ ] Book flight\n"
+    new_body, reason = set_todo_checked(body, "ok")
+    assert new_body is None
+    assert reason == "not_found"
