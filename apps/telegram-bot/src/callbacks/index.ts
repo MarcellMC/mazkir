@@ -14,8 +14,14 @@ import {
   clearPendingConfirmation,
 } from "../state/pending-confirmations.js";
 import { setSelectedDate, noteDayView } from "../state/selected-date.js";
+import { dayActionHandlers } from "./day-actions.js";
 
 export const callbackHandlers = new Composer();
+
+// Registered before the `day:(.+)` date handler below: that pattern would
+// otherwise swallow `day:refresh:2026-09-10` and `day:approveall:2026-09-10`
+// and try to parse the whole tail as a date.
+callbackHandlers.use(dayActionHandlers);
 
 // Confirmation choice buttons. The action id comes from the callback data
 // rather than module state, so a button on an older message cannot answer
