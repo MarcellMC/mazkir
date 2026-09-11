@@ -323,6 +323,103 @@ class TestDailyBlocks:
         blocks, _, _ = _build_blocks_and_coverage(events, "2026-08-29", elapsed_minutes=1440)
         assert blocks[0].habit_progress == "1/2"
 
+    def test_coverage_model_fields(self):
+        from src.api.routes.daily import DayCoverage
+
+        assert set(DayCoverage.model_fields) == {
+            "covered_minutes", "unaccounted_minutes", "elapsed_minutes",
+            "confirmed_minutes", "pending_minutes",
+        }
+
+    def test_pending_block_closes_the_gap_but_does_not_confirm(self):
+        """THE test that pins §3. A pending block must not leave a gap over
+        its own span — that would render two rows claiming the same time with
+        opposite meanings — and must not count as confirmed either."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{
+            "id": "e1", "name": "Standup", "source": "calendar",
+            "source_ids": {"calendar_id": "g1"},
+            "start_time": "2026-09-10T09:00", "end_time": "2026-09-10T10:00",
+        }]
+
+        blocks, gaps, coverage = _build_blocks_and_coverage(events, "2026-09-10", 720)
+
+        assert [b.state for b in blocks] == ["pending"]
+        assert coverage.confirmed_minutes == 0
+        assert coverage.pending_minutes == 60
+        # 09:00-10:00 is accounted for, so no gap covers it.
+        assert not any(g.start <= "09:30" <= g.end for g in gaps)
+        assert coverage.covered_minutes == 60
+        assert coverage.unaccounted_minutes == 720 - 60
+
+    def test_approved_block_counts_as_confirmed(self):
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{
+            "id": "e1", "name": "Dog walk", "source": "manual",
+            "source_ids": {},
+            "start_time": "2026-09-10T07:00", "end_time": "2026-09-10T08:00",
+        }]
+
+        blocks, _gaps, coverage = _build_blocks_and_coverage(events, "2026-09-10", 720)
+
+        assert [b.state for b in blocks] == ["approved"]
+        assert coverage.confirmed_minutes == 60
+        assert coverage.pending_minutes == 0
+
+    def test_pending_minutes_excludes_time_already_confirmed(self):
+        """Overlapping blocks of different states must not double-count: the
+        confirmed hour wins and pending reports only what it adds."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [
+            {"id": "a", "name": "Lunch", "source": "manual", "source_ids": {},
+             "start_time": "2026-09-10T12:00", "end_time": "2026-09-10T13:00"},
+            {"id": "b", "name": "Lunch meeting", "source": "calendar",
+             "source_ids": {"calendar_id": "g1"},
+             "start_time": "2026-09-10T12:30", "end_time": "2026-09-10T14:00"},
+        ]
+
+        _blocks, _gaps, coverage = _build_blocks_and_coverage(events, "2026-09-10", 900)
+
+        assert coverage.confirmed_minutes == 60      # 12:00-13:00
+        assert coverage.pending_minutes == 60        # 13:00-14:00 only
+        assert coverage.covered_minutes == 120       # 12:00-14:00
+
+    def test_dismissed_block_is_omitted_and_its_time_reopens(self):
+        """§2.5. A meeting you skipped means that hour really is unaccounted,
+        and the gap is then the prompt to say what you did instead."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{
+            "id": "e1", "name": "Standup", "source": "calendar",
+            "source_ids": {"calendar_id": "g1"}, "state": "dismissed",
+            "start_time": "2026-09-10T09:00", "end_time": "2026-09-10T10:00",
+        }]
+
+        blocks, gaps, coverage = _build_blocks_and_coverage(events, "2026-09-10", 720)
+
+        assert blocks == []
+        assert coverage.covered_minutes == 0
+        assert any(g.start <= "09:30" <= g.end for g in gaps)
+
+    def test_still_ahead_blocks_count_toward_neither(self):
+        """day_coverage already clips to elapsed; assert it holds for both
+        of the new numbers, not just the old one."""
+        from src.api.routes.daily import _build_blocks_and_coverage
+
+        events = [{
+            "id": "e1", "name": "Guitar", "source": "manual", "source_ids": {},
+            "start_time": "2026-09-10T21:00", "end_time": "2026-09-10T22:00",
+        }]
+
+        blocks, _gaps, coverage = _build_blocks_and_coverage(events, "2026-09-10", 720)
+
+        assert len(blocks) == 1              # still rendered
+        assert coverage.confirmed_minutes == 0
+        assert coverage.pending_minutes == 0
+
 
 class TestGetDailyRoute:
     """Route-level coverage for `get_daily` itself. `_build_blocks_and_coverage`
@@ -376,12 +473,14 @@ class TestGetDailyRoute:
         assert past_body["gaps"] == [{"start": "00:00", "end": "24:00", "minutes": 1440}]
         assert past_body["coverage"] == {
             "covered_minutes": 0, "unaccounted_minutes": 1440, "elapsed_minutes": 1440,
+            "confirmed_minutes": 0, "pending_minutes": 0,
         }
 
         # elapsed = 0 for a future date: no gaps at all, not one big one.
         assert future_body["gaps"] == []
         assert future_body["coverage"] == {
             "covered_minutes": 0, "unaccounted_minutes": 0, "elapsed_minutes": 0,
+            "confirmed_minutes": 0, "pending_minutes": 0,
         }
 
         # elapsed = now for today: one gap ending at (about) the wall clock.

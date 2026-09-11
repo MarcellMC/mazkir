@@ -10,6 +10,7 @@ from src.config import settings
 from src.services.daily_tasks import parse_all_todos, is_todo_line
 from src.services.habit_completion import is_complete_today
 from src.services.day_coverage import MINUTES_PER_DAY, day_coverage, minutes_into_day
+from src.services.approval import resolve_state
 
 router = APIRouter(prefix="/daily", tags=["daily"], dependencies=[Depends(verify_api_key)])
 logger = logging.getLogger(__name__)
@@ -28,7 +29,10 @@ class DailyBlock(BaseModel):
     completed: bool = False
     activity: str | None = None   # populated by Ship 6
     category: str | None = None   # populated by Ship 6
-    state: str = "suggested"      # "approved" arrives in Ship 5
+    # Always set explicitly from `resolve_state` in `_build_blocks_and_coverage`,
+    # so this default is unreachable — but it must not name a value the
+    # vocabulary no longer contains (services/approval.py).
+    state: str = "pending"
     habit_progress: str | None = None  # "1/2" when a daily_target is set
 
 
@@ -63,6 +67,16 @@ class DayCoverage(BaseModel):
     # elapsed and still-to-come rows shows exactly when
     # `0 < elapsed_minutes < 1440`.
     elapsed_minutes: int
+    # Two different unions over the same block list (spec §3). `covered` is
+    # every drawable block, which is what gaps are computed from — so a `░`
+    # row always means nothing is there at all, and can never overlap a
+    # pending block. `confirmed` is approved blocks only, and is the only
+    # number the weekly readout (Ship 9) may read.
+    confirmed_minutes: int = 0
+    # Pending time that is not already confirmed. Subtracted rather than
+    # counted independently, so two overlapping blocks of different states
+    # do not add up to more than the wall clock.
+    pending_minutes: int = 0
 
 
 class DailyNote(BaseModel):
@@ -248,11 +262,19 @@ def _build_blocks_and_coverage(
     midnight, so a neighbouring day's fragment here would distort this
     day's arithmetic. An event that starts on `date` and ends after it is
     clipped to `24:00` rather than dropped — see `_end_minutes`.
+
+    Dismissed events are dropped entirely and the span they occupied becomes
+    a gap (spec §2.5): a meeting you skipped means that hour really is
+    unaccounted, and the gap is the prompt to say what you did instead.
     """
     blocks: list[DailyBlock] = []
-    intervals: list[tuple[int, int]] = []
+    all_intervals: list[tuple[int, int]] = []
+    approved_intervals: list[tuple[int, int]] = []
 
     for e in events:
+        state = resolve_state(e)
+        if state == "dismissed":
+            continue
         start, end, _, _ = _block_times(e, date)
         if start is None or end is None:
             continue
@@ -276,15 +298,25 @@ def _build_blocks_and_coverage(
             completed=bool(e.get("completed") or habit.get("completed", False)),
             activity=e.get("activity"),
             category=e.get("category"),
-            state=e.get("state") or "suggested",
+            state=state,
             habit_progress=(
                 f"{habit.get('completions_today', 0)}/{target}" if target else None
             ),
         ))
-        intervals.append((start, end))
+        all_intervals.append((start, end))
+        if state == "approved":
+            approved_intervals.append((start, end))
 
     blocks.sort(key=lambda b: b.start)
-    raw_gaps, coverage = day_coverage(intervals, elapsed_minutes)
+
+    # Two calls, two unions. Gaps come from the first — over every drawable
+    # block — so a gap means nothing is there at all. Were gaps computed
+    # from the approved set, every pending block would sit inside a `░` row
+    # covering the same span, which is incoherent to read.
+    raw_gaps, coverage = day_coverage(all_intervals, elapsed_minutes)
+    _approved_gaps, approved_coverage = day_coverage(approved_intervals, elapsed_minutes)
+
+    confirmed = approved_coverage.covered_minutes
     return (
         blocks,
         [DailyGap(start=g.start, end=g.end, minutes=g.minutes) for g in raw_gaps],
@@ -292,6 +324,10 @@ def _build_blocks_and_coverage(
             covered_minutes=coverage.covered_minutes,
             unaccounted_minutes=coverage.unaccounted_minutes,
             elapsed_minutes=elapsed_minutes,
+            confirmed_minutes=confirmed,
+            # Never negative: `confirmed` is a union over a subset of
+            # `all_intervals`, so it cannot exceed `covered`.
+            pending_minutes=coverage.covered_minutes - confirmed,
         ),
     )
 
