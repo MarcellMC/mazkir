@@ -198,17 +198,25 @@ async def set_event_state(date: str, event_id: str, body: SetStateBody):
         }
 
     # --- approve a checkbox block by checking it -------------------------
+    # Section-agnostic, via `set_todo_checked` — not `daily_set_task_state`,
+    # which can only see and only write `## Tasks`. Since Ship 1,
+    # `parse_all_todos` turns *any* section's checkbox into a block, so the
+    # write path has to reach every checkbox the read path can see.
     if body.state == "approved" and "daily-note" in systems and not event.get("completed"):
-        from src.services.tool_handlers.daily import daily_set_task_state
+        from src.services.daily_tasks import set_todo_checked
+        vault = get_vault()
         text = event.get("name") or ""
-        result = daily_set_task_state(
-            get_vault(), {"text": text, "state": "checked", "date": date}
-        )
-        if not result.get("ok"):
-            error = result.get("error", {})
+        daily = vault.read_daily_note(date)
+        new_body, reason = set_todo_checked(daily["content"], text, checked=True)
+        if reason == "not_found":
+            raise HTTPException(404, f"No checkbox matches {text!r} on {date}")
+        if reason == "ambiguous":
             raise HTTPException(
-                404, error.get("message", f"Could not check task {text!r}")
+                409,
+                f"Multiple checkboxes match {text!r} on {date}; cannot tell "
+                "which one to check.",
             )
+        vault.write_daily_note(date, new_body)
         return {
             "ok": True, "state": "approved", "event_id": event_id,
             "habit": None, "checkbox": {"text": text},

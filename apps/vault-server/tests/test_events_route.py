@@ -369,3 +369,118 @@ class TestSetState:
                                 json={"state": "suggested"})
 
         assert r.status_code == 422
+
+    # --- checkbox branch: fix round 1 --------------------------------
+    #
+    # `daily_set_task_state` can only see and write `## Tasks`, because it
+    # re-renders that section wholesale via `render_tasks_section`. But
+    # `parse_all_todos` — which is what turns a timed checkbox into a block
+    # in the first place — is section-agnostic (Ship 1). These tests pin the
+    # route to `set_todo_checked` instead, which edits the matched line
+    # in place wherever it lives.
+
+    def test_approving_an_unfired_checkbox_ticks_it_and_stores_nothing(self, monkeypatch):
+        """Ticking makes `completed` true, so resolve_state derives approved
+        on the next merge — storing a state row too would key an approval to
+        an unstable `note_line` id, the same stale-row trap as the habit
+        branch."""
+        import src.main as main
+
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Visit dentist", "source": "daily-note",
+             "source_ids": {"note_line": "abc123"}, "completed": False,
+             "start_time": "2026-09-10T14:00", "end_time": "2026-09-10T15:00"},
+        ])
+
+        written = {}
+
+        class FakeVault:
+            def read_daily_note(self, date):
+                return {"content": "## Tasks\n- [ ] Visit dentist\n"}
+
+            def write_daily_note(self, date, content):
+                written["date"] = date
+                written["content"] = content
+
+        monkeypatch.setattr(main, "get_vault", lambda: FakeVault())
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "approved"})
+
+        assert r.status_code == 200
+        assert r.json()["checkbox"] == {"text": "Visit dentist"}
+        assert r.json()["habit"] is None
+        assert written["content"] == "## Tasks\n- [x] Visit dentist\n"
+        assert fake.saved == {}          # no state row written
+
+    def test_approving_a_checkbox_under_a_non_tasks_heading_is_approved(self, monkeypatch):
+        """The regression this fix round exists for: a timed checkbox under
+        `## Schedule` (or any heading other than `## Tasks`) is exactly the
+        block the day view shows, and `daily_set_task_state` cannot reach it
+        because it only ever writes back to `## Tasks`."""
+        import src.main as main
+
+        self._install(monkeypatch, [
+            {"id": "e1", "name": "Standup", "source": "daily-note",
+             "source_ids": {"note_line": "xyz789"}, "completed": False,
+             "start_time": "2026-09-10T09:00", "end_time": "2026-09-10T09:15"},
+        ])
+
+        written = {}
+
+        class FakeVault:
+            def read_daily_note(self, date):
+                return {"content": "## Schedule\n- [ ] 09:00 — Standup (15m)\n"}
+
+            def write_daily_note(self, date, content):
+                written["content"] = content
+
+        monkeypatch.setattr(main, "get_vault", lambda: FakeVault())
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "approved"})
+
+        assert r.status_code == 200
+        assert r.json()["checkbox"] == {"text": "Standup"}
+        assert written["content"] == "## Schedule\n- [x] 09:00 — Standup (15m)\n"
+
+    def test_approving_a_checkbox_with_no_match_is_404(self, monkeypatch):
+        import src.main as main
+
+        self._install(monkeypatch, [
+            {"id": "e1", "name": "Ghost task", "source": "daily-note",
+             "source_ids": {"note_line": "ghost"}, "completed": False},
+        ])
+
+        class FakeVault:
+            def read_daily_note(self, date):
+                return {"content": "## Tasks\n- [ ] Something else\n"}
+
+        monkeypatch.setattr(main, "get_vault", lambda: FakeVault())
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "approved"})
+
+        assert r.status_code == 404
+
+    def test_approving_an_ambiguous_checkbox_is_409(self, monkeypatch):
+        import src.main as main
+
+        self._install(monkeypatch, [
+            {"id": "e1", "name": "Walk dog", "source": "daily-note",
+             "source_ids": {"note_line": "dup"}, "completed": False},
+        ])
+
+        class FakeVault:
+            def read_daily_note(self, date):
+                return {"content": (
+                    "## Tasks\n- [ ] Walk dog in the park\n"
+                    "- [ ] Walk dog to the vet\n"
+                )}
+
+        monkeypatch.setattr(main, "get_vault", lambda: FakeVault())
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "approved"})
+
+        assert r.status_code == 409
