@@ -2,7 +2,7 @@
 import logging
 import re
 from datetime import date as dt_date, datetime, timedelta
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 import pytz
 from pydantic import BaseModel
 from src.auth import verify_api_key
@@ -480,3 +480,115 @@ async def get_daily(date: dt_date | None = None):
         todos=todos,
         notes=notes,
     )
+
+
+class FillGapBody(BaseModel):
+    start: str                      # "HH:MM"
+    end: str                        # "HH:MM"
+    # Absent means "use whatever you proposed for this interval". The client
+    # never sends the proposed name: a name can exceed the 64-byte callback
+    # budget, and a client-supplied name is a client-supplied write (§4.2).
+    name: str | None = None
+
+
+@router.post("/{date}/gaps/fill")
+async def fill_gap(date: str, body: FillGapBody):
+    """Turn a gap into a block (spec §4.4).
+
+    A gap has no id — it is derived — so this keys on the interval. Without a
+    `name`, the proposal for that interval is recomputed here rather than
+    taken from the client.
+    """
+    from src.main import get_events as get_events_svc
+    events_svc = get_events_svc()
+    if not events_svc:
+        raise HTTPException(503, "Events service not initialized")
+
+    target_date = dt_date.fromisoformat(date)
+    name = body.name
+    was_guess = False
+
+    if not name:
+        start = minutes_into_day(body.start, "")
+        end = minutes_into_day(body.end, "")
+        if start is None or end is None:
+            raise HTTPException(422, f"Unusable interval {body.start}-{body.end}")
+        proposal = propose_for_gap(start, end, _load_history(events_svc, target_date))
+        if not proposal:
+            raise HTTPException(
+                422, f"Nothing to propose for {body.start}-{body.end} — send a name.",
+            )
+        name = proposal["name"]
+        was_guess = True
+
+    created = events_svc.create_event(
+        date=date, name=name,
+        start_time=f"{date}T{body.start}", end_time=f"{date}T{body.end}",
+    )
+    return {"ok": True, "event_id": created.get("id", ""), "name": name,
+            "was_guess": was_guess}
+
+
+# Thin seams so approve-all is testable without a live events service, and so
+# both routes share one implementation of each action.
+async def _set_state_for_approve_all(date: str, event_id: str, body):
+    from src.api.routes.events import set_event_state
+    return await set_event_state(date, event_id, body)
+
+
+async def _fill_gap_for_approve_all(date: str, body: FillGapBody):
+    return await fill_gap(date, body)
+
+
+@router.post("/{date}/approve-all")
+async def approve_all(date: str):
+    """Approve every elapsed pending block on `date`, and bank every proposal.
+
+    Proposals are included deliberately (spec §5.6) — decided 2026-09-10
+    against the recommendation. The mitigation is that the response names what
+    it banked and flags guesses, so the bot can say "Approved 3, including
+    Sleep 00:20-06:40 (a guess)" and a wrong one is correctable in the same
+    breath rather than discovered weeks later in the readout.
+
+    One failure never aborts the rest: a 409 on a ticked habit must not strand
+    the approvals after it.
+    """
+    from src.api.routes.events import SetStateBody
+
+    day = await get_daily(dt_date.fromisoformat(date))
+    elapsed = day.coverage.elapsed_minutes
+    approved: list[dict] = []
+    failed: list[dict] = []
+
+    for block in day.blocks:
+        if block.state != "pending":
+            continue
+        # A block that has not happened cannot be confirmed. The /day view
+        # gives it no buttons for the same reason (spec §5.1's `◌`), so
+        # sweeping it here would confirm something the surface says you can't.
+        start = minutes_into_day(block.start, "")
+        if start is None or start >= elapsed:
+            continue
+        try:
+            await _set_state_for_approve_all(
+                date, block.id, SetStateBody(state="approved")
+            )
+            approved.append({"event_id": block.id, "name": block.title,
+                             "was_guess": False})
+        except HTTPException as exc:
+            failed.append({"event_id": block.id, "reason": str(exc.detail)})
+
+    for gap in day.gaps:
+        if gap.proposal is None:
+            continue
+        try:
+            result = await _fill_gap_for_approve_all(
+                date, FillGapBody(start=gap.start, end=gap.end)
+            )
+            approved.append({"event_id": result["event_id"],
+                             "name": result["name"], "was_guess": True})
+        except HTTPException as exc:
+            failed.append({"event_id": f"gap:{gap.start}-{gap.end}",
+                           "reason": str(exc.detail)})
+
+    return {"ok": True, "approved": approved, "failed": failed}

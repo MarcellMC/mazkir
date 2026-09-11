@@ -707,3 +707,204 @@ class TestGapProposals:
 
         assert history[0][0]["name"] == "Yesterday"
         assert history[1][0]["name"] == "Day before"
+
+
+def _fake_day(blocks, gaps):
+    """A DailyResponse with just the fields approve-all reads."""
+    from src.api.routes.daily import DailyResponse, DayCoverage
+
+    return DailyResponse(
+        date="2026-09-10", tokens_today=0, tokens_total=0,
+        blocks=blocks, gaps=gaps,
+        coverage=DayCoverage(
+            covered_minutes=0, unaccounted_minutes=0, elapsed_minutes=720,
+            confirmed_minutes=0, pending_minutes=0,
+        ),
+        todos=[], notes=[],
+    )
+
+
+class TestApproveAll:
+    def test_approves_pending_blocks_and_banks_guesses(self, monkeypatch):
+        """§5.6: approve-all includes proposals, and says which were guesses."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+        from src.api.routes.daily import DailyBlock, DailyGap, GapProposal
+        import src.api.routes.daily as daily_route
+
+        blocks = [
+            DailyBlock(id="e1", start="09:00", end="10:00", title="Standup",
+                       source="calendar", type="event", state="pending"),
+            DailyBlock(id="e2", start="07:00", end="08:00", title="Dog walk",
+                       source="manual", type="event", state="approved"),
+        ]
+        gaps = [DailyGap(start="00:20", end="06:40", minutes=380,
+                         proposal=GapProposal(name="Sleep", days_seen=11))]
+
+        async def fake_get_daily(date=None):
+            return _fake_day(blocks, gaps)
+
+        approvals, fills = [], []
+
+        async def fake_set_state(date, event_id, body):
+            approvals.append(event_id)
+            return {"ok": True, "state": "approved", "event_id": event_id,
+                    "habit": None, "checkbox": None}
+
+        async def fake_fill(date, body):
+            fills.append((body.start, body.end, body.name))
+            return {"ok": True, "event_id": "n1", "name": "Sleep", "was_guess": True}
+
+        monkeypatch.setattr(daily_route, "get_daily", fake_get_daily)
+        monkeypatch.setattr(daily_route, "_set_state_for_approve_all", fake_set_state)
+        monkeypatch.setattr(daily_route, "_fill_gap_for_approve_all", fake_fill)
+
+        body = TestClient(app).post("/daily/2026-09-10/approve-all").json()
+
+        assert approvals == ["e1"]                    # not the approved e2
+        assert fills == [("00:20", "06:40", None)]    # name recomputed server-side
+        assert [a["was_guess"] for a in body["approved"]] == [False, True]
+        assert body["failed"] == []
+
+    def test_a_failure_does_not_strand_the_rest(self, monkeypatch):
+        """A 409 on a ticked habit must not abort the approvals after it.
+
+        The failing block is ordered *before* the succeeding one: if a
+        failure aborted the loop, "good" would never be attempted and this
+        test would still see an empty `approved` list pass silently — proving
+        nothing about stranding.
+        """
+        from fastapi.testclient import TestClient
+        from fastapi import HTTPException
+        from src.main import app
+        from src.api.routes.daily import DailyBlock
+        import src.api.routes.daily as daily_route
+
+        blocks = [
+            DailyBlock(id="bad", start="09:00", end="10:00", title="Dog walk",
+                       source="habit", type="habit", state="pending"),
+            DailyBlock(id="good", start="10:00", end="11:00", title="Standup",
+                       source="calendar", type="event", state="pending"),
+        ]
+
+        async def fake_get_daily(date=None):
+            return _fake_day(blocks, [])
+
+        async def fake_set_state(date, event_id, body):
+            if event_id == "bad":
+                raise HTTPException(409, "untick it in /habits")
+            return {"ok": True, "state": "approved", "event_id": event_id,
+                    "habit": None, "checkbox": None}
+
+        monkeypatch.setattr(daily_route, "get_daily", fake_get_daily)
+        monkeypatch.setattr(daily_route, "_set_state_for_approve_all", fake_set_state)
+
+        body = TestClient(app).post("/daily/2026-09-10/approve-all").json()
+
+        assert [a["event_id"] for a in body["approved"]] == ["good"]
+        assert [f["event_id"] for f in body["failed"]] == ["bad"]
+        assert "untick" in body["failed"][0]["reason"]
+
+    def test_still_ahead_blocks_are_not_approved(self, monkeypatch):
+        """A block that has not happened cannot be confirmed — the /day view
+        gives it no buttons, and approve-all must agree.
+
+        `_fake_day`'s `elapsed_minutes` is 720 (noon). This block starts at
+        21:00 (1260 minutes), genuinely past elapsed, so it must be skipped.
+        Asserting the state endpoint was never called at all (not merely that
+        the response looks fine) is what makes this test actually prove the
+        still-ahead block was excluded rather than approved and then hidden
+        by a lenient assertion.
+        """
+        from fastapi.testclient import TestClient
+        from src.main import app
+        from src.api.routes.daily import DailyBlock
+        import src.api.routes.daily as daily_route
+
+        blocks = [DailyBlock(id="later", start="21:00", end="22:00", title="Guitar",
+                             source="manual", type="event", state="pending")]
+
+        async def fake_get_daily(date=None):
+            return _fake_day(blocks, [])
+
+        called = []
+
+        async def fake_set_state(date, event_id, body):
+            called.append(event_id)
+            return {"ok": True, "state": "approved", "event_id": event_id,
+                    "habit": None, "checkbox": None}
+
+        monkeypatch.setattr(daily_route, "get_daily", fake_get_daily)
+        monkeypatch.setattr(daily_route, "_set_state_for_approve_all", fake_set_state)
+
+        TestClient(app).post("/daily/2026-09-10/approve-all")
+
+        assert called == []
+
+
+class TestGapFill:
+    def _install(self, monkeypatch, history=None):
+        import src.main as main
+
+        class FakeEvents:
+            def __init__(self):
+                self.created = []
+
+            def get_events(self, date):
+                return (history or {}).get(date, [])
+
+            def create_event(self, **kwargs):
+                self.created.append(kwargs)
+                return {"id": "n1", **kwargs}
+
+        fake = FakeEvents()
+        monkeypatch.setattr(main, "get_events", lambda: fake)
+        return fake
+
+    def test_a_named_fill_creates_that_block(self, monkeypatch):
+        """A supplied name is trusted as-is; no proposal lookup happens."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        fake = self._install(monkeypatch)
+
+        body = TestClient(app).post(
+            "/daily/2026-09-10/gaps/fill",
+            json={"start": "16:00", "end": "17:30", "name": "Reading"},
+        ).json()
+
+        assert body["name"] == "Reading"
+        assert body["was_guess"] is False
+        assert fake.created[0]["name"] == "Reading"
+
+    def test_an_unnamed_fill_recomputes_the_proposal(self, monkeypatch):
+        """§4.2: the client sends only the interval. A client-supplied name is
+        a client-supplied write, and a long one would not fit in 64 bytes."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        fake = self._install(monkeypatch)
+
+        body = TestClient(app).post(
+            "/daily/2026-09-10/gaps/fill",
+            json={"start": "00:20", "end": "06:40"},
+        ).json()
+
+        # Empty history, overnight gap -> the cold-start Sleep seed.
+        assert body["name"] == "Sleep"
+        assert body["was_guess"] is True
+        assert fake.created[0]["name"] == "Sleep"
+
+    def test_an_unnamed_fill_with_no_proposal_is_422(self, monkeypatch):
+        """Nothing to guess and nothing supplied — the bot should have asked."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        self._install(monkeypatch)
+
+        r = TestClient(app).post(
+            "/daily/2026-09-10/gaps/fill",
+            json={"start": "16:00", "end": "17:30"},
+        )
+
+        assert r.status_code == 422
