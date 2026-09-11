@@ -492,19 +492,23 @@ class FillGapBody(BaseModel):
 
 
 @router.post("/{date}/gaps/fill")
-async def fill_gap(date: str, body: FillGapBody):
+async def fill_gap(date: dt_date, body: FillGapBody):
     """Turn a gap into a block (spec §4.4).
 
     A gap has no id — it is derived — so this keys on the interval. Without a
     `name`, the proposal for that interval is recomputed here rather than
     taken from the client.
+
+    `date` is typed, not a raw string, for the same reason as `get_daily`:
+    FastAPI rejects anything that isn't a real calendar date with 422 before
+    it reaches `EventsService.create_event` / `_file_path`.
     """
     from src.main import get_events as get_events_svc
     events_svc = get_events_svc()
     if not events_svc:
         raise HTTPException(503, "Events service not initialized")
 
-    target_date = dt_date.fromisoformat(date)
+    date_str = date.isoformat()
     name = body.name
     was_guess = False
 
@@ -513,7 +517,7 @@ async def fill_gap(date: str, body: FillGapBody):
         end = minutes_into_day(body.end, "")
         if start is None or end is None:
             raise HTTPException(422, f"Unusable interval {body.start}-{body.end}")
-        proposal = propose_for_gap(start, end, _load_history(events_svc, target_date))
+        proposal = propose_for_gap(start, end, _load_history(events_svc, date))
         if not proposal:
             raise HTTPException(
                 422, f"Nothing to propose for {body.start}-{body.end} — send a name.",
@@ -522,8 +526,8 @@ async def fill_gap(date: str, body: FillGapBody):
         was_guess = True
 
     created = events_svc.create_event(
-        date=date, name=name,
-        start_time=f"{date}T{body.start}", end_time=f"{date}T{body.end}",
+        date=date_str, name=name,
+        start_time=f"{date_str}T{body.start}", end_time=f"{date_str}T{body.end}",
     )
     return {"ok": True, "event_id": created.get("id", ""), "name": name,
             "was_guess": was_guess}
@@ -533,19 +537,22 @@ async def fill_gap(date: str, body: FillGapBody):
 # both routes share one implementation of each action.
 async def _set_state_for_approve_all(date: str, event_id: str, body):
     from src.api.routes.events import set_event_state
-    # set_event_state now takes a real `date` object (R8) — FastAPI coerces
-    # that from the path string on an HTTP call, but this is a direct Python
+    # set_event_state takes a real `date` object (R8) — FastAPI coerces that
+    # from the path string on an HTTP call, but this is a direct Python
     # call, so the string has to be converted here or `.isoformat()` inside
     # set_event_state raises AttributeError on every real (non-mocked) run.
     return await set_event_state(dt_date.fromisoformat(date), event_id, body)
 
 
 async def _fill_gap_for_approve_all(date: str, body: FillGapBody):
-    return await fill_gap(date, body)
+    # `fill_gap` now takes a real `date` object too, for the same reason as
+    # the seam above: this is a direct Python call, so FastAPI's path-param
+    # coercion never runs and the string has to be converted here.
+    return await fill_gap(dt_date.fromisoformat(date), body)
 
 
 @router.post("/{date}/approve-all")
-async def approve_all(date: str):
+async def approve_all(date: dt_date):
     """Approve every elapsed pending block on `date`, and bank every proposal.
 
     Proposals are included deliberately (spec §5.6) — decided 2026-09-10
@@ -556,10 +563,15 @@ async def approve_all(date: str):
 
     One failure never aborts the rest: a 409 on a ticked habit must not strand
     the approvals after it.
+
+    `date` is typed, not a raw string, for the same reason as `get_daily` and
+    `fill_gap`: FastAPI rejects anything that isn't a real calendar date with
+    422 before this ever calls into `get_daily` or the seams below.
     """
     from src.api.routes.events import SetStateBody
 
-    day = await get_daily(dt_date.fromisoformat(date))
+    date_str = date.isoformat()
+    day = await get_daily(date)
     elapsed = day.coverage.elapsed_minutes
     approved: list[dict] = []
     failed: list[dict] = []
@@ -575,7 +587,7 @@ async def approve_all(date: str):
             continue
         try:
             await _set_state_for_approve_all(
-                date, block.id, SetStateBody(state="approved")
+                date_str, block.id, SetStateBody(state="approved")
             )
             approved.append({"event_id": block.id, "name": block.title,
                              "was_guess": False})
@@ -587,11 +599,14 @@ async def approve_all(date: str):
             continue
         try:
             result = await _fill_gap_for_approve_all(
-                date, FillGapBody(start=gap.start, end=gap.end)
+                date_str, FillGapBody(start=gap.start, end=gap.end)
             )
             approved.append({"event_id": result["event_id"],
                              "name": result["name"], "was_guess": True})
         except HTTPException as exc:
+            # `event_id` here is a synthesized `gap:{start}-{end}` marker, not
+            # a real event id — gaps have no id of their own (spec §4.4), so
+            # this is a label for the failed[] row, not an addressable id.
             failed.append({"event_id": f"gap:{gap.start}-{gap.end}",
                            "reason": str(exc.detail)})
 

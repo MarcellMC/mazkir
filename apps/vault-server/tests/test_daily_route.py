@@ -939,3 +939,29 @@ class TestGapFill:
         )
 
         assert r.status_code == 422
+
+    def test_fill_gap_rejects_a_malformed_date(self, monkeypatch):
+        """422 at the boundary, not a 500. The date reaches create_event and
+        EventsService._file_path, which builds events_path / f"{date}.json"."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        self._install(monkeypatch)
+
+        r = TestClient(app).post(
+            "/daily/not-a-date/gaps/fill",
+            json={"start": "16:00", "end": "17:30", "name": "Reading"},
+        )
+
+        assert r.status_code == 422
+
+
+class TestApproveAllMalformedDate:
+    def test_approve_all_rejects_a_malformed_date(self):
+        """Same guard on the other new route that takes a date."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        r = TestClient(app).post("/daily/not-a-date/approve-all")
+
+        assert r.status_code == 422
