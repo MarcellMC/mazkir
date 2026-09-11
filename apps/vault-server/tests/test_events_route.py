@@ -224,6 +224,74 @@ class TestSetState:
         assert r.json()["state"] == "dismissed"
         assert fake.saved["2026-09-10"][0]["state"] == "dismissed"
 
+    def test_dismissing_an_unfired_habit_stores_dismissed_and_does_not_complete_it(
+        self, monkeypatch
+    ):
+        """§2.3's dispatch table: "habit, not fired | ✕ store dismissed".
+
+        Only the `approved` branches ever tick a habit or a checkbox — this
+        block has not been ticked (`completed: False`), so `resolve_state`
+        derives "pending", not "approved", and dismissing it falls past both
+        approve branches and the already-approved check into the bottom
+        `save_events` fallback, storing a `state="dismissed"` row keyed to
+        the unstable `habit_slug` id. That row-clutter is accepted (spec
+        §2.5); what must never happen is dismissing *also* completing the
+        habit, which is why the negative assertion is load-bearing here.
+        """
+        import src.api.routes.events as events_route
+
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Dog walk", "source": "habit",
+             "source_ids": {"habit_slug": "dog-walk"}, "completed": False,
+             "habit": {"name": "Dog walk"}},
+        ])
+
+        calls = []
+
+        def spy_complete_habit(*a, **kw):
+            calls.append((a, kw))
+            raise AssertionError("dismissing an unfired habit must not complete it")
+
+        monkeypatch.setattr(events_route, "complete_habit", spy_complete_habit)
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "dismissed"})
+
+        assert r.status_code == 200
+        assert r.json()["state"] == "dismissed"
+        assert fake.saved["2026-09-10"][0]["state"] == "dismissed"
+        assert calls == []
+
+    def test_dismissing_an_unchecked_timed_checkbox_stores_dismissed_and_does_not_write_the_note(
+        self, monkeypatch
+    ):
+        """§2.3's dispatch table: "checkbox, timed, unchecked | ✕ store
+        dismissed". Same shape as the habit case above: the block is not yet
+        `completed`, so dismissing it falls into the bottom `save_events`
+        fallback and stores a `state="dismissed"` row keyed to the unstable
+        `note_line` id, without ever writing the daily note."""
+        import src.main as main
+
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Visit dentist", "source": "daily-note",
+             "source_ids": {"note_line": "abc123"}, "completed": False},
+        ])
+
+        class SpyVault:
+            def write_daily_note(self, *a, **kw):
+                raise AssertionError(
+                    "dismissing an unchecked checkbox must not write the note"
+                )
+
+        monkeypatch.setattr(main, "get_vault", lambda: SpyVault())
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "dismissed"})
+
+        assert r.status_code == 200
+        assert r.json()["state"] == "dismissed"
+        assert fake.saved["2026-09-10"][0]["state"] == "dismissed"
+
     def test_dismissing_never_touches_google(self, monkeypatch):
         """§2.5 and §9: dismissal is local in this ship. cancel and delete are
         deferred, and a dismissal must not quietly become either."""
