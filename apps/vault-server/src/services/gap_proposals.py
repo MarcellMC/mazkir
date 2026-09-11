@@ -101,12 +101,8 @@ def propose_for_gap(
         if len(days) >= MIN_DAYS_SEEN:
             return {"name": name, "days_seen": len(days)}
 
-    # The overnight rule only fires on a completely empty store (cold-start seed).
-    # With history present, step 1 already fired (or would have if the name had
-    # enough days).
-    if not history:
-        core_start, core_end = SLEEP_CORE
-        if start <= core_start and end >= core_end:
-            return {"name": SLEEP_NAME, "days_seen": 0}
+    core_start, core_end = SLEEP_CORE
+    if start <= core_start and end >= core_end:
+        return {"name": SLEEP_NAME, "days_seen": 0}
 
     return None

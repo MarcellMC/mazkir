@@ -28,9 +28,11 @@ class TestHistory:
         assert propose_for_gap(20, 400, history) == {"name": "Sleep", "days_seen": 3}
 
     def test_two_days_is_below_the_floor(self):
-        history = [day(blk("Sleep", "00:20", "06:40")) for _ in range(2)]
+        """A midday gap deliberately: an overnight gap also satisfies the
+        overnight rule, so it cannot isolate the history floor."""
+        history = [day(blk("Lunch", "12:00", "13:00")) for _ in range(2)]
 
-        assert propose_for_gap(20, 400, history) is None
+        assert propose_for_gap(720, 780, history) is None
 
     def test_counts_distinct_days_not_blocks(self):
         """Three blocks on one day is one day's evidence, not three."""
@@ -109,6 +111,24 @@ class TestHistory:
         history += [day(blk("Ancient", "12:00", "13:00")) for _ in range(5)]
 
         assert propose_for_gap(720, 780, history) is None
+
+    def test_history_below_the_floor_falls_through_to_the_overnight_seed(self):
+        """Two days of Sleep is not enough for the history step, but an
+        overnight gap still gets the seed. Suppressing the proposal *because*
+        there is a little evidence for it would be backwards."""
+        history = [day(blk("Sleep", "00:20", "06:40")) for _ in range(2)]
+
+        assert propose_for_gap(20, 400, history) == {"name": "Sleep", "days_seen": 0}
+
+    def test_the_overnight_seed_survives_the_shape_the_route_passes(self):
+        """`_load_history` always returns exactly HISTORY_DAYS lists, with []
+        for a date that has no file — so a cold start arrives as fourteen
+        empty lists, not as []. A truthiness check on `history` would make
+        this rule unreachable in production while still passing
+        test_fires_on_an_empty_store."""
+        history = [[] for _ in range(HISTORY_DAYS)]
+
+        assert propose_for_gap(20, 400, history) == {"name": "Sleep", "days_seen": 0}
 
 
 class TestOvernightRule:
