@@ -8,11 +8,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from src.config import settings
-from src.services.approval import resolve_state
+from src.services.approval import resolve_state, source_systems
 from src.services.day_assembly import merge_from_sources as _merge_from_sources
-from src.services.events_service import (
-    USER_SETTABLE_FIELDS, _SOURCE_SYSTEM_BY_ID_KEY, apply_user_set,
-)
+from src.services.events_service import USER_SETTABLE_FIELDS, apply_user_set
 from src.services.habit_completion import complete_habit
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -133,13 +131,6 @@ async def patch_event(date: date_type, event_id: str, body: PatchEventBody):
     raise HTTPException(404, f"Event {event_id} not found")
 
 
-def _source_systems(event: dict) -> set[str]:
-    return {
-        _SOURCE_SYSTEM_BY_ID_KEY.get(key)
-        for key in (event.get("source_ids") or {})
-    }
-
-
 def _habit_path(vault, name: str) -> str | None:
     """The vault path of the active habit called `name`, case-insensitively."""
     wanted = name.strip().casefold()
@@ -176,7 +167,7 @@ async def set_event_state(date: date_type, event_id: str, body: SetStateBody):
     if event is None:
         raise HTTPException(404, f"No event {event_id} on {date_str}")
 
-    systems = _source_systems(event)
+    systems = source_systems(event)
     current = resolve_state(event)
 
     # --- nothing in this ship reverses a human action --------------------

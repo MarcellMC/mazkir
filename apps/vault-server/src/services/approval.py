@@ -35,6 +35,22 @@ _HUMAN_SOURCES = frozenset({"manual", "photo"})
 _STORABLE = frozenset({"approved", "dismissed"})
 
 
+def source_systems(event: dict[str, Any]) -> set[str]:
+    """The source systems (`calendar`, `timeline`, `habit`, `daily-note`, …)
+    an event's `source_ids` keys map to. Shared by `resolve_state` and by
+    `api/routes/events.py`'s dispatch on `set_event_state`, which needs the
+    same set to decide which branch owns an approve/dismiss.
+
+    `or {}` rather than a `.get` default: a persisted row can carry an
+    explicit null here, and `.get`'s default only applies when the key is
+    absent entirely.
+    """
+    return {
+        _SOURCE_SYSTEM_BY_ID_KEY.get(key)
+        for key in (event.get("source_ids") or {})
+    }
+
+
 def resolve_state(event: dict[str, Any]) -> str:
     """"approved", "pending" or "dismissed".
 
@@ -50,11 +66,7 @@ def resolve_state(event: dict[str, Any]) -> str:
     if event.get("source") in _HUMAN_SOURCES:
         return "approved"
 
-    # `or {}` rather than a `.get` default: a persisted row can carry an
-    # explicit null here, and `.get`'s default only applies when the key is
-    # absent entirely.
-    source_ids = event.get("source_ids") or {}
-    systems = {_SOURCE_SYSTEM_BY_ID_KEY.get(key) for key in source_ids}
+    systems = source_systems(event)
 
     # `completed` is not sufficient on its own. A calendar entry carries it
     # too — merger_service.py:279,297 set it from Google's green colour or a
