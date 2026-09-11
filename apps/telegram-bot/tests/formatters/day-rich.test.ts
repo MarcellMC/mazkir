@@ -32,7 +32,7 @@ function s5block(over: Partial<DailyBlock> = {}): DailyBlock {
 }
 
 function s5gap(over: Partial<DailyGap> = {}): DailyGap {
-  return { start: "13:00", end: "14:12", minutes: 72, proposal: null, ...over };
+  return { start: "13:00", end: "14:15", minutes: 75, proposal: null, ...over };
 }
 
 function s5day(over: Partial<DailyResponse> = {}): DailyResponse {
@@ -72,7 +72,7 @@ describe("Ship 5 glyphs", () => {
 
   it("marks a gap with ░", () => {
     const html_str = html(s5day({ gaps: [s5gap()] }));
-    expect(html_str).toContain("░ 13:00–14:12");
+    expect(html_str).toContain("░ 13:00–14:15");
   });
 
   it("never renders ✅, ⚠ or ⟳ anywhere", () => {
@@ -119,8 +119,11 @@ describe("gap proposals", () => {
 
   it("renders an unproposed gap with a fill button carrying the duration", () => {
     const html_str = html(s5day({ gaps: [s5gap()] }));
-    expect(html_str).toContain("+ 1.2h");
-    expect(html_str).toMatch(/data="gap:fill:2026-09-10:780:852"/);
+    // hours() is (minutes / 60).toFixed(1), so a 75-minute gap reads 1.3h.
+    // The brief said 1.2h, which was wrong — it was copied from a prototype
+    // label that had been hand-written rather than computed.
+    expect(html_str).toContain("+ 1.3h");
+    expect(html_str).toMatch(/data="gap:fill:2026-09-10:780:855"/);
   });
 });
 
