@@ -546,3 +546,25 @@ class TestPatchPinning:
         stored = svc.get_events("2026-09-10")[0]
         assert stored["photos"] == [{"path": "a.jpg"}]
         assert "photos" not in stored.get("user_set", {})
+
+    def test_patch_rejects_a_malformed_date(self):
+        """422 at the boundary — not a 500, and not a filesystem touch. The date
+        reaches EventsService._file_path, which builds events_path / f"{date}.json"."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        r = TestClient(app).patch("/events/not-a-date/e1",
+                                  json={"name": "Sprint planning"})
+
+        assert r.status_code == 422
+
+    def test_set_state_rejects_a_malformed_date(self):
+        """422 at the boundary — not a 500, and not a filesystem touch. The date
+        reaches EventsService._file_path, which builds events_path / f"{date}.json"."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        r = TestClient(app).post("/events/not-a-date/e1/state",
+                                 json={"state": "approved"})
+
+        assert r.status_code == 422

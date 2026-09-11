@@ -100,14 +100,15 @@ async def refresh_events(date: date_type):
 
 
 @router.patch("/{date}/{event_id}")
-async def patch_event(date: str, event_id: str, body: PatchEventBody):
+async def patch_event(date: date_type, event_id: str, body: PatchEventBody):
     """Update a single persisted event."""
+    date_str = date.isoformat()
     from src.main import get_events as get_events_svc
     events_svc = get_events_svc()
     if not events_svc:
         raise HTTPException(503, "Events service not initialized")
 
-    events = events_svc.get_events(date)
+    events = events_svc.get_events(date_str)
     for event in events:
         if event["id"] == event_id:
             updates = body.model_dump(exclude_none=True)
@@ -126,7 +127,7 @@ async def patch_event(date: str, event_id: str, body: PatchEventBody):
                 if field in USER_SETTABLE_FIELDS:
                     pinned[field] = value
             apply_user_set(event)
-            events_svc.save_events(date, events)
+            events_svc.save_events(date_str, events)
             return {"updated": event_id, "event": event}
 
     raise HTTPException(404, f"Event {event_id} not found")
@@ -149,7 +150,7 @@ def _habit_path(vault, name: str) -> str | None:
 
 
 @router.post("/{date}/{event_id}/state")
-async def set_event_state(date: str, event_id: str, body: SetStateBody):
+async def set_event_state(date: date_type, event_id: str, body: SetStateBody):
     """Approve or dismiss one block (spec §2.3).
 
     Dispatches on the block's source system. Two branches write no `state` at
@@ -158,6 +159,7 @@ async def set_event_state(date: str, event_id: str, body: SetStateBody):
     merge. Storing a state row as well would key an approval to an unstable
     `habit_slug`/`note_line` id — the stale-row trap §2.1 exists to avoid.
     """
+    date_str = date.isoformat()
     from src.main import get_events as get_events_svc, get_vault
     events_svc = get_events_svc()
     if not events_svc:
@@ -167,12 +169,12 @@ async def set_event_state(date: str, event_id: str, body: SetStateBody):
     # often has no persisted row at all, because /daily reconciles without
     # saving. Resolving from the raw store would 404 on exactly the blocks
     # this route most needs to act on.
-    fresh, available = await _merge_from_sources(date_type.fromisoformat(date))
-    merged = events_svc.reconcile(date, fresh, available)
+    fresh, available = await _merge_from_sources(date)
+    merged = events_svc.reconcile(date_str, fresh, available)
 
     event = next((e for e in merged if e.get("id") == event_id), None)
     if event is None:
-        raise HTTPException(404, f"No event {event_id} on {date}")
+        raise HTTPException(404, f"No event {event_id} on {date_str}")
 
     systems = _source_systems(event)
     current = resolve_state(event)
@@ -198,9 +200,8 @@ async def set_event_state(date: str, event_id: str, body: SetStateBody):
         # The block's date, not today. Midday so a timezone conversion can
         # never roll it into a neighbouring day; complete_habit only reads
         # `.date()` off it.
-        stamp = datetime.combine(
-            date_type.fromisoformat(date), time(12, 0),
-            tzinfo=pytz.timezone(settings.vault_timezone),
+        stamp = pytz.timezone(settings.vault_timezone).localize(
+            datetime.combine(date, time(12, 0))
         )
         outcome = complete_habit(vault, path, now=stamp)
         return {
@@ -222,17 +223,17 @@ async def set_event_state(date: str, event_id: str, body: SetStateBody):
         from src.services.daily_tasks import set_todo_checked
         vault = get_vault()
         text = event.get("name") or ""
-        daily = vault.read_daily_note(date)
+        daily = vault.read_daily_note(date_str)
         new_body, reason = set_todo_checked(daily["content"], text, checked=True)
         if reason == "not_found":
-            raise HTTPException(404, f"No checkbox matches {text!r} on {date}")
+            raise HTTPException(404, f"No checkbox matches {text!r} on {date_str}")
         if reason == "ambiguous":
             raise HTTPException(
                 409,
-                f"Multiple checkboxes match {text!r} on {date}; cannot tell "
+                f"Multiple checkboxes match {text!r} on {date_str}; cannot tell "
                 "which one to check.",
             )
-        vault.write_daily_note(date, new_body)
+        vault.write_daily_note(date_str, new_body)
         return {
             "ok": True, "state": "approved", "event_id": event_id,
             "habit": None, "checkbox": {"text": text},
@@ -250,7 +251,7 @@ async def set_event_state(date: str, event_id: str, body: SetStateBody):
     for candidate in merged:
         if candidate.get("id") == event_id:
             candidate["state"] = body.state
-    events_svc.save_events(date, merged)
+    events_svc.save_events(date_str, merged)
 
     return {"ok": True, "state": body.state, "event_id": event_id,
             "habit": None, "checkbox": None}
