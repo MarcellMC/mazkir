@@ -47,9 +47,11 @@ def _block_window(event: dict[str, Any]) -> tuple[int, int] | None:
 
     The date the block sits on is irrelevant here — we are asking "what
     usually happens at this time of day", so only the clock matters. An end
-    that parses as at or before its start belongs to a cross-midnight
-    fragment whose other half lives in its own date file; ignore it rather
-    than guess which.
+    at or before the start is malformed or zero-duration input, not a span:
+    a genuine cross-midnight event is already rejected upstream by
+    `minutes_into_day`, which returns None when the timestamp's date differs
+    from the date it is given. Either way such a window is no evidence about
+    what filled a gap, so it is skipped rather than guessed at.
     """
     start_raw, end_raw = event.get("start_time"), event.get("end_time")
     if not start_raw or not end_raw:

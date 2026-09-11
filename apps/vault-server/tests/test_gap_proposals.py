@@ -1,7 +1,7 @@
 """Gap proposals — spec §4.1."""
 
 from src.services.gap_proposals import (
-    HISTORY_DAYS, MIN_DAYS_SEEN, propose_for_gap,
+    HISTORY_DAYS, MIN_DAYS_SEEN, OVERLAP_FRACTION, SLEEP_CORE, propose_for_gap,
 )
 
 
@@ -35,11 +35,17 @@ class TestHistory:
         assert propose_for_gap(720, 780, history) is None
 
     def test_counts_distinct_days_not_blocks(self):
-        """Three blocks on one day is one day's evidence, not three."""
+        """Three blocks on one day is one day's evidence, not three.
+
+        Each block clears the 30-minute overlap floor on its own, so all three
+        reach the counting step: a regression that counted blocks instead of
+        distinct days would wrongly hit MIN_DAYS_SEEN and propose "Lunch".
+        The correct set-based count sees one day and returns None.
+        """
         history = [day(
-            blk("Lunch", "12:00", "12:20"),
-            blk("Lunch", "12:20", "12:40"),
-            blk("Lunch", "12:40", "13:00"),
+            blk("Lunch", "12:00", "12:45"),   # 45 min of the gap
+            blk("Lunch", "12:15", "13:00"),   # 45 min
+            blk("Lunch", "12:10", "12:50"),   # 40 min
         )]
 
         assert propose_for_gap(720, 780, history) is None
@@ -161,3 +167,5 @@ class TestConstants:
         implementer lowered a fuzzy-match floor to make a bad test pass."""
         assert HISTORY_DAYS == 14
         assert MIN_DAYS_SEEN == 3
+        assert OVERLAP_FRACTION == 0.5
+        assert SLEEP_CORE == (120, 300)
