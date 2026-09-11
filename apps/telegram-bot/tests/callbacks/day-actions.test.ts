@@ -154,3 +154,67 @@ describe("refresh", () => {
     expect(richMocks.editRich).toHaveBeenCalled();
   });
 });
+
+describe("the edit view", () => {
+  it("a nudge re-renders without writing anything", async () => {
+    api.getDaily.mockResolvedValue({
+      ...emptyDay,
+      blocks: [{
+        id: "e1", start: "09:05", end: "10:00", title: "Standup",
+        source: "calendar", type: "event", completed: false,
+        activity: null, category: null, state: "pending", habit_progress: null,
+      }],
+    });
+
+    await fire("adj:2026-09-10:e1:-15:0");
+
+    expect(api.patchEvent).not.toHaveBeenCalled();
+    expect(api.setBlockState).not.toHaveBeenCalled();
+    expect(richMocks.editRich).toHaveBeenCalled();
+  });
+
+  it("save patches the times and approves in one go", async () => {
+    api.getDaily.mockResolvedValue({
+      ...emptyDay,
+      blocks: [{
+        id: "e1", start: "09:05", end: "10:00", title: "Standup",
+        source: "calendar", type: "event", completed: false,
+        activity: null, category: null, state: "pending", habit_progress: null,
+      }],
+    });
+    api.patchEvent.mockResolvedValue({});
+    api.setBlockState.mockResolvedValue({ ok: true, state: "approved", habit: null });
+
+    await fire("adjsave:2026-09-10:e1:-15:0");
+
+    expect(api.patchEvent).toHaveBeenCalledWith("2026-09-10", "e1", {
+      start_time: "2026-09-10T08:50",
+      end_time: "2026-09-10T10:00",
+    });
+    expect(api.setBlockState).toHaveBeenCalledWith("2026-09-10", "e1", "approved");
+  });
+
+  it("save with no change still approves", async () => {
+    api.getDaily.mockResolvedValue({
+      ...emptyDay,
+      blocks: [{
+        id: "e1", start: "09:05", end: "10:00", title: "Standup",
+        source: "calendar", type: "event", completed: false,
+        activity: null, category: null, state: "pending", habit_progress: null,
+      }],
+    });
+    api.setBlockState.mockResolvedValue({ ok: true, state: "approved", habit: null });
+
+    await fire("adjsave:2026-09-10:e1:0:0");
+
+    expect(api.patchEvent).not.toHaveBeenCalled();
+    expect(api.setBlockState).toHaveBeenCalled();
+  });
+
+  it("cancel and delete say they are not wired up", async () => {
+    const ctx = await fire("cal:delete:e1");
+
+    expect(api.patchEvent).not.toHaveBeenCalled();
+    expect(ctx.answerCallbackQuery.mock.calls[0][0].text).toContain("Not wired up");
+  });
+});

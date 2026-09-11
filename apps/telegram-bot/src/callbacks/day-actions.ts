@@ -150,6 +150,31 @@ dayActionHandlers.callbackQuery(/^gap:fill:([^:]+):(\d+):(\d+)$/, async (ctx) =>
 dayActionHandlers.callbackQuery(/^block:edit:([^:]+):(.+)$/, async (ctx) => {
   const date = ctx.match[1]!;
   const eventId = ctx.match[2]!;
+  try {
+    const data = await api.getDaily(date);
+    const block = data.blocks.find((b) => b.id === eventId);
+    if (!block) {
+      await ctx.answerCallbackQuery({ text: "That block is gone — refresh." });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await editRich(ctx, buildBlockEditRich(block, date, 0, 0),
+      { reply_markup: buildNavKeyboard("day") });
+  } catch (err) {
+    await toastFailure(ctx, err, "Edit");
+  }
+});
+
+/** "HH:MM" shifted by `delta` minutes, wrapping at midnight. */
+function shiftClock(hhmmStr: string, delta: number): string {
+  const [h, m] = hhmmStr.split(":").map(Number);
+  return hhmm(((((h ?? 0) * 60 + (m ?? 0) + delta) % 1440) + 1440) % 1440);
+}
+
+dayActionHandlers.callbackQuery(/^adj:([^:]+):([^:]+):(-?\d+):(-?\d+)$/, async (ctx) => {
+  const date = ctx.match[1]!;
+  const eventId = ctx.match[2]!;
+  const [startDelta, endDelta] = [Number(ctx.match[3]), Number(ctx.match[4])];
   await ctx.answerCallbackQuery();
   try {
     const data = await api.getDaily(date);
@@ -158,9 +183,48 @@ dayActionHandlers.callbackQuery(/^block:edit:([^:]+):(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery({ text: "That block is gone — refresh." });
       return;
     }
-    await editRich(ctx, buildBlockEditRich(block, date, 0, 0),
+    await editRich(ctx, buildBlockEditRich(block, date, startDelta, endDelta),
       { reply_markup: buildNavKeyboard("day") });
   } catch (err) {
-    await toastFailure(ctx, err, "Edit");
+    await toastFailure(ctx, err, "Adjust");
   }
+});
+
+dayActionHandlers.callbackQuery(/^adjsave:([^:]+):([^:]+):(-?\d+):(-?\d+)$/, async (ctx) => {
+  const date = ctx.match[1]!;
+  const eventId = ctx.match[2]!;
+  const [startDelta, endDelta] = [Number(ctx.match[3]), Number(ctx.match[4])];
+  try {
+    const data = await api.getDaily(date);
+    const block = data.blocks.find((b) => b.id === eventId);
+    if (!block) {
+      await ctx.answerCallbackQuery({ text: "That block is gone — refresh." });
+      return;
+    }
+    if (startDelta !== 0 || endDelta !== 0) {
+      // PATCH pins what it sets (Task 9), so these times survive the next
+      // merge instead of being overwritten from the source.
+      await api.patchEvent(date, eventId, {
+        start_time: `${date}T${shiftClock(block.start, startDelta)}`,
+        end_time: `${date}T${shiftClock(block.end, endDelta)}`,
+      });
+    }
+    if (block.state === "pending") {
+      await api.setBlockState(date, eventId, "approved");
+    }
+    await ctx.answerCallbackQuery({ text: "✓ Saved" });
+    await rerender(ctx, date);
+  } catch (err) {
+    await toastFailure(ctx, err, "Save");
+  }
+});
+
+dayActionHandlers.callbackQuery(/^cal:(cancel|delete):(.+)$/, async (ctx) => {
+  // Deferred from this ship (spec §6.3, §9): the user chose local dismissal
+  // for now, "cheap and non-destructive", pending real use to see which of the
+  // two they reach for. The buttons are drawn because the layout was approved
+  // with them; they say so rather than silently doing nothing.
+  await ctx.answerCallbackQuery({
+    text: "Not wired up yet — ✕ on the day view dismisses it locally.",
+  });
 });
