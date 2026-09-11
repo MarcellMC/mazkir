@@ -153,6 +153,15 @@ describe("refresh", () => {
     expect(api.getDaily).toHaveBeenCalledWith("2026-09-10");
     expect(richMocks.editRich).toHaveBeenCalled();
   });
+
+  it("reports a failed refresh as a failure, not as success", async () => {
+    api.getDaily.mockRejectedValue(new Error("boom"));
+
+    const ctx = await fire("day:refresh:2026-09-10");
+
+    expect(ctx.answerCallbackQuery).toHaveBeenCalledTimes(1);
+    expect(ctx.answerCallbackQuery.mock.calls[0][0].text).not.toContain("Refreshed");
+  });
 });
 
 describe("the edit view", () => {
@@ -171,6 +180,16 @@ describe("the edit view", () => {
     expect(api.patchEvent).not.toHaveBeenCalled();
     expect(api.setBlockState).not.toHaveBeenCalled();
     expect(richMocks.editRich).toHaveBeenCalled();
+  });
+
+  it("tells you when the block is gone, answering exactly once", async () => {
+    api.getDaily.mockResolvedValue(emptyDay);   // no blocks
+
+    const ctx = await fire("adj:2026-09-10:missing:-15:0");
+
+    expect(ctx.answerCallbackQuery).toHaveBeenCalledTimes(1);
+    expect(ctx.answerCallbackQuery.mock.calls[0][0].text).toContain("gone");
+    expect(richMocks.editRich).not.toHaveBeenCalled();
   });
 
   it("save patches the times and approves in one go", async () => {

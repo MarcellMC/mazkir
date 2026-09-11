@@ -39,16 +39,29 @@ async function toastFailure(ctx: any, err: unknown, what: string): Promise<void>
   const text = String(err).includes("409")
     ? "Can't undo that here — untick it in /habits."
     : `❌ ${what} failed.`;
-  await ctx.answerCallbackQuery({ text });
+  // A handler may already have answered before failing, and Telegram rejects a
+  // second answer to the same query. Swallow that rejection: the original
+  // failure is the one worth reporting, and letting this throw from inside a
+  // catch block would replace it with a less useful error.
+  try {
+    await ctx.answerCallbackQuery({ text });
+  } catch (answerErr) {
+    logger.warn(
+      { event_type: "day_action_toast_failed", what, err: String(answerErr) },
+      "day_action_toast_failed",
+    );
+  }
 }
 
 // MUST precede the `day:(.+)` date handler in callbacks/index.ts, or
 // "refresh:2026-09-10" is parsed as a date.
 dayActionHandlers.callbackQuery(/^day:refresh:(.+)$/, async (ctx) => {
   const date = ctx.match[1]!;
-  await ctx.answerCallbackQuery({ text: "Refreshed" });
   try {
     await rerender(ctx, date);
+    // After, not before: this used to report "Refreshed" and then fail, which
+    // told the user the opposite of what happened.
+    await ctx.answerCallbackQuery({ text: "Refreshed" });
   } catch (err) {
     await toastFailure(ctx, err, "Refresh");
   }
@@ -175,7 +188,6 @@ dayActionHandlers.callbackQuery(/^adj:([^:]+):([^:]+):(-?\d+):(-?\d+)$/, async (
   const date = ctx.match[1]!;
   const eventId = ctx.match[2]!;
   const [startDelta, endDelta] = [Number(ctx.match[3]), Number(ctx.match[4])];
-  await ctx.answerCallbackQuery();
   try {
     const data = await api.getDaily(date);
     const block = data.blocks.find((b) => b.id === eventId);
@@ -183,6 +195,7 @@ dayActionHandlers.callbackQuery(/^adj:([^:]+):([^:]+):(-?\d+):(-?\d+)$/, async (
       await ctx.answerCallbackQuery({ text: "That block is gone — refresh." });
       return;
     }
+    await ctx.answerCallbackQuery();
     await editRich(ctx, buildBlockEditRich(block, date, startDelta, endDelta),
       { reply_markup: buildNavKeyboard("day") });
   } catch (err) {
