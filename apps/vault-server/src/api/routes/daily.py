@@ -533,7 +533,11 @@ async def fill_gap(date: str, body: FillGapBody):
 # both routes share one implementation of each action.
 async def _set_state_for_approve_all(date: str, event_id: str, body):
     from src.api.routes.events import set_event_state
-    return await set_event_state(date, event_id, body)
+    # set_event_state now takes a real `date` object (R8) — FastAPI coerces
+    # that from the path string on an HTTP call, but this is a direct Python
+    # call, so the string has to be converted here or `.isoformat()` inside
+    # set_event_state raises AttributeError on every real (non-mocked) run.
+    return await set_event_state(dt_date.fromisoformat(date), event_id, body)
 
 
 async def _fill_gap_for_approve_all(date: str, body: FillGapBody):

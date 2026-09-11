@@ -10,7 +10,9 @@ from pydantic import BaseModel
 from src.config import settings
 from src.services.approval import resolve_state
 from src.services.day_assembly import merge_from_sources as _merge_from_sources
-from src.services.events_service import _SOURCE_SYSTEM_BY_ID_KEY
+from src.services.events_service import (
+    USER_SETTABLE_FIELDS, _SOURCE_SYSTEM_BY_ID_KEY, apply_user_set,
+)
 from src.services.habit_completion import complete_habit
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -110,6 +112,20 @@ async def patch_event(date: str, event_id: str, body: PatchEventBody):
         if event["id"] == event_id:
             updates = body.model_dump(exclude_none=True)
             event.update(updates)
+            # Pin whatever the user just set, or the next reconcile overwrites
+            # it from the source and the edit silently reverts. Ship 4 built
+            # user_set for exactly this and wired it only into the agent's
+            # update_event; this route was the recorded gap.
+            #
+            # Only the five USER_SETTABLE_FIELDS are pinnable: `photos` and
+            # `assets` are preserved by other means, and letting a stray key
+            # into user_set would turn it into a way to rewrite
+            # reconciliation's own bookkeeping.
+            pinned = event.setdefault("user_set", {})
+            for field, value in updates.items():
+                if field in USER_SETTABLE_FIELDS:
+                    pinned[field] = value
+            apply_user_set(event)
             events_svc.save_events(date, events)
             return {"updated": event_id, "event": event}
 

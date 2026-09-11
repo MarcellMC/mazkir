@@ -484,3 +484,65 @@ class TestSetState:
                                 json={"state": "approved"})
 
         assert r.status_code == 409
+
+
+class TestPatchPinning:
+    """PATCH /events/{date}/{event_id} — Ship 4 follow-up: an edit made
+    through this route must survive the next reconcile, not silently
+    revert. `USER_SETTABLE_FIELDS` bounds what `user_set` may hold."""
+
+    def test_patch_pins_the_fields_it_changes(self, monkeypatch, tmp_path):
+        """A rename through PATCH must survive the next merge. Ship 4 built
+        user_set for this and wired it only into the agent's update_event."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+        from src.services.events_service import EventsService
+        import src.main as main
+
+        svc = EventsService(tmp_path / "events")
+        svc.save_events("2026-09-10", [{
+            "id": "e1", "name": "Standup", "source": "calendar",
+            "source_ids": {"calendar_id": "g1"},
+            "start_time": "2026-09-10T09:00", "end_time": "2026-09-10T10:00",
+        }])
+        monkeypatch.setattr(main, "get_events", lambda: svc)
+
+        r = TestClient(app).patch("/events/2026-09-10/e1",
+                                  json={"name": "Sprint planning"})
+
+        assert r.status_code == 200
+        stored = svc.get_events("2026-09-10")[0]
+        assert stored["name"] == "Sprint planning"
+        assert stored["user_set"]["name"] == "Sprint planning"
+
+        # And it survives a merge that says otherwise — which is the whole point.
+        fresh = [{
+            "id": "whatever", "name": "Standup", "source": "calendar",
+            "source_ids": {"calendar_id": "g1"},
+            "start_time": "2026-09-10T09:00", "end_time": "2026-09-10T10:00",
+        }]
+        reconciled = svc.reconcile("2026-09-10", fresh, {"calendar"})
+        assert reconciled[0]["name"] == "Sprint planning"
+
+    def test_patch_does_not_pin_photos(self, monkeypatch, tmp_path):
+        """Only the five USER_SETTABLE_FIELDS are pinnable. photos and assets
+        are preserved by other means, and a stray key in user_set would
+        become a way to rewrite reconciliation's own bookkeeping."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+        from src.services.events_service import EventsService
+        import src.main as main
+
+        svc = EventsService(tmp_path / "events")
+        svc.save_events("2026-09-10", [{
+            "id": "e1", "name": "Standup", "source": "calendar",
+            "source_ids": {"calendar_id": "g1"},
+        }])
+        monkeypatch.setattr(main, "get_events", lambda: svc)
+
+        TestClient(app).patch("/events/2026-09-10/e1",
+                              json={"photos": [{"path": "a.jpg"}]})
+
+        stored = svc.get_events("2026-09-10")[0]
+        assert stored["photos"] == [{"path": "a.jpg"}]
+        assert "photos" not in stored.get("user_set", {})

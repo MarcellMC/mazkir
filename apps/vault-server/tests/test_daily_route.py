@@ -841,6 +841,37 @@ class TestApproveAll:
 
         assert called == []
 
+    def test_set_state_for_approve_all_converts_the_date_for_the_real_call(self, monkeypatch):
+        """Ship 5 R8 typed `set_event_state`'s `date` param as a real `date`
+        object so FastAPI validates it at the HTTP boundary. But
+        `_set_state_for_approve_all` calls it directly in Python, not through
+        a request — FastAPI's path-param coercion never runs on that call, so
+        without an explicit conversion here the string flows straight into
+        `set_event_state`, whose body does `date.isoformat()` and raises
+        AttributeError on a str. Every approve-all test elsewhere mocks
+        `_set_state_for_approve_all` itself, so only a test on this function
+        exercises the real conversion."""
+        import asyncio
+        from datetime import date as date_type
+        import src.api.routes.daily as daily_route
+        import src.api.routes.events as events_route
+        from src.api.routes.events import SetStateBody
+
+        seen = {}
+
+        async def fake_set_event_state(date, event_id, body):
+            seen["date"] = date
+            return {"ok": True}
+
+        monkeypatch.setattr(events_route, "set_event_state", fake_set_event_state)
+
+        asyncio.run(daily_route._set_state_for_approve_all(
+            "2026-09-10", "e1", SetStateBody(state="approved")
+        ))
+
+        assert seen["date"] == date_type(2026, 9, 10)
+        assert isinstance(seen["date"], date_type)
+
 
 class TestGapFill:
     def _install(self, monkeypatch, history=None):
