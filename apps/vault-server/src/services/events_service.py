@@ -42,8 +42,11 @@ _SOURCE_SYSTEM_BY_ID_KEY = {
 #     shadowing, not deletion — and `available_sources` cannot see the
 #     difference, because the habit source *did* answer.
 #
-# Stale rows for these two linger until Ship 5 gives them stable identity.
-# That is visible clutter; the alternative is silent loss.
+# Ship 5 made stable identity unnecessary rather than providing it: these two
+# sources are the human-created ones, so their approval is derived from the
+# checkbox or the habit at read time (services/approval.py) and no row is ever
+# persisted against their ids. An unmatched row here is still preserved rather
+# than deleted, for the reasons above.
 _DELETABLE_SOURCE_SYSTEMS = frozenset({"calendar", "timeline"})
 
 # The only fields a user can pin against re-inference.
