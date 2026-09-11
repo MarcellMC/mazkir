@@ -1,7 +1,7 @@
 """Daily note API routes — blocks, gaps, coverage, todos and notes for one day."""
 import logging
 import re
-from datetime import date as dt_date, datetime
+from datetime import date as dt_date, datetime, timedelta
 from fastapi import APIRouter, Depends
 import pytz
 from pydantic import BaseModel
@@ -11,6 +11,7 @@ from src.services.daily_tasks import parse_all_todos, is_todo_line
 from src.services.habit_completion import is_complete_today
 from src.services.day_coverage import MINUTES_PER_DAY, day_coverage, minutes_into_day
 from src.services.approval import resolve_state
+from src.services.gap_proposals import HISTORY_DAYS, propose_for_gap
 
 router = APIRouter(prefix="/daily", tags=["daily"], dependencies=[Depends(verify_api_key)])
 logger = logging.getLogger(__name__)
@@ -36,10 +37,20 @@ class DailyBlock(BaseModel):
     habit_progress: str | None = None  # "1/2" when a daily_target is set
 
 
+class GapProposal(BaseModel):
+    """What probably filled a gap. A question, not an assertion — the row
+    renders it with a ✕ beside it, and `days_seen` is shown so the guess can
+    be judged rather than trusted."""
+    name: str
+    days_seen: int
+
+
 class DailyGap(BaseModel):
     start: str
     end: str
     minutes: int
+    # None means "no basis to guess" — the gap asks instead (spec §4.1).
+    proposal: GapProposal | None = None
 
 
 class DailyIncomplete(BaseModel):
@@ -332,6 +343,45 @@ def _build_blocks_and_coverage(
     )
 
 
+def _load_history(events_svc, target_date: dt_date) -> list[list[dict]]:
+    """The `HISTORY_DAYS` date files before `target_date`, most recent first.
+
+    Local reads only — `get_events` returns [] for a missing file, so a short
+    history needs no special case. The target's own date is excluded: today's
+    blocks are not evidence about what usually happens today.
+    """
+    return [
+        events_svc.get_events((target_date - timedelta(days=offset)).isoformat())
+        for offset in range(1, HISTORY_DAYS + 1)
+    ]
+
+
+def _decorate_gaps(
+    gaps: list[DailyGap], history: list[list[dict]]
+) -> list[DailyGap]:
+    """Attach a proposal to each gap that has a basis for one.
+
+    Done here rather than inside `_build_blocks_and_coverage` so that
+    function stays pure arithmetic with no service access — the same reason
+    `day_coverage.py` takes minute offsets and not events.
+    """
+    out: list[DailyGap] = []
+    for gap in gaps:
+        # `minutes_into_day` needs a date only to reject timestamps belonging
+        # to another day; gap times are bare "HH:MM", so "" never matches and
+        # never rejects. "24:00" is deliberately unparseable (day_coverage
+        # emits it for end-of-day) and comes back None rather than raising.
+        start = minutes_into_day(gap.start, "")
+        end = minutes_into_day(gap.end, "")
+        proposal = None
+        if start is not None and end is not None:
+            found = propose_for_gap(start, end, history)
+            if found:
+                proposal = GapProposal(**found)
+        out.append(gap.model_copy(update={"proposal": proposal}))
+    return out
+
+
 @router.get("", response_model=DailyResponse)
 async def get_daily(date: dt_date | None = None):
     """`date` is typed, not a raw string: FastAPI rejects anything that
@@ -389,6 +439,20 @@ async def get_daily(date: dt_date | None = None):
 
     blocks, gaps, coverage = _build_blocks_and_coverage(events, target, elapsed)
     incomplete = _build_incomplete(events, target)
+
+    # Gap proposals read the persisted store for previous dates. Local file
+    # reads, no network — and a failure here must cost the proposals only,
+    # never the day: an unreadable history is not a reason to show no blocks.
+    from src.main import get_events as get_events_svc
+    events_svc = get_events_svc()
+    if events_svc is not None:
+        try:
+            gaps = _decorate_gaps(gaps, _load_history(events_svc, target_date))
+        except Exception:
+            logger.warning(
+                "GET /daily?date=%s: gap proposals failed, gaps will ask instead",
+                target, exc_info=True,
+            )
 
     habits = vault.list_active_habits()
     # `target_date`, not today: habit checkboxes are reconciled against the

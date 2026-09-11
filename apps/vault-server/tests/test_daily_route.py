@@ -470,7 +470,7 @@ class TestGetDailyRoute:
         assert today_body["date"] == today.isoformat()
 
         # elapsed = 1440 for a past date: one full-day gap, nothing covered.
-        assert past_body["gaps"] == [{"start": "00:00", "end": "24:00", "minutes": 1440}]
+        assert past_body["gaps"] == [{"start": "00:00", "end": "24:00", "minutes": 1440, "proposal": None}]
         assert past_body["coverage"] == {
             "covered_minutes": 0, "unaccounted_minutes": 1440, "elapsed_minutes": 1440,
             "confirmed_minutes": 0, "pending_minutes": 0,
@@ -644,3 +644,66 @@ class TestIncompleteBlocks:
         incomplete = _build_incomplete(events, "2026-09-08")
         assert blocks == []
         assert incomplete == []
+
+
+class TestGapProposals:
+    def test_gap_model_has_a_proposal_field(self):
+        from src.api.routes.daily import DailyGap, GapProposal
+
+        assert set(DailyGap.model_fields) == {"start", "end", "minutes", "proposal"}
+        assert set(GapProposal.model_fields) == {"name", "days_seen"}
+
+    def test_decorates_gaps_with_proposals(self):
+        from src.api.routes.daily import DailyGap, _decorate_gaps
+
+        gaps = [
+            DailyGap(start="00:20", end="06:40", minutes=380),
+            DailyGap(start="16:00", end="17:30", minutes=90),
+        ]
+
+        decorated = _decorate_gaps(gaps, history=[])
+
+        assert decorated[0].proposal is not None
+        assert decorated[0].proposal.name == "Sleep"
+        assert decorated[1].proposal is None
+
+    def test_a_gap_ending_at_2400_is_handled(self):
+        """day_coverage emits "24:00" for a gap running to end of day, which
+        is not a parseable clock time. It must not crash the decorator."""
+        from src.api.routes.daily import DailyGap, _decorate_gaps
+
+        gaps = [DailyGap(start="23:00", end="24:00", minutes=60)]
+
+        assert _decorate_gaps(gaps, history=[])[0].proposal is None
+
+    def test_history_is_read_from_the_days_before_the_target(self, tmp_path):
+        """Reads the 14 date files before the one being viewed, and never the
+        target's own — today's blocks are not evidence about today."""
+        import datetime as dt
+        from src.api.routes.daily import _load_history
+        from src.services.events_service import EventsService
+
+        svc = EventsService(tmp_path / "events")
+        svc.save_events("2026-09-09", [{"id": "a", "name": "Sleep"}])
+        svc.save_events("2026-09-10", [{"id": "b", "name": "Target day"}])
+
+        history = _load_history(svc, dt.date(2026, 9, 10))
+
+        assert len(history) == 14
+        names = [e["name"] for day in history for e in day]
+        assert "Sleep" in names
+        assert "Target day" not in names
+
+    def test_history_order_is_most_recent_first(self, tmp_path):
+        import datetime as dt
+        from src.api.routes.daily import _load_history
+        from src.services.events_service import EventsService
+
+        svc = EventsService(tmp_path / "events")
+        svc.save_events("2026-09-09", [{"id": "a", "name": "Yesterday"}])
+        svc.save_events("2026-09-08", [{"id": "b", "name": "Day before"}])
+
+        history = _load_history(svc, dt.date(2026, 9, 10))
+
+        assert history[0][0]["name"] == "Yesterday"
+        assert history[1][0]["name"] == "Day before"
