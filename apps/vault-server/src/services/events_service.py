@@ -161,7 +161,16 @@ class EventsService:
         event.setdefault("activity", None)
         event.setdefault("category", None)
         event.setdefault("tags", [])
-        event.setdefault("state", "suggested")
+        # `state` is deliberately NOT defaulted. Absent means "derive it from
+        # the source" (see services/approval.py); only "approved" and
+        # "dismissed" are ever stored. A default would make an untouched row
+        # indistinguishable from a decided one.
+        #
+        # A legacy `"suggested"` — written by the setdefault this replaces —
+        # is stripped rather than kept, because it never expressed a decision
+        # and would otherwise read as stored state forever.
+        if event.get("state") == "suggested":
+            del event["state"]
         return event
 
     def get_events(self, date: str) -> list[dict[str, Any]]:
@@ -186,7 +195,6 @@ class EventsService:
             event.setdefault("activity", None)
             event.setdefault("category", None)
             event.setdefault("tags", [])
-            event.setdefault("state", "suggested")
             event.setdefault("user_set", {})
         path = self._file_path(date)
         payload = json.dumps(events, indent=2)
