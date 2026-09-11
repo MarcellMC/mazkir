@@ -20,8 +20,10 @@ Calendar sync is deliberately not here: the agent path gets it from the
 from __future__ import annotations
 
 import datetime as dt
+import pytz
 from typing import Any
 
+from src.config import settings
 from src.services.completion_log import (
     append_completion,
     count_on,
@@ -92,7 +94,13 @@ def complete_habit(vault: Any, path: str, now: dt.datetime | None = None) -> dic
     Tokens are awarded on every completion; the streak advances only on the
     completion that meets the day's target.
     """
-    now = now or dt.datetime.now()
+    # `VAULT_TIMEZONE`, not the server clock. `habits.py` has always read
+    # "today" in the vault's timezone while this wrote in the server's —
+    # inert while the two agree, and off by a day for the first hours of
+    # every local day when they don't (phase-2 doc §11). Ship 5 is the code
+    # that cares: approving a block on a past date must stamp that date, and
+    # a caller passing `now` explicitly is how it does so.
+    now = now or dt.datetime.now(pytz.timezone(settings.vault_timezone))
     today = now.date()
 
     habit = vault.read_file(path)
