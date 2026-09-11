@@ -23,7 +23,7 @@
 - **Only `"approved"` and `"dismissed"` are ever stored in `state`.** Absent means *derive it*. `"suggested"` is never written, and is dropped on read.
 - **The four glyphs are exactly these characters:** `✓` (U+2713) settled, `●` (U+25CF) happened-and-pending, `░` (U+2591) unaccounted, `◌` (U+25CC) still-ahead. No emoji-presentation variants, no `⚠`, no `⟳`, no `✅`.
 - **Buttons must render inside `<td>` elements.** A `<tg-button-row>` at top level stretches full width; inside an `<li>` it is hoisted out and stretched. Only a table cell gives compact pills.
-- **Callback data is at most 64 bytes.** The two new shapes are exactly `adj:<event_id>:<start_delta>:<end_delta>` and `prop:<date>:<start_min>:<end_min>`.
+- **Callback data is at most 64 bytes, and every block-scoped callback carries its date.** The shapes are exactly `block:approve:<date>:<id>`, `block:dismiss:<date>:<id>`, `block:edit:<date>:<id>`, `adj:<date>:<id>:<start_delta>:<end_delta>`, `adjsave:<date>:<id>:<start_delta>:<end_delta>`, `prop:<approve|dismiss|edit>:<date>:<start_min>:<end_min>`, `gap:fill:<date>:<start_min>:<end_min>`. The date is never taken from the bot's clock: a button drawn on a browsed day must address *that* day, or confirming anything but today fails.
 - **Proposal thresholds are exactly these:** a candidate block must overlap the gap by **at least half the gap's length**, and its name must appear on **at least 3 distinct days** out of the previous **14**.
 - **The overnight rule fires only when a gap fully contains 02:00–05:00**, and proposes the name `Sleep`.
 - **Nothing unticks a habit or retracts tokens.** There is no reverse path in this ship.
@@ -824,11 +824,16 @@ class TestHistory:
         assert propose_for_gap(0, 420, history) == {"name": "Night shift", "days_seen": 4}
 
     def test_ignores_blocks_with_unusable_times(self):
-        history = [
-            day({"name": "Broken", "source": "manual", "source_ids": {}}),
-            day({"name": "Broken", "start_time": "nonsense",
-                 "end_time": "also nonsense", "source": "manual", "source_ids": {}}),
-        ]
+        """Ten days, deliberately: at two the test sits below MIN_DAYS_SEEN and
+        would pass whether or not the bad times were skipped, asserting nothing
+        about the behaviour it names."""
+        history = []
+        for _ in range(5):
+            history.append(day({"name": "Broken", "source": "manual",
+                                "source_ids": {}}))
+            history.append(day({"name": "Broken", "start_time": "nonsense",
+                                "end_time": "also nonsense",
+                                "source": "manual", "source_ids": {}}))
 
         assert propose_for_gap(720, 780, history) is None
 
@@ -2424,9 +2429,9 @@ describe("Ship 5 glyphs", () => {
   it("marks a pending elapsed block with ● and three buttons", () => {
     const html = buildDayRich(s5day({ blocks: [s5block()] })).html!;
     expect(html).toContain("● 09:00–10:00");
-    expect(html).toMatch(/data="block:approve:e1"/);
-    expect(html).toMatch(/data="block:dismiss:e1"/);
-    expect(html).toMatch(/data="block:edit:e1"/);
+    expect(html).toMatch(/data="block:approve:2026-09-10:e1"/);
+    expect(html).toMatch(/data="block:dismiss:2026-09-10:e1"/);
+    expect(html).toMatch(/data="block:edit:2026-09-10:e1"/);
   });
 
   it("marks a still-ahead block with ◌ and gives it no buttons", () => {
@@ -2434,7 +2439,7 @@ describe("Ship 5 glyphs", () => {
       blocks: [s5block({ id: "e9", start: "19:00", end: "20:00" })],
     })).html!;
     expect(html).toContain("◌ 19:00–20:00");
-    expect(html).not.toMatch(/data="block:approve:e9"/);
+    expect(html).not.toMatch(/data="block:approve:2026-09-10:e9"/);
   });
 
   it("marks a gap with ░", () => {
@@ -2606,7 +2611,7 @@ function cellButtons(...buttons: string[]): string {
   return `<td><tg-button-row>${buttons.join("")}</tg-button-row></td>`;
 }
 
-function blockRow(b: DailyBlock, ahead: boolean): string {
+function blockRow(b: DailyBlock, ahead: boolean, date: string): string {
   const glyph = ahead
     ? GLYPH_AHEAD
     : b.state === "approved" ? GLYPH_CONFIRMED : GLYPH_PENDING;
@@ -2625,10 +2630,13 @@ function blockRow(b: DailyBlock, ahead: boolean): string {
     return `<tr>${time}${title}<td>${marker}</td></tr>`;
   }
 
+  // The date rides in the callback because the button must address the day it
+  // was drawn for. Deriving "today" in the handler instead would make every
+  // control on a browsed day act on the wrong date.
   return `<tr>${time}${title}${cellButtons(
-    button(GLYPH_CONFIRMED, `block:approve:${b.id}`, "success"),
-    button("✕", `block:dismiss:${b.id}`, "danger"),
-    button("✎", `block:edit:${b.id}`),
+    button(GLYPH_CONFIRMED, `block:approve:${date}:${b.id}`, "success"),
+    button("✕", `block:dismiss:${date}:${b.id}`, "danger"),
+    button("✎", `block:edit:${date}:${b.id}`),
   )}</tr>`;
 }
 
@@ -2689,9 +2697,13 @@ with:
   );
 ```
 
-Pass the date into `gapRow`:
+Pass the date into both row builders. `blockRow` gained a third parameter, so its call site in the `rows` array changes too:
 
 ```typescript
+    ...data.blocks.map((b) => {
+      const ahead = toMinutes(b.start) >= elapsedMinutes;
+      return { at: b.start, ahead, html: blockRow(b, ahead, data.date) };
+    }),
     ...data.gaps.map((g) => ({
       at: g.start,
       ahead: toMinutes(g.start) >= elapsedMinutes,
@@ -2752,7 +2764,7 @@ with:
   parts.push(navBar(data.date));
 ```
 
-Rewrite `weekBar` and `navBar` to use the shared `button` helper rather than their own inline `<tg-button>` strings, so there is one place that emits a button. Keep their labels, styles and `align="center"` exactly as they are — the week bar's two-line labels with the LRI/PDI isolates and the hyphenation point must not change.
+Leave `weekBar` and `navBar` alone. They emit their own `<tg-button>` strings, and that duplication is one line of interpolation — rewriting two working functions onto the shared helper is scope creep in a task that already rewrites most of this file.
 
 - [ ] **Step 5: Run the tests**
 
@@ -2850,7 +2862,7 @@ describe("block controls", () => {
   it("approve calls the state endpoint and re-renders", async () => {
     api.setBlockState.mockResolvedValue({ ok: true, state: "approved", habit: null });
 
-    await fire("block:approve:e1");
+    await fire("block:approve:2026-09-10:e1");
 
     expect(api.setBlockState).toHaveBeenCalledWith("2026-09-10", "e1", "approved");
     expect(richMocks.editRich).toHaveBeenCalled();
@@ -2859,7 +2871,7 @@ describe("block controls", () => {
   it("dismiss calls the state endpoint with dismissed", async () => {
     api.setBlockState.mockResolvedValue({ ok: true, state: "dismissed", habit: null });
 
-    await fire("block:dismiss:e1");
+    await fire("block:dismiss:2026-09-10:e1");
 
     expect(api.setBlockState).toHaveBeenCalledWith("2026-09-10", "e1", "dismissed");
   });
@@ -2870,7 +2882,7 @@ describe("block controls", () => {
       habit: { name: "Dog walk", tokens_earned: 5, new_streak: 13 },
     });
 
-    const ctx = await fire("block:approve:e1");
+    const ctx = await fire("block:approve:2026-09-10:e1");
 
     const said = ctx.answerCallbackQuery.mock.calls[0][0].text as string;
     expect(said).toContain("5");
@@ -2880,7 +2892,7 @@ describe("block controls", () => {
   it("reports a 409 as a toast without wiping the day", async () => {
     api.setBlockState.mockRejectedValue(new Error("409 untick it in /habits"));
 
-    const ctx = await fire("block:dismiss:e1");
+    const ctx = await fire("block:dismiss:2026-09-10:e1");
 
     expect(ctx.answerCallbackQuery).toHaveBeenCalled();
     expect(ctx.editMessageText).not.toHaveBeenCalled();
@@ -3024,7 +3036,6 @@ import { editRich } from "../bot-utils/send-rich.js";
 import { buildNavKeyboard } from "../keyboards/nav.js";
 import { markActiveSpanError } from "../tracing-utils.js";
 import { logger } from "../logger.js";
-import { config } from "../config.js";
 import { setSelectedDate, noteDayView } from "../state/selected-date.js";
 
 export const dayActionHandlers = new Composer();
@@ -3034,14 +3045,6 @@ export const dayActionHandlers = new Composer();
 export function hhmm(minutes: number): string {
   const m = Math.max(0, Math.floor(minutes));
   return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
-}
-
-/** Today in the vault's timezone, matching the server. `new Date()` here would
- *  give the bot host's date, which drifts from the server's for the first
- *  hours of every local day — the same class of bug as the habit clock. */
-function today(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: config.vaultTimezone })
-    .format(new Date());
 }
 
 /** Re-render the day in place. Every action ends here, because the day view IS
@@ -3103,10 +3106,10 @@ dayActionHandlers.callbackQuery(/^day:approveall:(.+)$/, async (ctx) => {
   }
 });
 
-dayActionHandlers.callbackQuery(/^block:(approve|dismiss):(.+)$/, async (ctx) => {
+dayActionHandlers.callbackQuery(/^block:(approve|dismiss):([^:]+):(.+)$/, async (ctx) => {
   const action = ctx.match[1] as "approve" | "dismiss";
-  const eventId = ctx.match[2]!;
-  const date = today();
+  const date = ctx.match[2]!;
+  const eventId = ctx.match[3]!;
   const state = action === "approve" ? "approved" : "dismissed";
   try {
     const result = await api.setBlockState(date, eventId, state);
@@ -3174,9 +3177,9 @@ dayActionHandlers.callbackQuery(/^gap:fill:([^:]+):(\d+):(\d+)$/, async (ctx) =>
   );
 });
 
-dayActionHandlers.callbackQuery(/^block:edit:(.+)$/, async (ctx) => {
-  const eventId = ctx.match[1]!;
-  const date = today();
+dayActionHandlers.callbackQuery(/^block:edit:([^:]+):(.+)$/, async (ctx) => {
+  const date = ctx.match[1]!;
+  const eventId = ctx.match[2]!;
   await ctx.answerCallbackQuery();
   try {
     const data = await api.getDaily(date);
@@ -3280,9 +3283,9 @@ describe("the nudge pad", () => {
   it("carries the running draft in the callback data", () => {
     const html = buildBlockEditRich(block, "2026-09-10", -15, 30).html!;
     // Each button adds its own step to what is already accumulated.
-    expect(html).toContain('data="adj:e1:-45:30"');   // start −15 then −30
-    expect(html).toContain('data="adj:e1:-10:30"');   // start −15 then +5
-    expect(html).toContain('data="adj:e1:-15:60"');   // end 30 then +30
+    expect(html).toContain('data="adj:2026-09-10:e1:-45:30"');  // start −15 then −30
+    expect(html).toContain('data="adj:2026-09-10:e1:-10:30"');  // start −15 then +5
+    expect(html).toContain('data="adj:2026-09-10:e1:-15:60"');  // end 30 then +30
   });
 
   it("keeps every callback inside the 64-byte budget", () => {
@@ -3307,7 +3310,7 @@ describe("the nudge pad", () => {
 describe("save and back", () => {
   it("saves with the accumulated deltas", () => {
     const html = buildBlockEditRich(block, "2026-09-10", -15, 30).html!;
-    expect(html).toContain('data="adjsave:e1:-15:30"');
+    expect(html).toContain('data="adjsave:2026-09-10:e1:-15:30"');
   });
 
   it("goes back to the day it came from", () => {
@@ -3389,7 +3392,8 @@ function toClock(minutes: number): string {
  *  (spec §6.2), so there is no edit state to evict and a button on an old
  *  message cannot apply its offsets to something since changed. */
 function nudgePad(
-  id: string, field: "start" | "end", startDelta: number, endDelta: number,
+  id: string, date: string, field: "start" | "end",
+  startDelta: number, endDelta: number,
 ): string {
   const rows = [-1, 1].map((sign) =>
     "<tg-button-row>" +
@@ -3398,7 +3402,7 @@ function nudgePad(
       const nextStart = field === "start" ? startDelta + delta : startDelta;
       const nextEnd = field === "end" ? endDelta + delta : endDelta;
       const label = `${sign < 0 ? "−" : "+"}${step}`;
-      return button(label, `adj:${id}:${nextStart}:${nextEnd}`);
+      return button(label, `adj:${date}:${id}:${nextStart}:${nextEnd}`);
     }).join("") +
     "</tg-button-row>",
   );
@@ -3416,14 +3420,14 @@ export function buildBlockEditRich(
     `<h2>${escapeHtml(block.title)}</h2>`,
     `<p>${start} – ${end} · ${length}m · ${escapeHtml(block.source)}</p>`,
     "<table>" +
-      `<tr><td>start ${start}</td>${nudgePad(block.id, "start", startDelta, endDelta)}</tr>` +
-      `<tr><td>end ${end}</td>${nudgePad(block.id, "end", startDelta, endDelta)}</tr>` +
+      `<tr><td>start ${start}</td>${nudgePad(block.id, date, "start", startDelta, endDelta)}</tr>` +
+      `<tr><td>end ${end}</td>${nudgePad(block.id, date, "end", startDelta, endDelta)}</tr>` +
     "</table>",
     "<p><i>nothing is written until you save</i></p>",
     // One button, not two: bothering to fix the times is taken as
     // confirmation that it happened (spec §6.2).
     `<tg-button-row align="center">` +
-      button("✓ save &amp; approve", `adjsave:${block.id}:${startDelta}:${endDelta}`, "success") +
+      button("✓ save &amp; approve", `adjsave:${date}:${block.id}:${startDelta}:${endDelta}`, "success") +
       button("← back", `day:${date}`) +
     "</tg-button-row>",
     "<h3>this event</h3>",
@@ -3453,10 +3457,10 @@ function shiftClock(hhmmStr: string, delta: number): string {
   return hhmm(((((h ?? 0) * 60 + (m ?? 0) + delta) % 1440) + 1440) % 1440);
 }
 
-dayActionHandlers.callbackQuery(/^adj:([^:]+):(-?\d+):(-?\d+)$/, async (ctx) => {
-  const eventId = ctx.match[1]!;
-  const [startDelta, endDelta] = [Number(ctx.match[2]), Number(ctx.match[3])];
-  const date = today();
+dayActionHandlers.callbackQuery(/^adj:([^:]+):([^:]+):(-?\d+):(-?\d+)$/, async (ctx) => {
+  const date = ctx.match[1]!;
+  const eventId = ctx.match[2]!;
+  const [startDelta, endDelta] = [Number(ctx.match[3]), Number(ctx.match[4])];
   await ctx.answerCallbackQuery();
   try {
     const data = await api.getDaily(date);
@@ -3472,10 +3476,10 @@ dayActionHandlers.callbackQuery(/^adj:([^:]+):(-?\d+):(-?\d+)$/, async (ctx) => 
   }
 });
 
-dayActionHandlers.callbackQuery(/^adjsave:([^:]+):(-?\d+):(-?\d+)$/, async (ctx) => {
-  const eventId = ctx.match[1]!;
-  const [startDelta, endDelta] = [Number(ctx.match[2]), Number(ctx.match[3])];
-  const date = today();
+dayActionHandlers.callbackQuery(/^adjsave:([^:]+):([^:]+):(-?\d+):(-?\d+)$/, async (ctx) => {
+  const date = ctx.match[1]!;
+  const eventId = ctx.match[2]!;
+  const [startDelta, endDelta] = [Number(ctx.match[3]), Number(ctx.match[4])];
   try {
     const data = await api.getDaily(date);
     const block = data.blocks.find((b) => b.id === eventId);
@@ -3526,7 +3530,7 @@ describe("the edit view", () => {
       }],
     });
 
-    await fire("adj:e1:-15:0");
+    await fire("adj:2026-09-10:e1:-15:0");
 
     expect(api.patchEvent).not.toHaveBeenCalled();
     expect(api.setBlockState).not.toHaveBeenCalled();
@@ -3545,7 +3549,7 @@ describe("the edit view", () => {
     api.patchEvent.mockResolvedValue({});
     api.setBlockState.mockResolvedValue({ ok: true, state: "approved", habit: null });
 
-    await fire("adjsave:e1:-15:0");
+    await fire("adjsave:2026-09-10:e1:-15:0");
 
     expect(api.patchEvent).toHaveBeenCalledWith("2026-09-10", "e1", {
       start_time: "2026-09-10T08:50",
@@ -3565,7 +3569,7 @@ describe("the edit view", () => {
     });
     api.setBlockState.mockResolvedValue({ ok: true, state: "approved", habit: null });
 
-    await fire("adjsave:e1:0:0");
+    await fire("adjsave:2026-09-10:e1:0:0");
 
     expect(api.patchEvent).not.toHaveBeenCalled();
     expect(api.setBlockState).toHaveBeenCalled();
@@ -3685,7 +3689,7 @@ git commit -m "docs: record Ship 5"
 
 **One ordering trap, called out where it bites.** `day:refresh:` and `day:approveall:` both match the existing `day:(.+)` pattern. Task 12 registers the new Composer first and says why in a code comment, not just in the plan.
 
-**One timezone trap.** Task 12's handlers need "today" and must take it from `config.vaultTimezone`, not `new Date()` — the bot host's date drifts from the server's for the first hours of every local day, which is the same class of bug Task 6 fixes on the server. `day-rich.ts` already has this helper and the reasoning behind it.
+**A timezone trap, avoided by construction.** An earlier draft had Task 12's handlers derive "today" for block actions, which would have made every control on a browsed day act on the wrong date. Every block-scoped callback now carries its own date (see Global Constraints), so no handler needs a clock at all. `day-rich.ts` still derives today's date for the `· today` header label, which is display-only and already uses `config.vaultTimezone` rather than `new Date()`.
 
 **Three places the plan knowingly guesses at a signature.** Tasks 7, 8 and 13 call `daily_set_task_state`, `EventsService.create_event` and `api.patchEvent` from memory of their shapes. Each step says to read the real signature and adapt, and states the behaviour required so an implementer verifies rather than assumes — and explicitly says not to change the handler to fit the call.
 
