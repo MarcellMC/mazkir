@@ -955,9 +955,13 @@ class AgentService:
                     "name": "create_event",
                     "description": (
                         "Create a new event. Use for photo stops, ad-hoc activities, "
-                        "or any event not already in the calendar/timeline. "
+                        "reminders, or any event not already in the calendar/timeline. "
                         "Events are recorded in the daily note's ## Schedule section "
-                        "and synced to Google Calendar when available."
+                        "and synced to Google Calendar when available. Check the returned "
+                        "`calendar_sync` before telling the user it is on their calendar: "
+                        "if `ok` is false, say what did happen (it is saved in Mazkir) and "
+                        "why it did not reach Google. Claiming a sync the result does not "
+                        "confirm is how a reminder silently went missing for a month."
                     ),
                     "input_schema": {
                         "type": "object",
@@ -978,12 +982,35 @@ class AgentService:
                             "duration_minutes": {
                                 "type": "integer",
                                 "description": (
-                                    "How long it lasted, in minutes. Supply any TWO of "
+                                    "How long it runs, in minutes. Supply any TWO of "
                                     "start_time / end_time / duration_minutes and the third "
-                                    "is computed — never work it out yourself. Supply only "
-                                    "one and the block is created incomplete, which is the "
-                                    "right outcome for 'just got back from the dog walk': "
-                                    "record the end, leave the start empty, and ask."
+                                    "is computed — never work it out yourself.\n"
+                                    "LOGGING something that already happened: supplying "
+                                    "only one is fine and often right. 'Just got back from "
+                                    "the dog walk' records the end, leaves the start empty, "
+                                    "and asks.\n"
+                                    "SCHEDULING something ahead (a reminder, an appointment): "
+                                    "always give a start_time AND a sensible "
+                                    "duration_minutes, because this is what reaches Google "
+                                    "Calendar and the user expects to be notified. Judge the "
+                                    "span from the thing itself rather than defaulting: "
+                                    "taking a pill or a short errand is ~5, a call ~30, a "
+                                    "meeting ~60, a dentist visit ~45. If you genuinely "
+                                    "cannot tell, ask instead of guessing wildly."
+                                ),
+                            },
+                            "remind_minutes_before": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": (
+                                    "Popup alerts, in minutes before the start — one entry "
+                                    "per alert. Choose for the occasion rather than using "
+                                    "one setting for everything: something done on the spot "
+                                    "at home (take a pill, water the plants) wants a single "
+                                    "short warning like [10]; anything needing travel or "
+                                    "preparation wants two, e.g. [1440, 60] — a day ahead to "
+                                    "plan and an hour ahead to leave. Omit to keep the "
+                                    "standing 10-minute default; send [] for no alerts."
                                 ),
                             },
                             "location": {
@@ -3058,8 +3085,21 @@ class AgentService:
         source_ids: dict | None = None
         calendar_synced = False
         calendar_sync: dict
-        if not complete:
-            calendar_sync = {"ok": False, "attempted": False, "reason": "incomplete"}
+        if not start_time:
+            # No start means there is nothing Google could be told: an event
+            # known only by when it ended ("just got back from the walk") is
+            # deliberately left for the user to finish.
+            #
+            # Having a start but no end used to land here too, as
+            # reason="incomplete" — which is how "add a calendar reminder for
+            # the Milpro pill in a month" became a row that never reached
+            # Google while the agent reported success (2026-09-11 03:22).
+            # A reminder is a point in time by definition, so gating the sync
+            # on an end time made reminders unsyncable in principle.
+            # `_build_event` has always defaulted a missing end to
+            # start + default_event_duration, so this guard was refusing a
+            # call that would have worked.
+            calendar_sync = {"ok": False, "attempted": False, "reason": "no_start_time"}
         elif spans_midnight:
             # Google stores this natively as one event, which would then hand
             # a single fresh event to two per-day fragments on the next
@@ -3087,6 +3127,12 @@ class AgentService:
                     date=date,
                     start_time=_extract_hhmm(start_time),
                     end_time=_extract_hhmm(end_time),
+                    # Forwarded so the agent's judgement reaches Google: the
+                    # span it chose when there is no end time, and the alerts
+                    # it chose for this kind of event. Mazkir used to impose
+                    # 30 minutes and one 10-minute popup on everything.
+                    duration_minutes=params.get("duration_minutes"),
+                    remind_minutes_before=params.get("remind_minutes_before"),
                 )
                 try:
                     loop = asyncio.get_running_loop()
@@ -3384,9 +3430,18 @@ class AgentService:
         # happened. Leave the calendar alone and let that branch speak.
         if result.get("moved_from"):
             pass
-        elif not is_complete(stored):
-            result["calendar_sync"] = {"ok": False, "attempted": False, "reason": "incomplete"}
-        elif crosses_midnight(stored.get("start_time"), stored.get("end_time")):
+        elif not stored.get("start_time"):
+            # Same narrowing as _tool_create_event: only a missing *start*
+            # leaves Google nothing to be told. A start with no end is a
+            # reminder, and `_build_event` defaults its span — gating on
+            # completeness here is why setting the Milpro reminder's time to
+            # 10:00 still did not reach the calendar (2026-09-11 03:23).
+            result["calendar_sync"] = {
+                "ok": False, "attempted": False, "reason": "no_start_time",
+            }
+        elif is_complete(stored) and crosses_midnight(
+            stored.get("start_time"), stored.get("end_time")
+        ):
             result["calendar_sync"] = {
                 "ok": False, "attempted": False, "reason": "crosses_midnight",
             }

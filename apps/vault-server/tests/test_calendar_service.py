@@ -141,3 +141,61 @@ class TestUpdateEvent:
         result = asyncio.run(cs.update_event(event_id="evt_1", name="X"))
 
         assert result is False
+
+
+class TestEventSpanAndAlerts:
+    """A caller chooses the span and the alerts; the defaults are only a floor.
+
+    Mazkir hardcoded a 30-minute span and a single 10-minute popup on
+    everything it created. A monthly pill reminder wants ~5 minutes and
+    earlier warning; a meeting with a commute wants two alerts. The agent is
+    the part that knows which, so it has to be able to say.
+    """
+
+    def _svc(self):
+        from src.services.calendar_service import CalendarService
+        cs = CalendarService(
+            credentials_path=MagicMock(), token_path=MagicMock(),
+            timezone="Asia/Jerusalem",
+        )
+        return cs
+
+    def test_duration_minutes_sets_the_end(self):
+        body = self._svc()._build_event(
+            "Give Matia Milpro pill", "2026-10-11", "22:00", duration_minutes=5,
+        )
+        assert body["start"]["dateTime"].startswith("2026-10-11T22:00:00")
+        assert body["end"]["dateTime"].startswith("2026-10-11T22:05:00")
+
+    def test_explicit_end_time_still_wins_over_duration(self):
+        body = self._svc()._build_event(
+            "Standup", "2026-10-11", "10:00", end_time="10:45", duration_minutes=5,
+        )
+        assert body["end"]["dateTime"].startswith("2026-10-11T10:45:00")
+
+    def test_falls_back_to_the_default_span(self):
+        body = self._svc()._build_event("Thing", "2026-10-11", "09:00")
+        assert body["end"]["dateTime"].startswith("2026-10-11T09:30:00")
+
+    def test_reminders_are_the_ones_asked_for(self):
+        body = self._svc()._build_event(
+            "Dentist", "2026-10-11", "09:00", duration_minutes=30,
+            remind_minutes_before=[1440, 60],
+        )
+        overrides = body["reminders"]["overrides"]
+        assert body["reminders"]["useDefault"] is False
+        assert [o["minutes"] for o in overrides] == [1440, 60]
+        assert {o["method"] for o in overrides} == {"popup"}
+
+    def test_empty_reminder_list_means_no_alerts_not_the_default_one(self):
+        # Distinguishable from "said nothing": an explicit empty list is a
+        # decision, and silently substituting the 10-minute default would
+        # overrule it.
+        body = self._svc()._build_event(
+            "Quiet thing", "2026-10-11", "09:00", remind_minutes_before=[],
+        )
+        assert body["reminders"] == {"useDefault": False, "overrides": []}
+
+    def test_unspecified_reminders_keep_the_existing_default(self):
+        body = self._svc()._build_event("Thing", "2026-10-11", "09:00")
+        assert body["reminders"]["overrides"] == [{"method": "popup", "minutes": 10}]

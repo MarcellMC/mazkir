@@ -1120,9 +1120,9 @@ class TestEventTools:
         assert sync["reason"] == "cross_date_move_not_supported"
         assert "2026-09-08" in sync["detail"]
 
-    def test_same_day_update_of_an_incomplete_block_reports_incomplete(self, agent, mock_services):
+    def test_same_day_update_of_a_startless_block_says_so(self, agent, mock_services):
         """A same-day edit now always carries a calendar_sync verdict — an
-        empty stored event has no start/end, so the verdict is 'incomplete'
+        empty stored event has no start, so the verdict is 'no_start_time'
         rather than silence."""
         events_mock = mock_services[4]
         events_mock.resolve_event_date.return_value = "2026-09-08"
@@ -1133,7 +1133,7 @@ class TestEventTools:
 
         result = agent._tool_update_event({"event_id": "evt_abc", "start_time": "16:30"})
 
-        assert result["data"]["calendar_sync"]["reason"] == "incomplete"
+        assert result["data"]["calendar_sync"]["reason"] == "no_start_time"
 
 
 class TestDeleteEventTool:
@@ -2577,7 +2577,10 @@ class TestCreateEventIntervals:
         assert kwargs["start_time"] is None
         assert kwargs["end_time"] == "2026-09-08T16:40:00"
         assert result["data"]["complete"] is False
-        assert result["data"]["calendar_sync"]["reason"] == "incomplete"
+        # "no_start_time", not "incomplete": only a missing *start* leaves
+        # Google nothing to be told. A start with no end is a reminder and
+        # now syncs, which is the Milpro fix.
+        assert result["data"]["calendar_sync"]["reason"] == "no_start_time"
 
     def test_date_description_explains_the_overnight_anchor(self, agent):
         """`date` defaults to today and derive_interval reads a reversed pair
@@ -3102,7 +3105,16 @@ class TestUpdateEventCalendarSync:
         agent.calendar.update_event.assert_not_awaited()
         assert result["data"]["calendar_sync"]["reason"] == "not_in_mazkir_calendar"
 
-    def test_incomplete_block_is_not_synced(self, agent, mock_services):
+    def test_a_block_with_a_start_but_no_end_is_synced(self, agent, mock_services):
+        """Deliberately inverted on 2026-09-12.
+
+        This used to assert that a start-without-end block was NOT synced.
+        That is the shape of every reminder — "give Matia the pill at 22:00"
+        has no end — and refusing to sync it is why two reminders asked for
+        on 2026-09-11 never reached Google while the agent reported success.
+        `_build_event` defaults a missing end to start + the default span, so
+        there was never anything Google could not accept.
+        """
         from unittest.mock import AsyncMock
         self._wire(mock_services, self._stored(end_time=None, source_ids={}))
         agent.calendar.is_initialized = True
@@ -3110,8 +3122,27 @@ class TestUpdateEventCalendarSync:
 
         result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
 
+        agent.calendar.create_event.assert_awaited()
+        assert result["data"]["calendar_sync"]["ok"] is True
+        assert result["data"]["calendar_sync"]["event_id"] == "gcal_new"
+        # The end really was absent — this is not a fixture that quietly had
+        # one, which would make the test pass for the wrong reason.
+        kwargs = agent.calendar.create_event.await_args.kwargs
+        assert kwargs["end_time"] is None
+        assert kwargs["start_time"] == "10:00"
+
+    def test_a_block_with_no_start_is_still_not_synced(self, agent, mock_services):
+        """The narrowing has to stop somewhere: an event known only by when
+        it ended cannot be described to Google at all."""
+        from unittest.mock import AsyncMock
+        self._wire(mock_services, self._stored(start_time=None, source_ids={}))
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_new")
+
+        result = agent._tool_update_event({"event_id": "evt_1", "name": "X"})
+
         agent.calendar.create_event.assert_not_awaited()
-        assert result["data"]["calendar_sync"]["reason"] == "incomplete"
+        assert result["data"]["calendar_sync"]["reason"] == "no_start_time"
 
     def test_completing_a_block_creates_its_calendar_entry(self, agent, mock_services):
         """'Sync it once it's complete' needs no flag: the absence of a
@@ -3385,3 +3416,60 @@ class TestSelectedDateInPromptTail:
         prompt = agent._build_system_prompt(ctx)
 
         assert f"The user is currently viewing {yesterday}." in prompt
+
+
+class TestReminderReachesTheCalendar:
+    """The 2026-09-11 Milpro regression, pinned.
+
+    "Add calendar reminder to give the next one after 1 month" produced two
+    rows with `source_ids: {}` and `calendar_sync: {attempted: false, reason:
+    "incomplete"}` — never sent to Google — while the agent replied "Done! 📅
+    Reminder created". Verified against the Google API on 2026-09-12: the
+    Mazkir calendar held only a Dog Walk that day.
+    """
+
+    def test_a_reminder_with_only_a_start_is_sent_to_google(self, agent, mock_services):
+        from unittest.mock import AsyncMock
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_1", "path": "p"}
+        agent.calendar = AsyncMock()
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_pill")
+
+        result = agent._tool_create_event({
+            "name": "Give Matia Milpro pill",
+            "date": "2026-10-11",
+            "start_time": "22:00",
+            "duration_minutes": 5,
+            "remind_minutes_before": [10],
+        })
+
+        sync = result["data"]["calendar_sync"]
+        assert sync["attempted"] is True
+        assert sync["ok"] is True
+        # The id has to land in source_ids, or the next merge treats the event
+        # as never synced and creates a duplicate.
+        assert events_mock.create_event.call_args.kwargs["source_ids"] == {
+            "calendar_id": "gcal_pill",
+        }
+
+    def test_the_span_and_alerts_the_agent_chose_reach_google(self, agent, mock_services):
+        """Mazkir used to impose 30 minutes and one 10-minute popup on
+        everything. The agent is the part that knows a pill is five minutes
+        and a dentist trip wants a day's warning, so its choice has to be
+        forwarded rather than dropped."""
+        from unittest.mock import AsyncMock
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_1", "path": "p"}
+        agent.calendar = AsyncMock()
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_1")
+
+        agent._tool_create_event({
+            "name": "Dentist", "date": "2026-10-11", "start_time": "09:00",
+            "duration_minutes": 45, "remind_minutes_before": [1440, 60],
+        })
+
+        kwargs = agent.calendar.create_event.await_args.kwargs
+        assert kwargs["duration_minutes"] == 45
+        assert kwargs["remind_minutes_before"] == [1440, 60]
