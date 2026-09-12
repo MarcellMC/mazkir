@@ -497,7 +497,15 @@ class CalendarService:
         )
 
         return {
-            'summary': f'📅 {name}',
+            # No decorative prefix. `🎯` on habits and the priority emoji on
+            # tasks say which tier an entry belongs to, and `✅` is *parsed*
+            # back as completion (see `mark_event_complete` and
+            # `get_todays_events`) — but `📅` on a plain calendar event only
+            # said "this is a calendar event", inside a calendar. It also
+            # used to leak into Mazkir's own copy of the name on the next
+            # merge, which is a separate fix; here it simply stops being
+            # written. Ownership is already recorded in `description`.
+            'summary': name,
             'description': f'Event: {name}\nManaged by Mazkir',
             'start': {
                 'dateTime': start_dt.isoformat(),
