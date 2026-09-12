@@ -440,14 +440,27 @@ class CalendarService:
             logger.error(f"Failed to create task event: {e}")
             return None
 
-    def _build_event(self, name: str, date: str, start_time: str, end_time: Optional[str] = None) -> Dict:
+    def _build_event(
+        self,
+        name: str,
+        date: str,
+        start_time: str,
+        end_time: Optional[str] = None,
+        duration_minutes: Optional[int] = None,
+        remind_minutes_before: Optional[List[int]] = None,
+    ) -> Dict:
         """Build a calendar event dict for a general event.
 
         Args:
             name: Event name
             date: Date string YYYY-MM-DD
             start_time: Start time HH:MM
-            end_time: End time HH:MM (optional, defaults to start + default_event_duration)
+            end_time: End time HH:MM (optional; wins over duration_minutes)
+            duration_minutes: How long it runs, when no end_time is known.
+                Falls back to default_event_duration.
+            remind_minutes_before: Popup alerts, in minutes before the start.
+                None means "no opinion", and keeps the standing default; an
+                empty list is a decision and means no alerts at all.
 
         Returns:
             Google Calendar event dict
@@ -455,11 +468,33 @@ class CalendarService:
         start_dt = datetime.strptime(f"{date}T{start_time}:00", "%Y-%m-%dT%H:%M:%S")
         start_dt = self.tz.localize(start_dt)
 
+        # end_time first: it is the observed fact, where a duration is at best
+        # an intention. Both may arrive together when the caller derived one
+        # from the other, and then they agree anyway.
         if end_time:
             end_dt = datetime.strptime(f"{date}T{end_time}:00", "%Y-%m-%dT%H:%M:%S")
             end_dt = self.tz.localize(end_dt)
         else:
-            end_dt = start_dt + timedelta(minutes=self.default_event_duration)
+            minutes = (
+                duration_minutes
+                if duration_minutes and duration_minutes > 0
+                else self.default_event_duration
+            )
+            end_dt = start_dt + timedelta(minutes=minutes)
+
+        # `is None` rather than falsiness: [] is an explicit "do not warn me",
+        # and treating it as absent would reinstate the default it overrules.
+        reminders = (
+            {"useDefault": False, "overrides": [{"method": "popup", "minutes": 10}]}
+            if remind_minutes_before is None
+            else {
+                "useDefault": False,
+                "overrides": [
+                    {"method": "popup", "minutes": int(m)}
+                    for m in remind_minutes_before
+                ],
+            }
+        )
 
         return {
             'summary': f'📅 {name}',
@@ -472,15 +507,18 @@ class CalendarService:
                 'dateTime': end_dt.isoformat(),
                 'timeZone': self.timezone,
             },
-            'reminders': {
-                'useDefault': False,
-                'overrides': [
-                    {'method': 'popup', 'minutes': 10},
-                ],
-            },
+            'reminders': reminders,
         }
 
-    async def create_event(self, name: str, date: str, start_time: str, end_time: Optional[str] = None) -> Optional[str]:
+    async def create_event(
+        self,
+        name: str,
+        date: str,
+        start_time: str,
+        end_time: Optional[str] = None,
+        duration_minutes: Optional[int] = None,
+        remind_minutes_before: Optional[List[int]] = None,
+    ) -> Optional[str]:
         """Create a calendar event for a general event.
 
         Args:
@@ -488,6 +526,8 @@ class CalendarService:
             date: Date string YYYY-MM-DD
             start_time: Start time HH:MM
             end_time: End time HH:MM (optional)
+            duration_minutes: Span when no end_time is known (optional)
+            remind_minutes_before: Popup alerts before the start (optional)
 
         Returns:
             Event ID or None if failed
@@ -497,7 +537,11 @@ class CalendarService:
             return None
 
         try:
-            event = self._build_event(name, date, start_time, end_time)
+            event = self._build_event(
+                name, date, start_time, end_time,
+                duration_minutes=duration_minutes,
+                remind_minutes_before=remind_minutes_before,
+            )
             created_event = self._service.events().insert(
                 calendarId=self._calendar_id,
                 body=event
