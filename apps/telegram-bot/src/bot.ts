@@ -30,10 +30,25 @@ export const bot = new Bot(config.botToken);
 // this for the selected date, and the gap prompts in `day-actions.ts` do it
 // for the open question. Exported (rather than inlined into the `.use()`
 // call) so it can be driven directly in a test with a stub `prev`.
+/** Calls that carry a `chat_id` but are not the bot *saying* anything.
+ *
+ *  `sendChatAction` is the typing indicator, and the NL message handler fires
+ *  one as its first act — before it reads either hint. So counting it as
+ *  "the bot said something else" destroyed both hints roughly twenty lines
+ *  before they were used: the gap question the bot had just asked, and (since
+ *  Ship 4, unnoticed) the selected date. Neither ever reached the server from
+ *  a plain text reply.
+ *
+ *  A denylist rather than an allowlist of real sends, deliberately: a send
+ *  method added later and forgotten here still clears the hints, which costs
+ *  a re-ask. The opposite default would let a stale hint ride along on an
+ *  unrelated message, which is wrong data rather than a lost convenience. */
+const NOT_A_MESSAGE: ReadonlySet<string> = new Set(["sendChatAction"]);
+
 export const dropPerMessageHints: Transformer = async (prev, method, payload, signal) => {
   const result = await prev(method, payload, signal);
   const chatId = (payload as { chat_id?: number }).chat_id;
-  if (chatId !== undefined) {
+  if (chatId !== undefined && !NOT_A_MESSAGE.has(method)) {
     noteOtherSend(chatId);
     // An unanswered question stops being the thing the next message answers
     // once the bot has said something else — a day view, another command's

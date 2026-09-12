@@ -310,3 +310,51 @@ describe("answering the bot's own question without a Telegram reply", () => {
     expect(payload.reply_to).toBeUndefined();
   });
 });
+
+describe("the hints survive the handler's own typing indicator", () => {
+  // Written after the fix above failed in production while its unit tests
+  // passed. `buildMessagePayload` tested in isolation never sees the typing
+  // indicator, and the typing indicator is what destroyed the hint — so the
+  // ordering has to be asserted at the handler, with the transformer wired in
+  // as it is live.
+  it("reads the open question even though typing fires first", async () => {
+    const { noteOpenQuestion } = await import("../../src/state/open-question.js");
+    const { dropPerMessageHints } = await import("../../src/bot.js");
+    const QUESTION = "15:00–17:30 on 2026-09-12 is unaccounted — what was it?";
+
+    (api.sendMessage as any).mockResolvedValue({
+      intent: "log", response: "ok", awaiting_confirmation: false,
+    });
+    noteOpenQuestion(123, QUESTION);
+
+    const msg = {
+      message_id: 1,
+      date: 1749500000,
+      chat: { id: 123, type: "private" },
+      text: "Bar hopping",
+    };
+    const ctx: any = {
+      update: { update_id: 1, message: msg },
+      message: msg,
+      chat: msg.chat,
+      me: { id: 42, is_bot: true, username: "test_bot" },
+      // The real ctx routes this through bot.api, and so through the
+      // transformer. Reproduce that, or the test cannot see the bug.
+      replyWithChatAction: async () => {
+        await dropPerMessageHints(
+          async () => ({ ok: true, result: {} }) as any,
+          "sendChatAction",
+          { chat_id: 123, action: "typing" } as never,
+          undefined,
+        );
+      },
+      reply: vi.fn().mockResolvedValue({ message_id: 2 }),
+      api: { editMessageText: vi.fn() },
+    };
+
+    await messageHandler.middleware()(ctx, async () => {});
+
+    const payload = (api.sendMessage as any).mock.calls.at(-1)?.[0];
+    expect(payload?.reply_to).toEqual({ text: QUESTION, from: "assistant" });
+  });
+});
