@@ -594,11 +594,31 @@ class EventsService:
                 # the opposite of `photos`/`assets`/`state`, which are
                 # enrichment nothing upstream can regenerate — those must
                 # keep coming from `matched_existing`, never from `fresh`.
-                matched_existing["name"] = fresh["name"]
+                #
+                # One exception, and it is about provenance rather than
+                # freshness: when the persisted event is manual- or
+                # photo-origin, the "fresh" row matching it is Mazkir's own
+                # echo. `create_event` writes `source: "manual"` and then
+                # syncs to Google, which puts a `calendar_id` in
+                # `source_ids`; the next merge reads that entry back and
+                # matches it here. Re-deriving `source` from it rewrote
+                # "manual" to "calendar", and `resolve_state` keys on
+                # `source` — so every block the user dictated came back as a
+                # pending calendar entry demanding approval of what they had
+                # just said, and `confirmed_minutes` stayed 0. The same echo
+                # imported the `📅 ` display prefix `calendar_service` adds
+                # on the way out. The calendar is not an independent witness
+                # for a row Mazkir authored, so origin and name stay ours.
+                # Times and location still track the source: those a user
+                # may genuinely have edited in Google, and `user_set` is what
+                # protects a deliberate override.
+                echoes_our_own_write = matched_existing.get("source") in ("manual", "photo")
+                if not echoes_our_own_write:
+                    matched_existing["name"] = fresh["name"]
+                    matched_existing["source"] = fresh.get("source", matched_existing.get("source"))
                 matched_existing["start_time"] = fresh["start_time"]
                 matched_existing["end_time"] = fresh.get("end_time", matched_existing.get("end_time"))
                 matched_existing["location"] = fresh.get("location", matched_existing.get("location"))
-                matched_existing["source"] = fresh.get("source", matched_existing.get("source"))
                 # `calendar` says which Google calendar the event came from,
                 # and ownership is decided from it. It is re-derived every
                 # merge like `name`/`start_time`, so it belongs here and not

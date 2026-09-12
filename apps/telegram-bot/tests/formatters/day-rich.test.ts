@@ -748,3 +748,23 @@ describe("incomplete blocks", () => {
     expect(out).toContain("Dog &amp; &lt;walk&gt;");
   });
 });
+
+describe("how a proposal's confidence is labelled", () => {
+  it("shows the day count when history supports it", () => {
+    const html_str = html(s5day({
+      gaps: [s5gap({ proposal: { name: "Gym", days_seen: 5 } })],
+    }));
+    expect(html_str).toContain("Gym? <sub>5/14</sub>");
+  });
+
+  it("says it is a guess for the overnight cold-start seed", () => {
+    // gap_proposals.py returns days_seen: 0 when a gap contains the core of
+    // the night and history has nothing to say. Rendering that as "0/14"
+    // read as "never seen this" — evidence against the guess it labelled.
+    const html_str = html(s5day({
+      gaps: [s5gap({ proposal: { name: "Sleep", days_seen: 0 } })],
+    }));
+    expect(html_str).toContain("Sleep? <sub>a guess</sub>");
+    expect(html_str).not.toContain("0/14");
+  });
+});
