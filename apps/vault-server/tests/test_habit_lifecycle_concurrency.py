@@ -253,6 +253,33 @@ def test_completing_the_same_habit_concurrently_pays_once(vault_service):
     assert vault_service.read_file(path)["metadata"]["streak"] == 1
 
 
+def test_completing_the_same_task_concurrently_pays_once(vault_service, vault_path):
+    """Two completions of one task both read the active file before either
+    archived it, and both awarded its tokens."""
+    path = "40-tasks/active/buy-groceries.md"
+    before = _total_tokens(vault_service)
+    barrier = threading.Barrier(4)
+    outcomes = []
+
+    def complete():
+        barrier.wait()
+        try:
+            outcomes.append(vault_service.complete_task(path))
+        except Exception as exc:  # the losers find the active file gone
+            outcomes.append(exc)
+
+    threads = [threading.Thread(target=complete) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert sum(isinstance(o, dict) for o in outcomes) == 1
+    assert _total_tokens(vault_service) == before + 5
+    assert not (vault_path / path).exists()
+    assert (vault_path / "40-tasks" / "archive" / "buy-groceries.md").exists()
+
+
 def test_rewriting_a_note_keeps_its_permissions(vault_service, vault_path):
     """`tempfile.mkstemp` creates 0600; the `open(path, 'w')` it replaced kept
     the file's existing mode."""

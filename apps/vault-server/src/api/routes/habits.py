@@ -1,4 +1,5 @@
 """Habit API routes."""
+import asyncio
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -117,7 +118,13 @@ async def complete_habit(name: str, body: HabitComplete):
     # today's Completion Log entries, honours daily_target, backfills the
     # transition day, awards tokens on every completion and advances the
     # streak only when the target is met.
-    result = habit_completion.complete_habit(vault, matched["path"])
+    #
+    # In a worker thread: it blocks on the vault's mutation lock, which an
+    # agent turn may be holding across a multi-file write, and waiting for it
+    # on the event loop would stall every other request meanwhile.
+    result = await asyncio.to_thread(
+        habit_completion.complete_habit, vault, matched["path"]
+    )
 
     if result["already_completed"]:
         return {
