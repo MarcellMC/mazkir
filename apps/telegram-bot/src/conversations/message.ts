@@ -12,6 +12,7 @@ import {
   clearPendingConfirmation,
 } from "../state/pending-confirmations.js";
 import { getSelectedDate } from "../state/selected-date.js";
+import { takeOpenQuestion, clearOpenQuestion } from "../state/open-question.js";
 
 /** Inline keyboard for a confirmation that names its options, or undefined
  *  for a plain yes/no gate (which is still answered as free text). The bot
@@ -75,6 +76,17 @@ export function buildMessagePayload(msg: Message, chatId: number) {
       text: msg.reply_to_message.text,
       from: msg.reply_to_message.from?.is_bot ? "assistant" : "user",
     };
+    // An explicit reply answers whatever the user pointed at, so any question
+    // the bot was still holding is no longer the thing being answered.
+    clearOpenQuestion(chatId);
+  } else {
+    // No explicit reply, but the bot may have asked something one turn ago
+    // that never reached the server — a gap prompt names an interval, and
+    // answering it with just "Bar hopping" left the agent asking for times
+    // the bot had already stated (2026-09-12 17:56). Present the question as
+    // the reply-to the user did not have to make.
+    const asked = takeOpenQuestion(chatId);
+    if (asked) reply_to = { text: asked, from: "assistant" };
   }
 
   // Forward context

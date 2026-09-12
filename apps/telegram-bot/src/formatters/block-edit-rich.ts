@@ -68,9 +68,17 @@ export function buildBlockEditRich(
     "</table>",
     "<p><i>nothing is written until you save</i></p>",
     // One button, not two: bothering to fix the times is taken as
-    // confirmation that it happened (spec §6.2).
+    // confirmation that it happened (spec §6.2). An already-approved block
+    // has nothing left to confirm, so the label drops the promise rather
+    // than offering to do again what is already done — this view is now
+    // reachable from an approved self-authored row, where "& approve" would
+    // describe something that will not happen.
     `<tg-button-row align="center">` +
-      button("✓ save &amp; approve", `adjsave:${date}:${block.id}:${startDelta}:${endDelta}`, "success") +
+      button(
+        block.state === "pending" ? "✓ save &amp; approve" : "✓ save",
+        `adjsave:${date}:${block.id}:${startDelta}:${endDelta}`,
+        "success",
+      ) +
       button("← back", `day:${date}`) +
     "</tg-button-row>",
     "<h3>this event</h3>",

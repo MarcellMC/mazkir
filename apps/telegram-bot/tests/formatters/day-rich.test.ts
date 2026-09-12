@@ -768,3 +768,69 @@ describe("how a proposal's confidence is labelled", () => {
     expect(html_str).not.toContain("0/14");
   });
 });
+
+describe("editing an approved block", () => {
+  it("offers ✎ on a block the user authored", () => {
+    // Its times came from a sentence or a tapped guess, so they are the ones
+    // most likely to be wrong; approving is not the same as getting them
+    // right.
+    const html_str = html(s5day({
+      blocks: [s5block({
+        id: "m1", title: "Sleep", source: "manual",
+        state: "approved", activity: "sleep",
+      })],
+    }));
+
+    expect(html_str).toContain('data="block:edit:2026-09-10:m1"');
+    // ✎ travels alone: there is nothing left to confirm or refuse.
+    expect(html_str).not.toContain('data="block:approve:2026-09-10:m1"');
+    expect(html_str).not.toContain('data="block:dismiss:2026-09-10:m1"');
+  });
+
+  it("keeps the facet label when the button takes its column", () => {
+    // The third column is the button's now, so the label moves beside the
+    // title rather than being dropped — the table stays three columns wide.
+    const html_str = html(s5day({
+      blocks: [s5block({
+        id: "m1", title: "Sleep", source: "manual",
+        state: "approved", activity: "sleep",
+      })],
+    }));
+
+    expect(html_str).toContain("Sleep <sub>sleep</sub>");
+  });
+
+  it("does not offer ✎ on an approved calendar block", () => {
+    // Upstream owns those times and this ship writes nothing back to Google,
+    // so a local edit would silently disagree with the source.
+    const html_str = html(s5day({
+      blocks: [s5block({ id: "c1", source: "calendar", state: "approved" })],
+    }));
+
+    expect(html_str).not.toContain('data="block:edit:2026-09-10:c1"');
+  });
+
+  it("still offers nothing on a block that has not happened yet", () => {
+    const html_str = html(s5day({
+      blocks: [s5block({
+        id: "m2", start: "23:00", end: "23:30",
+        source: "manual", state: "approved",
+      })],
+      coverage: {
+        covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600,
+        confirmed_minutes: 0, pending_minutes: 0,
+      },
+    }));
+
+    expect(html_str).not.toContain('data="block:edit:2026-09-10:m2"');
+  });
+
+  it("does not count an approved block toward approve-all", () => {
+    // The new button must not make a settled row look like outstanding work.
+    const html_str = html(s5day({
+      blocks: [s5block({ id: "m1", source: "manual", state: "approved" })],
+    }));
+
+    expect(html_str).not.toContain("approve all");
+  });
+});

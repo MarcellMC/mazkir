@@ -355,3 +355,35 @@ describe("the gap-fill prompt is answerable in one reply", () => {
     expect(asked).toMatch(/activity/i);
   });
 });
+
+describe("the gap prompt leaves the question findable", () => {
+  beforeEach(async () => {
+    const { resetOpenQuestions } = await import("../../src/state/open-question.js");
+    resetOpenQuestions();
+  });
+
+  it("arms the question it just asked", async () => {
+    const { takeOpenQuestion } = await import("../../src/state/open-question.js");
+
+    const ctx = await fire("gap:fill:2026-09-10:900:1050");
+
+    // Whatever the user was shown is exactly what is remembered, so the
+    // agent reads the same interval the user did.
+    const asked = ctx.reply.mock.calls[0][0] as string;
+    expect(takeOpenQuestion(1)).toBe(asked);
+    expect(asked).toContain("15:00");
+    expect(asked).toContain("17:30");
+  });
+
+  it("arms it after the send, not before", async () => {
+    // The bot-wide transformer clears these hints on every send, so arming
+    // before ctx.reply would be undone by that very reply. Nothing here can
+    // see the transformer, so this asserts the observable consequence: the
+    // question survives the send that announced it.
+    const { takeOpenQuestion } = await import("../../src/state/open-question.js");
+
+    await fire("gap:fill:2026-09-10:900:1050");
+
+    expect(takeOpenQuestion(1)).toBeDefined();
+  });
+});

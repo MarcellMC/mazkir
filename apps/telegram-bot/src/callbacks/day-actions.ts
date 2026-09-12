@@ -11,6 +11,7 @@ import {
   suppressProposal,
   stripSuppressedProposals,
 } from "../state/dismissed-proposals.js";
+import { noteOpenQuestion } from "../state/open-question.js";
 
 export const dayActionHandlers = new Composer();
 
@@ -181,9 +182,10 @@ dayActionHandlers.callbackQuery(/^prop:edit:([^:]+):(\d+):(\d+)$/, async (ctx) =
     // one reply can finish it.
     if (String(err).includes("422")) {
       await ctx.answerCallbackQuery();
-      await ctx.reply(
-        `${hhmm(start)}–${hhmm(end)} on ${date} is unaccounted — what was it?`,
-      );
+      const question =
+        `${hhmm(start)}–${hhmm(end)} on ${date} is unaccounted — what was it?`;
+      await ctx.reply(question);
+      noteOpenQuestion(ctx.chat!.id, question);
       return;
     }
     await toastFailure(ctx, err, "Edit");
@@ -202,10 +204,16 @@ dayActionHandlers.callbackQuery(/^gap:fill:([^:]+):(\d+):(\d+)$/, async (ctx) =>
   // Just tell me") invited a bare time range, and answering it with times
   // left the agent still needing the activity — a three-turn round trip for
   // one block, seen on 2026-09-12.
-  await ctx.reply(
+  const question =
     `${hhmm(start)}–${hhmm(end)} on ${date} is unaccounted — what was it? ` +
-      `Just the activity is enough, or say different times to change them.`,
-  );
+    `Just the activity is enough, or say different times to change them.`;
+  await ctx.reply(question);
+  // Armed *after* the send, like day.ts does for the selected date: the
+  // bot-wide transformer clears these hints on every send, so arming first
+  // would be undone by this very reply. Without the hint the agent sees the
+  // answer with no idea what was asked and asks for times the bot already
+  // named (2026-09-12 17:56).
+  noteOpenQuestion(ctx.chat!.id, question);
 });
 
 dayActionHandlers.callbackQuery(/^block:edit:([^:]+):(.+)$/, async (ctx) => {

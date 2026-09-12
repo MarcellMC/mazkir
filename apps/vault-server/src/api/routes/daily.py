@@ -25,7 +25,8 @@ class DailyBlock(BaseModel):
     start: str            # "HH:MM"
     end: str              # "HH:MM"
     title: str
-    source: str           # "calendar" | "timeline" | "merged" | "daily-note" | "habit"
+    # "calendar" | "timeline" | "merged" | "daily-note" | "habit" | "manual" | "photo"
+    source: str
     type: str
     completed: bool = False
     activity: str | None = None   # populated by Ship 6
