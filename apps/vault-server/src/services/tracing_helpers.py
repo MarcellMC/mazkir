@@ -36,3 +36,49 @@ def current_trace_id() -> Optional[str]:
     if ctx.is_valid:
         return format(ctx.trace_id, "032x")
     return None
+
+
+# Attribute prefix for "what context arrived with this turn". Kept as one
+# namespace so a Phoenix query can select the whole group.
+PAYLOAD_PREFIX = "mazkir.payload"
+
+
+def set_payload_provenance(
+    *,
+    text_length: int,
+    has_reply_to: bool,
+    reply_to_from: str | None = None,
+    selected_date: str | None = None,
+    has_forwarded_from: bool = False,
+    attachment_types: list[str] | None = None,
+) -> None:
+    """Stamp the current span with the context that came with this message.
+
+    These are the fields whose *absence* is a bug and which no other span
+    records. On 2026-09-12 a gap question the bot had asked never reached the
+    agent, and the traces for that minute could show only that the model
+    received a bare "Bar hopping" — `reply_to` and `selected_date` appeared
+    nowhere in 30 spans, so localising it meant grepping structured logs
+    instead. The server-side half of that answer lives here.
+
+    Read alongside the bot's `mazkir.payload.reply_to_source` on the
+    `telegram.update` span: the bot records what it *sent*, this records what
+    *arrived*. Agreement narrows the fault to one side of the wire.
+
+    No-ops without a recording span, so callers need no guard and tests need
+    no tracing setup.
+    """
+    span = get_current_span()
+    if not span.is_recording():
+        return
+    span.set_attribute(f"{PAYLOAD_PREFIX}.text_length", text_length)
+    span.set_attribute(f"{PAYLOAD_PREFIX}.has_reply_to", has_reply_to)
+    span.set_attribute(f"{PAYLOAD_PREFIX}.has_forwarded_from", has_forwarded_from)
+    # Empty string rather than omitting the key: a Phoenix filter on
+    # "selected_date == ''" can then distinguish "no date was sent" from "this
+    # span predates the attribute", which an absent key cannot.
+    span.set_attribute(f"{PAYLOAD_PREFIX}.selected_date", selected_date or "")
+    span.set_attribute(f"{PAYLOAD_PREFIX}.reply_to_from", reply_to_from or "")
+    span.set_attribute(
+        f"{PAYLOAD_PREFIX}.attachment_types", attachment_types or []
+    )

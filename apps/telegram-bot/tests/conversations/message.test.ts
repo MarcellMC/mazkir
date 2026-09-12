@@ -358,3 +358,63 @@ describe("the hints survive the handler's own typing indicator", () => {
     expect(payload?.reply_to).toEqual({ text: QUESTION, from: "assistant" });
   });
 });
+
+describe("payload provenance on the span", () => {
+  // What Phoenix could not tell me on 2026-09-12: whether the turn carried
+  // any reply context, and if so whose. All three cases are distinguishable
+  // now, because "none while a question was pending" is the failure and it
+  // has to be visible as a value rather than as a missing key.
+  let attrs: Record<string, unknown>;
+
+  beforeEach(async () => {
+    const { resetOpenQuestions } = await import("../../src/state/open-question.js");
+    const { resetSelectedDates } = await import("../../src/state/selected-date.js");
+    resetOpenQuestions();
+    resetSelectedDates();
+    attrs = {};
+    const otel = await import("@opentelemetry/api");
+    vi.spyOn(otel.trace, "getActiveSpan").mockReturnValue({
+      setAttribute: (k: string, v: unknown) => { attrs[k] = v; return undefined as never; },
+    } as never);
+  });
+
+  it("marks a real Telegram reply as such", () => {
+    buildMessagePayload({
+      text: "Bar hopping",
+      reply_to_message: { text: "what was it?", from: { is_bot: true } },
+    } as never, 123);
+
+    expect(attrs["mazkir.payload.reply_to_source"]).toBe("telegram");
+  });
+
+  it("marks the bot's own question as open_question", async () => {
+    const { noteOpenQuestion } = await import("../../src/state/open-question.js");
+    noteOpenQuestion(123, "15:00–17:30 — what was it?");
+
+    buildMessagePayload({ text: "Bar hopping" } as never, 123);
+
+    expect(attrs["mazkir.payload.reply_to_source"]).toBe("open_question");
+  });
+
+  it("records none, and an empty date, when the turn carried nothing", () => {
+    buildMessagePayload({ text: "Bar hopping" } as never, 123);
+
+    // This is the 20:03 turn as it would now appear in a trace — the failure
+    // is a value you can filter on, not an absence you have to infer.
+    expect(attrs["mazkir.payload.reply_to_source"]).toBe("none");
+    expect(attrs["mazkir.payload.selected_date"]).toBe("");
+    expect(attrs["mazkir.payload.attachment_count"]).toBe(0);
+  });
+
+  it("carries the selected date when the day view is on screen", async () => {
+    const { setSelectedDate, noteDayView } = await import(
+      "../../src/state/selected-date.js"
+    );
+    setSelectedDate(123, "2026-09-12");
+    noteDayView(123);
+
+    buildMessagePayload({ text: "what did I do" } as never, 123);
+
+    expect(attrs["mazkir.payload.selected_date"]).toBe("2026-09-12");
+  });
+});
