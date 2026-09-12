@@ -193,6 +193,37 @@ class TestPatchHabitCompletion:
         assert calendar.mark_event_complete.await_args[0][0] == "gcal_1"
         assert result["already_completed"] is False
 
+    def test_completion_runs_off_the_event_loop(self):
+        """`complete_habit` blocks on the vault's mutation lock, which an agent
+        turn may hold across a multi-file write. Waiting for it on the event
+        loop would stall every other request until the agent let go."""
+        import threading
+
+        from src.services import habit_completion
+
+        vault = self._vault(target=2)
+        threads = {}
+
+        def loop_vault():
+            threads["loop"] = threading.get_ident()
+            return vault
+
+        real = habit_completion.complete_habit
+
+        def recording(*args, **kwargs):
+            threads["completion"] = threading.get_ident()
+            return real(*args, **kwargs)
+
+        from src.main import app
+
+        with patch("src.api.routes.habits.get_vault", side_effect=loop_vault), \
+                patch("src.api.routes.habits.get_calendar", return_value=None), \
+                patch.object(habit_completion, "complete_habit", recording):
+            resp = TestClient(app).patch("/habits/Dog Walk", json={"completed": True})
+
+        assert resp.status_code == 200, resp.text
+        assert threads["completion"] != threads["loop"]
+
     def test_a_broken_daily_target_does_not_lock_the_habit(self):
         vault = self._vault(target="two")
 
@@ -213,7 +244,7 @@ def test_both_completion_paths_share_one_implementation():
     route_src = inspect.getsource(habits_route.complete_habit)
     tool_src = inspect.getsource(AgentService._tool_complete_habit)
 
-    assert "habit_completion.complete_habit(" in route_src
+    assert "habit_completion.complete_habit, vault" in route_src
     assert "complete_habit(self.vault" in tool_src
     # Neither may re-derive the rules locally: no second streak calculation,
     # no second reading of `last_completed`, no second log append.

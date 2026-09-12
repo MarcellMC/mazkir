@@ -72,7 +72,11 @@ function navButtons(callIndex = 0) {
 
 describe("the habit:complete: callback", () => {
   beforeEach(() => {
-    vi.mocked(api.completeHabit).mockReset().mockResolvedValue(undefined as never);
+    vi.mocked(api.completeHabit).mockReset().mockResolvedValue({
+      already_completed: false, name: "Workout", completions_today: 1,
+      daily_target: 1, old_streak: 1, new_streak: 2, tokens_earned: 5,
+      new_token_total: 55, target_met: true,
+    } as never);
     vi.mocked(api.listHabits).mockReset().mockResolvedValue(HABITS as never);
     vi.mocked(editRich).mockReset();
   });
@@ -96,6 +100,33 @@ describe("the habit:complete: callback", () => {
     const msg = vi.mocked(editRich).mock.calls[0]![1] as { html?: string };
     expect(msg).toHaveProperty("html");
     expect(msg.html).toContain("Habit Tracker");
+  });
+
+  it("says what the completion paid", async () => {
+    // The response used to be typed `unknown` and discarded, so the toast was
+    // always "✅ Workout completed!" — no way to tell an award from a no-op.
+    const ctx = ctxFor("habit:complete:Workout");
+    await dispatch(ctx);
+
+    expect(ctx.answerCallbackQuery).toHaveBeenCalledWith({
+      text: "✅ Workout · +5 tokens · streak 2",
+    });
+  });
+
+  it("does not claim an award on a repeat tap", async () => {
+    vi.mocked(api.completeHabit).mockResolvedValueOnce({
+      already_completed: true, name: "Workout", streak: 2,
+      completions_today: 2, daily_target: 2,
+    } as never);
+    const ctx = ctxFor("habit:complete:Workout");
+
+    await dispatch(ctx);
+
+    expect(ctx.answerCallbackQuery).toHaveBeenCalledWith({
+      text: "Already done today — Workout (2/2)",
+    });
+    // The list is still refreshed: the tapped button should go away.
+    expect(editRich).toHaveBeenCalledOnce();
   });
 
   it("reports a failure without touching the message", async () => {

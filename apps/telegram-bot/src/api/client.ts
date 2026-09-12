@@ -3,6 +3,7 @@ import type {
   Task,
   TaskDetail,
   Habit,
+  HabitCompletion,
   Goal,
   GoalDetail,
   TokensResponse,
@@ -127,7 +128,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     createHabit: (data: Record<string, unknown>) =>
       request<Habit>("/habits", { method: "POST", body: JSON.stringify(data) }),
     completeHabit: (name: string) =>
-      request<unknown>(`/habits/${encodeURIComponent(name)}`, {
+      request<HabitCompletion>(`/habits/${encodeURIComponent(name)}`, {
         method: "PATCH",
         body: JSON.stringify({ completed: true }),
       }),

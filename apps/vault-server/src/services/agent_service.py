@@ -1166,10 +1166,23 @@ class AgentService:
         # File-tier writes touch distinct vault paths via the resolver, so they
         # can run concurrently. Daily-section and event writes share a single
         # file and stay unsafe (default False from stamp_tool_registry).
+        #
+        # `complete_task` and `complete_habit` are deliberately NOT here, even
+        # though each resolves to its own item file: completing something also
+        # awards tokens, and that writes two files every completion shares —
+        # `00-system/motivation-tokens.md` and today's daily note. Run in
+        # parallel, three completions took the ledger from 50 to 5 while all
+        # three tool results reported `tokens_earned: 5`, because each thread
+        # read a total the others had not written yet (and, before writes were
+        # made atomic, sometimes read the ledger mid-truncation as empty).
+        # `VaultService.update_tokens` now holds a lock across the award, so the
+        # arithmetic survives either way; keeping the completion tools serial is
+        # the second half, since the test for "did I already do this today?"
+        # spans a read and a write of the habit note too. The cost is latency on
+        # bulk completion, which is the one thing parallel dispatch bought.
         SAFE_WRITES = {
             "create_task", "create_habit", "create_goal",
             "update_task", "update_habit", "update_goal",
-            "complete_task", "complete_habit",
             "delete_task", "archive_task", "delete_habit", "archive_goal",
             "save_knowledge",
         }
