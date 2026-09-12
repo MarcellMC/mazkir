@@ -702,7 +702,10 @@ def test_new_fields_are_defaulted_on_save(tmp_path):
     assert event["activity"] is None
     assert event["category"] is None
     assert event["tags"] == []
-    assert event["state"] == "suggested"
+    # `state` is absent, not "suggested" (spec §2.2): absent means "derive
+    # it from the source", and a stored value means the user decided. A
+    # default would make those two indistinguishable.
+    assert "state" not in event
 
 
 def test_explicit_values_are_preserved(tmp_path):
@@ -725,9 +728,13 @@ def test_explicit_values_are_preserved(tmp_path):
     assert event["state"] == "approved"
 
 
-def test_legacy_events_default_to_suggested(tmp_path):
-    """Events written before this change must not silently count as logged."""
+def test_legacy_events_carry_no_state_and_resolve_to_pending(tmp_path):
+    """Events written before approval existed must not silently count as
+    logged. They now carry no `state` at all, and `resolve_state` derives
+    "pending" for them — same protection, without a stored default that
+    would be indistinguishable from a real decision."""
     import json
+    from src.services.approval import resolve_state
     from src.services.events_service import EventsService
 
     events_dir = tmp_path / "events"
@@ -737,8 +744,51 @@ def test_legacy_events_default_to_suggested(tmp_path):
     )
 
     svc = EventsService(events_dir)
+    event = svc.get_events("2026-05-01")[0]
 
-    assert svc.get_events("2026-05-01")[0]["state"] == "suggested"
+    assert "state" not in event
+    assert resolve_state(event) == "pending"
+
+
+def test_a_stored_suggested_is_dropped_on_read(tmp_path):
+    """Rows written by Ship 4 carry state="suggested". It never expressed a
+    decision, so it is stripped rather than preserved — otherwise it would
+    read as stored state forever."""
+    import json
+    from src.services.events_service import EventsService
+
+    events_dir = tmp_path / "events"
+    events_dir.mkdir()
+    (events_dir / "2026-05-01.json").write_text(
+        json.dumps([{"id": "e1", "name": "Coffee", "state": "suggested"}]),
+        encoding="utf-8",
+    )
+
+    assert "state" not in EventsService(events_dir).get_events("2026-05-01")[0]
+
+
+def test_approved_and_dismissed_survive_a_save_and_read(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.save_events("2026-05-01", [
+        {"id": "a", "state": "approved"},
+        {"id": "b", "state": "dismissed"},
+    ])
+
+    by_id = {e["id"]: e for e in svc.get_events("2026-05-01")}
+    assert by_id["a"]["state"] == "approved"
+    assert by_id["b"]["state"] == "dismissed"
+
+
+def test_save_events_does_not_invent_a_state(tmp_path):
+    from src.services.events_service import EventsService
+
+    svc = EventsService(tmp_path / "events")
+    svc.save_events("2026-05-01", [{"id": "a", "name": "Coffee"}])
+
+    raw = (tmp_path / "events" / "2026-05-01.json").read_text()
+    assert '"state"' not in raw
 
 
 def test_create_event_writes_the_activity_kwarg_to_the_activity_field(tmp_path):

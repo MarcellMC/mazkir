@@ -161,3 +161,478 @@ class TestMergeFromSourcesAvailability:
     def test_a_vault_that_raises_makes_habit_source_unavailable(self, tmp_path):
         (tmp_path / "20-habits").mkdir()
         assert "habit" not in self._run(vault=self._real_vault(tmp_path, raises=True))
+
+
+class TestSetState:
+    """POST /events/{date}/{id}/state — spec §2.3."""
+
+    def _install(self, monkeypatch, events):
+        """Stub the events service and the source merge, returning the fake so
+        tests can inspect what was saved."""
+        import src.main as main
+        import src.api.routes.events as events_route
+
+        class FakeEvents:
+            def __init__(self):
+                self.saved = {}
+
+            def get_events(self, date):
+                return [dict(e) for e in events]
+
+            def reconcile(self, date, fresh, available=None):
+                return [dict(e) for e in events]
+
+            def save_events(self, date, evts):
+                self.saved[date] = evts
+
+        fake = FakeEvents()
+        monkeypatch.setattr(main, "get_events", lambda: fake)
+
+        async def no_sources(date):
+            return [], set()
+
+        monkeypatch.setattr(events_route, "_merge_from_sources", no_sources)
+        return fake
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from src.main import app
+        return TestClient(app)
+
+    def test_approving_a_calendar_block_stores_approved(self, monkeypatch):
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Standup", "source": "calendar",
+             "source_ids": {"calendar_id": "g1"}},
+        ])
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "approved"})
+
+        assert r.status_code == 200
+        assert r.json()["state"] == "approved"
+        assert fake.saved["2026-09-10"][0]["state"] == "approved"
+
+    def test_dismissing_a_calendar_block_stores_dismissed(self, monkeypatch):
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Standup", "source": "calendar",
+             "source_ids": {"calendar_id": "g1"}},
+        ])
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "dismissed"})
+
+        assert r.json()["state"] == "dismissed"
+        assert fake.saved["2026-09-10"][0]["state"] == "dismissed"
+
+    def test_dismissing_an_unfired_habit_stores_dismissed_and_does_not_complete_it(
+        self, monkeypatch
+    ):
+        """§2.3's dispatch table: "habit, not fired | ✕ store dismissed".
+
+        Only the `approved` branches ever tick a habit or a checkbox — this
+        block has not been ticked (`completed: False`), so `resolve_state`
+        derives "pending", not "approved", and dismissing it falls past both
+        approve branches and the already-approved check into the bottom
+        `save_events` fallback, storing a `state="dismissed"` row keyed to
+        the unstable `habit_slug` id. That row-clutter is accepted (spec
+        §2.5); what must never happen is dismissing *also* completing the
+        habit, which is why the negative assertion is load-bearing here.
+        """
+        import src.api.routes.events as events_route
+
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Dog walk", "source": "habit",
+             "source_ids": {"habit_slug": "dog-walk"}, "completed": False,
+             "habit": {"name": "Dog walk"}},
+        ])
+
+        calls = []
+
+        def spy_complete_habit(*a, **kw):
+            calls.append((a, kw))
+            raise AssertionError("dismissing an unfired habit must not complete it")
+
+        monkeypatch.setattr(events_route, "complete_habit", spy_complete_habit)
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "dismissed"})
+
+        assert r.status_code == 200
+        assert r.json()["state"] == "dismissed"
+        assert fake.saved["2026-09-10"][0]["state"] == "dismissed"
+        assert calls == []
+
+    def test_dismissing_an_unchecked_timed_checkbox_stores_dismissed_and_does_not_write_the_note(
+        self, monkeypatch
+    ):
+        """§2.3's dispatch table: "checkbox, timed, unchecked | ✕ store
+        dismissed". Same shape as the habit case above: the block is not yet
+        `completed`, so dismissing it falls into the bottom `save_events`
+        fallback and stores a `state="dismissed"` row keyed to the unstable
+        `note_line` id, without ever writing the daily note."""
+        import src.main as main
+
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Visit dentist", "source": "daily-note",
+             "source_ids": {"note_line": "abc123"}, "completed": False},
+        ])
+
+        class SpyVault:
+            def write_daily_note(self, *a, **kw):
+                raise AssertionError(
+                    "dismissing an unchecked checkbox must not write the note"
+                )
+
+        monkeypatch.setattr(main, "get_vault", lambda: SpyVault())
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "dismissed"})
+
+        assert r.status_code == 200
+        assert r.json()["state"] == "dismissed"
+        assert fake.saved["2026-09-10"][0]["state"] == "dismissed"
+
+    def test_dismissing_never_touches_google(self, monkeypatch):
+        """§2.5 and §9: dismissal is local in this ship. cancel and delete are
+        deferred, and a dismissal must not quietly become either."""
+        import src.main as main
+
+        calls = []
+        self._install(monkeypatch, [
+            {"id": "e1", "name": "Standup", "source": "calendar",
+             "source_ids": {"calendar_id": "g1"}, "calendar_id": "g1"},
+        ])
+
+        class LoudCalendar:
+            async def delete_event(self, *a, **kw):
+                calls.append("delete")
+
+            async def update_event(self, *a, **kw):
+                calls.append("update")
+
+        monkeypatch.setattr(main, "get_calendar", lambda: LoudCalendar())
+
+        self._client().post("/events/2026-09-10/e1/state",
+                            json={"state": "dismissed"})
+
+        assert calls == []
+
+    def test_approving_an_unfired_habit_ticks_it_and_stores_nothing(self, monkeypatch):
+        """Ticking makes `completed` true, so resolve_state derives approved on
+        the next merge. Storing a state row as well is the §2.1 stale-row bug,
+        because habit_slug ids are not stable."""
+        import src.main as main
+        import src.api.routes.events as events_route
+
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Dog walk", "source": "habit",
+             "source_ids": {"habit_slug": "dog-walk"}, "completed": False,
+             "habit": {"name": "Dog walk"},
+             "start_time": "2026-09-10T19:00", "end_time": "2026-09-10T20:00"},
+        ])
+
+        class FakeVault:
+            def list_active_habits(self):
+                return [{"metadata": {"name": "Dog walk"},
+                         "path": "20-habits/dog-walk.md"}]
+
+        monkeypatch.setattr(main, "get_vault", lambda: FakeVault())
+
+        seen = {}
+
+        def fake_complete(vault, path, now=None):
+            seen["path"] = path
+            seen["now"] = now
+            return {"already_completed": False, "name": "Dog walk",
+                    "tokens_earned": 5, "new_streak": 13,
+                    "date": now.date().isoformat()}
+
+        monkeypatch.setattr(events_route, "complete_habit", fake_complete)
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "approved"})
+
+        assert r.json()["habit"]["tokens_earned"] == 5
+        assert r.json()["habit"]["new_streak"] == 13
+        assert seen["path"] == "20-habits/dog-walk.md"
+        assert fake.saved == {}          # no state row written
+
+    def test_approving_a_habit_block_stamps_the_blocks_date(self, monkeypatch):
+        """The reason Task 6 exists. Confirming Monday's block records Monday,
+        not today."""
+        import src.main as main
+        import src.api.routes.events as events_route
+
+        self._install(monkeypatch, [
+            {"id": "e1", "name": "Dog walk", "source": "habit",
+             "source_ids": {"habit_slug": "dog-walk"}, "completed": False,
+             "habit": {"name": "Dog walk"},
+             "start_time": "2026-09-07T19:00", "end_time": "2026-09-07T20:00"},
+        ])
+
+        class FakeVault:
+            def list_active_habits(self):
+                return [{"metadata": {"name": "Dog walk"},
+                         "path": "20-habits/dog-walk.md"}]
+
+        monkeypatch.setattr(main, "get_vault", lambda: FakeVault())
+
+        seen = {}
+
+        def fake_complete(vault, path, now=None):
+            seen["now"] = now
+            return {"already_completed": False, "name": "Dog walk",
+                    "tokens_earned": 5, "new_streak": 2,
+                    "date": now.date().isoformat()}
+
+        monkeypatch.setattr(events_route, "complete_habit", fake_complete)
+
+        self._client().post("/events/2026-09-07/e1/state",
+                            json={"state": "approved"})
+
+        assert seen["now"].date().isoformat() == "2026-09-07"
+
+    def test_dismissing_a_ticked_habit_is_refused(self, monkeypatch):
+        """§2.4: nothing in this ship unticks a habit. Unreachable from /day,
+        so refuse rather than invent a reverse path."""
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Dog walk", "source": "habit",
+             "source_ids": {"habit_slug": "dog-walk"}, "completed": True,
+             "habit": {"name": "Dog walk"}},
+        ])
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "dismissed"})
+
+        assert r.status_code == 409
+        assert "untick" in r.json()["detail"].lower()
+        assert fake.saved == {}
+
+    def test_approving_an_already_approved_block_is_a_no_op(self, monkeypatch):
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Dog walk", "source": "manual", "source_ids": {}},
+        ])
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "approved"})
+
+        assert r.status_code == 200
+        assert r.json()["state"] == "approved"
+        assert fake.saved == {}
+
+    def test_unknown_event_is_404(self, monkeypatch):
+        self._install(monkeypatch, [])
+
+        r = self._client().post("/events/2026-09-10/nope/state",
+                                json={"state": "approved"})
+
+        assert r.status_code == 404
+
+    def test_an_invalid_state_is_rejected(self, monkeypatch):
+        self._install(monkeypatch, [
+            {"id": "e1", "source": "calendar", "source_ids": {"calendar_id": "g1"}},
+        ])
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "suggested"})
+
+        assert r.status_code == 422
+
+    # --- checkbox branch: fix round 1 --------------------------------
+    #
+    # `daily_set_task_state` can only see and write `## Tasks`, because it
+    # re-renders that section wholesale via `render_tasks_section`. But
+    # `parse_all_todos` — which is what turns a timed checkbox into a block
+    # in the first place — is section-agnostic (Ship 1). These tests pin the
+    # route to `set_todo_checked` instead, which edits the matched line
+    # in place wherever it lives.
+
+    def test_approving_an_unfired_checkbox_ticks_it_and_stores_nothing(self, monkeypatch):
+        """Ticking makes `completed` true, so resolve_state derives approved
+        on the next merge — storing a state row too would key an approval to
+        an unstable `note_line` id, the same stale-row trap as the habit
+        branch."""
+        import src.main as main
+
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Visit dentist", "source": "daily-note",
+             "source_ids": {"note_line": "abc123"}, "completed": False,
+             "start_time": "2026-09-10T14:00", "end_time": "2026-09-10T15:00"},
+        ])
+
+        written = {}
+
+        class FakeVault:
+            def read_daily_note(self, date):
+                return {"content": "## Tasks\n- [ ] Visit dentist\n"}
+
+            def write_daily_note(self, date, content):
+                written["date"] = date
+                written["content"] = content
+
+        monkeypatch.setattr(main, "get_vault", lambda: FakeVault())
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "approved"})
+
+        assert r.status_code == 200
+        assert r.json()["checkbox"] == {"text": "Visit dentist"}
+        assert r.json()["habit"] is None
+        assert written["content"] == "## Tasks\n- [x] Visit dentist\n"
+        assert fake.saved == {}          # no state row written
+
+    def test_approving_a_checkbox_under_a_non_tasks_heading_is_approved(self, monkeypatch):
+        """The regression this fix round exists for: a timed checkbox under
+        `## Schedule` (or any heading other than `## Tasks`) is exactly the
+        block the day view shows, and `daily_set_task_state` cannot reach it
+        because it only ever writes back to `## Tasks`."""
+        import src.main as main
+
+        self._install(monkeypatch, [
+            {"id": "e1", "name": "Standup", "source": "daily-note",
+             "source_ids": {"note_line": "xyz789"}, "completed": False,
+             "start_time": "2026-09-10T09:00", "end_time": "2026-09-10T09:15"},
+        ])
+
+        written = {}
+
+        class FakeVault:
+            def read_daily_note(self, date):
+                return {"content": "## Schedule\n- [ ] 09:00 — Standup (15m)\n"}
+
+            def write_daily_note(self, date, content):
+                written["content"] = content
+
+        monkeypatch.setattr(main, "get_vault", lambda: FakeVault())
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "approved"})
+
+        assert r.status_code == 200
+        assert r.json()["checkbox"] == {"text": "Standup"}
+        assert written["content"] == "## Schedule\n- [x] 09:00 — Standup (15m)\n"
+
+    def test_approving_a_checkbox_with_no_match_is_404(self, monkeypatch):
+        import src.main as main
+
+        self._install(monkeypatch, [
+            {"id": "e1", "name": "Ghost task", "source": "daily-note",
+             "source_ids": {"note_line": "ghost"}, "completed": False},
+        ])
+
+        class FakeVault:
+            def read_daily_note(self, date):
+                return {"content": "## Tasks\n- [ ] Something else\n"}
+
+        monkeypatch.setattr(main, "get_vault", lambda: FakeVault())
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "approved"})
+
+        assert r.status_code == 404
+
+    def test_approving_an_ambiguous_checkbox_is_409(self, monkeypatch):
+        import src.main as main
+
+        self._install(monkeypatch, [
+            {"id": "e1", "name": "Walk dog", "source": "daily-note",
+             "source_ids": {"note_line": "dup"}, "completed": False},
+        ])
+
+        class FakeVault:
+            def read_daily_note(self, date):
+                return {"content": (
+                    "## Tasks\n- [ ] Walk dog in the park\n"
+                    "- [ ] Walk dog to the vet\n"
+                )}
+
+        monkeypatch.setattr(main, "get_vault", lambda: FakeVault())
+
+        r = self._client().post("/events/2026-09-10/e1/state",
+                                json={"state": "approved"})
+
+        assert r.status_code == 409
+
+
+class TestPatchPinning:
+    """PATCH /events/{date}/{event_id} — Ship 4 follow-up: an edit made
+    through this route must survive the next reconcile, not silently
+    revert. `USER_SETTABLE_FIELDS` bounds what `user_set` may hold."""
+
+    def test_patch_pins_the_fields_it_changes(self, monkeypatch, tmp_path):
+        """A rename through PATCH must survive the next merge. Ship 4 built
+        user_set for this and wired it only into the agent's update_event."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+        from src.services.events_service import EventsService
+        import src.main as main
+
+        svc = EventsService(tmp_path / "events")
+        svc.save_events("2026-09-10", [{
+            "id": "e1", "name": "Standup", "source": "calendar",
+            "source_ids": {"calendar_id": "g1"},
+            "start_time": "2026-09-10T09:00", "end_time": "2026-09-10T10:00",
+        }])
+        monkeypatch.setattr(main, "get_events", lambda: svc)
+
+        r = TestClient(app).patch("/events/2026-09-10/e1",
+                                  json={"name": "Sprint planning"})
+
+        assert r.status_code == 200
+        stored = svc.get_events("2026-09-10")[0]
+        assert stored["name"] == "Sprint planning"
+        assert stored["user_set"]["name"] == "Sprint planning"
+
+        # And it survives a merge that says otherwise — which is the whole point.
+        fresh = [{
+            "id": "whatever", "name": "Standup", "source": "calendar",
+            "source_ids": {"calendar_id": "g1"},
+            "start_time": "2026-09-10T09:00", "end_time": "2026-09-10T10:00",
+        }]
+        reconciled = svc.reconcile("2026-09-10", fresh, {"calendar"})
+        assert reconciled[0]["name"] == "Sprint planning"
+
+    def test_patch_does_not_pin_photos(self, monkeypatch, tmp_path):
+        """Only the five USER_SETTABLE_FIELDS are pinnable. photos and assets
+        are preserved by other means, and a stray key in user_set would
+        become a way to rewrite reconciliation's own bookkeeping."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+        from src.services.events_service import EventsService
+        import src.main as main
+
+        svc = EventsService(tmp_path / "events")
+        svc.save_events("2026-09-10", [{
+            "id": "e1", "name": "Standup", "source": "calendar",
+            "source_ids": {"calendar_id": "g1"},
+        }])
+        monkeypatch.setattr(main, "get_events", lambda: svc)
+
+        TestClient(app).patch("/events/2026-09-10/e1",
+                              json={"photos": [{"path": "a.jpg"}]})
+
+        stored = svc.get_events("2026-09-10")[0]
+        assert stored["photos"] == [{"path": "a.jpg"}]
+        assert "photos" not in stored.get("user_set", {})
+
+    def test_patch_rejects_a_malformed_date(self):
+        """422 at the boundary — not a 500, and not a filesystem touch. The date
+        reaches EventsService._file_path, which builds events_path / f"{date}.json"."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        r = TestClient(app).patch("/events/not-a-date/e1",
+                                  json={"name": "Sprint planning"})
+
+        assert r.status_code == 422
+
+    def test_set_state_rejects_a_malformed_date(self):
+        """422 at the boundary — not a 500, and not a filesystem touch. The date
+        reaches EventsService._file_path, which builds events_path / f"{date}.json"."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+
+        r = TestClient(app).post("/events/not-a-date/e1/state",
+                                 json={"state": "approved"})
+
+        assert r.status_code == 422

@@ -6,6 +6,7 @@
 **Ship 1 shipped:** PR #9 (`3eb8b2c`), vault commit `fb824da`.
 **Ship 2 shipped:** PR #11 (`934c003`).
 **Ship 3 shipped:** see `docs/superpowers/specs/2026-09-05-ship3-agent-action-memory-design.md`.
+**Ship 5 shipped:** see `docs/superpowers/specs/2026-09-10-ship5-inferred-capture-design.md`. Reordered ahead of 4b — see that spec's §1.3.
 
 > **Two decisions from the Ship 2 design supersede parts of this document.**
 > 1. The events ledger is the source of truth for temporal data; daily notes are a worksurface. A timed checkbox becomes a block by *inference*, regenerated on every open — so promotion needs no write path. See the Ship 2 design §2.1.
@@ -33,8 +34,8 @@ Value-ordered rather than phase-ordered. Each ships independently.
 | 2 | [Navigable `/day`, rendering blocks read-only](../superpowers/specs/2026-08-29-ship2-navigable-day-design.md) | ~6 | The surface everything later writes to |
 | 3 | Bug B — the agent can't deny its own work | ~3 | Before any new write path inherits it |
 | 4 | NL logging + simple single edits | ~5 | The only capture path sleep and meals will ever have |
-| 4b | [Ambient capture: knowing what to log](#12-ambient-capture-ship-4b) | ~6 | Ship 4 gives Mazkir hands; this gives it judgment |
 | 5 | Inferred capture: suggested→approved, gaps | ~6 | Reduces typing once capture already works |
+| 4b | [Ambient capture: knowing what to log](#12-ambient-capture-ship-4b) | ~6 | Ship 4 gives Mazkir hands; this gives it judgment; now after 5 — see the Ship 5 spec §1.3 |
 | 6 | Classification | ~4 | Needs blocks to classify |
 | 7 | Batch edit → preview → accept all | ~4 | Needs blocks *and* addressing |
 | 8 | Timers | ~2 | NL already covers this ground retrospectively |
@@ -216,6 +217,6 @@ So a habit is spotted when the user happens to use its own words and missed sile
 
 ## 11. Carried forward from Phase 1
 
-- `habits.py` reads "today" in `VAULT_TIMEZONE` but writes via the server clock — inert while they match. Fix in Ship 5, which is the code that cares.
+- ~~`habits.py` reads "today" in `VAULT_TIMEZONE` but writes via the server clock~~ — fixed in Ship 5; `habit_completion.complete_habit` now defaults `now` to a `VAULT_TIMEZONE`-aware datetime, which is what let approval stamp a past block's own date.
 - `packages/shared-types` and the bot formatter do not surface `completions_today` / `daily_target`, so the bot shows a binary checkbox where the API can say 1/2. Fix in Ship 2, the same rendering pass.
 - `CLAUDE.md` has two stale claims: the "known pre-existing `import.meta.env` errors" no longer reproduce, and the webapp section still lists a `dayplanner/` feature that is now `time-management/`. Fix in Ship 1.

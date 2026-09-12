@@ -42,8 +42,11 @@ _SOURCE_SYSTEM_BY_ID_KEY = {
 #     shadowing, not deletion — and `available_sources` cannot see the
 #     difference, because the habit source *did* answer.
 #
-# Stale rows for these two linger until Ship 5 gives them stable identity.
-# That is visible clutter; the alternative is silent loss.
+# Ship 5 made stable identity unnecessary rather than providing it: these two
+# sources are the human-created ones, so their approval is derived from the
+# checkbox or the habit at read time (services/approval.py) and no row is ever
+# persisted against their ids. An unmatched row here is still preserved rather
+# than deleted, for the reasons above.
 _DELETABLE_SOURCE_SYSTEMS = frozenset({"calendar", "timeline"})
 
 # The only fields a user can pin against re-inference.
@@ -161,7 +164,16 @@ class EventsService:
         event.setdefault("activity", None)
         event.setdefault("category", None)
         event.setdefault("tags", [])
-        event.setdefault("state", "suggested")
+        # `state` is deliberately NOT defaulted. Absent means "derive it from
+        # the source" (see services/approval.py); only "approved" and
+        # "dismissed" are ever stored. A default would make an untouched row
+        # indistinguishable from a decided one.
+        #
+        # A legacy `"suggested"` — written by the setdefault this replaces —
+        # is stripped rather than kept, because it never expressed a decision
+        # and would otherwise read as stored state forever.
+        if event.get("state") == "suggested":
+            del event["state"]
         return event
 
     def get_events(self, date: str) -> list[dict[str, Any]]:
@@ -186,7 +198,6 @@ class EventsService:
             event.setdefault("activity", None)
             event.setdefault("category", None)
             event.setdefault("tags", [])
-            event.setdefault("state", "suggested")
             event.setdefault("user_set", {})
         path = self._file_path(date)
         payload = json.dumps(events, indent=2)

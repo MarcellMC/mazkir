@@ -200,3 +200,77 @@ class TestCompleteHabit:
     def test_reports_the_google_event_id_for_the_caller_to_sync(self):
         vault = FakeVault(_habit(target=2))
         assert self._run(vault)["google_event_id"] == "gcal_1"
+
+
+class _FrozenDatetime:
+    """Stands in for `dt.datetime` so `dt.datetime.now(tz)` is deterministic.
+    Only `now` is overridden; everything else defers to the real class."""
+
+    def __init__(self, instant):
+        self._instant = instant
+
+    def now(self, tz=None):
+        return self._instant.astimezone(tz) if tz else self._instant.replace(tzinfo=None)
+
+    def __getattr__(self, name):
+        import datetime as _dt
+        return getattr(_dt.datetime, name)
+
+
+class _RecordingVault:
+    """The minimum surface complete_habit touches."""
+
+    def __init__(self):
+        self.written = {}
+
+    def read_file(self, path):
+        return {"metadata": {"name": "Dog walk", "streak": 0}, "content": ""}
+
+    def write_file(self, path, metadata, content):
+        self.written["last_completed"] = metadata.get("last_completed")
+
+    def read_token_ledger(self):
+        return {"metadata": {"tokens_today": 0, "total_tokens": 0}}
+
+    def write_token_ledger(self, *a, **kw):
+        pass
+
+    def update_tokens(self, tokens, activity):
+        return {"new_total": tokens}
+
+
+def test_default_now_is_vault_timezone_not_the_server_clock(monkeypatch):
+    """The recorded bug (phase doc §11): the default was `dt.datetime.now()` —
+    naive, server-clock — while habits.py has always read "today" in the
+    vault's timezone. Inert while the two agree, and wrong by a day for the
+    first hours of every local day when they don't."""
+    import datetime as dt
+    from src.services import habit_completion
+
+    # A UTC instant that is already the next day in Asia/Jerusalem (UTC+3 in
+    # September): 22:30Z on the 10th is 01:30 on the 11th.
+    monkeypatch.setattr(
+        habit_completion.dt, "datetime",
+        _FrozenDatetime(dt.datetime(2026, 9, 10, 22, 30, tzinfo=dt.timezone.utc)),
+    )
+    vault = _RecordingVault()
+
+    result = habit_completion.complete_habit(vault, "20-habits/dog-walk.md")
+
+    assert result["date"] == "2026-09-11"
+    assert vault.written["last_completed"] == "2026-09-11"
+
+
+def test_an_explicit_now_stamps_that_date():
+    """What Task 7 relies on: approving Monday's block records Monday."""
+    import datetime as dt
+    from src.services.habit_completion import complete_habit
+
+    vault = _RecordingVault()
+
+    result = complete_habit(
+        vault, "20-habits/dog-walk.md", now=dt.datetime(2026, 9, 7, 19, 0),
+    )
+
+    assert result["date"] == "2026-09-07"
+    assert vault.written["last_completed"] == "2026-09-07"

@@ -75,6 +75,41 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     getDaily: (date?: string) =>
       request<DailyResponse>(date ? `/daily?date=${date}` : "/daily"),
 
+    setBlockState: (date: string, eventId: string, state: "approved" | "dismissed") =>
+      request<{
+        ok: boolean; state: string; event_id: string;
+        habit: { name: string; tokens_earned: number; new_streak: number } | null;
+        checkbox: { text: string } | null;
+      }>(`/events/${date}/${eventId}/state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state }),
+      }),
+
+    approveAll: (date: string) =>
+      request<{
+        ok: boolean;
+        approved: { event_id: string; name: string; was_guess: boolean }[];
+        failed: { event_id: string; reason: string }[];
+      }>(`/daily/${date}/approve-all`, { method: "POST" }),
+
+    fillGap: (date: string, start: string, end: string, name?: string) =>
+      request<{ ok: boolean; event_id: string; name: string; was_guess: boolean }>(
+        `/daily/${date}/gaps/fill`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ start, end, name: name ?? null }),
+        },
+      ),
+
+    patchEvent: (date: string, eventId: string, body: Record<string, unknown>) =>
+      request<Record<string, unknown>>(`/events/${date}/${eventId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+
     // Tasks
     listTasks: () => request<Task[]>("/tasks"),
     getTask: (slug: string) =>

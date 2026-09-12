@@ -1,8 +1,8 @@
 """Daily note API routes — blocks, gaps, coverage, todos and notes for one day."""
 import logging
 import re
-from datetime import date as dt_date, datetime
-from fastapi import APIRouter, Depends
+from datetime import date as dt_date, datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException
 import pytz
 from pydantic import BaseModel
 from src.auth import verify_api_key
@@ -10,6 +10,8 @@ from src.config import settings
 from src.services.daily_tasks import parse_all_todos, is_todo_line
 from src.services.habit_completion import is_complete_today
 from src.services.day_coverage import MINUTES_PER_DAY, day_coverage, minutes_into_day
+from src.services.approval import resolve_state
+from src.services.gap_proposals import HISTORY_DAYS, propose_for_gap
 
 router = APIRouter(prefix="/daily", tags=["daily"], dependencies=[Depends(verify_api_key)])
 logger = logging.getLogger(__name__)
@@ -28,14 +30,27 @@ class DailyBlock(BaseModel):
     completed: bool = False
     activity: str | None = None   # populated by Ship 6
     category: str | None = None   # populated by Ship 6
-    state: str = "suggested"      # "approved" arrives in Ship 5
+    # Always set explicitly from `resolve_state` in `_build_blocks_and_coverage`,
+    # so this default is unreachable — but it must not name a value the
+    # vocabulary no longer contains (services/approval.py).
+    state: str = "pending"
     habit_progress: str | None = None  # "1/2" when a daily_target is set
+
+
+class GapProposal(BaseModel):
+    """What probably filled a gap. A question, not an assertion — the row
+    renders it with a ✕ beside it, and `days_seen` is shown so the guess can
+    be judged rather than trusted."""
+    name: str
+    days_seen: int
 
 
 class DailyGap(BaseModel):
     start: str
     end: str
     minutes: int
+    # None means "no basis to guess" — the gap asks instead (spec §4.1).
+    proposal: GapProposal | None = None
 
 
 class DailyIncomplete(BaseModel):
@@ -63,6 +78,16 @@ class DayCoverage(BaseModel):
     # elapsed and still-to-come rows shows exactly when
     # `0 < elapsed_minutes < 1440`.
     elapsed_minutes: int
+    # Two different unions over the same block list (spec §3). `covered` is
+    # every drawable block, which is what gaps are computed from — so a `░`
+    # row always means nothing is there at all, and can never overlap a
+    # pending block. `confirmed` is approved blocks only, and is the only
+    # number the weekly readout (Ship 9) may read.
+    confirmed_minutes: int = 0
+    # Pending time that is not already confirmed. Subtracted rather than
+    # counted independently, so two overlapping blocks of different states
+    # do not add up to more than the wall clock.
+    pending_minutes: int = 0
 
 
 class DailyNote(BaseModel):
@@ -248,11 +273,19 @@ def _build_blocks_and_coverage(
     midnight, so a neighbouring day's fragment here would distort this
     day's arithmetic. An event that starts on `date` and ends after it is
     clipped to `24:00` rather than dropped — see `_end_minutes`.
+
+    Dismissed events are dropped entirely and the span they occupied becomes
+    a gap (spec §2.5): a meeting you skipped means that hour really is
+    unaccounted, and the gap is the prompt to say what you did instead.
     """
     blocks: list[DailyBlock] = []
-    intervals: list[tuple[int, int]] = []
+    all_intervals: list[tuple[int, int]] = []
+    approved_intervals: list[tuple[int, int]] = []
 
     for e in events:
+        state = resolve_state(e)
+        if state == "dismissed":
+            continue
         start, end, _, _ = _block_times(e, date)
         if start is None or end is None:
             continue
@@ -276,15 +309,25 @@ def _build_blocks_and_coverage(
             completed=bool(e.get("completed") or habit.get("completed", False)),
             activity=e.get("activity"),
             category=e.get("category"),
-            state=e.get("state") or "suggested",
+            state=state,
             habit_progress=(
                 f"{habit.get('completions_today', 0)}/{target}" if target else None
             ),
         ))
-        intervals.append((start, end))
+        all_intervals.append((start, end))
+        if state == "approved":
+            approved_intervals.append((start, end))
 
     blocks.sort(key=lambda b: b.start)
-    raw_gaps, coverage = day_coverage(intervals, elapsed_minutes)
+
+    # Two calls, two unions. Gaps come from the first — over every drawable
+    # block — so a gap means nothing is there at all. Were gaps computed
+    # from the approved set, every pending block would sit inside a `░` row
+    # covering the same span, which is incoherent to read.
+    raw_gaps, coverage = day_coverage(all_intervals, elapsed_minutes)
+    _approved_gaps, approved_coverage = day_coverage(approved_intervals, elapsed_minutes)
+
+    confirmed = approved_coverage.covered_minutes
     return (
         blocks,
         [DailyGap(start=g.start, end=g.end, minutes=g.minutes) for g in raw_gaps],
@@ -292,8 +335,51 @@ def _build_blocks_and_coverage(
             covered_minutes=coverage.covered_minutes,
             unaccounted_minutes=coverage.unaccounted_minutes,
             elapsed_minutes=elapsed_minutes,
+            confirmed_minutes=confirmed,
+            # Never negative: `confirmed` is a union over a subset of
+            # `all_intervals`, so it cannot exceed `covered`.
+            pending_minutes=coverage.covered_minutes - confirmed,
         ),
     )
+
+
+def _load_history(events_svc, target_date: dt_date) -> list[list[dict]]:
+    """The `HISTORY_DAYS` date files before `target_date`, most recent first.
+
+    Local reads only — `get_events` returns [] for a missing file, so a short
+    history needs no special case. The target's own date is excluded: today's
+    blocks are not evidence about what usually happens today.
+    """
+    return [
+        events_svc.get_events((target_date - timedelta(days=offset)).isoformat())
+        for offset in range(1, HISTORY_DAYS + 1)
+    ]
+
+
+def _decorate_gaps(
+    gaps: list[DailyGap], history: list[list[dict]]
+) -> list[DailyGap]:
+    """Attach a proposal to each gap that has a basis for one.
+
+    Done here rather than inside `_build_blocks_and_coverage` so that
+    function stays pure arithmetic with no service access — the same reason
+    `day_coverage.py` takes minute offsets and not events.
+    """
+    out: list[DailyGap] = []
+    for gap in gaps:
+        # `minutes_into_day` needs a date only to reject timestamps belonging
+        # to another day; gap times are bare "HH:MM", so "" never matches and
+        # never rejects. "24:00" is deliberately unparseable (day_coverage
+        # emits it for end-of-day) and comes back None rather than raising.
+        start = minutes_into_day(gap.start, "")
+        end = minutes_into_day(gap.end, "")
+        proposal = None
+        if start is not None and end is not None:
+            found = propose_for_gap(start, end, history)
+            if found:
+                proposal = GapProposal(**found)
+        out.append(gap.model_copy(update={"proposal": proposal}))
+    return out
 
 
 @router.get("", response_model=DailyResponse)
@@ -354,6 +440,20 @@ async def get_daily(date: dt_date | None = None):
     blocks, gaps, coverage = _build_blocks_and_coverage(events, target, elapsed)
     incomplete = _build_incomplete(events, target)
 
+    # Gap proposals read the persisted store for previous dates. Local file
+    # reads, no network — and a failure here must cost the proposals only,
+    # never the day: an unreadable history is not a reason to show no blocks.
+    from src.main import get_events as get_events_svc
+    events_svc = get_events_svc()
+    if events_svc is not None:
+        try:
+            gaps = _decorate_gaps(gaps, _load_history(events_svc, target_date))
+        except Exception:
+            logger.warning(
+                "GET /daily?date=%s: gap proposals failed, gaps will ask instead",
+                target, exc_info=True,
+            )
+
     habits = vault.list_active_habits()
     # `target_date`, not today: habit checkboxes are reconciled against the
     # day being viewed, or yesterday shows this morning's completions and
@@ -380,3 +480,134 @@ async def get_daily(date: dt_date | None = None):
         todos=todos,
         notes=notes,
     )
+
+
+class FillGapBody(BaseModel):
+    start: str                      # "HH:MM"
+    end: str                        # "HH:MM"
+    # Absent means "use whatever you proposed for this interval". The client
+    # never sends the proposed name: a name can exceed the 64-byte callback
+    # budget, and a client-supplied name is a client-supplied write (§4.2).
+    name: str | None = None
+
+
+@router.post("/{date}/gaps/fill")
+async def fill_gap(date: dt_date, body: FillGapBody):
+    """Turn a gap into a block (spec §4.4).
+
+    A gap has no id — it is derived — so this keys on the interval. Without a
+    `name`, the proposal for that interval is recomputed here rather than
+    taken from the client.
+
+    `date` is typed, not a raw string, for the same reason as `get_daily`:
+    FastAPI rejects anything that isn't a real calendar date with 422 before
+    it reaches `EventsService.create_event` / `_file_path`.
+    """
+    from src.main import get_events as get_events_svc
+    events_svc = get_events_svc()
+    if not events_svc:
+        raise HTTPException(503, "Events service not initialized")
+
+    date_str = date.isoformat()
+    name = body.name
+    was_guess = False
+
+    if not name:
+        start = minutes_into_day(body.start, "")
+        end = minutes_into_day(body.end, "")
+        if start is None or end is None:
+            raise HTTPException(422, f"Unusable interval {body.start}-{body.end}")
+        proposal = propose_for_gap(start, end, _load_history(events_svc, date))
+        if not proposal:
+            raise HTTPException(
+                422, f"Nothing to propose for {body.start}-{body.end} — send a name.",
+            )
+        name = proposal["name"]
+        was_guess = True
+
+    created = events_svc.create_event(
+        date=date_str, name=name,
+        start_time=f"{date_str}T{body.start}", end_time=f"{date_str}T{body.end}",
+    )
+    return {"ok": True, "event_id": created.get("id", ""), "name": name,
+            "was_guess": was_guess}
+
+
+# Thin seams so approve-all is testable without a live events service, and so
+# both routes share one implementation of each action.
+async def _set_state_for_approve_all(date: str, event_id: str, body):
+    from src.api.routes.events import set_event_state
+    # set_event_state takes a real `date` object (R8) — FastAPI coerces that
+    # from the path string on an HTTP call, but this is a direct Python
+    # call, so the string has to be converted here or `.isoformat()` inside
+    # set_event_state raises AttributeError on every real (non-mocked) run.
+    return await set_event_state(dt_date.fromisoformat(date), event_id, body)
+
+
+async def _fill_gap_for_approve_all(date: str, body: FillGapBody):
+    # `fill_gap` now takes a real `date` object too, for the same reason as
+    # the seam above: this is a direct Python call, so FastAPI's path-param
+    # coercion never runs and the string has to be converted here.
+    return await fill_gap(dt_date.fromisoformat(date), body)
+
+
+@router.post("/{date}/approve-all")
+async def approve_all(date: dt_date):
+    """Approve every elapsed pending block on `date`, and bank every proposal.
+
+    Proposals are included deliberately (spec §5.6) — decided 2026-09-10
+    against the recommendation. The mitigation is that the response names what
+    it banked and flags guesses, so the bot can say "Approved 3, including
+    Sleep 00:20-06:40 (a guess)" and a wrong one is correctable in the same
+    breath rather than discovered weeks later in the readout.
+
+    One failure never aborts the rest: a 409 on a ticked habit must not strand
+    the approvals after it.
+
+    `date` is typed, not a raw string, for the same reason as `get_daily` and
+    `fill_gap`: FastAPI rejects anything that isn't a real calendar date with
+    422 before this ever calls into `get_daily` or the seams below.
+    """
+    from src.api.routes.events import SetStateBody
+
+    date_str = date.isoformat()
+    day = await get_daily(date)
+    elapsed = day.coverage.elapsed_minutes
+    approved: list[dict] = []
+    failed: list[dict] = []
+
+    for block in day.blocks:
+        if block.state != "pending":
+            continue
+        # A block that has not happened cannot be confirmed. The /day view
+        # gives it no buttons for the same reason (spec §5.1's `◌`), so
+        # sweeping it here would confirm something the surface says you can't.
+        start = minutes_into_day(block.start, "")
+        if start is None or start >= elapsed:
+            continue
+        try:
+            await _set_state_for_approve_all(
+                date_str, block.id, SetStateBody(state="approved")
+            )
+            approved.append({"event_id": block.id, "name": block.title,
+                             "was_guess": False})
+        except HTTPException as exc:
+            failed.append({"event_id": block.id, "reason": str(exc.detail)})
+
+    for gap in day.gaps:
+        if gap.proposal is None:
+            continue
+        try:
+            result = await _fill_gap_for_approve_all(
+                date_str, FillGapBody(start=gap.start, end=gap.end)
+            )
+            approved.append({"event_id": result["event_id"],
+                             "name": result["name"], "was_guess": True})
+        except HTTPException as exc:
+            # `event_id` here is a synthesized `gap:{start}-{end}` marker, not
+            # a real event id — gaps have no id of their own (spec §4.4), so
+            # this is a label for the failed[] row, not an addressable id.
+            failed.append({"event_id": f"gap:{gap.start}-{gap.end}",
+                           "reason": str(exc.detail)})
+
+    return {"ok": True, "approved": approved, "failed": failed}

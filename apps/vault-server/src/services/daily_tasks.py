@@ -189,6 +189,56 @@ def parse_all_todos(body: str) -> list[Todo]:
     return todos
 
 
+def set_todo_checked(body: str, text: str, checked: bool = True) -> tuple[str | None, str]:
+    """Tick or untick one checkbox anywhere in the note, matched by its text.
+
+    Returns `(new_body, "ok")`, or `(None, reason)` with reason `"not_found"`
+    or `"ambiguous"`.
+
+    Section-agnostic, to match `parse_all_todos` — which is what turns a
+    timed checkbox into an event-service block in the first place, so the
+    write path has to reach every checkbox the read path can see.
+    `daily_set_task_state` cannot: it re-renders `## Tasks` wholesale via
+    `render_tasks_section`, so it can only ever write back to that section.
+
+    An in-place edit of the matched line's checkbox marker only, located via
+    `_LINE_RE`'s own `box` group span, so no other section's formatting,
+    ordering, indentation or annotations can be disturbed by approving a
+    block. `moved` lines are skipped: they have been rolled to another day
+    and are no longer this day's checkbox to tick.
+
+    The match is a case-insensitive substring with no other constraint, so a
+    needle shorter than 3 characters is refused as `"not_found"` rather than
+    risking a degenerate match against an unrelated line — "ok" would match
+    inside "Book flight" just as readily as inside "ok, done".
+    """
+    needle = text.strip().lower()
+    if len(needle) < 3:
+        return None, "not_found"
+
+    lines = body.splitlines(keepends=True)
+    hits: list[int] = []
+    for index, line in enumerate(lines):
+        fields = _parse_todo_line(line)
+        if fields is None or fields["state"] == "moved":
+            continue
+        if needle in fields["text"].strip().lower():
+            hits.append(index)
+
+    if not hits:
+        return None, "not_found"
+    if len(hits) > 1:
+        return None, "ambiguous"
+
+    index = hits[0]
+    line = lines[index]
+    lm = _LINE_RE.match(line)
+    box_start, box_end = lm.span("box")
+    marker = "x" if checked else " "
+    lines[index] = line[:box_start] + marker + line[box_end:]
+    return "".join(lines), "ok"
+
+
 def parse_tasks_section(body: str) -> list[DailyTask]:
     m = _SECTION_RE.search(body)
     if not m:

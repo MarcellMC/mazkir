@@ -30,14 +30,28 @@ const LRI = "⁦";
 const PDI = "⁩";
 const HYPHENATION_POINT = "‧";
 
-// The now-divider is a labelled text line, not an `<hr>` — a bare rule
-// stopped being unambiguous once the week-bar/nav spacer added a second
-// `<hr>` to the message with an unrelated meaning. U+2500 BOX DRAWINGS LIGHT
-// HORIZONTAL, eight either side of the word, per the Ship 2 design doc
-// (docs/plans/2026-08-21-time-management-phase2-capture-design.md §3). Not
-// hyphens: they read almost identically but are a different character, so
-// this is pinned as its own constant rather than typed inline anywhere.
-const NOW_DIVIDER = "─".repeat(8) + " now " + "─".repeat(8);
+// The four states a row can be in, as exactly the characters chosen from
+// on-device renders (spec §5.1). Not emoji-presentation variants: `⚠` used to
+// render at a size that dominated the row, which is why it is gone.
+//
+// `✓` folds in what used to be `✅` (completed). The two occupied the same
+// slot with nearly the same meaning, and where they diverged — a Google entry
+// Google marks green, which is `completed` yet machine-inferred — the honest
+// answer is `●`, because "the source says it was done" is one input to
+// approval, not approval itself.
+export const GLYPH_CONFIRMED = "✓";   // U+2713 — settled, counts
+export const GLYPH_PENDING = "●";     // U+25CF — happened, waiting on you
+export const GLYPH_GAP = "░";         // U+2591 — unaccounted
+export const GLYPH_AHEAD = "◌";       // U+25CC — still ahead, no buttons
+
+// A centred table cell is the only centring the rich grammar offers: `<p>` has
+// no alignment at all, which is why the old `─`-run divider only looked
+// centred when the dash count happened to match the message width, and drifted
+// whenever it did not. `<sub>` shrinks it; middle dots thin it.
+export const NOW_DIVIDER =
+  '<table><tr><td align="center"><sub>' +
+  "·".repeat(12) + " now " + "·".repeat(12) +
+  "</sub></td></tr></table>";
 
 function hours(minutes: number): string {
   return `${(minutes / 60).toFixed(1)}h`;
@@ -68,24 +82,72 @@ function facetLabel(b: DailyBlock): string {
   return "";
 }
 
-function blockRow(b: DailyBlock, ahead: boolean): string {
-  // Completion is prefixed to the TIME column, not put in the marker
-  // column: `habit_progress` and the facet label already live there, and a
-  // completed habit has both. Prefixing also puts it in the same column as
-  // the gap row's `⚠`, so the leftmost cell reads as one status channel
-  // down the timeline. Ship 1 rendered `✅ 14:00 — Standup`; this restores
-  // that for every source, not just habits.
-  //
-  // `⟳` (still ahead) shares the same prefix slot: a block cannot be both
-  // completed and still ahead of "now", so the two never collide, and the
-  // third column stays free for `habit_progress`/facet classification.
-  const prefix = b.completed ? "✅ " : ahead ? "⟳ " : "";
-  const marker = b.habit_progress ? escapeHtml(b.habit_progress) : facetLabel(b);
-  return `<tr><td>${prefix}${b.start}–${b.end}</td><td>${escapeHtml(b.title)}</td><td>${marker}</td></tr>`;
+function button(label: string, data: string, style?: string): string {
+  const s = style ? ` style="${style}"` : "";
+  return `<tg-button type="callback_data" data="${data}"${s}>${label}</tg-button>`;
 }
 
-function gapRow(g: DailyGap): string {
-  return `<tr><td>⚠ ${g.start}–${g.end}</td><td>—</td><td>${hours(g.minutes)}</td></tr>`;
+/** A `<tg-button-row>` wrapped in the `<td>` it must live in. Buttons only
+ *  render as compact pills inside a cell — at top level the row stretches to
+ *  full width, and inside an `<li>` Telegram hoists it out of the list and
+ *  stretches it anyway. Verified on device 2026-09-10. */
+function cellButtons(...buttons: string[]): string {
+  return `<td><tg-button-row>${buttons.join("")}</tg-button-row></td>`;
+}
+
+function blockRow(b: DailyBlock, ahead: boolean, date: string): string {
+  const glyph = ahead
+    ? GLYPH_AHEAD
+    : b.state === "approved" ? GLYPH_CONFIRMED : GLYPH_PENDING;
+  const time = `<td>${glyph} ${b.start}–${b.end}</td>`;
+  const title = `<td>${escapeHtml(b.title)}</td>`;
+  const marker = b.habit_progress ? escapeHtml(b.habit_progress) : facetLabel(b);
+
+  // A still-ahead block gets no controls: it has not happened, so there is
+  // nothing to confirm. That is what the `◌` is explaining.
+  if (ahead || b.state !== "pending") {
+    // Pending rows spend the third column on controls; approved rows spend it
+    // on the facet label. The two are mutually exclusive, so the column never
+    // holds both and the table stays three columns wide. Until Ship 6
+    // populates activity/category that cell is usually empty on an approved
+    // row, which matches the pre-Ship-5 rendering.
+    return `<tr>${time}${title}<td>${marker}</td></tr>`;
+  }
+
+  // The date rides in the callback because the button must address the day it
+  // was drawn for. Deriving "today" in the handler instead would make every
+  // control on a browsed day act on the wrong date.
+  return `<tr>${time}${title}${cellButtons(
+    button(GLYPH_CONFIRMED, `block:approve:${date}:${b.id}`, "success"),
+    button("✕", `block:dismiss:${date}:${b.id}`, "danger"),
+    button("✎", `block:edit:${date}:${b.id}`),
+  )}</tr>`;
+}
+
+function gapRow(g: DailyGap, date: string): string {
+  const start = toMinutes(g.start);
+  // `end` may be "24:00" — day_coverage emits it for a gap running to end of
+  // day. toMinutes handles it arithmetically (1440), which is what the fill
+  // endpoint wants anyway.
+  const end = toMinutes(g.end);
+  const time = `<td>${GLYPH_GAP} ${g.start}–${g.end}</td>`;
+
+  if (g.proposal) {
+    // A proposal is a question with a ✕ beside it, so it carries the same
+    // controls as a pending block. The day count is shown so the guess can be
+    // judged rather than trusted.
+    const seen = `${g.proposal.days_seen}/14`;
+    return `<tr>${time}<td>${escapeHtml(g.proposal.name)}? <sub>${seen}</sub></td>` +
+      cellButtons(
+        button(GLYPH_CONFIRMED, `prop:approve:${date}:${start}:${end}`, "success"),
+        button("✕", `prop:dismiss:${date}:${start}:${end}`, "danger"),
+        button("✎", `prop:edit:${date}:${start}:${end}`),
+      ) + "</tr>";
+  }
+
+  return `<tr>${time}<td>—</td>` + cellButtons(
+    button(`+ ${hours(g.minutes)}`, `gap:fill:${date}:${start}:${end}`),
+  ) + "</tr>";
 }
 
 const MINUTES_PER_DAY = 24 * 60;
@@ -160,9 +222,20 @@ export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {
   const parts: string[] = [];
 
   parts.push(`<h2>${escapeHtml(headerLabel(data.date, today))}</h2>`);
+
+  // The summary and the refresh button share a one-row table, because
+  // `<td align="right">` is the only right-alignment the rich grammar offers.
+  // The `<h2>` stays outside it: table cells take inline formatting only, so
+  // a heading inside one degrades to bold body text.
   parts.push(
-    `<p>${hours(data.coverage.covered_minutes)} covered · ` +
-    `${hours(data.coverage.unaccounted_minutes)} unaccounted</p>`,
+    "<table><tr>" +
+    `<td><sub>${hours(data.coverage.confirmed_minutes)} confirmed · ` +
+    `${hours(data.coverage.pending_minutes)} pending · ` +
+    `${hours(data.coverage.unaccounted_minutes)} unaccounted</sub></td>` +
+    `<td align="right"><tg-button-row>` +
+    button("⟲", `day:refresh:${data.date}`) +
+    "</tg-button-row></td>" +
+    "</tr></table>",
   );
 
   // Blocks and gaps interleave in time order: a gap is a hole between
@@ -176,13 +249,13 @@ export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {
   const rows = [
     ...data.blocks.map((b) => {
       const ahead = toMinutes(b.start) >= elapsedMinutes;
-      return { at: b.start, ahead, html: blockRow(b, ahead) };
+      return { at: b.start, ahead, html: blockRow(b, ahead, data.date) };
     }),
-    // Gap rows never carry `⟳`: the server already excludes future time
+    // Gap rows never carry `◌`: the server already excludes future time
     // from `unaccounted`, so a gap starting at or after `elapsed_minutes`
     // does not occur in practice, but the split still needs to place it on
     // the correct side if it ever did.
-    ...data.gaps.map((g) => ({ at: g.start, ahead: toMinutes(g.start) >= elapsedMinutes, html: gapRow(g) })),
+    ...data.gaps.map((g) => ({ at: g.start, ahead: toMinutes(g.start) >= elapsedMinutes, html: gapRow(g, data.date) })),
   ].sort((a, b) => a.at.localeCompare(b.at));
 
   if (rows.length === 0) {
@@ -197,11 +270,33 @@ export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {
 
     if (isToday && elapsedRows.length > 0 && aheadRows.length > 0) {
       parts.push(`<table>${elapsedRows.map((r) => r.html).join("")}</table>`);
-      parts.push(`<p>${NOW_DIVIDER}</p>`);
+      parts.push(NOW_DIVIDER);
       parts.push(`<table>${aheadRows.map((r) => r.html).join("")}</table>`);
     } else {
       parts.push(`<table>${rows.map((r) => r.html).join("")}</table>`);
     }
+  }
+
+  // The count is in the label deliberately: approve-all includes gap
+  // proposals (spec §5.6), so the number tells you how many things it will
+  // actually act on rather than hiding them behind the word "all". Only
+  // elapsed pending blocks count — a still-ahead one has no buttons and
+  // approve-all skips it server-side too.
+  const pendingCount =
+    data.blocks.filter(
+      (b) => b.state === "pending" && toMinutes(b.start) < elapsedMinutes,
+    ).length +
+    data.gaps.filter((g) => g.proposal !== null).length;
+  if (pendingCount > 0) {
+    parts.push(
+      `<p>&nbsp;</p><tg-button-row align="center">` +
+      button(
+        `${GLYPH_CONFIRMED} approve all ${pendingCount}`,
+        `day:approveall:${data.date}`,
+        "primary",
+      ) +
+      "</tg-button-row>",
+    );
   }
 
   // Timed todos already appear above as blocks; showing them again here
@@ -239,10 +334,13 @@ export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {
     parts.push(`<ul>${items.join("")}</ul>`);
   }
 
-  parts.push(weekBar(data.date));
-  // Spacer between week bar and nav bar. A plain space collapses and the gap
-  // disappears — the &nbsp; entity is visible in source and survives copy-paste.
+  // One rule for all navigation, week bar and nav grouped beneath it. This
+  // removes an `<hr>` rather than adding one: with two rules in the message
+  // the now divider stopped being unambiguous, which is what the comment on
+  // this divider's predecessor recorded.
   parts.push("<p>&nbsp;</p><hr>");
+  parts.push(weekBar(data.date));
+  parts.push("<p>&nbsp;</p>");
   parts.push(navBar(data.date));
 
   return { html: parts.join("\n") };

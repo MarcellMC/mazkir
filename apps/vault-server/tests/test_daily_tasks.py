@@ -9,6 +9,7 @@ from src.services.daily_tasks import (
     parse_all_todos,
     is_todo_line,
     replace_or_append_section,
+    set_todo_checked,
 )
 
 
@@ -393,3 +394,94 @@ def test_rewriting_a_section_does_not_eat_the_next_subheading():
     assert "- [ ] B" in out
     assert "## Notes" in out
     assert "- [ ] C" in out
+
+
+# --- set_todo_checked: section-agnostic in-place tick/untick -------------
+
+
+def test_set_todo_checked_ticks_a_checkbox_under_tasks():
+    body = "## Tasks\n- [ ] Walk dog\n"
+    new_body, reason = set_todo_checked(body, "Walk dog")
+    assert reason == "ok"
+    assert new_body == "## Tasks\n- [x] Walk dog\n"
+
+
+def test_set_todo_checked_ticks_a_checkbox_under_a_different_heading():
+    """The case that was broken: daily_set_task_state can only see and write
+    `## Tasks` because it re-renders that section wholesale, but
+    `parse_all_todos` (and therefore the day view) treats a checkbox under
+    any heading as a todo. This is the regression test for that gap."""
+    body = "## Tasks\n- [ ] Walk dog\n\n## Schedule\n- [ ] 09:00 — Standup (15m)\n"
+    new_body, reason = set_todo_checked(body, "Standup")
+    assert reason == "ok"
+    assert new_body == (
+        "## Tasks\n- [ ] Walk dog\n\n## Schedule\n- [x] 09:00 — Standup (15m)\n"
+    )
+
+
+def test_set_todo_checked_leaves_every_other_line_byte_identical():
+    body = (
+        "## Tasks\n- [ ] Walk dog\n- [x] Buy milk\n\n"
+        "## Notes\n- just a thought\n\n"
+        "## Schedule\n- [ ] 09:00 — Standup (15m)\n- [ ] 10:00 — Sync (30m)\n"
+    )
+    new_body, reason = set_todo_checked(body, "Standup")
+    assert reason == "ok"
+    assert new_body == (
+        "## Tasks\n- [ ] Walk dog\n- [x] Buy milk\n\n"
+        "## Notes\n- just a thought\n\n"
+        "## Schedule\n- [x] 09:00 — Standup (15m)\n- [ ] 10:00 — Sync (30m)\n"
+    )
+
+
+def test_set_todo_checked_preserves_time_duration_and_annotation():
+    body = (
+        "## Schedule\n"
+        "- [ ] 14:00 — Visit dentist (60m) — moved from [[2026-09-06#Tasks]]\n"
+    )
+    new_body, reason = set_todo_checked(body, "Visit dentist")
+    assert reason == "ok"
+    assert new_body == (
+        "## Schedule\n"
+        "- [x] 14:00 — Visit dentist (60m) — moved from [[2026-09-06#Tasks]]\n"
+    )
+
+
+def test_set_todo_checked_can_uncheck():
+    body = "## Tasks\n- [x] Walk dog\n"
+    new_body, reason = set_todo_checked(body, "Walk dog", checked=False)
+    assert reason == "ok"
+    assert new_body == "## Tasks\n- [ ] Walk dog\n"
+
+
+def test_set_todo_checked_not_found():
+    body = "## Tasks\n- [ ] Walk dog\n"
+    new_body, reason = set_todo_checked(body, "Feed cat")
+    assert new_body is None
+    assert reason == "not_found"
+
+
+def test_set_todo_checked_ambiguous():
+    body = "## Tasks\n- [ ] Walk dog in the park\n- [ ] Walk dog to the vet\n"
+    new_body, reason = set_todo_checked(body, "Walk dog")
+    assert new_body is None
+    assert reason == "ambiguous"
+
+
+def test_set_todo_checked_skips_moved_items():
+    """A moved item has been rolled to another day and is no longer this
+    day's checkbox to tick — it must not count as a match."""
+    body = "## Tasks\n- [ ] ~~Order phone~~ — moved to [[2026-06-05#Tasks]]\n"
+    new_body, reason = set_todo_checked(body, "Order phone")
+    assert new_body is None
+    assert reason == "not_found"
+
+
+def test_set_todo_checked_refuses_a_degenerate_short_needle():
+    """The match is a case-insensitive substring with no length floor
+    otherwise — a two-character needle like "ok" would match inside
+    "Book flight" just as readily as a real checkbox named "ok"."""
+    body = "## Tasks\n- [ ] Book flight\n"
+    new_body, reason = set_todo_checked(body, "ok")
+    assert new_body is None
+    assert reason == "not_found"

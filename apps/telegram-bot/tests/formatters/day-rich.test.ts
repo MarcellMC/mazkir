@@ -1,3 +1,4 @@
+import type { DailyResponse, DailyBlock, DailyGap } from "@mazkir/shared-types";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { buildDayRich } from "../../src/formatters/day-rich.js";
 
@@ -11,23 +12,194 @@ const base = {
   // test in this file predates the ahead-marker feature and expects plain
   // rows, and 1440 is the one elapsed_minutes value that marks nothing
   // ahead regardless of a block's start.
-  coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 1440 },
+  coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 1440, confirmed_minutes: 0, pending_minutes: 0, incomplete_minutes: undefined },
+  incomplete: [],
   todos: [],
   notes: [],
 };
 
-function html(data: unknown): string {
-  return buildDayRich(data as never).html ?? "";
+function html(data: DailyResponse): string {
+  return buildDayRich(data).html ?? "";
 }
+
+function s5block(over: Partial<DailyBlock> = {}): DailyBlock {
+  return {
+    id: "e1", start: "09:00", end: "10:00", title: "Standup",
+    source: "calendar", type: "event", completed: false,
+    activity: null, category: null, state: "pending", habit_progress: null,
+    ...over,
+  };
+}
+
+function s5gap(over: Partial<DailyGap> = {}): DailyGap {
+  return { start: "13:00", end: "14:15", minutes: 75, proposal: null, ...over };
+}
+
+function s5day(over: Partial<DailyResponse> = {}): DailyResponse {
+  return {
+    date: "2026-09-10", tokens_today: 0, tokens_total: 0,
+    blocks: [], gaps: [], incomplete: [], todos: [], notes: [],
+    coverage: {
+      covered_minutes: 120, unaccounted_minutes: 60, elapsed_minutes: 720,
+      confirmed_minutes: 60, pending_minutes: 60,
+    },
+    ...over,
+  } as DailyResponse;
+}
+
+describe("Ship 5 glyphs", () => {
+  it("marks a confirmed block with ✓ and gives it no buttons", () => {
+    const html_str = html(s5day({ blocks: [s5block({ state: "approved" })] }));
+    expect(html_str).toContain("✓ 09:00–10:00");
+    expect(html_str).not.toMatch(/data="block:/);
+  });
+
+  it("marks a pending elapsed block with ● and three buttons", () => {
+    const html_str = html(s5day({ blocks: [s5block()] }));
+    expect(html_str).toContain("● 09:00–10:00");
+    expect(html_str).toMatch(/data="block:approve:2026-09-10:e1"/);
+    expect(html_str).toMatch(/data="block:dismiss:2026-09-10:e1"/);
+    expect(html_str).toMatch(/data="block:edit:2026-09-10:e1"/);
+  });
+
+  it("marks a still-ahead block with ◌ and gives it no buttons", () => {
+    const html_str = html(s5day({
+      blocks: [s5block({ id: "e9", start: "19:00", end: "20:00" })],
+    }));
+    expect(html_str).toContain("◌ 19:00–20:00");
+    expect(html_str).not.toMatch(/data="block:approve:2026-09-10:e9"/);
+  });
+
+  it("marks a gap with ░", () => {
+    const html_str = html(s5day({ gaps: [s5gap()] }));
+    expect(html_str).toContain("░ 13:00–14:15");
+  });
+
+  it("never renders ✅, ⚠ or ⟳ anywhere", () => {
+    const html_str = html(s5day({
+      blocks: [
+        s5block({ state: "approved", completed: true }),
+        s5block({ id: "e2", start: "21:00", end: "22:00" }),
+      ],
+      gaps: [s5gap()],
+    }));
+    for (const glyph of ["✅", "⚠", "⟳"]) expect(html_str).not.toContain(glyph);
+  });
+
+  it("folds completion into ✓ rather than adding a second marker", () => {
+    const html_str = html(s5day({
+      blocks: [s5block({ state: "approved", completed: true })],
+    }));
+    expect(html_str).toContain("✓ 09:00–10:00");
+  });
+});
+
+describe("buttons live inside table cells", () => {
+  it("wraps every block button row in a <td>", () => {
+    // A top-level row stretches full width and an <li> hoists it out; only a
+    // cell gives compact pills. Assert the containment, not just presence.
+    const html_str = html(s5day({ blocks: [s5block()] }));
+    expect(html_str).toMatch(/<td><tg-button-row>[\s\S]*?<\/tg-button-row><\/td>/);
+  });
+});
+
+describe("gap proposals", () => {
+  it("renders a proposal as a named row with the full control set", () => {
+    const html_str = html(s5day({
+      gaps: [s5gap({
+        start: "00:20", end: "06:40", minutes: 380,
+        proposal: { name: "Sleep", days_seen: 11 },
+      })],
+    }));
+    expect(html_str).toContain("Sleep");
+    expect(html_str).toContain("11/14");
+    expect(html_str).toMatch(/data="prop:approve:2026-09-10:20:400"/);
+    expect(html_str).toMatch(/data="prop:dismiss:2026-09-10:20:400"/);
+  });
+
+  it("renders an unproposed gap with a fill button carrying the duration", () => {
+    const html_str = html(s5day({ gaps: [s5gap()] }));
+    // hours() is (minutes / 60).toFixed(1), so a 75-minute gap reads 1.3h.
+    // The brief said 1.2h, which was wrong — it was copied from a prototype
+    // label that had been hand-written rather than computed.
+    expect(html_str).toContain("+ 1.3h");
+    expect(html_str).toMatch(/data="gap:fill:2026-09-10:780:855"/);
+  });
+});
+
+describe("summary row and refresh", () => {
+  it("keeps the h2 and puts coverage in a sub beside a right-aligned refresh", () => {
+    const html_str = html(s5day());
+    expect(html_str).toContain("<h2>");
+    expect(html_str).toMatch(/<sub>[^<]*1\.0h confirmed[^<]*<\/sub>/);
+    expect(html_str).toMatch(
+      /<td align="right"><tg-button-row><tg-button[^>]*data="day:refresh:2026-09-10"/,
+    );
+  });
+});
+
+describe("the now divider", () => {
+  it("is a centred subscript run of twelve middle dots either side", () => {
+    const html_str = html(s5day({
+      blocks: [
+        s5block({ id: "past", state: "approved" }),
+        s5block({ id: "future", start: "19:00", end: "20:00" }),
+      ],
+    }));
+    expect(html_str).toContain(
+      '<table><tr><td align="center"><sub>' +
+      "·".repeat(12) + " now " + "·".repeat(12) +
+      "</sub></td></tr></table>",
+    );
+  });
+
+  it("is suppressed when one side is empty", () => {
+    const html_str = html(s5day({
+      blocks: [s5block({ state: "approved" })],
+    }));
+    expect(html_str).not.toContain(" now ");
+  });
+});
+
+describe("approve all", () => {
+  it("carries the count of what it will act on", () => {
+    const html_str = html(s5day({
+      blocks: [s5block(), s5block({ id: "e2", start: "10:00", end: "11:00" })],
+      gaps: [s5gap({ proposal: { name: "Sleep", days_seen: 11 } })],
+    }));
+    // Two pending elapsed blocks plus one proposal. The number is in the
+    // label deliberately: approve-all banks guesses, so it must not hide how
+    // many things it touches behind the word "all".
+    expect(html_str).toContain("approve all 3");
+    expect(html_str).toMatch(/data="day:approveall:2026-09-10"/);
+  });
+
+  it("is absent when there is nothing to approve", () => {
+    const html_str = html(s5day({
+      blocks: [s5block({ state: "approved" })],
+    }));
+    expect(html_str).not.toContain("approve all");
+  });
+});
+
+describe("the tail", () => {
+  it("has one rule before both week and nav bars (hr groups all nav)", () => {
+    const html_str = html(s5day());
+    expect((html_str.match(/<hr>/g) ?? []).length).toBe(1);
+    const rule = html_str.indexOf("<p>&nbsp;</p><hr>");
+    expect(html_str.indexOf('data="day:2026-09-06"')).toBeGreaterThan(rule);
+    expect(html_str.indexOf('data="day:today"')).toBeGreaterThan(rule);
+  });
+});
 
 describe("buildDayRich", () => {
   it("renders the date and coverage in the header", () => {
     const out = html({
       ...base,
-      coverage: { covered_minutes: 155, unaccounted_minutes: 745 },
+      coverage: { covered_minutes: 0, unaccounted_minutes: 745, elapsed_minutes: 1440, confirmed_minutes: 155, pending_minutes: 0, incomplete_minutes: undefined },
     });
     expect(out).toContain("29 Aug");
-    expect(out).toContain("2.6h covered");
+    expect(out).toContain("2.6h confirmed");
     expect(out).toContain("12.4h unaccounted");
   });
 
@@ -37,15 +209,15 @@ describe("buildDayRich", () => {
       blocks: [
         { id: "a", start: "07:00", end: "07:40", title: "Dog walk", source: "habit",
           type: "habit", completed: false, activity: null, category: null,
-          state: "suggested", habit_progress: "1/2" },
+          state: "pending", habit_progress: "1/2" },
         { id: "b", start: "09:05", end: "10:00", title: "Standup", source: "calendar",
           type: "calendar", completed: false, activity: "meetings", category: "work",
-          state: "suggested", habit_progress: null },
+          state: "pending", habit_progress: null },
       ],
-      gaps: [{ start: "07:40", end: "09:05", minutes: 85 }],
+      gaps: [{ start: "07:40", end: "09:05", minutes: 85, proposal: null }],
     });
-    expect(out.indexOf("Dog walk")).toBeLessThan(out.indexOf("⚠"));
-    expect(out.indexOf("⚠")).toBeLessThan(out.indexOf("Standup"));
+    expect(out.indexOf("Dog walk")).toBeLessThan(out.indexOf("░"));
+    expect(out.indexOf("░")).toBeLessThan(out.indexOf("Standup"));
     expect(out).toContain("1.4h");
   });
 
@@ -54,7 +226,7 @@ describe("buildDayRich", () => {
       ...base,
       blocks: [{ id: "a", start: "09:00", end: "10:00", title: "Standup",
                  source: "calendar", type: "calendar", completed: false,
-                 activity: null, category: null, state: "suggested",
+                 activity: null, category: null, state: "approved",
                  habit_progress: null }],
     });
     expect(unclassified).not.toContain("×");
@@ -62,7 +234,7 @@ describe("buildDayRich", () => {
       ...base,
       blocks: [{ id: "a", start: "09:00", end: "10:00", title: "Standup",
                  source: "calendar", type: "calendar", completed: false,
-                 activity: "meetings", category: "work", state: "suggested",
+                 activity: "meetings", category: "work", state: "approved",
                  habit_progress: null }],
     });
     expect(classified).toContain("meetings × work");
@@ -73,7 +245,7 @@ describe("buildDayRich", () => {
       ...base,
       blocks: [{ id: "a", start: "09:00", end: "10:00", title: "Standup",
                  source: "calendar", type: "calendar", completed: false,
-                 activity: "meetings", category: null, state: "suggested",
+                 activity: "meetings", category: null, state: "approved",
                  habit_progress: null }],
     });
     expect(out).toContain("<td>meetings</td>");
@@ -85,7 +257,7 @@ describe("buildDayRich", () => {
       ...base,
       blocks: [{ id: "a", start: "09:00", end: "10:00", title: "Standup",
                  source: "calendar", type: "calendar", completed: false,
-                 activity: null, category: "work", state: "suggested",
+                 activity: null, category: "work", state: "approved",
                  habit_progress: null }],
     });
     expect(out).toContain("<td>work</td>");
@@ -111,7 +283,7 @@ describe("buildDayRich", () => {
       ...base,
       blocks: [{ id: "a", start: "14:00", end: "15:00", title: "Visit dentist",
                  source: "daily-note", type: "task", completed: false,
-                 activity: null, category: null, state: "suggested",
+                 activity: null, category: null, state: "pending",
                  habit_progress: null }],
       todos: [{ text: "Visit dentist", done: false, section: "Tasks",
                 scheduled_at: "14:00", duration_minutes: 60 }],
@@ -364,7 +536,7 @@ describe("buildDayRich", () => {
     const doneBlock = {
       id: "a", start: "14:00", end: "15:00", title: "Standup",
       source: "daily-note", type: "task", completed: true,
-      activity: null, category: null, state: "suggested", habit_progress: null,
+      activity: null, category: null, state: "approved", habit_progress: null,
     };
 
     it("marks a completed block", () => {
@@ -373,48 +545,46 @@ describe("buildDayRich", () => {
       // rendered identically to an outstanding one and appeared nowhere
       // else. Ship 1 rendered it as done.
       const out = html({ ...base, blocks: [doneBlock] });
-      expect(out).toContain("<td>\u2705 14:00\u201315:00</td>");
+      expect(out).toContain("<td>\u2713 14:00\u201315:00</td>");
     });
 
     it("leaves an outstanding block unmarked", () => {
-      const out = html({ ...base, blocks: [{ ...doneBlock, completed: false }] });
-      expect(out).toContain("<td>14:00\u201315:00</td>");
-      expect(out).not.toContain("\u2705");
+      const out = html({ ...base, blocks: [{ ...doneBlock, completed: false, state: "pending" }] });
+      expect(out).toContain("\u25cf 14:00\u201315:00");
     });
 
     it("keeps the completion marker out of the habit_progress column", () => {
       // A completed habit has both signals, and they must not collide:
-      // completion prefixes the time cell, progress owns the marker cell.
+      // completion is folded into the state glyph.
       const out = html({
         ...base,
         blocks: [{ ...doneBlock, title: "Dog walk", source: "habit",
                    type: "habit", habit_progress: "2/2" }],
       });
-      expect(out).toContain("<td>\u2705 14:00\u201315:00</td>");
+      expect(out).toContain("<td>\u2713 14:00\u201315:00</td>");
       expect(out).toContain("<td>2/2</td>");
     });
   });
 
   describe("the now-divider and ahead marker", () => {
-    const block = (start: string, end: string, title: string, completed = false) => ({
+    const block = (start: string, end: string, title: string, state: "pending" | "approved" = "pending") => ({
       id: title, start, end, title, source: "calendar", type: "calendar",
-      completed, activity: null, category: null, state: "suggested" as const,
+      completed: false, activity: null, category: null, state,
       habit_progress: null,
     });
 
     // The labelled divider's exact text, built the same way day-rich.ts
-    // builds it (U+2500 BOX DRAWINGS LIGHT HORIZONTAL, eight either side of
-    // "now"), so a future edit that quietly swaps in hyphens \u2014 which look
-    // almost identical in a diff \u2014 fails this rather than passing silently.
-    const NOW_DIVIDER_HTML = `<p>${"\u2500".repeat(8)} now ${"\u2500".repeat(8)}</p>`;
+    // builds it (U+00B7 middle dot, twelve either side of " now "), so a future
+    // edit that quietly swaps in hyphens or other dots fails this rather than passing silently.
+    const NOW_DIVIDER_HTML = `<table><tr><td align="center"><sub>${"\u00b7".repeat(12)} now ${"\u00b7".repeat(12)}</sub></td></tr></table>`;
 
-    it("today with rows on both sides: exactly one <hr> (the spacer), the labelled divider, two <table>s, \u27f3 on ahead blocks only", () => {
+    it("today with rows on both sides: exactly one <hr> (the spacer), the labelled divider, four <table>s, \u25cc on ahead blocks only", () => {
       const out = html({
         ...base,
-        coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600 }, // 10:00
+        coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600, confirmed_minutes: 0, pending_minutes: 0, incomplete_minutes: undefined }, // 10:00
         blocks: [block("09:00", "09:30", "Past thing"), block("11:00", "12:00", "Future thing")],
       });
-      expect((out.match(/<table>/g) ?? []).length).toBe(2);
+      expect((out.match(/<table>/g) ?? []).length).toBe(4);
       // Only the week-bar/nav spacer's <hr> remains; the now-divider is no
       // longer an <hr> at all.
       expect((out.match(/<hr>/g) ?? []).length).toBe(1);
@@ -428,47 +598,45 @@ describe("buildDayRich", () => {
       expect(dividerAt).toBeLessThan(lastTableEnd);
       expect(lastTableEnd).toBeLessThan(spacerAt);
       expect(out.indexOf("Past thing")).toBeLessThan(out.indexOf("Future thing"));
-      expect(out).not.toContain("\u27f3 09:00");
-      expect(out).toContain("\u27f3 11:00");
+      expect(out).not.toContain("\u25cc 09:00");
+      expect(out).toContain("\u25cc 11:00");
     });
 
-    it("pins the divider's exact box-drawing string, not hyphens", () => {
+    it("pins the divider's exact middle-dot string, not hyphens", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600 },
         blocks: [block("09:00", "09:30", "Past thing"), block("11:00", "12:00", "Future thing")],
       });
-      expect(out).toContain(
-        "<p>\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 now \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500</p>",
-      );
+      expect(out).toContain(NOW_DIVIDER_HTML);
       expect(out).not.toContain("-------- now --------");
     });
 
-    it("today with everything elapsed: exactly one <hr> (spacer only), no labelled divider, one table, no \u27f3", () => {
+    it("today with everything elapsed: exactly one <hr> (spacer only), no labelled divider, two tables (summary + blocks), no \u25cc", () => {
       const out = html({
         ...base,
-        coverage: { covered_minutes: 30, unaccounted_minutes: 1170, elapsed_minutes: 1200 },
+        coverage: { covered_minutes: 30, unaccounted_minutes: 1170, elapsed_minutes: 1200, confirmed_minutes: 30, pending_minutes: 0, incomplete_minutes: undefined },
         blocks: [block("09:00", "09:30", "Past thing")],
       });
       expect((out.match(/<hr>/g) ?? []).length).toBe(1);
       expect(out).not.toContain(NOW_DIVIDER_HTML);
-      expect((out.match(/<table>/g) ?? []).length).toBe(1);
-      expect(out).not.toContain("\u27f3");
+      expect((out.match(/<table>/g) ?? []).length).toBe(2);
+      expect(out).not.toContain("\u25cc");
     });
 
-    it("today with everything ahead: exactly one <hr> (spacer only), no labelled divider, one table, \u27f3 present", () => {
+    it("today with everything ahead: exactly one <hr> (spacer only), no labelled divider, two tables (summary + blocks), \u25cc present", () => {
       const out = html({
         ...base,
-        coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 60 },
+        coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 60, confirmed_minutes: 0, pending_minutes: 0, incomplete_minutes: undefined },
         blocks: [block("09:00", "09:30", "Future thing")],
       });
       expect((out.match(/<hr>/g) ?? []).length).toBe(1);
       expect(out).not.toContain(NOW_DIVIDER_HTML);
-      expect((out.match(/<table>/g) ?? []).length).toBe(1);
-      expect(out).toContain("\u27f3 09:00");
+      expect((out.match(/<table>/g) ?? []).length).toBe(2);
+      expect(out).toContain("\u25cc 09:00");
     });
 
-    it("a past day (elapsed_minutes: 1440): exactly one <hr> (spacer only), no labelled divider, no \u27f3", () => {
+    it("a past day (elapsed_minutes: 1440): exactly one <hr> (spacer only), no labelled divider, no \u25cc", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 30, unaccounted_minutes: 1410, elapsed_minutes: 1440 },
@@ -476,10 +644,10 @@ describe("buildDayRich", () => {
       });
       expect((out.match(/<hr>/g) ?? []).length).toBe(1);
       expect(out).not.toContain(NOW_DIVIDER_HTML);
-      expect(out).not.toContain("\u27f3");
+      expect(out).not.toContain("\u25cc");
     });
 
-    it("a future day (elapsed_minutes: 0): exactly one <hr> (spacer only), no labelled divider; every block is ahead, so \u27f3 on all of them", () => {
+    it("a future day (elapsed_minutes: 0): exactly one <hr> (spacer only), no labelled divider; every block is ahead, so \u25cc on all of them", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 0 },
@@ -487,8 +655,8 @@ describe("buildDayRich", () => {
       });
       expect((out.match(/<hr>/g) ?? []).length).toBe(1);
       expect(out).not.toContain(NOW_DIVIDER_HTML);
-      expect(out).toContain("\u27f3 09:00");
-      expect(out).toContain("\u27f3 14:00");
+      expect(out).toContain("\u25cc 09:00");
+      expect(out).toContain("\u25cc 14:00");
     });
 
     it("suppresses the labelled divider on today with no rows at all, same rule as an empty side", () => {
@@ -505,26 +673,26 @@ describe("buildDayRich", () => {
       expect((out.match(/<hr>/g) ?? []).length).toBe(1);
     });
 
-    it("a gap row in the ahead section never carries \u27f3", () => {
+    it("a gap row in the ahead section never carries \u25cc", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600 },
         blocks: [block("11:00", "12:00", "Future thing")],
-        gaps: [{ start: "12:00", end: "13:00", minutes: 60 }],
+        gaps: [{ start: "12:00", end: "13:00", minutes: 60, proposal: null }],
       });
-      // Exactly one `\u27f3` in the whole render \u2014 the block's, never the gap's.
-      expect(out.match(/\u27f3/g) ?? []).toHaveLength(1);
-      expect(out).toContain("\u26a0 12:00");
+      // Exactly one `\u25cc` in the whole render \u2014 the block's, never the gap's.
+      expect((out.match(/\u25cc/g) ?? []).length).toBe(1);
+      expect(out).toContain("\u2591 12:00");
     });
 
-    it("a completed block that is somehow ahead renders \u2705, not both markers", () => {
+    it("an approved block that is somehow ahead renders \u25cc, not \u2713", () => {
       const out = html({
         ...base,
         coverage: { covered_minutes: 0, unaccounted_minutes: 0, elapsed_minutes: 600 },
-        blocks: [block("11:00", "12:00", "Weirdly done early", true)],
+        blocks: [block("11:00", "12:00", "Weirdly approved early", "approved")],
       });
-      expect(out).toContain("\u2705 11:00");
-      expect(out).not.toContain("\u27f3");
+      expect(out).toContain("\u25cc 11:00");
+      expect(out).not.toContain("\u2713");
     });
   });
 
@@ -535,13 +703,13 @@ describe("buildDayRich", () => {
     expect(out).toContain("<p>&nbsp;</p><hr>");
   });
 
-  it("puts the spacer between the two button rows, not elsewhere", () => {
+  it("puts the spacer before the week bar (one rule groups all nav)", () => {
     const out = html({ ...base, date: "2026-08-30" });
     const weekBarAt = out.indexOf('data="day:2026-08-30"');
     const spacerAt = out.indexOf("<p>&nbsp;</p><hr>");
     const navAt = out.indexOf('data="day:today"');
-    expect(weekBarAt).toBeLessThan(spacerAt);
-    expect(spacerAt).toBeLessThan(navAt);
+    expect(spacerAt).toBeLessThan(weekBarAt);
+    expect(weekBarAt).toBeLessThan(navAt);
   });
 });
 
