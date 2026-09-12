@@ -226,6 +226,33 @@ def test_completing_many_habits_concurrently_still_totals_correctly(vault_servic
     assert _total_tokens(vault_service) == before + 8 * 5
 
 
+def test_completing_the_same_habit_concurrently_pays_once(vault_service):
+    """The agent tool and a button tap completing one habit at the same moment.
+
+    Locking only `update_tokens` kept the total arithmetic right but let both
+    callers read "0 of 1 done" and pass the already-complete check: one log
+    entry survived the overwrite while both awards were paid.
+    """
+    path = vault_service.create_habit(name="Meditate")["path"]
+    before = _total_tokens(vault_service)
+    barrier = threading.Barrier(4)
+    results = []
+
+    def complete():
+        barrier.wait()
+        results.append(habit_completion.complete_habit(vault_service, path))
+
+    threads = [threading.Thread(target=complete) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert sum(not r["already_completed"] for r in results) == 1
+    assert _total_tokens(vault_service) == before + 5
+    assert vault_service.read_file(path)["metadata"]["streak"] == 1
+
+
 def test_rewriting_a_note_keeps_its_permissions(vault_service, vault_path):
     """`tempfile.mkstemp` creates 0600; the `open(path, 'w')` it replaced kept
     the file's existing mode."""

@@ -883,36 +883,40 @@ class VaultService:
         Returns:
             Dict with completion info
         """
-        # Read task
-        task = self.read_file(task_path)
-        metadata = task['metadata']
+        # One lock across read, award, archive and unlink: two concurrent
+        # completions of the same task would otherwise both read the active
+        # file before either removed it, and both award tokens.
+        with self._mutation_lock:
+            # Read task
+            task = self.read_file(task_path)
+            metadata = task['metadata']
 
-        # Get task name
-        task_name = metadata.get('name', 'Task')
+            # Get task name
+            task_name = metadata.get('name', 'Task')
 
-        # Award tokens if requested
-        tokens_earned = 0
-        if award_tokens:
-            tokens_earned = metadata.get('tokens_on_completion', 5)
-            self.update_tokens(tokens_earned, f"Completed: {task_name}")
+            # Award tokens if requested
+            tokens_earned = 0
+            if award_tokens:
+                tokens_earned = metadata.get('tokens_on_completion', 5)
+                self.update_tokens(tokens_earned, f"Completed: {task_name}")
 
-        # Update metadata
-        today = datetime.now(self.tz).strftime('%Y-%m-%d')
-        metadata['status'] = 'done'
-        metadata['completed_date'] = today
-        metadata['updated'] = today
+            # Update metadata
+            today = datetime.now(self.tz).strftime('%Y-%m-%d')
+            metadata['status'] = 'done'
+            metadata['completed_date'] = today
+            metadata['updated'] = today
 
-        # Generate archive path
-        filename = Path(task_path).name
-        archive_path = f"40-tasks/archive/{filename}"
+            # Generate archive path
+            filename = Path(task_path).name
+            archive_path = f"40-tasks/archive/{filename}"
 
-        # Write to archive
-        self.write_file(archive_path, metadata, task['content'])
+            # Write to archive
+            self.write_file(archive_path, metadata, task['content'])
 
-        # Delete from active
-        active_file = self.vault_path / task_path
-        if active_file.exists():
-            active_file.unlink()
+            # Delete from active
+            active_file = self.vault_path / task_path
+            if active_file.exists():
+                active_file.unlink()
 
         return {
             'task_name': task_name,
