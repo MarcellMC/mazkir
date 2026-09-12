@@ -3,7 +3,20 @@ export interface DailyBlock {
   start: string;          // "HH:MM"
   end: string;            // "HH:MM"
   title: string;
-  source: "calendar" | "timeline" | "merged" | "daily-note" | "habit";
+  /** `"manual"` and `"photo"` are what `create_event` and photo attachment
+   *  write, and they are the blocks the user authored directly — the ones
+   *  `resolve_state` auto-approves. They were missing from this union while
+   *  the server had been emitting them since Ship 4, so no bot code could
+   *  branch on "did I make this myself" without TypeScript rejecting the
+   *  comparison as impossible. */
+  source:
+    | "calendar"
+    | "timeline"
+    | "merged"
+    | "daily-note"
+    | "habit"
+    | "manual"
+    | "photo";
   type: string;
   completed: boolean;
   activity: string | null;   // populated by Ship 6

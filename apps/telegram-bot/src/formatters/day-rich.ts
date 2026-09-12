@@ -71,6 +71,13 @@ function headerLabel(iso: string, today: string): string {
   return iso === today ? `${label} · today` : label;
 }
 
+/** Sources that mean "the user made this block directly", so its times are
+ *  theirs to correct. Mirrors `_HUMAN_SOURCES` in
+ *  `apps/vault-server/src/services/approval.py` — the same two values that
+ *  make a block auto-approved are the ones whose times nothing upstream
+ *  owns. */
+const SELF_AUTHORED: ReadonlySet<string> = new Set(["manual", "photo"]);
+
 function facetLabel(b: DailyBlock): string {
   // Render whichever facets exist: a block can have an activity without a
   // category (or vice versa) — Ship 6 populates them independently, and
@@ -105,7 +112,29 @@ function blockRow(b: DailyBlock, ahead: boolean, date: string): string {
 
   // A still-ahead block gets no controls: it has not happened, so there is
   // nothing to confirm. That is what the `◌` is explaining.
-  if (ahead || b.state !== "pending") {
+  if (ahead) {
+    return `<tr>${time}${title}<td>${marker}</td></tr>`;
+  }
+
+  if (b.state !== "pending") {
+    // An approved block the *user authored* still gets ✎. Its times came from
+    // a sentence ("05:00 - 15:00") or a tapped guess, so they are the times
+    // most likely to be wrong, and approving is not the same as getting them
+    // right. A calendar- or timeline-sourced row is deliberately excluded:
+    // its times come from upstream, and this ship writes nothing back to
+    // Google, so an edit there would silently disagree with the source.
+    // There is nothing to confirm, so ✎ travels alone — no ✓, no ✕.
+    if (SELF_AUTHORED.has(b.source)) {
+      // The facet label moves in beside the title, because the third column
+      // is now the button's and the table stays three columns wide. Nothing
+      // is dropped: on the Sleep block that label is the activity.
+      const titleWithMarker = marker
+        ? `<td>${escapeHtml(b.title)} <sub>${marker}</sub></td>`
+        : title;
+      return `<tr>${time}${titleWithMarker}${cellButtons(
+        button("✎", `block:edit:${date}:${b.id}`),
+      )}</tr>`;
+    }
     // Pending rows spend the third column on controls; approved rows spend it
     // on the facet label. The two are mutually exclusive, so the column never
     // holds both and the table stays three columns wide. Until Ship 6

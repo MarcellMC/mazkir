@@ -251,3 +251,62 @@ describe("document attachments", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("answering the bot's own question without a Telegram reply", () => {
+  // The reported bug. The bot's gap prompt is a plain ctx.reply and never
+  // passes through POST /message, so on 2026-09-12 17:56 "Bar hopping"
+  // reached the agent as two words with no interval (the server logged
+  // has_reply_to: false) and it asked for times the bot had just named.
+  const QUESTION =
+    "15:00–17:30 on 2026-09-12 is unaccounted — what was it?";
+
+  beforeEach(async () => {
+    const { resetOpenQuestions } = await import("../../src/state/open-question.js");
+    resetOpenQuestions();
+  });
+
+  it("carries the question as reply context", async () => {
+    const { noteOpenQuestion } = await import("../../src/state/open-question.js");
+    noteOpenQuestion(123, QUESTION);
+
+    const payload = buildMessagePayload({ text: "Bar hopping" } as never, 123);
+
+    expect(payload.reply_to).toEqual({ text: QUESTION, from: "assistant" });
+  });
+
+  it("consumes it, so it cannot ride along on the next message too", async () => {
+    const { noteOpenQuestion } = await import("../../src/state/open-question.js");
+    noteOpenQuestion(123, QUESTION);
+
+    buildMessagePayload({ text: "Bar hopping" } as never, 123);
+    const second = buildMessagePayload({ text: "what's my balance?" } as never, 123);
+
+    expect(second.reply_to).toBeUndefined();
+  });
+
+  it("prefers a real reply and drops the pending question", async () => {
+    const { noteOpenQuestion, takeOpenQuestion } = await import(
+      "../../src/state/open-question.js"
+    );
+    noteOpenQuestion(123, QUESTION);
+
+    const payload = buildMessagePayload({
+      text: "Bar hopping",
+      reply_to_message: { text: "something else entirely", from: { is_bot: true } },
+    } as never, 123);
+
+    // The explicit reply wins...
+    expect(payload.reply_to).toEqual({
+      text: "something else entirely", from: "assistant",
+    });
+    // ...and the question the user did not answer is gone, rather than
+    // waiting to attach itself to whatever comes next.
+    expect(takeOpenQuestion(123)).toBeUndefined();
+  });
+
+  it("adds nothing when the bot has asked nothing", () => {
+    const payload = buildMessagePayload({ text: "Bar hopping" } as never, 123);
+
+    expect(payload.reply_to).toBeUndefined();
+  });
+});
