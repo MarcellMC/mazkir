@@ -199,3 +199,31 @@ class TestEventSpanAndAlerts:
     def test_unspecified_reminders_keep_the_existing_default(self):
         body = self._svc()._build_event("Thing", "2026-10-11", "09:00")
         assert body["reminders"]["overrides"] == [{"method": "popup", "minutes": 10}]
+
+
+class TestNoDecorativePrefix:
+    def _svc(self):
+        from src.services.calendar_service import CalendarService
+        return CalendarService(
+            credentials_path=MagicMock(), token_path=MagicMock(),
+            timezone="Asia/Jerusalem",
+        )
+
+    def test_a_plain_event_keeps_its_own_name(self):
+        body = self._svc()._build_event("Bar hopping", "2026-09-12", "15:00")
+        assert body["summary"] == "Bar hopping"
+        assert "📅" not in body["summary"]
+
+    def test_ownership_is_still_recorded(self):
+        """The prefix was the only visible marker that Mazkir made the entry,
+        so the description has to keep carrying that."""
+        body = self._svc()._build_event("Bar hopping", "2026-09-12", "15:00")
+        assert "Managed by Mazkir" in body["description"]
+
+    def test_the_completion_marker_is_untouched(self):
+        """`✅` is parsed back as completion, unlike `📅`. Removing the
+        decorative prefix must not have gone near it."""
+        import inspect
+        from src.services.calendar_service import CalendarService
+        src = inspect.getsource(CalendarService.mark_event_complete)
+        assert "✅" in src
