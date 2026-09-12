@@ -136,7 +136,14 @@ function gapRow(g: DailyGap, date: string): string {
     // A proposal is a question with a ✕ beside it, so it carries the same
     // controls as a pending block. The day count is shown so the guess can be
     // judged rather than trusted.
-    const seen = `${g.proposal.days_seen}/14`;
+    // `days_seen: 0` is the overnight cold-start seed, not an observation —
+    // gap_proposals.py returns it when a gap contains the core of the night
+    // and history has nothing to say. Rendering it as "0/14" read as
+    // "never seen this", which argues against the very guess it labels, so
+    // the seed says what it is instead of showing a count it does not have.
+    const seen = g.proposal.days_seen > 0
+      ? `${g.proposal.days_seen}/14`
+      : "a guess";
     return `<tr>${time}<td>${escapeHtml(g.proposal.name)}? <sub>${seen}</sub></td>` +
       cellButtons(
         button(GLYPH_CONFIRMED, `prop:approve:${date}:${start}:${end}`, "success"),

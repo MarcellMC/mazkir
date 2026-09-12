@@ -14,6 +14,7 @@ import {
   clearPendingConfirmation,
 } from "../state/pending-confirmations.js";
 import { setSelectedDate, noteDayView } from "../state/selected-date.js";
+import { stripSuppressedProposals } from "../state/dismissed-proposals.js";
 import { dayActionHandlers } from "./day-actions.js";
 
 export const callbackHandlers = new Composer();
@@ -130,7 +131,11 @@ callbackHandlers.callbackQuery(/^day:(.+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   const date = arg === "today" ? undefined : arg;
   try {
-    const data = await api.getDaily(date);
+    const fresh = await api.getDaily(date);
+    // Same suppression as day-actions' rerender: a proposal the user waved
+    // away must not come back just because they stepped to another day and
+    // back within the same sitting.
+    const data = stripSuppressedProposals(ctx.chat!.id, fresh);
     setSelectedDate(ctx.chat!.id, data.date);
     await editRich(ctx, buildDayRich(data), { reply_markup: buildNavKeyboard("day") });
     noteDayView(ctx.chat!.id);

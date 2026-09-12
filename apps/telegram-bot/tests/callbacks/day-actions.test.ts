@@ -237,3 +237,121 @@ describe("the edit view", () => {
     expect(ctx.answerCallbackQuery.mock.calls[0][0].text).toContain("Not wired up");
   });
 });
+
+describe("dismissing a proposal makes it go away", () => {
+  // The reported bug: ✕ answered "Skipped" and then the re-render recomputed
+  // and redrew the very same row, so nothing appeared to happen. The write
+  // still never reaches the vault (asserted above); what changed is that the
+  // re-render no longer contradicts the toast.
+  // Two proposals, so the test can tell "the dismissed one went" from
+  // "proposals stopped rendering".
+  const dayWithSleepProposal = {
+    ...emptyDay,
+    gaps: [
+      { start: "00:00", end: "05:00", minutes: 300,
+        proposal: { name: "Sleep", days_seen: 0 } },
+      { start: "15:00", end: "17:00", minutes: 120,
+        proposal: { name: "Gym", days_seen: 5 } },
+    ],
+  };
+
+  beforeEach(async () => {
+    const { resetDismissedProposals } = await import(
+      "../../src/state/dismissed-proposals.js"
+    );
+    resetDismissedProposals();
+    api.getDaily.mockResolvedValue(dayWithSleepProposal);
+  });
+
+  /** The HTML the day view was actually rendered with on the last edit. */
+  function renderedHtml(): string {
+    const calls = richMocks.editRich.mock.calls;
+    return (calls[calls.length - 1]![1] as { html: string }).html;
+  }
+
+  it("strips the dismissed proposal from the re-render", async () => {
+    await fire("prop:dismiss:2026-09-10:0:300");
+
+    // Asserted on the rendered markup, not on the store: the bug was that
+    // the row came back on screen, so the screen is what has to be checked.
+    // Before the fix this still contained "Sleep?".
+    expect(renderedHtml()).not.toContain("Sleep?");
+    // The untouched gap still offers its own guess — otherwise this would
+    // also pass if proposals had simply stopped rendering altogether.
+    expect(renderedHtml()).toContain("Gym?");
+  });
+
+  it("leaves a different chat's view alone", async () => {
+    const { stripSuppressedProposals } = await import(
+      "../../src/state/dismissed-proposals.js"
+    );
+
+    await fire("prop:dismiss:2026-09-10:0:300");
+
+    expect(stripSuppressedProposals(999, dayWithSleepProposal).gaps[0]!.proposal)
+      .toEqual({ name: "Sleep", days_seen: 0 });
+    // ...and this chat's own view really did lose it, so the assertion above
+    // is about the chat key and not about suppression having failed.
+    expect(stripSuppressedProposals(1, dayWithSleepProposal).gaps[0]!.proposal)
+      .toBeNull();
+  });
+
+  it("still writes nothing to the server", async () => {
+    await fire("prop:dismiss:2026-09-10:0:300");
+
+    expect(api.fillGap).not.toHaveBeenCalled();
+    expect(api.setBlockState).not.toHaveBeenCalled();
+    expect(api.patchEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("editing a proposal opens the nudge pad", () => {
+  // The other half of the report: ✎ on a suggestion replied with a text
+  // prompt, so the 5/15/30 nudge view was unreachable from a gap. It now
+  // banks the guess and edits the block that creates.
+  it("fills the gap then renders the edit view, not a chat prompt", async () => {
+    api.fillGap.mockResolvedValue({
+      ok: true, event_id: "n1", name: "Sleep", was_guess: true,
+    });
+    api.getDaily.mockResolvedValue({
+      ...emptyDay,
+      blocks: [{
+        id: "n1", start: "00:00", end: "05:00", title: "Sleep",
+        source: "manual", type: "manual", completed: false,
+        activity: null, category: null, state: "approved",
+        habit_progress: null,
+      }],
+    });
+
+    const ctx = await fire("prop:edit:2026-09-10:0:300");
+
+    // Server decides the name (§4.2): no name is sent.
+    expect(api.fillGap).toHaveBeenCalledWith("2026-09-10", "00:00", "05:00", undefined);
+    expect(richMocks.editRich).toHaveBeenCalled();
+    expect(ctx.reply).not.toHaveBeenCalled();
+  });
+
+  it("falls back to asking when the server has nothing to propose", async () => {
+    api.fillGap.mockRejectedValue(new Error("API error: 422 nothing to propose"));
+
+    const ctx = await fire("prop:edit:2026-09-10:780:855");
+
+    expect(ctx.reply).toHaveBeenCalled();
+    const asked = ctx.reply.mock.calls[0][0] as string;
+    expect(asked).toContain("13:00");
+    expect(asked).toContain("14:15");
+  });
+});
+
+describe("the gap-fill prompt is answerable in one reply", () => {
+  it("states the interval as known and asks only for the activity", async () => {
+    const ctx = await fire("gap:fill:2026-09-10:780:855");
+
+    const asked = ctx.reply.mock.calls[0][0] as string;
+    // The old wording ("what was that? Just tell me") invited a bare time
+    // range, which then needed a second turn to get the activity — the
+    // three-turn round trip seen on 2026-09-12.
+    expect(asked).toContain("13:00");
+    expect(asked).toMatch(/activity/i);
+  });
+});

@@ -7,6 +7,10 @@ import { buildNavKeyboard } from "../keyboards/nav.js";
 import { markActiveSpanError } from "../tracing-utils.js";
 import { logger } from "../logger.js";
 import { setSelectedDate, noteDayView } from "../state/selected-date.js";
+import {
+  suppressProposal,
+  stripSuppressedProposals,
+} from "../state/dismissed-proposals.js";
 
 export const dayActionHandlers = new Composer();
 
@@ -21,7 +25,11 @@ export function hhmm(minutes: number): string {
  *  the feedback — a toast alone leaves stale glyphs and stale numbers on
  *  screen. */
 async function rerender(ctx: any, date: string): Promise<void> {
-  const data = await api.getDaily(date);
+  const fresh = await api.getDaily(date);
+  // Drop the proposals this chat has waved away. Without this, ✕ recomputes
+  // and redraws the very row it just dismissed (spec §4.3 writes nothing by
+  // design), so the tap read as broken.
+  const data = stripSuppressedProposals(ctx.chat!.id, fresh);
   setSelectedDate(ctx.chat!.id, data.date);
   await editRich(ctx, buildDayRich(data), { reply_markup: buildNavKeyboard("day") });
   noteDayView(ctx.chat!.id);
@@ -125,11 +133,15 @@ dayActionHandlers.callbackQuery(/^prop:approve:([^:]+):(\d+):(\d+)$/, async (ctx
 
 dayActionHandlers.callbackQuery(/^prop:dismiss:([^:]+):(\d+):(\d+)$/, async (ctx) => {
   const date = ctx.match[1]!;
-  // Writes nothing, deliberately. A refused proposal reappears on the next
-  // open (spec §4.3) rather than leaving behind a row whose only purpose is
-  // suppression. If this ever starts writing, that decision was reversed
+  const [start, end] = [Number(ctx.match[2]), Number(ctx.match[3])];
+  // Still writes nothing to the vault, deliberately (spec §4.3): no
+  // tombstone, and the proposal is free to ask again later. What changed is
+  // that the refusal is now remembered in memory for this chat, so the
+  // re-render below does not immediately redraw the row it just dismissed.
+  // If this ever starts writing to the server, that decision was reversed
   // without anyone saying so — the test asserts the silence.
-  await ctx.answerCallbackQuery({ text: "Skipped — it'll ask again" });
+  suppressProposal(ctx.chat!.id, date, hhmm(start), hhmm(end));
+  await ctx.answerCallbackQuery({ text: "Skipped — it'll ask again later" });
   try {
     await rerender(ctx, date);
   } catch (err) {
@@ -140,13 +152,42 @@ dayActionHandlers.callbackQuery(/^prop:dismiss:([^:]+):(\d+):(\d+)$/, async (ctx
 dayActionHandlers.callbackQuery(/^prop:edit:([^:]+):(\d+):(\d+)$/, async (ctx) => {
   const date = ctx.match[1]!;
   const [start, end] = [Number(ctx.match[2]), Number(ctx.match[3])];
-  await ctx.answerCallbackQuery();
-  // A proposal has no block to edit yet, so there is nothing for the nudge pad
-  // to operate on. Asking is the honest fallback, and the answer goes through
-  // create_event like any other described block.
-  await ctx.reply(
-    `${hhmm(start)}–${hhmm(end)} on ${date} — tell me what it was and when.`,
-  );
+  // A proposal has no block, and the nudge pad needs one to operate on — so
+  // accept the guess first, then open the pad on the block that creates.
+  // Tapping ✎ already means "yes, roughly this, let me fix it", so banking
+  // the interval is not a decision taken on the user's behalf; walking away
+  // leaves exactly what ✓ would have left.
+  //
+  // No name is sent: the server recomputes the proposal for the interval
+  // (§4.2), so a client can never write a name of its choosing.
+  try {
+    const filled = await api.fillGap(date, hhmm(start), hhmm(end), undefined);
+    const data = await api.getDaily(date);
+    const block = data.blocks.find((b) => b.id === filled.event_id);
+    if (!block) {
+      // Created, but not drawable yet — report the truth rather than opening
+      // an editor on nothing.
+      await ctx.answerCallbackQuery({ text: `✓ ${filled.name} — refresh to edit` });
+      await rerender(ctx, date);
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await editRich(ctx, buildBlockEditRich(block, date, 0, 0),
+      { reply_markup: buildNavKeyboard("day") });
+  } catch (err) {
+    // 422 means the server had nothing to propose for this interval, which
+    // is not a failure — there is simply no guess to adjust. Fall back to
+    // asking, carrying both the interval and the fact that it is a gap so
+    // one reply can finish it.
+    if (String(err).includes("422")) {
+      await ctx.answerCallbackQuery();
+      await ctx.reply(
+        `${hhmm(start)}–${hhmm(end)} on ${date} is unaccounted — what was it?`,
+      );
+      return;
+    }
+    await toastFailure(ctx, err, "Edit");
+  }
 });
 
 dayActionHandlers.callbackQuery(/^gap:fill:([^:]+):(\d+):(\d+)$/, async (ctx) => {
@@ -155,8 +196,15 @@ dayActionHandlers.callbackQuery(/^gap:fill:([^:]+):(\d+):(\d+)$/, async (ctx) =>
   await ctx.answerCallbackQuery();
   // No proposal to accept, so ask. The answer goes through the normal NL path
   // into create_event, which Ship 4 already built.
+  //
+  // The interval is stated as already known and the reply narrowed to the
+  // activity, so one message finishes it. The old wording ("what was that?
+  // Just tell me") invited a bare time range, and answering it with times
+  // left the agent still needing the activity — a three-turn round trip for
+  // one block, seen on 2026-09-12.
   await ctx.reply(
-    `${hhmm(start)}–${hhmm(end)} on ${date} — what was that? Just tell me.`,
+    `${hhmm(start)}–${hhmm(end)} on ${date} is unaccounted — what was it? ` +
+      `Just the activity is enough, or say different times to change them.`,
   );
 });
 

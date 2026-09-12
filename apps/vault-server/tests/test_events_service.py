@@ -1304,3 +1304,86 @@ class TestReconcileRefreshesTheOwningCalendar:
         }], {"calendar"})
 
         assert result[0]["calendar"] == "Mazkir"
+
+
+class TestManualOriginSurvivesCalendarEcho:
+    """A block the user dictated must not become machine-inferred.
+
+    `create_event` writes `source: "manual"` and syncs to Google Calendar,
+    which stores a `calendar_id` in `source_ids`. On the next merge the
+    calendar hands that same event back, it matches on `calendar_id`, and
+    reconcile used to re-derive `source` and `name` from the echo — turning
+    the user's own statement into a pending calendar entry (`resolve_state`
+    keys on `source`) and importing the `📅` display prefix that
+    `calendar_service` had added on the way out.
+
+    The echo is not independent evidence: Mazkir wrote it. Observed on
+    2026-09-12, where ten hours of dictated sleep rendered as `pending` with
+    `confirmed_minutes: 0`.
+    """
+
+    def _echo(self, calendar_id: str) -> dict:
+        """What the calendar source returns for an event Mazkir pushed."""
+        return {
+            "name": "📅 Sleep",
+            "type": "calendar",
+            "source": "calendar",
+            "calendar": "Mazkir",
+            "start_time": "2026-09-12T05:00:00+03:00",
+            "end_time": "2026-09-12T15:00:00+03:00",
+            "source_ids": {"calendar_id": calendar_id},
+        }
+
+    def test_dictated_block_stays_approved_after_calendar_echo(self, events_service):
+        from src.services.approval import resolve_state
+
+        events_service.create_event(
+            date="2026-09-12", name="Sleep",
+            start_time="05:00", end_time="15:00",
+            source_ids={"calendar_id": "cal_sleep"},
+        )
+        assert resolve_state(events_service.get_events("2026-09-12")[0]) == "approved"
+
+        result = events_service.reconcile(
+            "2026-09-12", [self._echo("cal_sleep")], {"calendar"},
+        )
+
+        assert len(result) == 1
+        assert result[0]["source"] == "manual"
+        assert resolve_state(result[0]) == "approved"
+
+    def test_calendar_echo_does_not_import_the_display_prefix(self, events_service):
+        events_service.create_event(
+            date="2026-09-12", name="Sleep",
+            start_time="05:00", end_time="15:00",
+            source_ids={"calendar_id": "cal_sleep"},
+        )
+
+        result = events_service.reconcile(
+            "2026-09-12", [self._echo("cal_sleep")], {"calendar"},
+        )
+
+        assert result[0]["name"] == "Sleep"
+
+    def test_a_real_calendar_event_still_tracks_its_source(self, events_service):
+        """The narrow rule must not freeze genuine calendar events.
+
+        Without this, the fix would be indistinguishable from "never update
+        name or source from the calendar", and a renamed Google entry would
+        stop propagating.
+        """
+        events_service.save_events("2026-09-12", [{
+            "id": "evt_cal", "name": "Standup", "source": "calendar",
+            "source_ids": {"calendar_id": "cal_standup"},
+            "start_time": "2026-09-12T10:00:00", "end_time": "2026-09-12T10:30:00",
+        }])
+
+        result = events_service.reconcile("2026-09-12", [{
+            "name": "Standup (moved)", "type": "calendar", "source": "calendar",
+            "calendar": "Mazkir",
+            "start_time": "2026-09-12T11:00:00", "end_time": "2026-09-12T11:30:00",
+            "source_ids": {"calendar_id": "cal_standup"},
+        }], {"calendar"})
+
+        assert result[0]["name"] == "Standup (moved)"
+        assert result[0]["source"] == "calendar"
