@@ -75,3 +75,59 @@ describe("dropPerMessageHints and the open question", () => {
     expect(takeOpenQuestion(1)).toBeUndefined();
   });
 });
+
+describe("the typing indicator is not the bot saying something", () => {
+  // The hole that made the 2026-09-12 20:03 report identical to the 17:56
+  // one despite the fix being deployed. The NL handler's first act is
+  // `ctx.replyWithChatAction("typing")`, which carries a chat_id and so ran
+  // this transformer — destroying both hints before buildMessagePayload read
+  // them, twenty lines later. Asserted here, at the transformer, because
+  // buildMessagePayload tested in isolation passes either way.
+  async function fire(method: string) {
+    const prev = vi.fn().mockResolvedValue({ ok: true, result: {} });
+    await dropPerMessageHints(prev, method, { chat_id: 1, text: "x" } as never, undefined);
+  }
+
+  beforeEach(async () => {
+    const { resetSelectedDates } = await import("../src/state/selected-date.js");
+    const { resetOpenQuestions } = await import("../src/state/open-question.js");
+    resetSelectedDates();
+    resetOpenQuestions();
+  });
+
+  it("keeps both hints alive through a typing indicator", async () => {
+    const { setSelectedDate, noteDayView, getSelectedDate } = await import(
+      "../src/state/selected-date.js"
+    );
+    const { noteOpenQuestion, takeOpenQuestion } = await import(
+      "../src/state/open-question.js"
+    );
+    setSelectedDate(1, "2026-09-12");
+    noteDayView(1);
+    noteOpenQuestion(1, "15:00–17:30 — what was it?");
+
+    await fire("sendChatAction");
+
+    expect(getSelectedDate(1)).toBe("2026-09-12");
+    expect(takeOpenQuestion(1)).toBe("15:00–17:30 — what was it?");
+  });
+
+  it("still drops both when the bot actually sends a message", async () => {
+    // The floor: excluding the typing indicator must not turn the transformer
+    // off, or a stale hint rides along on an unrelated message.
+    const { setSelectedDate, noteDayView, getSelectedDate } = await import(
+      "../src/state/selected-date.js"
+    );
+    const { noteOpenQuestion, takeOpenQuestion } = await import(
+      "../src/state/open-question.js"
+    );
+    setSelectedDate(1, "2026-09-12");
+    noteDayView(1);
+    noteOpenQuestion(1, "15:00–17:30 — what was it?");
+
+    await fire("sendMessage");
+
+    expect(getSelectedDate(1)).toBeUndefined();
+    expect(takeOpenQuestion(1)).toBeUndefined();
+  });
+});

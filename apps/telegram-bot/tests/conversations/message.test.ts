@@ -310,3 +310,111 @@ describe("answering the bot's own question without a Telegram reply", () => {
     expect(payload.reply_to).toBeUndefined();
   });
 });
+
+describe("the hints survive the handler's own typing indicator", () => {
+  // Written after the fix above failed in production while its unit tests
+  // passed. `buildMessagePayload` tested in isolation never sees the typing
+  // indicator, and the typing indicator is what destroyed the hint — so the
+  // ordering has to be asserted at the handler, with the transformer wired in
+  // as it is live.
+  it("reads the open question even though typing fires first", async () => {
+    const { noteOpenQuestion } = await import("../../src/state/open-question.js");
+    const { dropPerMessageHints } = await import("../../src/bot.js");
+    const QUESTION = "15:00–17:30 on 2026-09-12 is unaccounted — what was it?";
+
+    (api.sendMessage as any).mockResolvedValue({
+      intent: "log", response: "ok", awaiting_confirmation: false,
+    });
+    noteOpenQuestion(123, QUESTION);
+
+    const msg = {
+      message_id: 1,
+      date: 1749500000,
+      chat: { id: 123, type: "private" },
+      text: "Bar hopping",
+    };
+    const ctx: any = {
+      update: { update_id: 1, message: msg },
+      message: msg,
+      chat: msg.chat,
+      me: { id: 42, is_bot: true, username: "test_bot" },
+      // The real ctx routes this through bot.api, and so through the
+      // transformer. Reproduce that, or the test cannot see the bug.
+      replyWithChatAction: async () => {
+        await dropPerMessageHints(
+          async () => ({ ok: true, result: {} }) as any,
+          "sendChatAction",
+          { chat_id: 123, action: "typing" } as never,
+          undefined,
+        );
+      },
+      reply: vi.fn().mockResolvedValue({ message_id: 2 }),
+      api: { editMessageText: vi.fn() },
+    };
+
+    await messageHandler.middleware()(ctx, async () => {});
+
+    const payload = (api.sendMessage as any).mock.calls.at(-1)?.[0];
+    expect(payload?.reply_to).toEqual({ text: QUESTION, from: "assistant" });
+  });
+});
+
+describe("payload provenance on the span", () => {
+  // What Phoenix could not tell me on 2026-09-12: whether the turn carried
+  // any reply context, and if so whose. All three cases are distinguishable
+  // now, because "none while a question was pending" is the failure and it
+  // has to be visible as a value rather than as a missing key.
+  let attrs: Record<string, unknown>;
+
+  beforeEach(async () => {
+    const { resetOpenQuestions } = await import("../../src/state/open-question.js");
+    const { resetSelectedDates } = await import("../../src/state/selected-date.js");
+    resetOpenQuestions();
+    resetSelectedDates();
+    attrs = {};
+    const otel = await import("@opentelemetry/api");
+    vi.spyOn(otel.trace, "getActiveSpan").mockReturnValue({
+      setAttribute: (k: string, v: unknown) => { attrs[k] = v; return undefined as never; },
+    } as never);
+  });
+
+  it("marks a real Telegram reply as such", () => {
+    buildMessagePayload({
+      text: "Bar hopping",
+      reply_to_message: { text: "what was it?", from: { is_bot: true } },
+    } as never, 123);
+
+    expect(attrs["mazkir.payload.reply_to_source"]).toBe("telegram");
+  });
+
+  it("marks the bot's own question as open_question", async () => {
+    const { noteOpenQuestion } = await import("../../src/state/open-question.js");
+    noteOpenQuestion(123, "15:00–17:30 — what was it?");
+
+    buildMessagePayload({ text: "Bar hopping" } as never, 123);
+
+    expect(attrs["mazkir.payload.reply_to_source"]).toBe("open_question");
+  });
+
+  it("records none, and an empty date, when the turn carried nothing", () => {
+    buildMessagePayload({ text: "Bar hopping" } as never, 123);
+
+    // This is the 20:03 turn as it would now appear in a trace — the failure
+    // is a value you can filter on, not an absence you have to infer.
+    expect(attrs["mazkir.payload.reply_to_source"]).toBe("none");
+    expect(attrs["mazkir.payload.selected_date"]).toBe("");
+    expect(attrs["mazkir.payload.attachment_count"]).toBe(0);
+  });
+
+  it("carries the selected date when the day view is on screen", async () => {
+    const { setSelectedDate, noteDayView } = await import(
+      "../../src/state/selected-date.js"
+    );
+    setSelectedDate(123, "2026-09-12");
+    noteDayView(123);
+
+    buildMessagePayload({ text: "what did I do" } as never, 123);
+
+    expect(attrs["mazkir.payload.selected_date"]).toBe("2026-09-12");
+  });
+});

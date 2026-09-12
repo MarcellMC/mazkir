@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.auth import verify_api_key
+from src.services.tracing_helpers import set_payload_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,19 @@ async def handle_message(body: MessageRequest, stream: bool = False):
             "has_reply_to": body.reply_to is not None,
             "has_forwarded_from": body.forwarded_from is not None,
         },
+    )
+    # The same facts on the span, not only in the log. A missing reply_to or
+    # selected_date is the shape of bug that cost two rounds on 2026-09-12,
+    # and it was invisible in Phoenix: 30 spans for that minute mentioned
+    # neither field, so the only way to see it was grepping this log by
+    # timestamp. Now one trace answers "what context did this turn have".
+    set_payload_provenance(
+        text_length=len(body.text),
+        has_reply_to=body.reply_to is not None,
+        reply_to_from=body.reply_to.from_role if body.reply_to else None,
+        selected_date=body.selected_date,
+        has_forwarded_from=body.forwarded_from is not None,
+        attachment_types=attachment_types,
     )
 
     kwargs = _prepare_agent_kwargs(body)

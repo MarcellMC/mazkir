@@ -3,7 +3,12 @@ import type { Message } from "grammy/types";
 import type { Attachment, ReplyContext, ForwardContext } from "@mazkir/shared-types";
 import { api, streamMessage } from "../api/client.js";
 import { config } from "../config.js";
-import { markActiveSpanError, setActiveSpanOutput } from "../tracing-utils.js";
+import {
+  markActiveSpanError,
+  setActiveSpanOutput,
+  setPayloadProvenance,
+  type ReplyToSource,
+} from "../tracing-utils.js";
 import { sendRich } from "../bot-utils/send-rich.js";
 import { buildConfirmationKeyboard } from "../keyboards/confirmation.js";
 import {
@@ -71,11 +76,13 @@ export function buildMessagePayload(msg: Message, chatId: number) {
 
   // Reply context
   let reply_to: ReplyContext | undefined;
+  let replyToSource: ReplyToSource = "none";
   if (msg.reply_to_message?.text) {
     reply_to = {
       text: msg.reply_to_message.text,
       from: msg.reply_to_message.from?.is_bot ? "assistant" : "user",
     };
+    replyToSource = "telegram";
     // An explicit reply answers whatever the user pointed at, so any question
     // the bot was still holding is no longer the thing being answered.
     clearOpenQuestion(chatId);
@@ -86,7 +93,10 @@ export function buildMessagePayload(msg: Message, chatId: number) {
     // the bot had already stated (2026-09-12 17:56). Present the question as
     // the reply-to the user did not have to make.
     const asked = takeOpenQuestion(chatId);
-    if (asked) reply_to = { text: asked, from: "assistant" };
+    if (asked) {
+      reply_to = { text: asked, from: "assistant" };
+      replyToSource = "open_question";
+    }
   }
 
   // Forward context
@@ -109,6 +119,16 @@ export function buildMessagePayload(msg: Message, chatId: number) {
   }
 
   const selected_date = getSelectedDate(chatId);
+
+  // Stamped here rather than at the call site: this function is the only
+  // place that knows whether the reply context was the user's own or the
+  // bot's own question handed back, and that distinction is the diagnostic.
+  setPayloadProvenance({
+    replyToSource,
+    selectedDate: selected_date,
+    attachmentCount: attachments.length,
+    hasForwardedFrom: forwarded_from !== undefined,
+  });
 
   return {
     text,
