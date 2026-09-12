@@ -16,8 +16,27 @@ import {
 import { setSelectedDate, noteDayView } from "../state/selected-date.js";
 import { stripSuppressedProposals } from "../state/dismissed-proposals.js";
 import { dayActionHandlers } from "./day-actions.js";
+import type { HabitCompletion } from "@mazkir/shared-types";
 
 export const callbackHandlers = new Composer();
+
+/** Toast text for a habit completion, reporting what it actually paid.
+ *
+ * `tokens_earned` is read with `?? 0` rather than checked for truthiness: a
+ * habit configured with `tokens_per_completion: 0` did complete, and saying so
+ * without a token clause is right. `already_completed` is the server's word for
+ * "the day's target was already met", which is not a failure and not an award.
+ */
+function completionToast(name: string, result: HabitCompletion): string {
+  if (result.already_completed) {
+    return `Already done today — ${name} (${result.completions_today}/${result.daily_target})`;
+  }
+  const tokens = result.tokens_earned ?? 0;
+  const parts = [`✅ ${name}`];
+  if (tokens > 0) parts.push(`+${tokens} tokens`);
+  if (result.new_streak !== undefined) parts.push(`streak ${result.new_streak}`);
+  return parts.join(" · ");
+}
 
 // Registered before the `day:(.+)` date handler below: that pattern would
 // otherwise swallow `day:refresh:2026-09-10` and `day:approveall:2026-09-10`
@@ -58,8 +77,14 @@ callbackHandlers.callbackQuery(/^confirm:([^:]+):(.+)$/, async (ctx) => {
 callbackHandlers.callbackQuery(/^habit:complete:(.+)$/, async (ctx) => {
   const name = ctx.match[1]!;
   try {
-    await api.completeHabit(name);
-    await ctx.answerCallbackQuery({ text: `✅ ${name} completed!` });
+    const result = await api.completeHabit(name);
+    // Say what it paid, as /day's approval toast does. This used to discard the
+    // response and always answer "✅ completed!", so a repeat tap — which
+    // writes nothing and awards nothing — was indistinguishable from a real
+    // completion, and a genuine award was never visible as one. That is half of
+    // "manually recording didn't trigger a token award"; the other half was the
+    // award actually being lost server-side.
+    await ctx.answerCallbackQuery({ text: completionToast(name, result) });
     // Refresh the habits list in-place. The re-render MUST carry
     // reply_markup: this edit used to omit it entirely, which stripped every
     // button from the message and left the user re-issuing /habits to get
