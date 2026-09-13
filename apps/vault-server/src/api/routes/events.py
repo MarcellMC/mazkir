@@ -5,7 +5,7 @@ from typing import Literal
 
 import pytz
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from src.config import settings
 from src.services.approval import resolve_state, source_systems
@@ -17,10 +17,19 @@ router = APIRouter(prefix="/events", tags=["events"])
 
 
 class PatchEventBody(BaseModel):
+    # `forbid`: the /day edit view sent start_time/end_time for months while
+    # this model had no such fields, so pydantic dropped them, the route saved
+    # the event unchanged, and the bot reported "✓ Saved". An unknown field is
+    # now a 422 the bot's error toast can show.
+    model_config = ConfigDict(extra="forbid")
+
     photos: list[dict] | None = None
     assets: dict[str, str] | None = None
     name: str | None = None
     location: dict | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    activity: str | None = None
 
 
 class SetStateBody(BaseModel):

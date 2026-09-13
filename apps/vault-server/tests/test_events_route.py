@@ -592,6 +592,52 @@ class TestPatchPinning:
         reconciled = svc.reconcile("2026-09-10", fresh, {"calendar"})
         assert reconciled[0]["name"] == "Sprint planning"
 
+    def test_patch_moves_a_blocks_times(self, monkeypatch, tmp_path):
+        """The /day edit view's Save sends start_time/end_time. The body model
+        had no such fields, so pydantic dropped them, the route saved the
+        event unchanged and returned 200 — and the bot said "✓ Saved"."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+        from src.services.events_service import EventsService
+        import src.main as main
+
+        svc = EventsService(tmp_path / "events")
+        svc.save_events("2026-09-13", [{
+            "id": "e1", "name": "Lunch", "source": "manual",
+            "source_ids": {"calendar_id": "g1"},
+            "start_time": "2026-09-13T12:30", "end_time": "2026-09-13T13:00",
+            "duration_minutes": 30,
+        }])
+        monkeypatch.setattr(main, "get_events", lambda: svc)
+
+        r = TestClient(app).patch("/events/2026-09-13/e1", json={
+            "start_time": "2026-09-13T12:45", "end_time": "2026-09-13T13:30",
+        })
+
+        assert r.status_code == 200, r.text
+        stored = svc.get_events("2026-09-13")[0]
+        assert stored["start_time"] == "2026-09-13T12:45"
+        assert stored["end_time"] == "2026-09-13T13:30"
+        assert stored["duration_minutes"] == 45
+        assert stored["user_set"]["start_time"] == "2026-09-13T12:45"
+        assert stored["user_set"]["end_time"] == "2026-09-13T13:30"
+
+    def test_patch_rejects_a_field_it_cannot_apply(self, monkeypatch, tmp_path):
+        """A field the route does not know must be a 422, not a silent 200.
+        Dropping unknown keys is how the time edit reported success for months."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+        from src.services.events_service import EventsService
+        import src.main as main
+
+        svc = EventsService(tmp_path / "events")
+        svc.save_events("2026-09-13", [{"id": "e1", "name": "Lunch", "source": "manual"}])
+        monkeypatch.setattr(main, "get_events", lambda: svc)
+
+        r = TestClient(app).patch("/events/2026-09-13/e1", json={"starts": "12:45"})
+
+        assert r.status_code == 422
+
     def test_patch_does_not_pin_photos(self, monkeypatch, tmp_path):
         """Only the five USER_SETTABLE_FIELDS are pinnable. photos and assets
         are preserved by other means, and a stray key in user_set would
