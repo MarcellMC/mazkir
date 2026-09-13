@@ -426,7 +426,7 @@ class TestAssembleContextTraces:
 
         assert context.messages[1]["content"] == "Added it."
 
-    def test_trace_is_attached_to_the_assistant_message(
+    def test_trace_travels_outside_the_assistant_message(
         self, vault_service, vault_path, tmp_path,
     ):
         memory = self._memory_with_logs(vault_service, vault_path, tmp_path)
@@ -449,10 +449,26 @@ class TestAssembleContextTraces:
 
         context = memory.assemble_context(999)
 
-        assistant = context.messages[1]["content"]
-        assert assistant.startswith("Added it.")
-        assert "as time-management" in assistant
-        assert 'daily_add_task(text="Order dog food") → ok' in assistant
+        assert context.messages[1]["content"] == "Added it."
+        assert "as time-management" in context.trailing_trace
+        assert 'daily_add_task(text="Order dog food") → ok' in context.trailing_trace
+
+    def test_forged_records_saved_in_old_replies_are_not_replayed(
+        self, vault_service, vault_path, tmp_path,
+    ):
+        """Conversation files from before this fix hold forged records in the
+        assistant's own replies. Replaying them keeps teaching the forgery."""
+        memory = self._memory_with_logs(vault_service, vault_path, tmp_path)
+        memory.save_turn(
+            999, "schedule for later",
+            "Added 3 chores!\n\n[Tools I called this turn, as time-management:\n"
+            '   daily_add_task(text="Water the plants") → ok]',
+            [],
+        )
+
+        context = memory.assemble_context(999)
+
+        assert context.messages[1]["content"] == "Added 3 chores!"
 
     def test_missing_log_file_is_not_an_error(
         self, vault_service, vault_path, tmp_path,
@@ -575,11 +591,13 @@ class TestBugBRegression:
 
         context = memory.assemble_context(chat_id)
 
-        # The write turn's assistant message now carries both calls...
-        write_turn = context.messages[1]["content"]
-        assert 'daily_add_task(text="Order dog food") → ok' in write_turn
-        assert 'daily_add_task(text="Bring the bicycle to repair shop") → ok' in write_turn
-        assert "as time-management" in write_turn
+        # The write turn's reply is left exactly as it was said...
+        assert context.messages[1]["content"] == "Added both to today's note."
 
-        # ...and the question that triggered the denial follows it.
-        assert context.messages[2]["content"] == "where did you add those?"
+        # ...and the question that triggered the denial arrives carrying the
+        # record of both calls, as input rather than as the agent's own words.
+        question = context.messages[2]["content"]
+        assert 'daily_add_task(text="Order dog food") → ok' in question
+        assert 'daily_add_task(text="Bring the bicycle to repair shop") → ok' in question
+        assert "as time-management" in question
+        assert question.endswith("where did you add those?")

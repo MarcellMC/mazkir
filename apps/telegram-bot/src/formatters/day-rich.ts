@@ -112,7 +112,13 @@ function blockRow(b: DailyBlock, ahead: boolean, date: string): string {
 
   // A still-ahead block gets no controls: it has not happened, so there is
   // nothing to confirm. That is what the `◌` is explaining.
-  if (ahead) {
+  //
+  // The exception is a proposal. A pending block the user authored can only be
+  // one Mazkir proposed ("schedule these for later") — their own dictated
+  // blocks auto-approve — and a proposal lives in the future by nature, so
+  // hiding its controls until the time passed would leave it unadjustable.
+  const proposal = b.state === "pending" && SELF_AUTHORED.has(b.source);
+  if (ahead && !proposal) {
     return `<tr>${time}${title}<td>${marker}</td></tr>`;
   }
 

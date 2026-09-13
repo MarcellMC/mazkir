@@ -70,6 +70,20 @@ describe("Ship 5 glyphs", () => {
     expect(html_str).not.toMatch(/data="block:approve:2026-09-10:e9"/);
   });
 
+  it("gives a still-ahead proposal its buttons, since it is waiting on the user", () => {
+    // A pending block the user authored can only be one Mazkir proposed
+    // ("schedule these for later") — their own dictated blocks auto-approve.
+    // It sits in the future by nature, so hiding its controls until the time
+    // has passed would make the suggestion impossible to adjust or refuse.
+    const html_str = html(s5day({
+      blocks: [s5block({ id: "p1", start: "19:00", end: "19:10", source: "manual" })],
+    }));
+    expect(html_str).toContain("◌ 19:00–19:10");
+    expect(html_str).toMatch(/data="block:approve:2026-09-10:p1"/);
+    expect(html_str).toMatch(/data="block:dismiss:2026-09-10:p1"/);
+    expect(html_str).toMatch(/data="block:edit:2026-09-10:p1"/);
+  });
+
   it("marks a gap with ░", () => {
     const html_str = html(s5day({ gaps: [s5gap()] }));
     expect(html_str).toContain("░ 13:00–14:15");

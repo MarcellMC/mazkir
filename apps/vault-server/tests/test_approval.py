@@ -29,6 +29,20 @@ class TestStoredWins:
         assert resolve_state(e) == "approved"
 
 
+class TestProposed:
+    """A block whose time Mazkir chose ("schedule these for later") is a
+    suggestion, not something the user said — so it waits for them."""
+
+    def test_a_proposed_manual_block_is_pending(self):
+        assert resolve_state(ev(source="manual", proposed=True)) == "pending"
+
+    def test_approving_a_proposal_sticks(self):
+        assert resolve_state(ev(source="manual", proposed=True, state="approved")) == "approved"
+
+    def test_dismissing_a_proposal_sticks(self):
+        assert resolve_state(ev(source="manual", proposed=True, state="dismissed")) == "dismissed"
+
+
 class TestDerivedApproved:
     def test_manual_source(self):
         assert resolve_state(ev(source="manual")) == "approved"

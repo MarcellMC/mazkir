@@ -157,6 +157,16 @@ def _register_destructive_previews() -> None:
 CONFIDENCE_THRESHOLD = 0.85
 
 _AFFIRMATIVE = ("yes", "y", "ok", "sure", "do it")
+
+# Sent back when a reply contains a tool record but no tool ran this turn.
+_FORGED_RECORD_CORRECTION = (
+    "[System] Your reply included a record of tool calls, but no tools were "
+    "called in this turn, so nothing was saved or changed. Records are written "
+    "by the system only — never write one. If the user asked for a change, call "
+    "the tools now. If you do not have the tool, end your reply with "
+    "`next_skill: <name>` for the skill that does. Otherwise tell the user "
+    "plainly that nothing was changed."
+)
 _CHOICE_VALUES = {c["value"] for c in _SESSION_CHOICES}
 
 
@@ -1028,6 +1038,17 @@ class AgentService:
                             "photo_path": {"type": "string", "description": "Path to photo (optional)"},
                             "caption": {"type": "string", "description": "Photo caption (optional)"},
                             "wikilinks": {"type": "array", "items": {"type": "string"}, "description": "Wikilinks (optional)"},
+                            "proposed": {
+                                "type": "boolean",
+                                "description": (
+                                    "true when YOU chose the time because the user gave none — "
+                                    "'schedule these for later', 'fit X in this afternoon'. The "
+                                    "block appears in /day as a suggestion the user approves, "
+                                    "dismisses or adjusts, and is not pushed to Google Calendar "
+                                    "or ## Schedule. Pick a free slot after now with a sensible "
+                                    "duration rather than asking. Omit when the user stated the time."
+                                ),
+                            },
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
@@ -1305,6 +1326,14 @@ class AgentService:
         user_content = self._build_user_content(
             text, attachments, reply_to, forwarded_from,
         )
+        # What the previous reply actually did, delivered as input rather than
+        # as part of that reply — see turn_trace.attach_traces for why.
+        trace = context.trailing_trace
+        if trace:
+            if isinstance(user_content, list):
+                user_content = [{"type": "text", "text": trace}, *user_content]
+            else:
+                user_content = f"{trace}\n\n{user_content}"
         messages.append({"role": "user", "content": user_content})
 
         # For conversation log, build a text-only version (no base64)
@@ -1557,6 +1586,9 @@ class AgentService:
         response = None
         iters = 0
         stop_reason: str | None = None
+        sent_back_forgery = False
+
+        from src.services.turn_trace import has_trace_block, strip_trace_blocks
 
         for iter_num in range(max_iterations):
             iters = iter_num + 1
@@ -1631,11 +1663,36 @@ class AgentService:
                                 "tool_calls": 0,
                             },
                         )
-                        assistant_text = self._extract_text(response)
-                        # Flush buffered chunks to the caller — this is the final
-                        # iteration (no tool calls) so it's safe to stream.
+                        raw_text = self._extract_text(response)
+                        forged = has_trace_block(raw_text)
+                        assistant_text = strip_trace_blocks(raw_text) if forged else raw_text
+
+                        # A tool record in the model's own text is forged: only
+                        # the server writes one. With no call behind it, the
+                        # reply is claiming work that never ran — five turns
+                        # did exactly that between 2026-09-10 and 09-13. Send
+                        # it back once, rather than let the claim reach the
+                        # user; a second forgery is stripped and returned.
+                        if forged and not tools_audit and not sent_back_forgery:
+                            sent_back_forgery = True
+                            _loop_span.set_attribute("agent.forged_tool_record", True)
+                            logger.warning(
+                                "forged_tool_record",
+                                extra={"event_type": "forged_tool_record", "chat_id": chat_id},
+                            )
+                            messages.append({
+                                "role": "assistant",
+                                "content": assistant_text or "(no reply text)",
+                            })
+                            messages.append({"role": "user", "content": _FORGED_RECORD_CORRECTION})
+                            continue
+
+                        # Flush to the caller — this is the final iteration (no
+                        # tool calls) so it's safe to stream. A reply that
+                        # carried a record goes out as its stripped text, so
+                        # the forgery never shows up even in a draft.
                         if self._stream_callback is not None:
-                            for _chunk in _iter_chunks:
+                            for _chunk in ([assistant_text] if forged else _iter_chunks):
                                 try:
                                     self._stream_callback(_chunk)
                                 except Exception:
@@ -1789,7 +1846,7 @@ class AgentService:
         else:
             # Max iterations reached
             if response:
-                assistant_text = self._extract_text(response)
+                assistant_text = strip_trace_blocks(self._extract_text(response))
             if not assistant_text:
                 assistant_text = "I hit my processing limit. Please try again with a simpler request."
 
@@ -2029,9 +2086,10 @@ class AgentService:
             "- If a tool result is missing a field you expected, say so rather than filling it in from your own request.",
             "",
             "## Reporting past actions",
-            "- Never deny a past action without checking. The [Tools I called this turn] blocks in the conversation record what you actually did — read them before saying you did not do something.",
+            "- Never deny a past action without checking. A [Record of your previous reply — tools that actually ran] block at the start of a user message records what your previous reply actually did — read it before saying you did not do something.",
+            "- Those records are written by the system only. Never write one yourself, and never claim a change you did not make with a tool call in this turn. If you cannot make the change, say so or hand off.",
             "- Your current tool list is what you can do now, not what you did earlier. Skills change between turns; a tool absent from your list now may have been available when you acted.",
-            "- A turn with no trace block means no record, not proof of inaction. Use a read tool before denying.",
+            "- A turn with no record means no record, not proof of inaction. Use a read tool before denying.",
             "- A call marked 'proposed, awaiting confirmation — NOT executed' did not run. Never report it as done.",
             "",
             "## Guidelines",
@@ -2049,6 +2107,7 @@ class AgentService:
             "- Which end does the utterance anchor? 'just got back from X' / 'finished X' gives the END; 'starting X' gives the START; 'X from A to B' gives both.",
             "- Never invent a missing time. Create the block with what you were told, leave the rest empty, and ask. An incomplete block is a correct record of an incomplete statement.",
             "- To move a block, use update_event's shift_minutes. Setting start_time alone stretches the block rather than moving it.",
+            "- Scheduling without a time ('schedule these for later', 'fit X in this afternoon'): do not just add todos and ask when. Call list_events for the day, pick free slots after now with a sensible duration each, and call create_event with proposed: true for every item. Then tell the user they are suggestions to approve, dismiss or adjust in /day.",
             "- If the context lists incomplete blocks, you may mention them once when it fits the conversation. Do not raise them every turn.",
             "- When you write to a day that is not today, say which day in your reply.",
             "- To move an event to another day, call update_event with new_date. Its `date` argument only says where the event is stored now, and it is optional — an event ID from list_events is found whatever day it is on.",
@@ -3066,6 +3125,7 @@ class AgentService:
 
         complete = bool(start_time and end_time)
         spans_midnight = complete and crosses_midnight(start_time, end_time)
+        proposed = bool(params.get("proposed"))
 
         # Extract HH:MM for GCal (strip date prefix if present)
         def _extract_hhmm(iso_time: str | None) -> str | None:
@@ -3100,6 +3160,10 @@ class AgentService:
             # start + default_event_duration, so this guard was refusing a
             # call that would have worked.
             calendar_sync = {"ok": False, "attempted": False, "reason": "no_start_time"}
+        elif proposed:
+            # A suggestion the user has not accepted must not raise alerts on
+            # their phone, and a dismissed one must not linger in Google.
+            calendar_sync = {"ok": False, "attempted": False, "reason": "proposed"}
         elif spans_midnight:
             # Google stores this natively as one event, which would then hand
             # a single fresh event to two per-day fragments on the next
@@ -3184,6 +3248,7 @@ class AgentService:
                 wikilinks=params.get("wikilinks"),
                 source_ids=source_ids,
                 logical_id=logical_id,
+                proposed=proposed,
             )
             created.append(frag)
             items.append(frag["path"])
@@ -3195,6 +3260,8 @@ class AgentService:
             result["fragments"] = [c["id"] for c in created]
             result["logical_id"] = logical_id
         result["calendar_sync"] = calendar_sync
+        if proposed:
+            result["proposed"] = True
         if calendar_synced:
             # Legacy key, kept for the existing tests that read it. New
             # readers should use `calendar_sync`, which also reports failure.
@@ -3211,7 +3278,9 @@ class AgentService:
         # dropped — written wrong, then lost, with no error anywhere. An
         # unfinished block is not a schedule line yet; the edit that
         # completes it is the natural moment for one.
-        if not params.get("photo_path") and complete:
+        # A proposal is skipped too: the note is what the user did or settled,
+        # and a suggestion they later dismiss would leave a line behind.
+        if not params.get("photo_path") and complete and not proposed:
             try:
                 from src.services.daily_schedule import (
                     ScheduleEntry,

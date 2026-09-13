@@ -15,6 +15,7 @@ log line must cost one trace, not the whole conversation.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -66,9 +67,41 @@ def read_turn_records(
     return records
 
 
-_HEADER = "Tools I called this turn"
+_HEADER = "Record of your previous reply — tools that actually ran"
+# The format this module wrote until 2026-09-13, inside the assistant's own
+# text. Models learned to write it themselves instead of calling tools, and
+# copies of it persist in conversation files, so it is still recognised.
+_LEGACY_HEADER = "Tools I called this turn"
 _MAX_PARAM_CHARS = 80
 _PENDING_OUTCOME = "proposed, awaiting confirmation — NOT executed"
+
+# A block runs from its header to the first `]` that ends a line, so a list
+# param such as `remind_minutes_before=[10]` does not close it early.
+_TRACE_BLOCK = re.compile(
+    r"\s*\[(?:" + re.escape(_HEADER) + "|" + re.escape(_LEGACY_HEADER) + r")\b"
+    r".*?\](?=[ \t]*(?:\n|$))",
+    re.DOTALL,
+)
+
+
+def has_trace_block(text: str) -> bool:
+    """Whether `text` contains a tool record, in either format."""
+    return isinstance(text, str) and bool(_TRACE_BLOCK.search(text))
+
+
+def strip_trace_blocks(text: str) -> str:
+    """Remove every tool record from `text`.
+
+    Only the server writes these. One appearing in model output is forged,
+    and must not reach the user, the conversation file, or the next prompt —
+    each surviving copy teaches the forgery again.
+
+    Anything that is not a string is returned as it came: like the rest of
+    this module, stripping must never be the reason a turn fails.
+    """
+    if not isinstance(text, str):
+        return text
+    return _TRACE_BLOCK.sub("", text).strip()
 
 
 def _render_params(params: Any) -> str:
@@ -163,8 +196,15 @@ def _pair_indices(messages: list[dict[str, Any]]) -> list[tuple[int, int]]:
 
 def attach_traces(
     messages: list[dict[str, Any]], records: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Attach each turn's trace to the assistant message that turn produced.
+) -> tuple[list[dict[str, Any]], str]:
+    """Attach each turn's trace to the *user* message that follows its reply.
+
+    Returns ``(messages, trailing)``. ``trailing`` is the trace for the newest
+    reply, which has no following user message in history yet; the caller
+    prefixes it to the message it is about to send. Assistant messages are
+    never modified: when the record was appended to the reply itself, the
+    model saw its own replies end in one and began writing forged records
+    instead of calling tools.
 
     Both sequences are chronological and pair 1:1 -- every path through
     ``_run_agent_turn`` calls ``save_turn`` and then ``_emit_turn_audit``
@@ -198,17 +238,24 @@ def attach_traces(
     """
     out = [dict(m) for m in messages]
     pairs = _pair_indices(out)
+    # Matched against the untouched user texts: a trace prefixed onto a later
+    # user message must not stop that message's own pair from matching.
+    user_texts = [m.get("content") for m in out]
+    trailing = ""
 
     i = len(pairs) - 1
     j = len(records) - 1
     while i >= 0 and j >= 0:
         user_idx, assistant_idx = pairs[i]
-        if out[user_idx].get("content") == records[j].get("user_text"):
+        if user_texts[user_idx] == records[j].get("user_text"):
             trace = render_trace(records[j])
-            existing = out[assistant_idx].get("content", "")
-            out[assistant_idx]["content"] = f"{existing}\n\n{trace}"
+            following = assistant_idx + 1
+            if following == len(out):
+                trailing = trace
+            elif out[following].get("role") == "user":
+                out[following]["content"] = f"{trace}\n\n{out[following].get('content', '')}"
             i -= 1
             j -= 1
         else:
             i -= 1  # this pair has no record -- attach nothing, never guess
-    return out
+    return out, trailing

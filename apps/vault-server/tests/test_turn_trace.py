@@ -4,7 +4,13 @@ import json
 
 import pytest
 
-from src.services.turn_trace import attach_traces, read_turn_records, render_trace
+from src.services.turn_trace import (
+    attach_traces,
+    has_trace_block,
+    read_turn_records,
+    render_trace,
+    strip_trace_blocks,
+)
 
 
 def _write_log(logs_dir, rows):
@@ -99,16 +105,19 @@ def _call(name, params=None, ok=True, error_code=None, pending=False, no_result=
     return call
 
 
+HEADER = "Record of your previous reply — tools that actually ran"
+
+
 class TestRenderTrace:
     def test_no_calls_renders_none(self):
-        assert render_trace({"tools": []}) == "[Tools I called this turn: none]"
+        assert render_trace({"tools": []}) == f"[{HEADER}: none]"
 
     def test_missing_tools_key_renders_none(self):
-        assert render_trace({}) == "[Tools I called this turn: none]"
+        assert render_trace({}) == f"[{HEADER}: none]"
 
     def test_skill_appears_in_header(self):
         out = render_trace({"skill": "time-management", "tools": []})
-        assert out == "[Tools I called this turn, as time-management: none]"
+        assert out == f"[{HEADER}, as time-management: none]"
 
     def test_successful_call(self):
         out = render_trace({"tools": [_call("daily_add_task", {"text": "Order dog food"})]})
@@ -135,7 +144,7 @@ class TestRenderTrace:
             _call("daily_add_task", {"text": "Bring the bicycle to repair shop"}),
         ]})
         assert out.count("daily_add_task") == 2
-        assert out.startswith("[Tools I called this turn:\n")
+        assert out.startswith(f"[{HEADER}:\n")
         assert out.endswith("]")
 
     def test_long_params_are_truncated(self):
@@ -164,11 +173,11 @@ class TestRenderTrace:
 
     def test_tools_as_non_list_does_not_raise(self):
         out = render_trace({"tools": "oops"})
-        assert out == "[Tools I called this turn: none]"
+        assert out == f"[{HEADER}: none]"
 
     def test_tools_list_of_non_dicts_does_not_raise(self):
-        assert render_trace({"tools": [1, 2]}) == "[Tools I called this turn: none]"
-        assert render_trace({"tools": [None]}) == "[Tools I called this turn: none]"
+        assert render_trace({"tools": [1, 2]}) == f"[{HEADER}: none]"
+        assert render_trace({"tools": [None]}) == f"[{HEADER}: none]"
 
     def test_mixed_valid_and_invalid_entries_renders_the_valid_ones(self):
         out = render_trace({"tools": [
@@ -216,81 +225,151 @@ def _rec(user_text, tool_name="daily_add_task", skill=None):
 
 
 class TestAttachTraces:
-    def test_attaches_trace_to_the_matching_assistant_message(self):
-        messages = _msgs(("add two todos", "Added both."))
-        out = attach_traces(messages, [_rec("add two todos")])
+    """The record of a turn's tool calls travels in the *user* message that
+    follows the assistant reply it describes, never inside the reply itself.
 
-        assert out[0]["content"] == "add two todos"
-        assert out[1]["content"].startswith("Added both.")
-        assert "daily_add_task() → ok" in out[1]["content"]
+    It used to be appended to the assistant's own text. The model then saw its
+    past replies ending in `[Tools I called this turn: …]` and learned to write
+    that block itself instead of calling the tools — five turns between
+    2026-09-10 and 2026-09-13 claimed writes that never ran (habits never
+    created, blocks never logged) with a convincing forged record as proof.
+    """
+
+    def test_trace_goes_into_the_following_user_message(self):
+        messages = _msgs(("add two todos", "Added both."), ("thanks", "Any time."))
+        out, trailing = attach_traces(messages, [_rec("add two todos"), _rec("thanks")])
+
+        assert out[1]["content"] == "Added both."
+        assert out[2]["content"].endswith("thanks")
+        assert "daily_add_task() → ok" in out[2]["content"]
+        assert "daily_add_task() → ok" in trailing
+
+    def test_the_newest_turns_trace_is_returned_as_trailing(self):
+        """The last reply has no following user message in history; the caller
+        prefixes the trailing trace to the message it is about to send."""
+        messages = _msgs(("add two todos", "Added both."))
+        out, trailing = attach_traces(messages, [_rec("add two todos")])
+
+        assert out == messages
+        assert trailing.startswith("[")
+        assert "daily_add_task() → ok" in trailing
+
+    def test_assistant_messages_are_never_modified(self):
+        messages = _msgs(("one", "A"), ("two", "B"))
+        out, _ = attach_traces(messages, [_rec("one"), _rec("two")])
+
+        assert [m["content"] for m in out if m["role"] == "assistant"] == ["A", "B"]
 
     def test_does_not_mutate_input(self):
-        messages = _msgs(("hi", "hello"))
-        attach_traces(messages, [_rec("hi")])
+        messages = _msgs(("hi", "hello"), ("more", "sure"))
+        attach_traces(messages, [_rec("hi"), _rec("more")])
 
-        assert messages[1]["content"] == "hello"
+        assert messages[2]["content"] == "more"
 
     def test_no_records_leaves_messages_unchanged(self):
         messages = _msgs(("hi", "hello"))
-        out = attach_traces(messages, [])
+        out, trailing = attach_traces(messages, [])
 
         assert out == messages
+        assert trailing == ""
 
     def test_extra_older_records_are_ignored(self):
         """Decay truncates the note from the front; the log keeps everything."""
         messages = _msgs(("third", "C"))
         records = [_rec("first"), _rec("second"), _rec("third")]
 
-        out = attach_traces(messages, records)
+        out, trailing = attach_traces(messages, records)
 
-        assert "→ ok" in out[1]["content"]
-        assert out[1]["content"].startswith("C")
+        assert out == messages
+        assert "→ ok" in trailing
 
     def test_duplicate_user_texts_disambiguate_by_order(self):
         messages = _msgs(("yes", "Did A."), ("yes", "Did B."))
         records = [_rec("yes", tool_name="tool_a"), _rec("yes", tool_name="tool_b")]
 
-        out = attach_traces(messages, records)
+        out, trailing = attach_traces(messages, records)
 
-        assert "tool_a" in out[1]["content"]
-        assert "tool_b" in out[3]["content"]
+        assert "tool_a" in out[2]["content"]
+        assert "tool_b" in trailing
 
     def test_pair_without_a_record_gets_nothing_and_others_still_align(self):
         """save_turn runs before _emit_turn_audit; a crash between leaves a gap."""
         messages = _msgs(("one", "A"), ("two", "B"), ("three", "C"))
         records = [_rec("one", tool_name="tool_one"), _rec("three", tool_name="tool_three")]
 
-        out = attach_traces(messages, records)
+        out, trailing = attach_traces(messages, records)
 
-        assert "tool_one" in out[1]["content"]
-        assert out[3]["content"] == "B"          # no record -- nothing attached
-        assert "tool_three" in out[5]["content"]
+        assert "tool_one" in out[2]["content"]
+        assert out[4]["content"] == "three"      # "two" has no record -- nothing
+        assert "tool_three" in trailing
 
     def test_never_attaches_a_mismatched_trace(self):
         messages = _msgs(("what did you do?", "Nothing."))
         records = [_rec("delete everything", tool_name="delete_task")]
 
-        out = attach_traces(messages, records)
+        out, trailing = attach_traces(messages, records)
 
-        assert out[1]["content"] == "Nothing."
-        assert "delete_task" not in out[1]["content"]
+        assert out == messages
+        assert trailing == ""
 
     def test_window_starting_mid_pair_is_handled(self):
         """A 20-message window can begin on an assistant message."""
         messages = [{"role": "assistant", "content": "orphan"}] + _msgs(("hi", "hello"))
-        out = attach_traces(messages, [_rec("hi")])
+        out, trailing = attach_traces(messages, [_rec("hi")])
 
         assert out[0]["content"] == "orphan"
-        assert "→ ok" in out[2]["content"]
+        assert "→ ok" in trailing
 
     def test_turn_with_no_tools_renders_none_block(self):
         messages = _msgs(("hi", "hello"))
-        out = attach_traces(messages, [{"user_text": "hi", "tools": []}])
+        _, trailing = attach_traces(messages, [{"user_text": "hi", "tools": []}])
 
-        assert out[1]["content"] == "hello\n\n[Tools I called this turn: none]"
+        assert trailing.endswith(": none]")
 
     def test_skill_is_carried_into_the_attached_block(self):
         messages = _msgs(("add two todos", "Added both."))
-        out = attach_traces(messages, [_rec("add two todos", skill="time-management")])
+        _, trailing = attach_traces(messages, [_rec("add two todos", skill="time-management")])
 
-        assert "as time-management" in out[1]["content"]
+        assert "as time-management" in trailing
+
+
+class TestStripTraceBlocks:
+    """Forged records must not reach the user, the conversation file, or the
+    next prompt — each copy teaches the model the forgery again."""
+
+    def test_removes_a_forged_legacy_block(self):
+        text = (
+            "Added 3 chores!\n\n"
+            "[Tools I called this turn, as time-management:\n"
+            '   daily_add_task(text="Water the plants") → ok\n'
+            '   daily_add_task(text="Vacuum the floor") → ok]'
+        )
+        assert strip_trace_blocks(text) == "Added 3 chores!"
+
+    def test_removes_a_block_at_the_start(self):
+        text = (
+            "[Tools I called this turn, as time-management:\n"
+            '   create_event(name="Reading", start_time="06:35") → ok]\n\n'
+            "Done! Both logged."
+        )
+        assert strip_trace_blocks(text) == "Done! Both logged."
+
+    def test_removes_the_current_record_format_too(self):
+        assert strip_trace_blocks(
+            "Hi\n\n" + render_trace({"tools": [], "skill": "mazkir"})
+        ) == "Hi"
+
+    def test_a_bracket_inside_params_does_not_end_the_block_early(self):
+        text = (
+            "Ok\n\n[Tools I called this turn:\n"
+            '   create_event(name="x", remind_minutes_before=[10]) → ok]'
+        )
+        assert strip_trace_blocks(text) == "Ok"
+
+    def test_leaves_ordinary_text_alone(self):
+        text = "Logged [Reading] 09:30–12:30 — see /day."
+        assert strip_trace_blocks(text) == text
+
+    def test_detects_whether_a_block_was_present(self):
+        assert has_trace_block("x\n\n[Tools I called this turn: none]")
+        assert not has_trace_block("Logged [Reading].")
