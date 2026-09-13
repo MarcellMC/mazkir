@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.services.events_service import _SOURCE_SYSTEM_BY_ID_KEY
+from src.services.events_service import AUTHORED_SOURCES, _SOURCE_SYSTEM_BY_ID_KEY
 
 # Source systems whose blocks a human action created, and which therefore
 # need no tap. `daily-note` is a checkbox the user wrote; `habit` is one they
@@ -29,8 +29,10 @@ _HUMAN_SOURCE_SYSTEMS = frozenset({"habit", "daily-note"})
 
 # `source` values that mean the user made this block directly, with no
 # upstream to infer from: `create_event` writes "manual", photo attachment
-# writes "photo".
-_HUMAN_SOURCES = frozenset({"manual", "photo"})
+# writes "photo". Imported rather than restated — `events_service` reasons
+# about the same pair when it refuses to let a missing calendar echo delete
+# one, and the two rules must not drift apart.
+_HUMAN_SOURCES = AUTHORED_SOURCES
 
 _STORABLE = frozenset({"approved", "dismissed"})
 

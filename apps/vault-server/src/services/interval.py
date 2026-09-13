@@ -14,7 +14,41 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytz
+
 _FMT = "%Y-%m-%dT%H:%M:%S"
+
+
+def to_wall_clock(value: str | None, tz_name: str) -> str | None:
+    """Convert a timestamp carrying a UTC offset into `tz_name`'s wall clock.
+
+    Everything downstream of the event tools — storage, `day_coverage`,
+    `/day` — is local wall clock with no offset, and `minutes_into_day`
+    deliberately *refuses* a `Z`-suffixed timestamp rather than guessing a
+    zone for it. So a model that answered "start_time" with
+    `2026-09-13T06:35:00Z` wrote a block that `/day` could place on no day at
+    all: not a row, not a gap, not even an "incomplete" entry, while the tool
+    returned `ok: true`. It also reached Google at the wrong instant, because
+    the sync takes the literal `HH:MM` out of the string and sends it as
+    local time.
+
+    An offset is not ambiguous — it names an instant — so this converts
+    rather than strips, which is the only reading under which the ledger and
+    Google end up agreeing. A naive timestamp is already wall clock and is
+    returned untouched; anything unparseable is returned untouched too, since
+    the callers below have their own opinions about malformed input.
+
+    Pure: the zone is an argument, never read from config here.
+    """
+    if not value or not isinstance(value, str):
+        return value
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        return value
+    return parsed.astimezone(pytz.timezone(tz_name)).strftime(_FMT)
 
 
 def normalize_time(value: str | None, date: str) -> str | None:

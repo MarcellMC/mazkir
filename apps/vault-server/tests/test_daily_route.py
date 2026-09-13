@@ -646,6 +646,71 @@ class TestIncompleteBlocks:
         assert incomplete == []
 
 
+class TestUnreadableTimestampsAreSurfaced:
+    """An event whose timestamps exist but cannot be read still belongs to
+    the day — the one thing it must not do is disappear.
+
+    `minutes_into_day` rejects a UTC (`Z`) timestamp by design rather than
+    guess a zone. The old `if start_raw and end_raw: continue` guard read
+    "has both timestamps" as "belongs to another day", so such an event fell
+    out of `blocks[]` and out of `incomplete[]` both: created, persisted,
+    `ok: true`, and visible nowhere. Storage is normalized at the write
+    boundary now, but rows written before that, or by any path that skips
+    it, must still show up somewhere a person can see them.
+    """
+
+    def _utc_event(self):
+        return {"id": "evt_z", "name": "Reading",
+                "start_time": "2026-09-13T06:35:00Z",
+                "end_time": "2026-09-13T07:35:00Z",
+                "source": "manual", "type": "manual"}
+
+    def test_a_utc_timestamped_event_is_reported_not_dropped(self):
+        from src.api.routes.daily import _build_blocks_and_coverage, _build_incomplete
+        events = [self._utc_event()]
+
+        blocks, _, _ = _build_blocks_and_coverage(events, "2026-09-13", 1440)
+        incomplete = _build_incomplete(events, "2026-09-13")
+
+        assert blocks == []
+        assert [b.title for b in incomplete] == ["Reading"]
+        assert incomplete[0].missing == ["start_time", "end_time"]
+
+    def test_a_half_unreadable_event_reports_only_the_bad_end(self):
+        from src.api.routes.daily import _build_incomplete
+        incomplete = _build_incomplete([{
+            "id": "evt_1", "name": "Reading",
+            "start_time": "2026-09-13T06:35:00",
+            "end_time": "2026-09-13T07:35:00Z",
+            "source": "manual", "type": "manual",
+        }], "2026-09-13")
+
+        assert incomplete[0].missing == ["end_time"]
+        assert incomplete[0].start == "06:35"
+
+    def test_a_neighbouring_fragment_is_still_dropped(self):
+        """The guard this replaces existed for a real case, and it has to
+        keep working: yesterday's fragment must not surface on today."""
+        from src.api.routes.daily import _build_incomplete
+        assert _build_incomplete([{
+            "id": "evt_1", "name": "Yesterday",
+            "start_time": "2026-09-12T16:00:00", "end_time": "2026-09-12T17:00:00",
+            "source": "manual", "type": "manual",
+        }], "2026-09-13") == []
+
+    def test_a_block_running_past_midnight_is_still_a_block(self):
+        from src.api.routes.daily import _build_blocks_and_coverage, _build_incomplete
+        events = [{"id": "evt_1", "name": "Sleep",
+                   "start_time": "2026-09-13T23:00:00",
+                   "end_time": "2026-09-14T01:00:00",
+                   "source": "manual", "type": "manual"}]
+
+        blocks, _, _ = _build_blocks_and_coverage(events, "2026-09-13", 1440)
+
+        assert [b.end for b in blocks] == ["24:00"]
+        assert _build_incomplete(events, "2026-09-13") == []
+
+
 class TestGapProposals:
     def test_gap_model_has_a_proposal_field(self):
         from src.api.routes.daily import DailyGap, GapProposal

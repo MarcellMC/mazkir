@@ -227,3 +227,66 @@ class TestNoDecorativePrefix:
         from src.services.calendar_service import CalendarService
         src = inspect.getsource(CalendarService.mark_event_complete)
         assert "✅" in src
+
+
+class TestTheDayWindowIsARealDay:
+    """`datetime(y, m, d, tzinfo=pytz_zone)` does not mean midnight local.
+
+    A pytz zone attached directly hands back its *first* historical offset —
+    LMT, +02:21 for Asia/Jerusalem — so the query window ran from 00:39
+    today to 00:39 tomorrow. Two consequences, both silent: an event living
+    entirely inside a day's first 39 minutes was never returned, and one from
+    the next day's first 39 minutes was returned under today's date.
+
+    The first is worse than a missing row. `EventsService.reconcile` deletes a
+    persisted event when the source that would have produced it answered
+    without it — so a block Mazkir had itself created and synced was dropped
+    from the day for being invisible to the very query meant to find it.
+    """
+
+    def _service(self):
+        from src.services.calendar_service import CalendarService
+
+        cs = CalendarService(
+            credentials_path=MagicMock(),
+            token_path=MagicMock(),
+            timezone="Asia/Jerusalem",
+            calendar_include=["Mazkir"],
+        )
+        cs._service = MagicMock()
+        cs._initialized = True
+        cs._calendar_id = "mazkir-cal-id"
+        cs._service.calendarList().list().execute.return_value = {
+            "items": [{"id": "mazkir-cal-id", "summary": "Mazkir"}]
+        }
+        cs._service.events().list().execute.return_value = {"items": []}
+        return cs
+
+    def _window(self, cs):
+        call = next(
+            c for c in cs._service.events().list.call_args_list
+            if c.kwargs.get("calendarId")
+        )
+        return call.kwargs["timeMin"], call.kwargs["timeMax"]
+
+    def test_the_window_starts_at_local_midnight(self):
+        from datetime import date
+
+        cs = self._service()
+        asyncio.run(cs.get_todays_events(all_calendars=True, target_date=date(2026, 9, 13)))
+
+        time_min, time_max = self._window(cs)
+        assert time_min == "2026-09-13T00:00:00+03:00"
+        assert time_max == "2026-09-14T00:00:00+03:00"
+
+    def test_a_dst_boundary_still_spans_exactly_one_day(self):
+        """Israel leaves DST on 2026-10-25, so that day is 25 hours long and
+        adding a bare 24 hours would stop the window an hour early."""
+        from datetime import date
+
+        cs = self._service()
+        asyncio.run(cs.get_todays_events(all_calendars=True, target_date=date(2026, 10, 25)))
+
+        time_min, time_max = self._window(cs)
+        assert time_min.startswith("2026-10-25T00:00:00")
+        assert time_max.startswith("2026-10-26T00:00:00")

@@ -18,6 +18,7 @@ from src.services.daily_tasks import (
     render_tasks_section,
     replace_or_append_section,
 )
+from src.services.clock import vault_today, vault_today_iso
 from src.services.tool_response import ErrorCode, err, ok
 
 
@@ -30,7 +31,7 @@ def _flatten(tasks):
 
 
 def daily_add_task(vault: Any, params: dict) -> dict:
-    date_str = params.get("date") or dt.date.today().isoformat()
+    date_str = params.get("date") or vault_today_iso()
     daily = vault.read_daily_note(date_str)
     body = daily["content"]
 
@@ -51,7 +52,7 @@ def daily_add_task(vault: Any, params: dict) -> dict:
 
 
 def daily_set_task_state(vault: Any, params: dict) -> dict:
-    date_str = params.get("date") or dt.date.today().isoformat()
+    date_str = params.get("date") or vault_today_iso()
     daily = vault.read_daily_note(date_str)
     body = daily["content"]
     tasks = parse_tasks_section(body)
@@ -82,7 +83,7 @@ def daily_set_task_state(vault: Any, params: dict) -> dict:
 
 
 def daily_rollover(vault: Any, params: dict) -> dict:
-    today = dt.date.today()
+    today = vault_today()
     to_date = params.get("to_date") or today.isoformat()
     from_date = params.get("from_date") or (today - dt.timedelta(days=1)).isoformat()
 
@@ -151,7 +152,7 @@ def daily_rollover(vault: Any, params: dict) -> dict:
 
 
 def promote_daily_task(vault: Any, params: dict) -> dict:
-    date_str = params.get("date") or dt.date.today().isoformat()
+    date_str = params.get("date") or vault_today_iso()
     daily = vault.read_daily_note(date_str)
     body = daily["content"]
     tasks = parse_tasks_section(body)

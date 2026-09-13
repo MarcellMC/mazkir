@@ -889,6 +889,71 @@ def test_manual_events_are_still_preserved(tmp_path):
     assert len(result) == 1
 
 
+class TestAuthoredBlocksSurviveAMissingEcho:
+    """A block the user dictated is not deleted by the calendar's silence.
+
+    `create_event` writes `source: "manual"` and syncs to Google, which puts
+    a `calendar_id` into `source_ids` — and from that moment the row looked
+    exactly like a calendar event to the deletion pass. Any read where the
+    calendar answered without echoing it back deleted the user's own block:
+    it vanished from `/day` while the tool call had reported `ok: true`, and
+    `GET /events/{date}` persisted the loss.
+
+    The echo can go missing without the user touching anything: Google's
+    insert is not read-your-writes consistent, `GOOGLE_CALENDAR_INCLUDE` need
+    not name Mazkir's calendar, and the day window can miss it.
+    """
+
+    def test_a_synced_manual_event_is_not_deleted_when_the_echo_is_missing(self, tmp_path):
+        svc = EventsService(tmp_path)
+        svc.save_events("2026-09-13", [_persisted(
+            name="Reading", source="manual",
+            source_ids={"calendar_id": "gcal_reading"},
+            start_time="2026-09-13T06:35:00", end_time="2026-09-13T07:35:00",
+        )])
+
+        result = svc.reconcile("2026-09-13", [], available_sources={"calendar"})
+
+        assert [e["name"] for e in result] == ["Reading"]
+        assert result[0]["source"] == "manual"
+
+    def test_a_synced_photo_event_is_not_deleted_either(self, tmp_path):
+        svc = EventsService(tmp_path)
+        svc.save_events("2026-09-13", [_persisted(
+            source="photo", source_ids={"calendar_id": "gcal_photo"},
+        )])
+
+        result = svc.reconcile("2026-09-13", [], available_sources={"calendar"})
+
+        assert len(result) == 1
+
+    def test_a_real_calendar_event_is_still_deletable(self, tmp_path):
+        """The preservation must stay narrow: deleting an entry in Google
+        still has to remove Mazkir's copy of it."""
+        svc = EventsService(tmp_path)
+        svc.save_events("2026-09-13", [_persisted(source="calendar")])
+
+        assert svc.reconcile("2026-09-13", [], available_sources={"calendar"}) == []
+
+    def test_the_echo_still_matches_rather_than_duplicating(self, tmp_path):
+        """Preserving the unmatched case must not break the matched one: when
+        the calendar *does* return the event, it is one row, not two."""
+        svc = EventsService(tmp_path)
+        svc.save_events("2026-09-13", [_persisted(
+            name="Reading", source="manual",
+            source_ids={"calendar_id": "gcal_reading"},
+        )])
+
+        result = svc.reconcile("2026-09-13", [{
+            "name": "Reading", "type": "calendar", "source": "calendar",
+            "start_time": "2026-09-13T06:35:00", "end_time": "2026-09-13T07:35:00",
+            "source_ids": {"calendar_id": "gcal_reading"},
+        }], {"calendar"})
+
+        assert len(result) == 1
+        assert result[0]["source"] == "manual"
+
+
 def test_reconcile_does_not_persist(tmp_path):
     """The whole point of the read/write split: /daily calls this to
     preview a merge without ever writing data/events/{date}.json for

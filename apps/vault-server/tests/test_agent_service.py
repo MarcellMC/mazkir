@@ -3385,6 +3385,50 @@ class TestIncompleteBlocksInContext:
         assert "Incomplete blocks" not in prompt
 
 
+class TestThePromptClockIsTheUsersClock:
+    """"Current date/time" used to be `datetime.now()` — the *process*
+    timezone, which in a container is UTC unless someone set TZ.
+
+    Reported 2026-09-13: blocks created from a morning conversation were
+    stamped 06:35 and 07:35 while the user's clock read 09:34, so they were
+    drawn three hours away from the part of the day the user was looking at.
+    Between 21:00 local and midnight the same offset moves the *date*, and
+    then the block is not merely misplaced — it goes into yesterday's file,
+    and today's /day cannot show it at all.
+    """
+
+    def _prompt(self, agent, mock_services, zone, monkeypatch):
+        from types import SimpleNamespace
+        from src.config import settings
+        monkeypatch.setattr(settings, "vault_timezone", zone)
+        mock_services[4].get_events.return_value = []
+        ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
+        return agent._build_system_prompt(ctx)
+
+    def test_the_clock_follows_vault_timezone_not_the_process(
+        self, agent, mock_services, monkeypatch
+    ):
+        import datetime
+        import re
+
+        def at(zone):
+            line = self._prompt(agent, mock_services, zone, monkeypatch).splitlines()[0]
+            stamp = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2})", line).group(1)
+            return datetime.datetime.strptime(stamp, "%Y-%m-%d %H:%M")
+
+        # Same instant, two zones: the rendered clocks must differ by
+        # Jerusalem's offset from UTC (2h in winter, 3h in summer). A naive
+        # `datetime.now()` would render the same time for both.
+        delta = at("Asia/Jerusalem") - at("UTC")
+        assert delta in (datetime.timedelta(hours=2), datetime.timedelta(hours=3))
+
+    def test_the_zone_is_named_so_the_number_cannot_be_reread_as_utc(
+        self, agent, mock_services, monkeypatch
+    ):
+        prompt = self._prompt(agent, mock_services, "Asia/Jerusalem", monkeypatch)
+        assert "Asia/Jerusalem" in prompt.splitlines()[0]
+
+
 class TestSelectedDateInPromptTail:
     """The hint is almost always redundant with 'Current date/time' — a
     plain /day with no argument returns today, so it must be suppressed
@@ -3392,12 +3436,15 @@ class TestSelectedDateInPromptTail:
 
     def test_absent_when_selected_date_is_today(self, agent, mock_services):
         from types import SimpleNamespace
-        import datetime
         import pytz
+        from src.services.clock import vault_today_iso
         mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
         mock_services[4].get_events.return_value = []
         ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
-        agent._selected_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        # The vault's today, not the process's: the suppression compares
+        # against the prompt's own clock, and reading a different one here
+        # would make this test fail for three hours every evening.
+        agent._selected_date = vault_today_iso()
 
         prompt = agent._build_system_prompt(ctx)
 
@@ -3407,15 +3454,135 @@ class TestSelectedDateInPromptTail:
         from types import SimpleNamespace
         import datetime
         import pytz
+        from src.services.clock import vault_today
         mock_services[1].tz = pytz.timezone("Asia/Jerusalem")
         mock_services[4].get_events.return_value = []
         ctx = SimpleNamespace(vault_snapshot="1 task", knowledge=None)
-        yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        yesterday = (vault_today() - datetime.timedelta(days=1)).isoformat()
         agent._selected_date = yesterday
 
         prompt = agent._build_system_prompt(ctx)
 
         assert f"The user is currently viewing {yesterday}." in prompt
+
+
+class TestEventTimestampsAreStoredAsWallClock:
+    """A timestamp the model wrote with an offset is converted on the way in.
+
+    `minutes_into_day` refuses a `Z`-suffixed timestamp rather than guessing
+    a zone for it, so an event stored with one belongs to no day: it is
+    absent from `blocks[]`, from the coverage arithmetic, and (before this
+    ship) from `incomplete[]` too — while `create_event` returned `ok: true`.
+    That is the "created successfully, not in /day" report with no error
+    anywhere to explain it.
+    """
+
+    def test_a_utc_start_is_converted_to_the_vault_wall_clock(
+        self, agent, mock_services, monkeypatch
+    ):
+        from src.config import settings
+        monkeypatch.setattr(settings, "vault_timezone", "Asia/Jerusalem")
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_1", "path": "p"}
+        agent.calendar = None
+
+        result = agent._tool_create_event({
+            "name": "Reading",
+            "date": "2026-09-13",
+            "start_time": "2026-09-13T06:35:00Z",
+            "end_time": "2026-09-13T07:35:00Z",
+        })
+
+        assert result["ok"] is True
+        kwargs = events_mock.create_event.call_args.kwargs
+        assert kwargs["start_time"] == "2026-09-13T09:35:00"
+        assert kwargs["end_time"] == "2026-09-13T10:35:00"
+
+    def test_the_stored_day_follows_the_converted_time(
+        self, agent, mock_services, monkeypatch
+    ):
+        """The file an event lives in is the day it belongs to, and that day
+        is decided by the converted timestamp — 22:30Z is tomorrow here."""
+        from src.config import settings
+        monkeypatch.setattr(settings, "vault_timezone", "Asia/Jerusalem")
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_1", "path": "p"}
+        agent.calendar = None
+
+        agent._tool_create_event({
+            "name": "Late call",
+            "date": "2026-09-13",
+            "start_time": "2026-09-13T22:30:00Z",
+            "end_time": "2026-09-13T23:00:00Z",
+        })
+
+        kwargs = events_mock.create_event.call_args.kwargs
+        assert kwargs["date"] == "2026-09-14"
+        assert kwargs["start_time"] == "2026-09-14T01:30:00"
+
+    def test_google_is_told_the_same_wall_clock(self, agent, mock_services, monkeypatch):
+        """The sync takes the literal HH:MM out of the stored string, so
+        without the conversion Google was told 06:35 local for an instant
+        that was really 09:35 — the ledger and the calendar disagreeing by
+        three hours about the same block."""
+        from unittest.mock import AsyncMock
+        from src.config import settings
+        monkeypatch.setattr(settings, "vault_timezone", "Asia/Jerusalem")
+        mock_services[4].create_event.return_value = {"id": "evt_1", "path": "p"}
+        agent.calendar = AsyncMock()
+        agent.calendar.is_initialized = True
+        agent.calendar.create_event = AsyncMock(return_value="gcal_1")
+
+        agent._tool_create_event({
+            "name": "Reading",
+            "date": "2026-09-13",
+            "start_time": "2026-09-13T06:35:00Z",
+            "end_time": "2026-09-13T07:35:00Z",
+        })
+
+        kwargs = agent.calendar.create_event.call_args.kwargs
+        assert kwargs["start_time"] == "09:35"
+        assert kwargs["end_time"] == "10:35"
+
+    def test_a_bare_time_is_unaffected(self, agent, mock_services, monkeypatch):
+        """The normal path must not move: a bare HH:MM is already the user's
+        wall clock and is anchored to the date, not converted."""
+        from src.config import settings
+        monkeypatch.setattr(settings, "vault_timezone", "Asia/Jerusalem")
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_1", "path": "p"}
+        agent.calendar = None
+
+        agent._tool_create_event({
+            "name": "Reading", "date": "2026-09-13",
+            "start_time": "06:35", "end_time": "07:35",
+        })
+
+        assert events_mock.create_event.call_args.kwargs["start_time"] == \
+            "2026-09-13T06:35:00"
+
+
+class TestTheDefaultDateIsTheUsersDate:
+    """`date` defaults to today, and "today" is the user's, not the
+    process's. With the server on UTC, every event created between 21:00 and
+    midnight in Jerusalem defaulted to yesterday's file — written, reported
+    `ok: true`, and absent from the /day the user was looking at."""
+
+    def test_create_event_defaults_to_the_vault_date(
+        self, agent, mock_services, monkeypatch
+    ):
+        from src.config import settings
+        from src.services.clock import vault_today_iso
+        monkeypatch.setattr(settings, "vault_timezone", "Pacific/Kiritimati")
+        expected = vault_today_iso()
+        events_mock = mock_services[4]
+        events_mock.create_event.return_value = {"id": "evt_1", "path": "p"}
+        agent.calendar = None
+
+        agent._tool_create_event({"name": "Reading", "start_time": "06:35",
+                                  "end_time": "07:35"})
+
+        assert events_mock.create_event.call_args.kwargs["date"] == expected
 
 
 class TestReminderReachesTheCalendar:

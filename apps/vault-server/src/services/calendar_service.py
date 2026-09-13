@@ -722,12 +722,24 @@ class CalendarService:
             return [], False
 
         try:
-            if target_date:
-                start_of_day = datetime(target_date.year, target_date.month, target_date.day, tzinfo=self.tz)
-            else:
-                now = datetime.now(self.tz)
-                start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_of_day = start_of_day + timedelta(days=1)
+            # `tz.localize(...)`, never `datetime(..., tzinfo=self.tz)`: a
+            # pytz zone attached directly supplies its *first historical*
+            # offset — LMT, which for Asia/Jerusalem is +02:21 — so the
+            # window silently ran 00:39 today to 00:39 tomorrow. An event
+            # living entirely inside that first 39 minutes was never
+            # returned, which for a Mazkir-authored block meant
+            # reconciliation saw its source answer without it.
+            #
+            # Both ends are localized midnights rather than one plus 24
+            # hours, because a day is not always 24 hours long: Israel's
+            # October transition makes one 25, and `start + timedelta(days=1)`
+            # would stop the window at 23:00 and lose the last hour of it.
+            day = target_date or datetime.now(self.tz).date()
+            next_day = day + timedelta(days=1)
+            start_of_day = self.tz.localize(datetime(day.year, day.month, day.day))
+            end_of_day = self.tz.localize(
+                datetime(next_day.year, next_day.month, next_day.day)
+            )
 
             # Get list of calendars to query
             calendar_ids = []

@@ -236,6 +236,23 @@ def _block_times(e: dict, date: str) -> tuple[int | None, int | None, str | None
     )
 
 
+def _belongs_to_another_day(timestamp: str | None, date: str) -> bool:
+    """Whether `timestamp` names a calendar date other than `date`.
+
+    The question `minutes_into_day` returning None cannot answer on its own:
+    it says the same None for "this is Tuesday's timestamp" and for "this is
+    unreadable". Only the first means the event is somebody else's fragment.
+    """
+    if not isinstance(timestamp, str) or "T" not in timestamp:
+        return False
+    day_part = timestamp.partition("T")[0]
+    try:
+        dt_date.fromisoformat(day_part)
+    except ValueError:
+        return False
+    return day_part != date
+
+
 def _build_incomplete(events: list[dict], date: str) -> list[DailyIncomplete]:
     """Events that belong to `date` but cannot be drawn as blocks.
 
@@ -243,6 +260,17 @@ def _build_incomplete(events: list[dict], date: str) -> list[DailyIncomplete]:
     Bug A's exact shape: written correctly, parsed correctly, invisible. They
     are reported separately rather than as blocks with null fields because
     they have no interval — nothing to sort by, nothing to measure.
+
+    A timestamp that is *present but unreadable* lands here too, and that is
+    the point of the `_belongs_to_another_day` test. The old guard skipped
+    any event that had both timestamps, on the assumption that the only way
+    to have both and still not be drawable was to be a neighbouring day's
+    fragment. `minutes_into_day` also rejects a UTC (`Z`-suffixed) timestamp,
+    which a model can and did write — and such an event was then dropped from
+    `blocks[]` *and* from here: created, persisted, reported `ok: true`, and
+    visible nowhere. Anything claiming this day now surfaces, listing the
+    fields that cannot be read as the ones it is missing, because from the
+    day view's side "unreadable" and "absent" are the same problem.
     """
     out: list[DailyIncomplete] = []
     for e in events:
@@ -252,14 +280,18 @@ def _build_incomplete(events: list[dict], date: str) -> list[DailyIncomplete]:
         # A timestamp that is present but belongs to another day is a
         # neighbouring fragment, not an incomplete block — it stays out, or
         # it would appear on a day it does not belong to.
-        if start_raw and end_raw:
+        if _belongs_to_another_day(start_raw, date) or _belongs_to_another_day(end_raw, date):
             continue
         out.append(DailyIncomplete(
             id=e.get("id", ""),
             title=e.get("name", ""),
             start=f"{start // 60:02d}:{start % 60:02d}" if start is not None else None,
             end=f"{end // 60:02d}:{end % 60:02d}" if end is not None else None,
-            missing=[f for f, v in (("start_time", start_raw), ("end_time", end_raw)) if not v],
+            missing=[
+                field
+                for field, offset in (("start_time", start), ("end_time", end))
+                if offset is None
+            ],
             source=e.get("source") or "",
         ))
     return out

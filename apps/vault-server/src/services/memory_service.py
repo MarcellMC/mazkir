@@ -418,8 +418,11 @@ class MemoryService:
         except Exception:
             return "Vault: unavailable"
 
-        from datetime import date
-        today_str = date.today().isoformat()
+        # The vault's timezone, like every other date in this file — the
+        # snapshot sits in the same prompt as "Current date/time" and the two
+        # disagreeing by a day is how an overdue count goes wrong at night.
+        today = datetime.datetime.now(self.tz).date()
+        today_str = today.isoformat()
 
         overdue = 0
         try:
@@ -438,7 +441,7 @@ class MemoryService:
             # on partial completions as well.
             from src.services.habit_completion import is_complete_today
             habits_done_today = sum(
-                1 for h in habits if is_complete_today(h, date.today())
+                1 for h in habits if is_complete_today(h, today)
             )
         except Exception:
             pass

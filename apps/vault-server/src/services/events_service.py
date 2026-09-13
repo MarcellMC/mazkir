@@ -49,6 +49,17 @@ _SOURCE_SYSTEM_BY_ID_KEY = {
 # than deleted, for the reasons above.
 _DELETABLE_SOURCE_SYSTEMS = frozenset({"calendar", "timeline"})
 
+# `source` values meaning Mazkir itself wrote this row because the user said
+# so: `create_event` writes "manual", photo attachment writes "photo". They
+# have no independent upstream witness, which has two consequences in
+# `reconcile` — the matched branch keeps their `source`/`name` against the
+# calendar's echo, and the leftover branch below never deletes them.
+#
+# `approval.py` imports this as its `_HUMAN_SOURCES` rather than restating
+# the pair, so "a row the user authored" cannot come to mean two different
+# things in the two modules.
+AUTHORED_SOURCES = frozenset({"manual", "photo"})
+
 # The only fields a user can pin against re-inference.
 #
 # `completed` and `habit` are deliberately absent: `reconcile` re-derives
@@ -559,7 +570,7 @@ class EventsService:
                 if val:
                     existing_by_source[f"{key}:{val}"] = evt
                     matched = True
-            if not matched and evt.get("source") in ("manual", "photo"):
+            if not matched and evt.get("source") in AUTHORED_SOURCES:
                 manual_events.append(evt)
 
         result: list[dict] = []
@@ -612,7 +623,7 @@ class EventsService:
                 # Times and location still track the source: those a user
                 # may genuinely have edited in Google, and `user_set` is what
                 # protects a deliberate override.
-                echoes_our_own_write = matched_existing.get("source") in ("manual", "photo")
+                echoes_our_own_write = matched_existing.get("source") in AUTHORED_SOURCES
                 if not echoes_our_own_write:
                     matched_existing["name"] = fresh["name"]
                     matched_existing["source"] = fresh.get("source", matched_existing.get("source"))
@@ -654,6 +665,29 @@ class EventsService:
             leftover_by_id[evt.get("id", id(evt))] = evt
 
         for evt in leftover_by_id.values():
+            # A row Mazkir authored is never deleted by a source that failed
+            # to echo it. `create_event` writes `source: "manual"` and then
+            # syncs to Google, which puts a `calendar_id` into `source_ids`
+            # — and from that moment the event *looked* like a calendar
+            # event to the loop below, so any read where the calendar
+            # answered without returning it dropped the user's own block.
+            # That happens for reasons that have nothing to do with the user
+            # deleting anything: Google's insert is not immediately
+            # consistent, `GOOGLE_CALENDAR_INCLUDE` may not name Mazkir's
+            # calendar, and the day window itself can miss it. The result was
+            # a block that was written, reported `ok: true`, and then was
+            # simply absent from /day — and, because `GET /events/{date}`
+            # persists, absent for good after one read.
+            #
+            # The ledger is the source of truth for temporal data; the
+            # calendar entry is a copy Mazkir pushed out. A copy going
+            # missing is not evidence that the original never happened. (A
+            # user who really wants the block gone says so, and
+            # `delete_event` removes it from both sides.)
+            if evt.get("source") in AUTHORED_SOURCES:
+                result.append(evt)
+                continue
+
             source_ids = evt.get("source_ids", {})
             its_systems = {
                 _SOURCE_SYSTEM_BY_ID_KEY[key]

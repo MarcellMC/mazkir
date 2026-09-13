@@ -14,10 +14,12 @@ from opentelemetry.trace import NonRecordingSpan, SpanContext, Status, StatusCod
 from openinference.instrumentation import using_attributes
 from openinference.semconv.trace import SpanAttributes
 
+from src.config import settings
 from src.logging_setup import emit_agent_turn
 from src.tracing_setup import fs_span
 from src.services.tracing_helpers import with_span_status
 from src.services.claude_service import ClaudeService
+from src.services.clock import vault_now, vault_today, vault_today_iso
 from src.services.hooks import register_hook, run_pre_hooks, run_post_hooks
 from src.services.hooks.validate_schema import validate_schema as _validate_schema_hook
 from src.services.hooks.audit_log import audit_log as _audit_log_hook
@@ -113,7 +115,7 @@ def _register_destructive_previews() -> None:
                 import datetime as _dt
                 from src.services.block_resolver import resolve_block
 
-                today = _dt.date.today().isoformat()
+                today = vault_today_iso()
                 dates = [d for d in dict.fromkeys([params.get("date"), today]) if d]
                 candidates = []
                 for date in dates:
@@ -1871,7 +1873,7 @@ class AgentService:
         Returns None on failure.
         """
         import datetime as dt
-        today = dt.date.today().isoformat()
+        today = vault_today_iso()
         media_dir = self.media_path / today
         media_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1909,7 +1911,7 @@ class AgentService:
         entries.append({
             "filename": filename,
             "path": rel_path,
-            "saved_at": dt.datetime.now().isoformat(),
+            "saved_at": vault_now().isoformat(),
             "exif_timestamp": timestamp,
             "exif_location": exif.get("location"),
             "exif_camera": exif.get("camera"),
@@ -2100,11 +2102,16 @@ class AgentService:
         kept separate from the static prefix so the static prefix can be cached
         by Anthropic's prompt caching feature.
         """
-        import datetime
-        now = datetime.datetime.now()
+        # The user's wall clock, not the process's. A server running with
+        # TZ=UTC used to tell the model "06:34" while the user's phone said
+        # "09:34", and every block it then anchored on "now" landed three
+        # hours from the day being lived. The zone is named in the line so
+        # the model has no reason to reinterpret the number as UTC.
+        now = vault_now()
 
         parts = [
-            f"Current date/time: {now.strftime('%Y-%m-%d %H:%M')}",
+            f"Current date/time: {now.strftime('%Y-%m-%d %H:%M')} ({now.tzname()}, "
+            f"{settings.vault_timezone})",
             "",
             "## Current vault state",
             context.vault_snapshot,
@@ -2120,8 +2127,7 @@ class AgentService:
         # is always in the persisted store. A local read, never a merge.
         try:
             from src.services.events_service import is_complete
-            import datetime as _dt
-            today = _dt.datetime.now(self.vault.tz).strftime("%Y-%m-%d")
+            today = vault_today_iso()
             unfinished = [e for e in self.events.get_events(today) if not is_complete(e)]
             if unfinished:
                 described = "; ".join(
@@ -2348,7 +2354,7 @@ class AgentService:
         import datetime as dt
         from src.services.daily_tasks import parse_tasks_section
 
-        today = dt.date.today().isoformat()
+        today = vault_today_iso()
 
         # Daily-tier
         try:
@@ -2420,7 +2426,7 @@ class AgentService:
         import datetime as dt
         from src.services.habit_completion import completions_today, daily_target_of
 
-        today = dt.date.today()
+        today = vault_today()
         habits = self.vault.list_active_habits()
         return ok(
             {
@@ -2750,7 +2756,7 @@ class AgentService:
         section = params.get("section", "Notes")
         date = params.get("date")
 
-        now = dt.datetime.now()
+        now = vault_now()
         time_str = now.strftime("%H:%M")
 
         # Build markdown content block
@@ -2925,7 +2931,7 @@ class AgentService:
         import datetime as dt
         from src.services.events_service import is_complete
 
-        date = params.get("date", dt.date.today().isoformat())
+        date = params.get("date", vault_today_iso())
         if not self.events:
             return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
 
@@ -3000,7 +3006,7 @@ class AgentService:
                 "Supply either event_id or block_reference",
             )
 
-        today = dt.date.today().isoformat()
+        today = vault_today_iso()
         selected_date = params.get("selected_date") or getattr(self, "_selected_date", None)
         dates = [d for d in dict.fromkeys([selected_date, today]) if d]
 
@@ -3050,15 +3056,20 @@ class AgentService:
         import datetime as dt
         if not self.events:
             return err(ErrorCode.EXTERNAL_FAILURE, "Events service not available")
-        date = params.get("date", dt.date.today().isoformat())
+        date = params.get("date", vault_today_iso())
 
         from src.services.interval import (
-            crosses_midnight, derive_interval, split_at_midnight,
+            crosses_midnight, derive_interval, split_at_midnight, to_wall_clock,
         )
 
+        # An offset-bearing timestamp (`...T06:35:00Z`, `...+03:00`) becomes
+        # local wall clock before anything else looks at it. Everything from
+        # here on — the midnight split, `frag_date`, the stored row, `/day` —
+        # assumes wall clock, and a `Z` timestamp that reaches storage is a
+        # block `/day` can place on no day at all.
         derived = derive_interval(
-            params.get("start_time"),
-            params.get("end_time"),
+            to_wall_clock(params.get("start_time"), settings.vault_timezone),
+            to_wall_clock(params.get("end_time"), settings.vault_timezone),
             params.get("duration_minutes"),
             date,
         )
@@ -3137,7 +3148,12 @@ class AgentService:
                 import asyncio
                 coro = self.calendar.create_event(
                     name=params["name"],
-                    date=date,
+                    # The start's own day, not the `date` argument: a bare
+                    # HH:MM was anchored to `date` so they agree, but a
+                    # timestamp converted to wall clock (or derived backwards
+                    # from an end) can land on the next day, and Google would
+                    # otherwise be told the wrong one.
+                    date=start_time[:10] if start_time else date,
                     start_time=_extract_hhmm(start_time),
                     end_time=_extract_hhmm(end_time),
                     # Forwarded so the agent's judgement reaches Google: the
@@ -3240,7 +3256,13 @@ class AgentService:
                 for link in params.get("wikilinks") or []:
                     text = f"{text} [[{link}]]"
 
-                daily = self.vault.read_daily_note(date)
+                # The day the block actually landed on, which is only `date`
+                # when nothing moved it: converting an offset-bearing
+                # timestamp to wall clock can carry the start into the next
+                # day, and the schedule line has to follow the block rather
+                # than the argument that suggested a day for it.
+                note_date = fragments[0][0][:10] if fragments[0][0] else date
+                daily = self.vault.read_daily_note(note_date)
                 body = daily["content"]
                 entries = parse_schedule_section(body)
                 entries.append(
@@ -3252,8 +3274,8 @@ class AgentService:
                 )
                 new_section = render_schedule_section(entries)
                 new_body = replace_or_append_section(body, "Schedule", new_section)
-                self.vault.write_daily_note(date, new_body)
-                daily_path = f"10-daily/{date}.md"
+                self.vault.write_daily_note(note_date, new_body)
+                daily_path = f"10-daily/{note_date}.md"
                 items.append(daily_path)
                 result["daily_note"] = daily_path
             except Exception as e:
@@ -3326,7 +3348,11 @@ class AgentService:
                 return t
             if "T" not in t and len(t) <= 5:
                 return f"{date}T{t}:00"
-            return t
+            # Same reason as create_event: an offset names an instant, and
+            # everything downstream of here is wall clock. A `Z` timestamp
+            # stored on an event makes it undrawable on any day.
+            from src.services.interval import to_wall_clock
+            return to_wall_clock(t, settings.vault_timezone)
 
         updates = {}
         if "name" in params:

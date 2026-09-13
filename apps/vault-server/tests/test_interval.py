@@ -164,3 +164,49 @@ class TestCrossesMidnightIsTotal:
 
         with pytest.raises(ValueError):
             derive_interval("nonsense", None, 30, "2026-09-08")
+
+
+class TestToWallClock:
+    """An offset-bearing timestamp is converted, not stored as-is.
+
+    `minutes_into_day` rejects a `Z`-suffixed timestamp by design — it will
+    not guess a zone — so an event written with one could be placed on no day
+    at all: absent from `blocks[]`, absent from `gaps[]`, absent even from
+    `incomplete[]`, while `create_event` returned `ok: true`.
+    """
+
+    def test_a_utc_timestamp_becomes_local_wall_clock(self):
+        from src.services.interval import to_wall_clock
+
+        # 06:35Z is 09:35 in Jerusalem (IDT, +03:00) — the offset names an
+        # instant, so the conversion is the only reading that keeps the
+        # ledger and Google Calendar agreeing about when this happened.
+        assert to_wall_clock("2026-09-13T06:35:00Z", "Asia/Jerusalem") == \
+            "2026-09-13T09:35:00"
+
+    def test_an_offset_that_already_matches_is_merely_normalized(self):
+        from src.services.interval import to_wall_clock
+
+        assert to_wall_clock("2026-09-13T06:35:00+03:00", "Asia/Jerusalem") == \
+            "2026-09-13T06:35:00"
+
+    def test_a_utc_timestamp_can_move_the_date(self):
+        from src.services.interval import to_wall_clock
+
+        assert to_wall_clock("2026-09-13T22:30:00Z", "Asia/Jerusalem") == \
+            "2026-09-14T01:30:00"
+
+    def test_a_naive_timestamp_is_already_wall_clock(self):
+        from src.services.interval import to_wall_clock
+
+        assert to_wall_clock("2026-09-13T06:35:00", "Asia/Jerusalem") == \
+            "2026-09-13T06:35:00"
+
+    def test_a_bare_time_and_nonsense_pass_through_untouched(self):
+        """The callers own malformed input: `derive_interval` rejects it with
+        a message, and a bare HH:MM is anchored to the date further down."""
+        from src.services.interval import to_wall_clock
+
+        assert to_wall_clock("06:35", "Asia/Jerusalem") == "06:35"
+        assert to_wall_clock("nonsense", "Asia/Jerusalem") == "nonsense"
+        assert to_wall_clock(None, "Asia/Jerusalem") is None
