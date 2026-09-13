@@ -101,17 +101,6 @@ def complete_habit(vault: Any, path: str, now: dt.datetime | None = None) -> dic
     # that cares: approving a block on a past date must stamp that date, and
     # a caller passing `now` explicitly is how it does so.
     now = now or dt.datetime.now(pytz.timezone(settings.vault_timezone))
-
-    # The whole completion is one read-check-write, not just the token award.
-    # Locking only `update_tokens` let the agent tool (a worker thread) and
-    # `PATCH /habits/{name}` both read "0 of 1 done", both pass the check, and
-    # the second write drop the first's log entry — while both awards landed,
-    # paying twice for one recorded completion.
-    with vault.mutation_lock:
-        return _complete_habit_locked(vault, path, now)
-
-
-def _complete_habit_locked(vault: Any, path: str, now: dt.datetime) -> dict:
     today = now.date()
 
     habit = vault.read_file(path)

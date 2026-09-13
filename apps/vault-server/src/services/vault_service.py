@@ -1,7 +1,3 @@
-import logging
-import os
-import tempfile
-import threading
 from pathlib import Path
 from datetime import datetime
 import frontmatter
@@ -11,8 +7,6 @@ from typing import Dict, List, Optional
 
 from src.tracing_setup import fs_span
 
-logger = logging.getLogger(__name__)
-
 
 class VaultService:
     """Service for reading and writing to Obsidian vault"""
@@ -20,20 +14,6 @@ class VaultService:
     def __init__(self, vault_path: Path, timezone: str = "Asia/Jerusalem"):
         self.vault_path = Path(vault_path)
         self.tz = pytz.timezone(timezone)
-
-        # Serializes read-modify-write sequences against concurrent callers.
-        #
-        # `AgentService._execute_tool_batch` dispatches a batch of tool calls
-        # across threads, and the REST routes reach the same vault from their
-        # own requests. Without this, two awards read the same
-        # `total_tokens`, both write `old + n`, and one award is simply gone.
-        # Re-entrant because `update_tokens` calls `update_file`, which calls
-        # `write_file` — all three take it.
-        #
-        # Single-process only: it does nothing about two uvicorn workers or a
-        # second process editing the vault. That would need a file lock; one
-        # process is the deployment this serves.
-        self._mutation_lock = threading.RLock()
 
         # Verify vault exists
         if not self.vault_path.exists():
@@ -67,48 +47,6 @@ class VaultService:
             'path': relative_path
         }
 
-    @property
-    def mutation_lock(self) -> threading.RLock:
-        """The lock guarding vault mutations, for callers composing their own
-        read-modify-write sequence across more than one vault call."""
-        return self._mutation_lock
-
-    @staticmethod
-    def _atomic_write_bytes(file_path: Path, data: bytes) -> None:
-        """Replace `file_path` with `data` in one indivisible step.
-
-        `open(path, 'w')` truncates first and writes after, so any concurrent
-        reader can observe a zero-length or half-written file. `frontmatter`
-        parses both of those as `metadata == {}` rather than raising, so a
-        torn read of a habit note silently drops it from
-        `list_active_habits` — "the habit was created but is not in the
-        list", with nothing logged anywhere.
-
-        The temp file is created in the destination directory (same
-        filesystem, so `os.replace` is atomic) and named `.<file>.…tmp`, which
-        matches neither `list_files`' `*.md` glob nor anything Obsidian
-        indexes.
-        """
-        fd, tmp_name = tempfile.mkstemp(
-            dir=file_path.parent, prefix=f".{file_path.name}.", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-            # mkstemp creates 0600, while the `open(path, 'w')` this replaced
-            # kept whatever mode the file already had. Carry the old mode over
-            # so rewriting a note cannot quietly narrow its permissions.
-            try:
-                os.chmod(tmp_name, file_path.stat().st_mode & 0o7777)
-            except FileNotFoundError:
-                pass  # New file — 0600 is a fine default for vault content.
-            os.replace(tmp_name, file_path)
-        except BaseException:
-            Path(tmp_name).unlink(missing_ok=True)
-            raise
-
     def write_file(self, relative_path: str, metadata: Dict, content: str):
         """Write a markdown file with frontmatter
 
@@ -130,11 +68,10 @@ class VaultService:
 
         # Write to file
         rendered = frontmatter.dumps(post)
-        data = rendered.encode("utf-8")
         with fs_span("write", relative_path, "vault") as span:
-            span.set_attribute("fs.bytes", len(data))
-            with self._mutation_lock:
-                self._atomic_write_bytes(file_path, data)
+            span.set_attribute("fs.bytes", len(rendered.encode("utf-8")))
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(rendered)
 
     def update_file(self, relative_path: str, metadata_updates: Dict):
         """Update frontmatter of existing file
@@ -143,18 +80,14 @@ class VaultService:
             relative_path: Path relative to vault root
             metadata_updates: Dictionary of fields to update
         """
-        # Read and write under one lock: this is a read-modify-write, and two
-        # concurrent callers would otherwise each apply their update to the
-        # same starting metadata and the first one would be lost.
-        with self._mutation_lock:
-            # Read existing
-            file_data = self.read_file(relative_path)
+        # Read existing
+        file_data = self.read_file(relative_path)
 
-            # Update metadata
-            file_data['metadata'].update(metadata_updates)
+        # Update metadata
+        file_data['metadata'].update(metadata_updates)
 
-            # Write back
-            self.write_file(relative_path, file_data['metadata'], file_data['content'])
+        # Write back
+        self.write_file(relative_path, file_data['metadata'], file_data['content'])
 
     def append_history_line(self, body: str, summary: str) -> str:
         """Append a timestamped event line to the ## History section of `body`.
@@ -394,15 +327,6 @@ class VaultService:
             data = self.read_file(str(file_path))
             if data['metadata'].get('status') == 'active':
                 habits.append(data)
-            elif not data['metadata']:
-                # No frontmatter at all, so not an intentional `status:
-                # inactive` — the note is empty or its YAML is unterminated,
-                # and filtering it out silently is what made a habit that
-                # would not show up in the list impossible to diagnose.
-                logger.warning(
-                    "Habit note has no readable frontmatter, excluded from "
-                    "the active list: %s", file_path,
-                )
 
         return habits
 
@@ -478,55 +402,46 @@ class VaultService:
         Returns:
             Updated token data
         """
-        # The whole award is one read-modify-write over two shared files — the
-        # ledger and today's daily note — so it is held under one lock.
-        # Concurrent awards used to lose each other: two `complete_habit`
-        # calls in the same agent batch both read `total_tokens: 50` and both
-        # wrote 55, so one habit's tokens vanished while the tool result still
-        # reported `tokens_earned: 5`. That is the "logged a completion, got no
-        # tokens" report, and it is why the completion tools are no longer
-        # dispatched in parallel (see SAFE_WRITES in agent_service.py).
-        with self._mutation_lock:
-            # Read current ledger
-            ledger = self.read_token_ledger()
-            metadata = ledger['metadata']
+        # Read current ledger
+        ledger = self.read_token_ledger()
+        metadata = ledger['metadata']
 
-            # Reset tokens_today if it's a new day
-            today = datetime.now(self.tz).strftime('%Y-%m-%d')
-            last_updated = str(metadata.get('updated', ''))
-            if last_updated != today:
-                prior_today = 0
-            else:
-                prior_today = metadata.get('tokens_today', 0)
+        # Reset tokens_today if it's a new day
+        today = datetime.now(self.tz).strftime('%Y-%m-%d')
+        last_updated = str(metadata.get('updated', ''))
+        if last_updated != today:
+            prior_today = 0
+        else:
+            prior_today = metadata.get('tokens_today', 0)
 
-            # Update totals
-            old_total = metadata.get('total_tokens', 0)
-            new_total = old_total + tokens_earned
-            tokens_today = prior_today + tokens_earned
+        # Update totals
+        old_total = metadata.get('total_tokens', 0)
+        new_total = old_total + tokens_earned
+        tokens_today = prior_today + tokens_earned
 
-            # Update metadata
-            updates = {
-                'total_tokens': new_total,
-                'tokens_today': tokens_today,
-                'all_time_tokens': metadata.get('all_time_tokens', 0) + tokens_earned
+        # Update metadata
+        updates = {
+            'total_tokens': new_total,
+            'tokens_today': tokens_today,
+            'all_time_tokens': metadata.get('all_time_tokens', 0) + tokens_earned
+        }
+
+        self.update_file("00-system/motivation-tokens.md", updates)
+
+        # Add transaction to today's daily note
+        try:
+            daily = self.read_daily_note()
+            daily_metadata = daily['metadata']
+
+            daily_updates = {
+                'tokens_earned': daily_metadata.get('tokens_earned', 0) + tokens_earned,
+                'tokens_total': new_total
             }
 
-            self.update_file("00-system/motivation-tokens.md", updates)
-
-            # Add transaction to today's daily note
-            try:
-                daily = self.read_daily_note()
-                daily_metadata = daily['metadata']
-
-                daily_updates = {
-                    'tokens_earned': daily_metadata.get('tokens_earned', 0) + tokens_earned,
-                    'tokens_total': new_total
-                }
-
-                self.update_file(self.get_daily_note_path(), daily_updates)
-            except FileNotFoundError:
-                # Daily note doesn't exist yet - that's okay
-                pass
+            self.update_file(self.get_daily_note_path(), daily_updates)
+        except FileNotFoundError:
+            # Daily note doesn't exist yet - that's okay
+            pass
 
         return {
             'tokens_earned': tokens_earned,
@@ -883,40 +798,36 @@ class VaultService:
         Returns:
             Dict with completion info
         """
-        # One lock across read, award, archive and unlink: two concurrent
-        # completions of the same task would otherwise both read the active
-        # file before either removed it, and both award tokens.
-        with self._mutation_lock:
-            # Read task
-            task = self.read_file(task_path)
-            metadata = task['metadata']
+        # Read task
+        task = self.read_file(task_path)
+        metadata = task['metadata']
 
-            # Get task name
-            task_name = metadata.get('name', 'Task')
+        # Get task name
+        task_name = metadata.get('name', 'Task')
 
-            # Award tokens if requested
-            tokens_earned = 0
-            if award_tokens:
-                tokens_earned = metadata.get('tokens_on_completion', 5)
-                self.update_tokens(tokens_earned, f"Completed: {task_name}")
+        # Award tokens if requested
+        tokens_earned = 0
+        if award_tokens:
+            tokens_earned = metadata.get('tokens_on_completion', 5)
+            self.update_tokens(tokens_earned, f"Completed: {task_name}")
 
-            # Update metadata
-            today = datetime.now(self.tz).strftime('%Y-%m-%d')
-            metadata['status'] = 'done'
-            metadata['completed_date'] = today
-            metadata['updated'] = today
+        # Update metadata
+        today = datetime.now(self.tz).strftime('%Y-%m-%d')
+        metadata['status'] = 'done'
+        metadata['completed_date'] = today
+        metadata['updated'] = today
 
-            # Generate archive path
-            filename = Path(task_path).name
-            archive_path = f"40-tasks/archive/{filename}"
+        # Generate archive path
+        filename = Path(task_path).name
+        archive_path = f"40-tasks/archive/{filename}"
 
-            # Write to archive
-            self.write_file(archive_path, metadata, task['content'])
+        # Write to archive
+        self.write_file(archive_path, metadata, task['content'])
 
-            # Delete from active
-            active_file = self.vault_path / task_path
-            if active_file.exists():
-                active_file.unlink()
+        # Delete from active
+        active_file = self.vault_path / task_path
+        if active_file.exists():
+            active_file.unlink()
 
         return {
             'task_name': task_name,
