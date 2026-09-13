@@ -1,5 +1,6 @@
 """Unified events API — auto-merges from sources on read, persists enriched data."""
 
+import logging
 from datetime import date as date_type, datetime, time
 from typing import Literal
 
@@ -14,6 +15,106 @@ from src.services.events_service import USER_SETTABLE_FIELDS, apply_user_set
 from src.services.habit_completion import complete_habit
 
 router = APIRouter(prefix="/events", tags=["events"])
+
+logger = logging.getLogger(__name__)
+
+
+def _rfc3339(timestamp: str | None) -> str | None:
+    """Google's `dateTime` needs seconds; the bot's edit view sends `…THH:MM`."""
+    if timestamp and len(timestamp) == 16:
+        return f"{timestamp}:00"
+    return timestamp
+
+
+async def _push_edit_to_google(event: dict) -> dict:
+    """Send a name/time edit to the Google entry this block mirrors.
+
+    Without this, ✎ changed only Mazkir's copy, and Google kept the old times.
+    Same guards as the agent's `update_event`: only Mazkir's own calendar is
+    ours to change, and Google stores a cross-midnight span as one event where
+    Mazkir keeps two fragments.
+    """
+    from src.main import get_calendar
+    from src.services.events_service import is_complete
+    from src.services.interval import crosses_midnight
+
+    calendar_id = (event.get("source_ids") or {}).get("calendar_id")
+    calendar = get_calendar()
+    if not calendar_id:
+        return {"ok": False, "attempted": False, "reason": "not_in_calendar"}
+    if event.get("calendar") not in (None, "Mazkir"):
+        return {"ok": False, "attempted": False, "reason": "not_in_mazkir_calendar"}
+    if is_complete(event) and crosses_midnight(event["start_time"], event["end_time"]):
+        return {"ok": False, "attempted": False, "reason": "crosses_midnight"}
+    if not calendar or not getattr(calendar, "is_initialized", False):
+        return {"ok": False, "attempted": False, "reason": "calendar_not_configured"}
+
+    try:
+        pushed = await calendar.update_event(
+            event_id=calendar_id,
+            name=event.get("name"),
+            start_time=_rfc3339(event.get("start_time")),
+            end_time=_rfc3339(event.get("end_time")),
+        )
+    except Exception as exc:
+        logger.warning("Failed to push event edit to Google Calendar: %s", exc)
+        pushed = False
+    sync = {"ok": bool(pushed), "attempted": True, "event_id": calendar_id}
+    if not pushed:
+        sync["reason"] = "update_failed"
+    return sync
+
+
+async def _settle_proposal(event: dict, date_str: str) -> dict:
+    """Give an approved proposal what `create_event` withheld from it.
+
+    A proposal skips Google Calendar and `## Schedule` so a dismissed
+    suggestion leaves nothing behind. Approval is the moment it becomes real,
+    so both happen here — with the block's current times, which already carry
+    any ✎ adjustment, since the edit view saves before it approves. A failed
+    sync never blocks the approval; it is reported, as `create_event` does.
+    """
+    from src.main import get_calendar, get_vault
+    from src.services.daily_schedule import append_schedule_entry
+    from src.services.events_service import is_complete
+    from src.services.interval import crosses_midnight
+
+    start, end = event.get("start_time"), event.get("end_time")
+    calendar = get_calendar()
+
+    if not start:
+        sync = {"ok": False, "attempted": False, "reason": "no_start_time"}
+    elif is_complete(event) and crosses_midnight(start, end):
+        sync = {"ok": False, "attempted": False, "reason": "crosses_midnight"}
+    elif not calendar or not getattr(calendar, "is_initialized", False):
+        sync = {"ok": False, "attempted": False, "reason": "calendar_not_configured"}
+    else:
+        sync = {"ok": False, "attempted": True, "reason": "no_event_created"}
+        try:
+            gcal_id = await calendar.create_event(
+                name=event.get("name") or "",
+                date=date_str,
+                start_time=start[11:16],
+                end_time=(end or "")[11:16] or None,
+            )
+            if gcal_id:
+                event["source_ids"] = {**(event.get("source_ids") or {}), "calendar_id": gcal_id}
+                sync = {"ok": True, "attempted": True, "event_id": gcal_id}
+        except Exception as exc:
+            logger.warning("Failed to sync approved proposal to Google Calendar: %s", exc)
+            sync = {"ok": False, "attempted": True, "reason": str(exc)}
+
+    if start and end:
+        try:
+            vault = get_vault()
+            daily = vault.read_daily_note(date_str)
+            vault.write_daily_note(date_str, append_schedule_entry(
+                daily["content"], start[11:16], end[11:16], event.get("name") or "",
+            ))
+        except Exception as exc:
+            logger.warning("Failed to write approved proposal to ## Schedule: %s", exc)
+
+    return sync
 
 
 class PatchEventBody(BaseModel):
@@ -135,7 +236,10 @@ async def patch_event(date: date_type, event_id: str, body: PatchEventBody):
                     pinned[field] = value
             apply_user_set(event)
             events_svc.save_events(date_str, events)
-            return {"updated": event_id, "event": event}
+            response = {"updated": event_id, "event": event}
+            if updates.keys() & {"name", "start_time", "end_time"}:
+                response["calendar_sync"] = await _push_edit_to_google(event)
+            return response
 
     raise HTTPException(404, f"Event {event_id} not found")
 
@@ -244,6 +348,15 @@ async def set_event_state(date: date_type, event_id: str, body: SetStateBody):
         return {"ok": True, "state": "approved", "event_id": event_id,
                 "habit": None, "checkbox": None}
 
+    # --- an approved proposal becomes real -------------------------------
+    calendar_sync = None
+    if (
+        body.state == "approved"
+        and event.get("proposed")
+        and not (event.get("source_ids") or {}).get("calendar_id")
+    ):
+        calendar_sync = await _settle_proposal(event, date_str)
+
     # --- store the state -------------------------------------------------
     # Persist the reconciled day so the row exists to carry the state. This
     # is the deliberate exception to "reads never persist": an explicit user
@@ -253,5 +366,8 @@ async def set_event_state(date: date_type, event_id: str, body: SetStateBody):
             candidate["state"] = body.state
     events_svc.save_events(date_str, merged)
 
-    return {"ok": True, "state": body.state, "event_id": event_id,
-            "habit": None, "checkbox": None}
+    response = {"ok": True, "state": body.state, "event_id": event_id,
+                "habit": None, "checkbox": None}
+    if calendar_sync is not None:
+        response["calendar_sync"] = calendar_sync
+    return response

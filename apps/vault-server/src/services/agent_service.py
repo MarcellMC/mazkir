@@ -1587,6 +1587,9 @@ class AgentService:
         iters = 0
         stop_reason: str | None = None
         sent_back_forgery = False
+        # Raw text of every reply that carried a forged record. Stripped from
+        # what the model and the user see; kept whole for the turn audit.
+        forged_records: list[str] = []
 
         from src.services.turn_trace import has_trace_block, strip_trace_blocks
 
@@ -1665,6 +1668,8 @@ class AgentService:
                         )
                         raw_text = self._extract_text(response)
                         forged = has_trace_block(raw_text)
+                        if forged:
+                            forged_records.append(raw_text)
                         assistant_text = strip_trace_blocks(raw_text) if forged else raw_text
 
                         # A tool record in the model's own text is forged: only
@@ -1678,7 +1683,11 @@ class AgentService:
                             _loop_span.set_attribute("agent.forged_tool_record", True)
                             logger.warning(
                                 "forged_tool_record",
-                                extra={"event_type": "forged_tool_record", "chat_id": chat_id},
+                                extra={
+                                    "event_type": "forged_tool_record",
+                                    "chat_id": chat_id,
+                                    "forged_text": raw_text[:2000],
+                                },
                             )
                             messages.append({
                                 "role": "assistant",
@@ -1874,6 +1883,7 @@ class AgentService:
             iters=iters,
             stop_reason=stop_reason,
             skill=skill,
+            forged_records=forged_records,
         )
         return AgentResponse(response=assistant_text)
 
@@ -1891,8 +1901,9 @@ class AgentService:
         iters: int,
         stop_reason: str | None,
         skill: str | None = None,
+        forged_records: list[str] | None = None,
     ) -> None:
-        emit_agent_turn({
+        record = {
             "chat_id": chat_id,
             "skill": skill,
             "user_text": user_text,
@@ -1904,7 +1915,12 @@ class AgentService:
             "prior_action_id": prior_action_id,
             "iters": iters,
             "stop_reason": stop_reason,
-        })
+        }
+        if forged_records:
+            # The evidence a forged turn leaves: the claim, beside the empty
+            # `tools` list above that disproves it.
+            record["forged_records"] = forged_records
+        emit_agent_turn(record)
 
     # ── Attachments ────────────────────────────────────────────────
 
@@ -3282,12 +3298,7 @@ class AgentService:
         # and a suggestion they later dismiss would leave a line behind.
         if not params.get("photo_path") and complete and not proposed:
             try:
-                from src.services.daily_schedule import (
-                    ScheduleEntry,
-                    parse_schedule_section,
-                    render_schedule_section,
-                )
-                from src.services.daily_tasks import replace_or_append_section
+                from src.services.daily_schedule import append_schedule_entry
 
                 text = params["name"]
                 loc = params.get("location") or {}
@@ -3297,17 +3308,9 @@ class AgentService:
                     text = f"{text} [[{link}]]"
 
                 daily = self.vault.read_daily_note(date)
-                body = daily["content"]
-                entries = parse_schedule_section(body)
-                entries.append(
-                    ScheduleEntry(
-                        start=_extract_hhmm(start_time),
-                        end=_extract_hhmm(end_time),
-                        text=text,
-                    )
+                new_body = append_schedule_entry(
+                    daily["content"], _extract_hhmm(start_time), _extract_hhmm(end_time), text,
                 )
-                new_section = render_schedule_section(entries)
-                new_body = replace_or_append_section(body, "Schedule", new_section)
                 self.vault.write_daily_note(date, new_body)
                 daily_path = f"10-daily/{date}.md"
                 items.append(daily_path)

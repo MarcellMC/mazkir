@@ -187,6 +187,25 @@ class TestHandleMessage:
         saved_reply = memory.save_turn.call_args.args[2]
         assert "Tools I called" not in saved_reply
 
+    def test_a_forged_record_is_kept_in_the_turn_audit(self, agent, mock_services, monkeypatch):
+        """Stripped from what the model and the user read, never from what a
+        person debugs: agent-turns.jsonl is how this bug was found at all."""
+        claude = mock_services[0]
+        captured = {}
+        monkeypatch.setattr(
+            "src.services.agent_service.emit_agent_turn",
+            lambda record: captured.update(record),
+        )
+        claude.create.side_effect = [
+            self._text(self._FORGED),
+            self._text("Nothing was saved."),
+        ]
+
+        agent.handle_message("Schedule for later: water the plants", chat_id=123)
+
+        assert captured["forged_records"] == [self._FORGED]
+        assert "Tools I called" not in captured["assistant_text"]
+
     def test_a_record_after_real_calls_is_stripped_without_a_retry(
         self, agent, mock_services,
     ):
