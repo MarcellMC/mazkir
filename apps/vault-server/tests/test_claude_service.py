@@ -84,32 +84,64 @@ class TestClaudeServiceCreateRouterChoice:
             )
             assert result == {"skill": "capture", "reason": "user wants to save a note"}
 
-    def test_parses_json_with_trailing_prose(self):
-        """Regression: model appends extra text after the JSON object."""
+    def test_forces_a_known_skill_through_structured_output(self):
+        """The router was asked for JSON but not held to it. Given a chat
+        history, Haiku sometimes just continued the chat — 11 unparseable
+        replies on 2026-09-12/13, each silently routed to `mazkir`, which has
+        no write tools. A schema with the skill names as an enum makes prose
+        and unknown skills impossible rather than unlikely."""
         with patch("src.services.claude_service.anthropic") as mock_anthropic:
             service = self._make_service(
-                mock_anthropic,
-                '{"skill": "recall", "reason": "read-only query"}\nSome extra text.',
+                mock_anthropic, '{"skill": "recall", "reason": "read-only query"}',
             )
-            result = service.create_router_choice(
+            service.create_router_choice(
                 user_msg="show tasks",
                 recent_messages=[],
-                skill_catalog=[{"name": "recall", "description": "d", "when_to_use": ""}],
+                skill_catalog=[
+                    {"name": "capture", "description": "d", "when_to_use": ""},
+                    {"name": "recall", "description": "d", "when_to_use": ""},
+                ],
             )
-            assert result["skill"] == "recall"
 
-    def test_parses_json_in_markdown_fence(self):
+            kwargs = mock_anthropic.Anthropic.return_value.messages.create.call_args.kwargs
+            assert kwargs["output_config"] == {
+                "format": {
+                    "type": "json_schema",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "skill": {"type": "string", "enum": ["capture", "recall"]},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["skill", "reason"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+
+    def test_history_reaches_the_router_as_a_transcript_not_as_turns(self):
+        """Handed the conversation as alternating turns, the router is placed
+        mid-chat as the assistant, and its most natural output is the next
+        reply. As a quoted transcript it is material to classify."""
         with patch("src.services.claude_service.anthropic") as mock_anthropic:
             service = self._make_service(
-                mock_anthropic,
-                '```json\n{"skill": "manager", "reason": "planning"}\n```',
+                mock_anthropic, '{"skill": "recall", "reason": "follow-up"}',
             )
-            result = service.create_router_choice(
-                user_msg="complete my tasks",
-                recent_messages=[],
-                skill_catalog=[{"name": "manager", "description": "d", "when_to_use": ""}],
+            service.create_router_choice(
+                user_msg="yes, do it",
+                recent_messages=[
+                    {"role": "user", "content": "move the gym block?"},
+                    {"role": "assistant", "content": "Move it to 18:00?"},
+                ],
+                skill_catalog=[{"name": "recall", "description": "d", "when_to_use": ""}],
             )
-            assert result["skill"] == "manager"
+
+            messages = mock_anthropic.Anthropic.return_value.messages.create.call_args.kwargs["messages"]
+            assert [m["role"] for m in messages] == ["user"]
+            content = messages[0]["content"]
+            assert "user: move the gym block?" in content
+            assert "assistant: Move it to 18:00?" in content
+            assert content.rstrip().endswith("yes, do it")
 
 
 class TestClaudeServiceComplete:

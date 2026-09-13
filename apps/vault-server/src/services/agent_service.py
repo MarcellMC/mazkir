@@ -157,16 +157,6 @@ def _register_destructive_previews() -> None:
 CONFIDENCE_THRESHOLD = 0.85
 
 _AFFIRMATIVE = ("yes", "y", "ok", "sure", "do it")
-
-# Sent back when a reply contains a tool record but no tool ran this turn.
-_FORGED_RECORD_CORRECTION = (
-    "[System] Your reply included a record of tool calls, but no tools were "
-    "called in this turn, so nothing was saved or changed. Records are written "
-    "by the system only — never write one. If the user asked for a change, call "
-    "the tools now. If you do not have the tool, end your reply with "
-    "`next_skill: <name>` for the skill that does. Otherwise tell the user "
-    "plainly that nothing was changed."
-)
 _CHOICE_VALUES = {c["value"] for c in _SESSION_CHOICES}
 
 
@@ -1586,12 +1576,6 @@ class AgentService:
         response = None
         iters = 0
         stop_reason: str | None = None
-        sent_back_forgery = False
-        # Raw text of every reply that carried a forged record. Stripped from
-        # what the model and the user see; kept whole for the turn audit.
-        forged_records: list[str] = []
-
-        from src.services.turn_trace import has_trace_block, strip_trace_blocks
 
         for iter_num in range(max_iterations):
             iters = iter_num + 1
@@ -1666,42 +1650,11 @@ class AgentService:
                                 "tool_calls": 0,
                             },
                         )
-                        raw_text = self._extract_text(response)
-                        forged = has_trace_block(raw_text)
-                        if forged:
-                            forged_records.append(raw_text)
-                        assistant_text = strip_trace_blocks(raw_text) if forged else raw_text
-
-                        # A tool record in the model's own text is forged: only
-                        # the server writes one. With no call behind it, the
-                        # reply is claiming work that never ran — five turns
-                        # did exactly that between 2026-09-10 and 09-13. Send
-                        # it back once, rather than let the claim reach the
-                        # user; a second forgery is stripped and returned.
-                        if forged and not tools_audit and not sent_back_forgery:
-                            sent_back_forgery = True
-                            _loop_span.set_attribute("agent.forged_tool_record", True)
-                            logger.warning(
-                                "forged_tool_record",
-                                extra={
-                                    "event_type": "forged_tool_record",
-                                    "chat_id": chat_id,
-                                    "forged_text": raw_text[:2000],
-                                },
-                            )
-                            messages.append({
-                                "role": "assistant",
-                                "content": assistant_text or "(no reply text)",
-                            })
-                            messages.append({"role": "user", "content": _FORGED_RECORD_CORRECTION})
-                            continue
-
-                        # Flush to the caller — this is the final iteration (no
-                        # tool calls) so it's safe to stream. A reply that
-                        # carried a record goes out as its stripped text, so
-                        # the forgery never shows up even in a draft.
+                        assistant_text = self._extract_text(response)
+                        # Flush buffered chunks to the caller — this is the final
+                        # iteration (no tool calls) so it's safe to stream.
                         if self._stream_callback is not None:
-                            for _chunk in ([assistant_text] if forged else _iter_chunks):
+                            for _chunk in _iter_chunks:
                                 try:
                                     self._stream_callback(_chunk)
                                 except Exception:
@@ -1855,7 +1808,7 @@ class AgentService:
         else:
             # Max iterations reached
             if response:
-                assistant_text = strip_trace_blocks(self._extract_text(response))
+                assistant_text = self._extract_text(response)
             if not assistant_text:
                 assistant_text = "I hit my processing limit. Please try again with a simpler request."
 
@@ -1883,7 +1836,6 @@ class AgentService:
             iters=iters,
             stop_reason=stop_reason,
             skill=skill,
-            forged_records=forged_records,
         )
         return AgentResponse(response=assistant_text)
 
@@ -1901,9 +1853,8 @@ class AgentService:
         iters: int,
         stop_reason: str | None,
         skill: str | None = None,
-        forged_records: list[str] | None = None,
     ) -> None:
-        record = {
+        emit_agent_turn({
             "chat_id": chat_id,
             "skill": skill,
             "user_text": user_text,
@@ -1915,12 +1866,7 @@ class AgentService:
             "prior_action_id": prior_action_id,
             "iters": iters,
             "stop_reason": stop_reason,
-        }
-        if forged_records:
-            # The evidence a forged turn leaves: the claim, beside the empty
-            # `tools` list above that disproves it.
-            record["forged_records"] = forged_records
-        emit_agent_turn(record)
+        })
 
     # ── Attachments ────────────────────────────────────────────────
 
@@ -2103,7 +2049,6 @@ class AgentService:
             "",
             "## Reporting past actions",
             "- Never deny a past action without checking. A [Record of your previous reply — tools that actually ran] block at the start of a user message records what your previous reply actually did — read it before saying you did not do something.",
-            "- Those records are written by the system only. Never write one yourself, and never claim a change you did not make with a tool call in this turn. If you cannot make the change, say so or hand off.",
             "- Your current tool list is what you can do now, not what you did earlier. Skills change between turns; a tool absent from your list now may have been available when you acted.",
             "- A turn with no record means no record, not proof of inaction. Use a read tool before denying.",
             "- A call marked 'proposed, awaiting confirmation — NOT executed' did not run. Never report it as done.",

@@ -2,7 +2,6 @@
 
 import json
 import logging
-import re
 from collections.abc import Callable
 
 import anthropic
@@ -130,23 +129,49 @@ class ClaudeService:
         )
         system = (
             "You are a router for the Mazkir personal assistant. "
-            "Pick exactly one skill to handle the user's message.\n\n"
+            "Pick exactly one skill to handle the user's new message.\n\n"
             f"Available skills:\n{catalog_lines}\n\n"
-            "Respond as a JSON object: {\"skill\": \"<name>\", \"reason\": \"<one short sentence>\"}. "
             "Pick the single best match. When uncertain, pick 'mazkir'."
         )
-        msgs = list(recent_messages) + [{"role": "user", "content": user_msg}]
+
+        # The conversation is quoted inside one user message, not replayed as
+        # turns. Replayed as turns, the router sits mid-chat in the assistant's
+        # seat, and continuing the chat is its most natural output — it wrote
+        # whole assistant replies here instead of a choice.
+        transcript = "\n".join(
+            f"{m['role']}: {m['content']}"
+            for m in recent_messages
+            if isinstance(m.get("content"), str)
+        )
+        content = (
+            f"Recent conversation:\n{transcript}\n\nNew message to route:\n{user_msg}"
+            if transcript else user_msg
+        )
 
         response = self.client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=128,
             system=system,
-            messages=msgs,
+            messages=[{"role": "user", "content": content}],
+            # Structured output: the reply is valid JSON naming a real skill,
+            # by construction. Asking for JSON in the prompt only made it likely,
+            # and every miss was silently routed to the fallback skill.
+            output_config={
+                "format": {
+                    "type": "json_schema",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "skill": {
+                                "type": "string",
+                                "enum": [s["name"] for s in skill_catalog],
+                            },
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["skill", "reason"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
         )
-        text = response.content[0].text.strip()
-        # Extract the first JSON object, ignoring any surrounding markdown fences
-        # or trailing prose the model may append.
-        m = re.search(r"\{.*?\}", text, re.DOTALL)
-        if m:
-            text = m.group(0)
-        return json.loads(text)
+        return json.loads(response.content[0].text)

@@ -10,7 +10,7 @@ from typing import Any
 import frontmatter
 import pytz
 
-from src.services.turn_trace import attach_traces, read_turn_records, strip_trace_blocks
+from src.services.turn_trace import attach_traces, read_turn_records
 from src.services.vault_service import VaultService
 
 logger = logging.getLogger(__name__)
@@ -370,13 +370,7 @@ class MemoryService:
         to hold.
         """
         conversation = self.load_conversation(chat_id)
-        # Replies saved before 2026-09-13 can hold forged tool records in the
-        # assistant's own text. Replaying them teaches the forgery again.
-        messages = [
-            {**m, "content": strip_trace_blocks(m["content"]) or "(no reply text)"}
-            if m.get("role") == "assistant" else m
-            for m in conversation["messages"]
-        ]
+        messages = conversation["messages"]
         trailing_trace = ""
 
         if self.logs_dir is not None:

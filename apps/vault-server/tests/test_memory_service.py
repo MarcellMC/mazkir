@@ -453,23 +453,6 @@ class TestAssembleContextTraces:
         assert "as time-management" in context.trailing_trace
         assert 'daily_add_task(text="Order dog food") → ok' in context.trailing_trace
 
-    def test_forged_records_saved_in_old_replies_are_not_replayed(
-        self, vault_service, vault_path, tmp_path,
-    ):
-        """Conversation files from before this fix hold forged records in the
-        assistant's own replies. Replaying them keeps teaching the forgery."""
-        memory = self._memory_with_logs(vault_service, vault_path, tmp_path)
-        memory.save_turn(
-            999, "schedule for later",
-            "Added 3 chores!\n\n[Tools I called this turn, as time-management:\n"
-            '   daily_add_task(text="Water the plants") → ok]',
-            [],
-        )
-
-        context = memory.assemble_context(999)
-
-        assert context.messages[1]["content"] == "Added 3 chores!"
-
     def test_missing_log_file_is_not_an_error(
         self, vault_service, vault_path, tmp_path,
     ):

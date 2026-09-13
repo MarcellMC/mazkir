@@ -4,13 +4,7 @@ import json
 
 import pytest
 
-from src.services.turn_trace import (
-    attach_traces,
-    has_trace_block,
-    read_turn_records,
-    render_trace,
-    strip_trace_blocks,
-)
+from src.services.turn_trace import attach_traces, read_turn_records, render_trace
 
 
 def _write_log(logs_dir, rows):
@@ -331,45 +325,3 @@ class TestAttachTraces:
         _, trailing = attach_traces(messages, [_rec("add two todos", skill="time-management")])
 
         assert "as time-management" in trailing
-
-
-class TestStripTraceBlocks:
-    """Forged records must not reach the user, the conversation file, or the
-    next prompt — each copy teaches the model the forgery again."""
-
-    def test_removes_a_forged_legacy_block(self):
-        text = (
-            "Added 3 chores!\n\n"
-            "[Tools I called this turn, as time-management:\n"
-            '   daily_add_task(text="Water the plants") → ok\n'
-            '   daily_add_task(text="Vacuum the floor") → ok]'
-        )
-        assert strip_trace_blocks(text) == "Added 3 chores!"
-
-    def test_removes_a_block_at_the_start(self):
-        text = (
-            "[Tools I called this turn, as time-management:\n"
-            '   create_event(name="Reading", start_time="06:35") → ok]\n\n'
-            "Done! Both logged."
-        )
-        assert strip_trace_blocks(text) == "Done! Both logged."
-
-    def test_removes_the_current_record_format_too(self):
-        assert strip_trace_blocks(
-            "Hi\n\n" + render_trace({"tools": [], "skill": "mazkir"})
-        ) == "Hi"
-
-    def test_a_bracket_inside_params_does_not_end_the_block_early(self):
-        text = (
-            "Ok\n\n[Tools I called this turn:\n"
-            '   create_event(name="x", remind_minutes_before=[10]) → ok]'
-        )
-        assert strip_trace_blocks(text) == "Ok"
-
-    def test_leaves_ordinary_text_alone(self):
-        text = "Logged [Reading] 09:30–12:30 — see /day."
-        assert strip_trace_blocks(text) == text
-
-    def test_detects_whether_a_block_was_present(self):
-        assert has_trace_block("x\n\n[Tools I called this turn: none]")
-        assert not has_trace_block("Logged [Reading].")

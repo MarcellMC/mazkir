@@ -59,6 +59,19 @@ def test_router_falls_back_when_llm_errors(skills):
     assert "fallback" in decision.reason.lower()
 
 
+def test_a_router_failure_is_logged_as_an_error(skills, caplog):
+    """A fallback sends the turn to a skill that may lack the tools it needs.
+    That happened on most days since June at WARNING, where nobody saw it."""
+    claude = MagicMock()
+    claude.create_router_choice.side_effect = RuntimeError("LLM down")
+    router = RouterService(claude=claude, fallback_skill="manager")
+
+    with caplog.at_level("WARNING"):
+        router.pick("foo", recent_messages=[], skills=skills)
+
+    assert [r.levelname for r in caplog.records] == ["ERROR"]
+
+
 def test_default_fallback_is_mazkir():
     from unittest.mock import Mock
     from src.services.router_service import RouterService

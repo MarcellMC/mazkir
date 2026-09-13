@@ -15,7 +15,6 @@ log line must cost one trace, not the whole conversation.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -68,41 +67,8 @@ def read_turn_records(
 
 
 _HEADER = "Record of your previous reply — tools that actually ran"
-# The format this module wrote until 2026-09-13, inside the assistant's own
-# text. Models learned to write it themselves instead of calling tools, and
-# copies of it persist in conversation files, so it is still recognised.
-_LEGACY_HEADER = "Tools I called this turn"
 _MAX_PARAM_CHARS = 80
 _PENDING_OUTCOME = "proposed, awaiting confirmation — NOT executed"
-
-# A block runs from its header to the first `]` that ends a line, so a list
-# param such as `remind_minutes_before=[10]` does not close it early.
-_TRACE_BLOCK = re.compile(
-    r"\s*\[(?:" + re.escape(_HEADER) + "|" + re.escape(_LEGACY_HEADER) + r")\b"
-    r".*?\](?=[ \t]*(?:\n|$))",
-    re.DOTALL,
-)
-
-
-def has_trace_block(text: str) -> bool:
-    """Whether `text` contains a tool record, in either format."""
-    return isinstance(text, str) and bool(_TRACE_BLOCK.search(text))
-
-
-def strip_trace_blocks(text: str) -> str:
-    """Remove every tool record from `text`.
-
-    Only the server writes these. One appearing in model output is forged,
-    and must not reach the user, the conversation file, or the next prompt —
-    each surviving copy teaches the forgery again.
-
-    Anything that is not a string is returned as it came: like the rest of
-    this module, stripping must never be the reason a turn fails.
-    """
-    if not isinstance(text, str):
-        return text
-    return _TRACE_BLOCK.sub("", text).strip()
-
 
 def _render_params(params: Any) -> str:
     """Render a call's params compactly, capped at _MAX_PARAM_CHARS.
