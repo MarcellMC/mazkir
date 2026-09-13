@@ -65,3 +65,16 @@ def render_schedule_section(entries: list[ScheduleEntry]) -> str:
         rng = f"{e.start}–{e.end}" if e.end else e.start
         lines.append(f"- {rng} {e.text}")
     return "\n".join(lines) + "\n"
+
+
+def append_schedule_entry(body: str, start: str, end: str | None, text: str) -> str:
+    """`body` with one `- HH:MM[–HH:MM] text` line added to `## Schedule`.
+
+    Shared by `create_event` and by approving a proposal, which skipped the
+    line at creation so a dismissed suggestion would leave nothing behind.
+    """
+    from src.services.daily_tasks import replace_or_append_section
+
+    entries = parse_schedule_section(body)
+    entries.append(ScheduleEntry(start=start, end=end, text=text))
+    return replace_or_append_section(body, "Schedule", render_schedule_section(entries))

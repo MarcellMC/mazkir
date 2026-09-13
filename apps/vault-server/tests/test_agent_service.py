@@ -138,6 +138,39 @@ class TestHandleMessage:
         assert result.awaiting_confirmation is False
         memory.save_turn.assert_called_once()
 
+    @staticmethod
+    def _text(text):
+        block = MagicMock()
+        block.type = "text"
+        block.text = text
+        response = MagicMock()
+        response.stop_reason = "end_turn"
+        response.content = [block]
+        return response
+
+    def test_the_newest_turns_trace_rides_on_the_incoming_message(
+        self, agent, mock_services,
+    ):
+        from src.services.memory_service import ConversationContext
+        claude = mock_services[0]
+        memory = mock_services[2]
+        memory.assemble_context.return_value = ConversationContext(
+            messages=[
+                {"role": "user", "content": "add a todo"},
+                {"role": "assistant", "content": "Added it."},
+            ],
+            summary="", vault_snapshot="No data.", knowledge="",
+            trailing_trace='[Record of your previous reply: daily_add_task() → ok]',
+        )
+        claude.create.return_value = self._text("You're welcome.")
+
+        agent.handle_message("thanks", chat_id=123)
+
+        sent = claude.create.call_args.kwargs["messages"]
+        assert sent[-2] == {"role": "assistant", "content": "Added it."}
+        assert "daily_add_task() → ok" in str(sent[-1]["content"])
+        assert str(sent[-1]["content"]).rstrip().endswith("thanks")
+
     def test_tool_call_then_response(self, agent, mock_services):
         claude = mock_services[0]
         vault = mock_services[1]
@@ -662,6 +695,35 @@ class TestEventTools:
         assert result["ok"] is True
         assert result["data"]["event_id"] == "evt_new"
         events_mock.create_event.assert_called_once()
+
+    def test_create_event_proposed_is_stored_as_a_suggestion_and_not_synced(
+        self, agent, mock_services,
+    ):
+        """Times Mazkir picked are a suggestion: stored as proposed, kept off
+        Google Calendar and out of ## Schedule until the user settles them."""
+        from unittest.mock import AsyncMock
+        events_mock = mock_services[4]
+        calendar_mock = mock_services[3]
+        vault_mock = mock_services[1]
+        events_mock.create_event.return_value = {"id": "evt_new", "path": "data/events/2026-09-13.json"}
+        calendar_mock.create_event = AsyncMock(return_value="gcal_event_123")
+
+        result = agent._tool_create_event({
+            "name": "Water the plants",
+            "date": "2026-09-13",
+            "start_time": "17:00",
+            "duration_minutes": 10,
+            "proposed": True,
+        })
+
+        assert result["ok"] is True
+        assert events_mock.create_event.call_args.kwargs.get("proposed") is True
+        calendar_mock.create_event.assert_not_called()
+        assert result["data"]["calendar_sync"] == {
+            "ok": False, "attempted": False, "reason": "proposed",
+        }
+        assert result["data"]["proposed"] is True
+        vault_mock.write_daily_note.assert_not_called()
 
     def test_create_event_syncs_to_gcal(self, agent, mock_services):
         from unittest.mock import AsyncMock

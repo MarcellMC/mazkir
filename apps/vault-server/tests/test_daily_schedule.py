@@ -2,9 +2,30 @@
 
 from src.services.daily_schedule import (
     ScheduleEntry,
+    append_schedule_entry,
     parse_schedule_section,
     render_schedule_section,
 )
+
+
+def test_append_adds_a_line_and_keeps_other_sections():
+    body = "## Schedule\n- 09:00–09:30 Standup\n\n## Notes\n- hi\n"
+
+    out = append_schedule_entry(body, "17:00", "17:10", "Water the plants")
+
+    assert parse_schedule_section(out) == [
+        ScheduleEntry(start="09:00", end="09:30", text="Standup"),
+        ScheduleEntry(start="17:00", end="17:10", text="Water the plants"),
+    ]
+    assert "## Notes\n- hi" in out
+
+
+def test_append_creates_the_section_when_missing():
+    out = append_schedule_entry("## Notes\n- hi\n", "17:00", None, "Water the plants")
+
+    assert parse_schedule_section(out) == [
+        ScheduleEntry(start="17:00", end=None, text="Water the plants"),
+    ]
 
 
 def test_parse_empty_when_no_section():

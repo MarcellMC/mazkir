@@ -63,6 +63,12 @@ def resolve_state(event: dict[str, Any]) -> str:
     if stored in _STORABLE:
         return stored
 
+    # A proposal is authored by Mazkir, not the user: asked to schedule things
+    # "for later", it picked the times. `source` is still "manual", so without
+    # this it would auto-approve and count as something the user said.
+    if event.get("proposed"):
+        return "pending"
+
     if event.get("source") in _HUMAN_SOURCES:
         return "approved"
 

@@ -1,7 +1,6 @@
 """Tests for the shared habit-completion semantics."""
 
 import datetime as dt
-import threading
 
 from src.services.habit_completion import completions_today, daily_target_of
 
@@ -83,7 +82,6 @@ class FakeVault:
         self.files = {habit["path"]: habit}
         self.total_tokens = 0
         self.token_calls = []
-        self.mutation_lock = threading.RLock()
 
     def read_file(self, path):
         import copy
@@ -224,7 +222,6 @@ class _RecordingVault:
 
     def __init__(self):
         self.written = {}
-        self.mutation_lock = threading.RLock()
 
     def read_file(self, path):
         return {"metadata": {"name": "Dog walk", "streak": 0}, "content": ""}

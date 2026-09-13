@@ -220,8 +220,12 @@ class EventsService:
         source_ids: dict | None = None,
         category: str | None = None,
         logical_id: str | None = None,
+        proposed: bool = False,
     ) -> dict:
         """Create a new event and persist it.
+
+        `proposed` marks a block whose time Mazkir chose rather than the user
+        stated; `approval.resolve_state` keeps it pending until they decide.
 
         `activity` is what the time was spent doing (walk, work, commute).
         `category` is a deprecated alias for it, kept for one release: it used
@@ -280,6 +284,8 @@ class EventsService:
             event["photos"].append(
                 PhotoRef(path=photo_path, caption=caption, wikilinks=wikilinks or []).to_dict()
             )
+        if proposed:
+            event["proposed"] = True
 
         events.append(event)
         self.save_events(date, events)

@@ -50,7 +50,10 @@ class RouterService:
                 skill_catalog=catalog,
             )
         except Exception as e:
-            logger.warning("Router LLM call failed: %s — falling back to %s", e, self.fallback_skill)
+            # ERROR, not WARNING: the fallback skill may lack the tools this
+            # message needs, and a skill without the tool is where a reply
+            # claiming work that never ran comes from.
+            logger.error("Router LLM call failed: %s — falling back to %s", e, self.fallback_skill)
             return RouterDecision(
                 skill=self.fallback_skill,
                 reason=f"fallback: router error ({e})",
@@ -60,7 +63,7 @@ class RouterService:
         reason = choice.get("reason", "")
 
         if picked not in known:
-            logger.warning(
+            logger.error(
                 "Router picked unknown skill %r — falling back to %s",
                 picked, self.fallback_skill,
             )

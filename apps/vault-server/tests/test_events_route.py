@@ -212,6 +212,102 @@ class TestSetState:
         assert r.json()["state"] == "approved"
         assert fake.saved["2026-09-10"][0]["state"] == "approved"
 
+    # --- a proposal reaches Google only once approved --------------------
+
+    _PROPOSAL = {
+        "id": "p1", "name": "Water the plants", "source": "manual",
+        "proposed": True, "source_ids": {},
+        "start_time": "2026-09-13T17:00:00", "end_time": "2026-09-13T17:10:00",
+    }
+
+    @staticmethod
+    def _fake_calendar(monkeypatch, gcal_id="gcal_p1"):
+        import src.main as main
+
+        class FakeCalendar:
+            is_initialized = True
+
+            def __init__(self):
+                self.created = []
+
+            async def create_event(self, **kwargs):
+                self.created.append(kwargs)
+                return gcal_id
+
+        calendar = FakeCalendar()
+        monkeypatch.setattr(main, "get_calendar", lambda: calendar)
+        return calendar
+
+    @staticmethod
+    def _fake_note(monkeypatch):
+        import src.main as main
+        written = {}
+
+        class FakeVault:
+            def read_daily_note(self, date):
+                return {"content": "## Notes\n- hi\n"}
+
+            def write_daily_note(self, date, content):
+                written["date"] = date
+                written["content"] = content
+
+        monkeypatch.setattr(main, "get_vault", lambda: FakeVault())
+        return written
+
+    def test_approving_a_proposal_puts_it_on_google_and_in_the_note(self, monkeypatch):
+        """A proposal was kept off Google and ## Schedule so a dismissed one
+        leaves nothing behind. Approval is the moment it becomes real."""
+        fake = self._install(monkeypatch, [dict(self._PROPOSAL)])
+        calendar = self._fake_calendar(monkeypatch)
+        written = self._fake_note(monkeypatch)
+
+        r = self._client().post("/events/2026-09-13/p1/state", json={"state": "approved"})
+
+        assert r.status_code == 200, r.text
+        assert r.json()["calendar_sync"] == {"ok": True, "attempted": True, "event_id": "gcal_p1"}
+        assert calendar.created == [{
+            "name": "Water the plants", "date": "2026-09-13",
+            "start_time": "17:00", "end_time": "17:10",
+        }]
+        saved = fake.saved["2026-09-13"][0]
+        assert saved["state"] == "approved"
+        assert saved["source_ids"] == {"calendar_id": "gcal_p1"}
+        assert "- 17:00–17:10 Water the plants" in written["content"]
+
+    def test_approving_a_proposal_without_a_calendar_still_approves(self, monkeypatch):
+        import src.main as main
+        fake = self._install(monkeypatch, [dict(self._PROPOSAL)])
+        monkeypatch.setattr(main, "get_calendar", lambda: None)
+        written = self._fake_note(monkeypatch)
+
+        r = self._client().post("/events/2026-09-13/p1/state", json={"state": "approved"})
+
+        assert r.status_code == 200, r.text
+        assert r.json()["calendar_sync"]["reason"] == "calendar_not_configured"
+        assert fake.saved["2026-09-13"][0]["state"] == "approved"
+        assert "- 17:00–17:10 Water the plants" in written["content"]
+
+    def test_dismissing_a_proposal_never_reaches_google(self, monkeypatch):
+        fake = self._install(monkeypatch, [dict(self._PROPOSAL)])
+        calendar = self._fake_calendar(monkeypatch)
+
+        r = self._client().post("/events/2026-09-13/p1/state", json={"state": "dismissed"})
+
+        assert r.status_code == 200
+        assert calendar.created == []
+        assert fake.saved["2026-09-13"][0]["state"] == "dismissed"
+
+    def test_approving_a_calendar_block_creates_nothing_in_google(self, monkeypatch):
+        self._install(monkeypatch, [
+            {"id": "e1", "name": "Standup", "source": "calendar",
+             "source_ids": {"calendar_id": "g1"}},
+        ])
+        calendar = self._fake_calendar(monkeypatch)
+
+        self._client().post("/events/2026-09-10/e1/state", json={"state": "approved"})
+
+        assert calendar.created == []
+
     def test_dismissing_a_calendar_block_stores_dismissed(self, monkeypatch):
         fake = self._install(monkeypatch, [
             {"id": "e1", "name": "Standup", "source": "calendar",
@@ -591,6 +687,114 @@ class TestPatchPinning:
         }]
         reconciled = svc.reconcile("2026-09-10", fresh, {"calendar"})
         assert reconciled[0]["name"] == "Sprint planning"
+
+    def test_patch_moves_a_blocks_times(self, monkeypatch, tmp_path):
+        """The /day edit view's Save sends start_time/end_time. The body model
+        had no such fields, so pydantic dropped them, the route saved the
+        event unchanged and returned 200 — and the bot said "✓ Saved"."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+        from src.services.events_service import EventsService
+        import src.main as main
+
+        svc = EventsService(tmp_path / "events")
+        svc.save_events("2026-09-13", [{
+            "id": "e1", "name": "Lunch", "source": "manual",
+            "source_ids": {"calendar_id": "g1"},
+            "start_time": "2026-09-13T12:30", "end_time": "2026-09-13T13:00",
+            "duration_minutes": 30,
+        }])
+        monkeypatch.setattr(main, "get_events", lambda: svc)
+
+        r = TestClient(app).patch("/events/2026-09-13/e1", json={
+            "start_time": "2026-09-13T12:45", "end_time": "2026-09-13T13:30",
+        })
+
+        assert r.status_code == 200, r.text
+        stored = svc.get_events("2026-09-13")[0]
+        assert stored["start_time"] == "2026-09-13T12:45"
+        assert stored["end_time"] == "2026-09-13T13:30"
+        assert stored["duration_minutes"] == 45
+        assert stored["user_set"]["start_time"] == "2026-09-13T12:45"
+        assert stored["user_set"]["end_time"] == "2026-09-13T13:30"
+
+    def test_patch_rejects_a_field_it_cannot_apply(self, monkeypatch, tmp_path):
+        """A field the route does not know must be a 422, not a silent 200.
+        Dropping unknown keys is how the time edit reported success for months."""
+        from fastapi.testclient import TestClient
+        from src.main import app
+        from src.services.events_service import EventsService
+        import src.main as main
+
+        svc = EventsService(tmp_path / "events")
+        svc.save_events("2026-09-13", [{"id": "e1", "name": "Lunch", "source": "manual"}])
+        monkeypatch.setattr(main, "get_events", lambda: svc)
+
+        r = TestClient(app).patch("/events/2026-09-13/e1", json={"starts": "12:45"})
+
+        assert r.status_code == 422
+
+    @staticmethod
+    def _patch_with_calendar(monkeypatch, tmp_path, event, body):
+        from fastapi.testclient import TestClient
+        from src.main import app
+        from src.services.events_service import EventsService
+        import src.main as main
+
+        class FakeCalendar:
+            is_initialized = True
+
+            def __init__(self):
+                self.updated = []
+
+            async def update_event(self, **kwargs):
+                self.updated.append(kwargs)
+                return True
+
+        svc = EventsService(tmp_path / "events")
+        svc.save_events("2026-09-13", [event])
+        calendar = FakeCalendar()
+        monkeypatch.setattr(main, "get_events", lambda: svc)
+        monkeypatch.setattr(main, "get_calendar", lambda: calendar)
+        r = TestClient(app).patch("/events/2026-09-13/e1", json=body)
+        return r, calendar
+
+    def test_patch_pushes_a_time_edit_to_google(self, monkeypatch, tmp_path):
+        """✎ on a block already in Google changed only Mazkir's copy, so the
+        calendar kept the old times while /day showed the new ones."""
+        r, calendar = self._patch_with_calendar(monkeypatch, tmp_path, {
+            "id": "e1", "name": "Lunch", "source": "manual",
+            "source_ids": {"calendar_id": "g1"},
+            "start_time": "2026-09-13T12:30", "end_time": "2026-09-13T13:00",
+        }, {"start_time": "2026-09-13T12:45", "end_time": "2026-09-13T13:30"})
+
+        assert r.status_code == 200, r.text
+        # Google's dateTime is RFC 3339, which the bot's HH:MM form is not.
+        assert calendar.updated == [{
+            "event_id": "g1", "name": "Lunch",
+            "start_time": "2026-09-13T12:45:00", "end_time": "2026-09-13T13:30:00",
+        }]
+        assert r.json()["calendar_sync"] == {"ok": True, "attempted": True, "event_id": "g1"}
+
+    def test_patch_leaves_another_calendars_event_alone(self, monkeypatch, tmp_path):
+        r, calendar = self._patch_with_calendar(monkeypatch, tmp_path, {
+            "id": "e1", "name": "Standup", "source": "calendar", "calendar": "Work",
+            "source_ids": {"calendar_id": "g1"},
+            "start_time": "2026-09-13T09:00", "end_time": "2026-09-13T09:30",
+        }, {"start_time": "2026-09-13T09:05"})
+
+        assert calendar.updated == []
+        assert r.json()["calendar_sync"]["reason"] == "not_in_mazkir_calendar"
+
+    def test_patch_of_a_block_not_in_google_calls_nothing(self, monkeypatch, tmp_path):
+        r, calendar = self._patch_with_calendar(monkeypatch, tmp_path, {
+            "id": "e1", "name": "Water the plants", "source": "manual", "proposed": True,
+            "source_ids": {},
+            "start_time": "2026-09-13T17:00", "end_time": "2026-09-13T17:10",
+        }, {"start_time": "2026-09-13T17:30", "end_time": "2026-09-13T17:40"})
+
+        assert r.status_code == 200, r.text
+        assert calendar.updated == []
 
     def test_patch_does_not_pin_photos(self, monkeypatch, tmp_path):
         """Only the five USER_SETTABLE_FIELDS are pinnable. photos and assets

@@ -23,6 +23,9 @@ class ConversationContext:
     summary: str
     vault_snapshot: str
     knowledge: str
+    # The tool record for the newest reply, which has no following user
+    # message in history; `handle_message` prefixes it to the incoming one.
+    trailing_trace: str = ""
 
 
 class MemoryService:
@@ -361,12 +364,14 @@ class MemoryService:
         Combines: conversation history (short-term), vault state snapshot
         (mid-term), and relevant knowledge + preferences (long-term).
 
-        Each turn's tool calls are attached to the assistant message that
-        turn produced, so the agent reads what it actually did rather than
-        inferring it from the tools its *current* skill happens to hold.
+        Each turn's tool calls are attached to the user message after the
+        reply that turn produced, so the agent reads what it actually did
+        rather than inferring it from the tools its *current* skill happens
+        to hold.
         """
         conversation = self.load_conversation(chat_id)
         messages = conversation["messages"]
+        trailing_trace = ""
 
         if self.logs_dir is not None:
             # NOTE (timezone coupling): `today` here is filtered against
@@ -386,7 +391,7 @@ class MemoryService:
             # whole reply, so the guarantee is structural here too.
             try:
                 records = read_turn_records(self.logs_dir, chat_id, today)
-                messages = attach_traces(messages, records)
+                messages, trailing_trace = attach_traces(messages, records)
             except Exception:
                 logger.warning(
                     "turn trace attach failed for chat_id=%s; "
@@ -399,6 +404,7 @@ class MemoryService:
         knowledge = self._gather_relevant_knowledge(conversation)
 
         return ConversationContext(
+            trailing_trace=trailing_trace,
             messages=messages,
             summary=conversation["summary"],
             vault_snapshot=vault_snapshot,

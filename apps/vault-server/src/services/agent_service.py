@@ -1028,6 +1028,17 @@ class AgentService:
                             "photo_path": {"type": "string", "description": "Path to photo (optional)"},
                             "caption": {"type": "string", "description": "Photo caption (optional)"},
                             "wikilinks": {"type": "array", "items": {"type": "string"}, "description": "Wikilinks (optional)"},
+                            "proposed": {
+                                "type": "boolean",
+                                "description": (
+                                    "true when YOU chose the time because the user gave none — "
+                                    "'schedule these for later', 'fit X in this afternoon'. The "
+                                    "block appears in /day as a suggestion the user approves, "
+                                    "dismisses or adjusts, and is not pushed to Google Calendar "
+                                    "or ## Schedule. Pick a free slot after now with a sensible "
+                                    "duration rather than asking. Omit when the user stated the time."
+                                ),
+                            },
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
@@ -1166,23 +1177,10 @@ class AgentService:
         # File-tier writes touch distinct vault paths via the resolver, so they
         # can run concurrently. Daily-section and event writes share a single
         # file and stay unsafe (default False from stamp_tool_registry).
-        #
-        # `complete_task` and `complete_habit` are deliberately NOT here, even
-        # though each resolves to its own item file: completing something also
-        # awards tokens, and that writes two files every completion shares —
-        # `00-system/motivation-tokens.md` and today's daily note. Run in
-        # parallel, three completions took the ledger from 50 to 5 while all
-        # three tool results reported `tokens_earned: 5`, because each thread
-        # read a total the others had not written yet (and, before writes were
-        # made atomic, sometimes read the ledger mid-truncation as empty).
-        # `VaultService.update_tokens` now holds a lock across the award, so the
-        # arithmetic survives either way; keeping the completion tools serial is
-        # the second half, since the test for "did I already do this today?"
-        # spans a read and a write of the habit note too. The cost is latency on
-        # bulk completion, which is the one thing parallel dispatch bought.
         SAFE_WRITES = {
             "create_task", "create_habit", "create_goal",
             "update_task", "update_habit", "update_goal",
+            "complete_task", "complete_habit",
             "delete_task", "archive_task", "delete_habit", "archive_goal",
             "save_knowledge",
         }
@@ -1318,6 +1316,14 @@ class AgentService:
         user_content = self._build_user_content(
             text, attachments, reply_to, forwarded_from,
         )
+        # What the previous reply actually did, delivered as input rather than
+        # as part of that reply — see turn_trace.attach_traces for why.
+        trace = context.trailing_trace
+        if trace:
+            if isinstance(user_content, list):
+                user_content = [{"type": "text", "text": trace}, *user_content]
+            else:
+                user_content = f"{trace}\n\n{user_content}"
         messages.append({"role": "user", "content": user_content})
 
         # For conversation log, build a text-only version (no base64)
@@ -2042,9 +2048,9 @@ class AgentService:
             "- If a tool result is missing a field you expected, say so rather than filling it in from your own request.",
             "",
             "## Reporting past actions",
-            "- Never deny a past action without checking. The [Tools I called this turn] blocks in the conversation record what you actually did — read them before saying you did not do something.",
+            "- Never deny a past action without checking. A [Record of your previous reply — tools that actually ran] block at the start of a user message records what your previous reply actually did — read it before saying you did not do something.",
             "- Your current tool list is what you can do now, not what you did earlier. Skills change between turns; a tool absent from your list now may have been available when you acted.",
-            "- A turn with no trace block means no record, not proof of inaction. Use a read tool before denying.",
+            "- A turn with no record means no record, not proof of inaction. Use a read tool before denying.",
             "- A call marked 'proposed, awaiting confirmation — NOT executed' did not run. Never report it as done.",
             "",
             "## Guidelines",
@@ -2062,6 +2068,7 @@ class AgentService:
             "- Which end does the utterance anchor? 'just got back from X' / 'finished X' gives the END; 'starting X' gives the START; 'X from A to B' gives both.",
             "- Never invent a missing time. Create the block with what you were told, leave the rest empty, and ask. An incomplete block is a correct record of an incomplete statement.",
             "- To move a block, use update_event's shift_minutes. Setting start_time alone stretches the block rather than moving it.",
+            "- Scheduling without a time ('schedule these for later', 'fit X in this afternoon'): do not just add todos and ask when. Call list_events for the day, pick free slots after now with a sensible duration each, and call create_event with proposed: true for every item. Then tell the user they are suggestions to approve, dismiss or adjust in /day.",
             "- If the context lists incomplete blocks, you may mention them once when it fits the conversation. Do not raise them every turn.",
             "- When you write to a day that is not today, say which day in your reply.",
             "- To move an event to another day, call update_event with new_date. Its `date` argument only says where the event is stored now, and it is optional — an event ID from list_events is found whatever day it is on.",
@@ -3079,6 +3086,7 @@ class AgentService:
 
         complete = bool(start_time and end_time)
         spans_midnight = complete and crosses_midnight(start_time, end_time)
+        proposed = bool(params.get("proposed"))
 
         # Extract HH:MM for GCal (strip date prefix if present)
         def _extract_hhmm(iso_time: str | None) -> str | None:
@@ -3113,6 +3121,10 @@ class AgentService:
             # start + default_event_duration, so this guard was refusing a
             # call that would have worked.
             calendar_sync = {"ok": False, "attempted": False, "reason": "no_start_time"}
+        elif proposed:
+            # A suggestion the user has not accepted must not raise alerts on
+            # their phone, and a dismissed one must not linger in Google.
+            calendar_sync = {"ok": False, "attempted": False, "reason": "proposed"}
         elif spans_midnight:
             # Google stores this natively as one event, which would then hand
             # a single fresh event to two per-day fragments on the next
@@ -3197,6 +3209,7 @@ class AgentService:
                 wikilinks=params.get("wikilinks"),
                 source_ids=source_ids,
                 logical_id=logical_id,
+                proposed=proposed,
             )
             created.append(frag)
             items.append(frag["path"])
@@ -3208,6 +3221,8 @@ class AgentService:
             result["fragments"] = [c["id"] for c in created]
             result["logical_id"] = logical_id
         result["calendar_sync"] = calendar_sync
+        if proposed:
+            result["proposed"] = True
         if calendar_synced:
             # Legacy key, kept for the existing tests that read it. New
             # readers should use `calendar_sync`, which also reports failure.
@@ -3224,14 +3239,11 @@ class AgentService:
         # dropped — written wrong, then lost, with no error anywhere. An
         # unfinished block is not a schedule line yet; the edit that
         # completes it is the natural moment for one.
-        if not params.get("photo_path") and complete:
+        # A proposal is skipped too: the note is what the user did or settled,
+        # and a suggestion they later dismiss would leave a line behind.
+        if not params.get("photo_path") and complete and not proposed:
             try:
-                from src.services.daily_schedule import (
-                    ScheduleEntry,
-                    parse_schedule_section,
-                    render_schedule_section,
-                )
-                from src.services.daily_tasks import replace_or_append_section
+                from src.services.daily_schedule import append_schedule_entry
 
                 text = params["name"]
                 loc = params.get("location") or {}
@@ -3241,17 +3253,9 @@ class AgentService:
                     text = f"{text} [[{link}]]"
 
                 daily = self.vault.read_daily_note(date)
-                body = daily["content"]
-                entries = parse_schedule_section(body)
-                entries.append(
-                    ScheduleEntry(
-                        start=_extract_hhmm(start_time),
-                        end=_extract_hhmm(end_time),
-                        text=text,
-                    )
+                new_body = append_schedule_entry(
+                    daily["content"], _extract_hhmm(start_time), _extract_hhmm(end_time), text,
                 )
-                new_section = render_schedule_section(entries)
-                new_body = replace_or_append_section(body, "Schedule", new_section)
                 self.vault.write_daily_note(date, new_body)
                 daily_path = f"10-daily/{date}.md"
                 items.append(daily_path)
