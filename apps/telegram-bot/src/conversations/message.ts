@@ -10,6 +10,7 @@ import {
   type ReplyToSource,
 } from "../tracing-utils.js";
 import { sendRich } from "../bot-utils/send-rich.js";
+import { repliedToText } from "../bot-utils/rich-text.js";
 import { buildConfirmationKeyboard } from "../keyboards/confirmation.js";
 import {
   getPendingConfirmation,
@@ -77,9 +78,13 @@ export function buildMessagePayload(msg: Message, chatId: number) {
   // Reply context
   let reply_to: ReplyContext | undefined;
   let replyToSource: ReplyToSource = "none";
-  if (msg.reply_to_message?.text) {
+  // Not `reply_to_message.text`: agent answers and the day/task/habit/goal
+  // views are rich messages with no `.text`, so reading it dropped every
+  // reply to them (2026-09-15, and silently since 2026-06-19).
+  const answered = repliedToText(msg);
+  if (msg.reply_to_message && answered) {
     reply_to = {
-      text: msg.reply_to_message.text,
+      text: answered,
       from: msg.reply_to_message.from?.is_bot ? "assistant" : "user",
     };
     replyToSource = "telegram";

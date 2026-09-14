@@ -418,3 +418,62 @@ describe("payload provenance on the span", () => {
     expect(attrs["mazkir.payload.selected_date"]).toBe("2026-09-12");
   });
 });
+
+describe("replying to a rich message", () => {
+  // 2026-09-15 00:28: "Record it between 23:45 and 23:55 instead", sent as a
+  // Telegram reply to the agent's rich "🫧 Washing machine started at 23:55"
+  // answer, reached the server with no context (`reply_to_source: "none"` on
+  // telegram.update), and the agent asked which block was meant.
+  const richAnswer = {
+    message_id: 41,
+    date: 1757800000,
+    chat: { id: 123, type: "private" },
+    from: { id: 42, is_bot: true, first_name: "Mazkir" },
+    rich_message: { blocks: [{ type: "paragraph", text: [
+      "🫧 ", { type: "bold", text: "Washing machine" }, " started at 23:55.",
+    ] }] },
+  };
+
+  beforeEach(async () => {
+    const { resetOpenQuestions } = await import("../../src/state/open-question.js");
+    resetOpenQuestions();
+  });
+
+  it("carries the rich message's text as reply context", () => {
+    const payload = buildMessagePayload({
+      text: "Record it between 23:45 and 23:55 instead",
+      reply_to_message: richAnswer,
+    } as never, 123);
+
+    expect(payload.reply_to).toEqual({
+      text: "🫧 Washing machine started at 23:55.",
+      from: "assistant",
+    });
+  });
+
+  it("marks it as a real Telegram reply on the span", async () => {
+    const attrs: Record<string, unknown> = {};
+    const otel = await import("@opentelemetry/api");
+    vi.spyOn(otel.trace, "getActiveSpan").mockReturnValue({
+      setAttribute: (k: string, v: unknown) => { attrs[k] = v; return undefined as never; },
+    } as never);
+
+    buildMessagePayload({ text: "move it", reply_to_message: richAnswer } as never, 123);
+
+    expect(attrs["mazkir.payload.reply_to_source"]).toBe("telegram");
+  });
+
+  it("does not consume a pending bot question when the user replied explicitly", async () => {
+    const { noteOpenQuestion, takeOpenQuestion } = await import(
+      "../../src/state/open-question.js"
+    );
+    noteOpenQuestion(123, "15:00–17:30 — what was it?");
+
+    const payload = buildMessagePayload({ text: "move it", reply_to_message: richAnswer } as never, 123);
+
+    // The explicit reply wins, and the held question is dropped rather than
+    // left to attach itself to a later message.
+    expect(payload.reply_to?.text).toBe("🫧 Washing machine started at 23:55.");
+    expect(takeOpenQuestion(123)).toBeUndefined();
+  });
+});
