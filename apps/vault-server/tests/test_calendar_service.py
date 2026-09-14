@@ -227,3 +227,47 @@ class TestNoDecorativePrefix:
         from src.services.calendar_service import CalendarService
         src = inspect.getsource(CalendarService.mark_event_complete)
         assert "✅" in src
+
+
+class TestUpdateEventSendsRfc3339:
+    """Google rejects a `dateTime` without seconds with a bare 400.
+
+    2026-09-15: the agent moved "Washing machine" to 23:45–23:55 and passed the
+    stored `2026-09-14T23:45` straight through. Mazkir's copy changed, Google
+    kept 23:55–00:25, and the reply could only say the sync "failed".
+    """
+
+    def _service(self):
+        from src.services.calendar_service import CalendarService
+        cs = CalendarService(
+            credentials_path=MagicMock(), token_path=MagicMock(),
+            timezone="Asia/Jerusalem",
+        )
+        cs._initialized = True
+        cs._calendar_id = "cal_123"
+        cs._service = MagicMock()
+        cs._service.events.return_value.patch.return_value.execute.return_value = {}
+        return cs
+
+    def _body(self, **kwargs):
+        cs = self._service()
+        asyncio.run(cs.update_event(event_id="evt_1", **kwargs))
+        return cs._service.events.return_value.patch.call_args.kwargs["body"]
+
+    def test_pads_minute_precision_times(self):
+        body = self._body(start_time="2026-09-14T23:45", end_time="2026-09-14T23:55")
+        assert body["start"]["dateTime"] == "2026-09-14T23:45:00"
+        assert body["end"]["dateTime"] == "2026-09-14T23:55:00"
+
+    def test_leaves_times_that_already_have_seconds(self):
+        body = self._body(start_time="2026-09-14T23:45:30")
+        assert body["start"]["dateTime"] == "2026-09-14T23:45:30"
+
+    def test_keeps_an_offset_while_padding(self):
+        body = self._body(start_time="2026-09-14T23:45+03:00")
+        assert body["start"]["dateTime"] == "2026-09-14T23:45:00+03:00"
+
+    def test_padding_is_idempotent(self):
+        from src.services.calendar_service import _with_seconds
+        once = _with_seconds("2026-09-14T23:45")
+        assert _with_seconds(once) == once == "2026-09-14T23:45:00"

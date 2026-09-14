@@ -1,5 +1,6 @@
 """Google Calendar integration service for Mazkir."""
 import logging
+import re
 import socket
 from datetime import date as date_type, datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,20 @@ import pytz
 
 # Force IPv4 for Google API connections (IPv6 times out on some networks)
 _original_getaddrinfo = socket.getaddrinfo
+
+_MINUTE_PRECISION = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?!:\d)(.*)$")
+
+
+def _with_seconds(timestamp: str) -> str:
+    """`2026-09-14T23:45` -> `2026-09-14T23:45:00`, keeping any offset.
+
+    Google's `dateTime` must be RFC3339, which requires seconds. Anything
+    already carrying seconds, or not shaped like a timestamp at all, is
+    returned unchanged, so applying this twice is harmless.
+    """
+    match = _MINUTE_PRECISION.match(timestamp)
+    return f"{match.group(1)}:00{match.group(2)}" if match else timestamp
+
 
 def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     """Override getaddrinfo to force IPv4 for googleapis.com"""
@@ -584,10 +599,16 @@ class CalendarService:
         body: Dict = {}
         if name is not None:
             body["summary"] = name
+        # Seconds are padded here, at the one place every edit reaches Google,
+        # rather than at each caller. RFC3339 requires them and Google answers
+        # a bare `…T23:45` with an unexplained 400 "Bad Request". The ✎ route
+        # already padded its own times; the agent's `update_event` tool did
+        # not, so "move the washing machine to 23:45–23:55" (2026-09-15)
+        # changed Mazkir's copy and left Google on the old slot.
         if start_time is not None:
-            body["start"] = {"dateTime": start_time, "timeZone": self.timezone}
+            body["start"] = {"dateTime": _with_seconds(start_time), "timeZone": self.timezone}
         if end_time is not None:
-            body["end"] = {"dateTime": end_time, "timeZone": self.timezone}
+            body["end"] = {"dateTime": _with_seconds(end_time), "timeZone": self.timezone}
         if not body:
             return True
 
