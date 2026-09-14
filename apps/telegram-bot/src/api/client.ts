@@ -110,6 +110,12 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         body: JSON.stringify(body),
       }),
 
+    deleteEvent: (date: string, eventId: string) =>
+      request<{ ok: boolean; deleted: string; calendar_sync: Record<string, unknown> }>(
+        `/events/${date}/${eventId}`,
+        { method: "DELETE" },
+      ),
+
     // Tasks
     listTasks: () => request<Task[]>("/tasks"),
     getTask: (slug: string) =>

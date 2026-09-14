@@ -66,12 +66,33 @@ describe("save and back", () => {
   });
 });
 
-describe("the deferred calendar actions", () => {
+describe("the event actions", () => {
   it("renders cancel and delete, delete styled as dangerous", () => {
     const html = buildBlockEditRich(block, "2026-09-10", 0, 0).html!;
     expect(html).toContain("cancel in calendar");
-    expect(html).toContain("delete");
-    expect(html).toMatch(/data="cal:delete:e1"[^>]*style="danger"|style="danger"[^>]*>delete/);
+    expect(html).toMatch(/data="evdel:ask:2026-09-10:e1"[^>]*style="danger"/);
+  });
+
+  it("does not delete on the first tap — it asks", () => {
+    const html = buildBlockEditRich(block, "2026-09-10", 0, 0).html!;
+    expect(html).not.toContain("evdel:yes");
+  });
+
+  it("the confirmation offers delete or keep, and nothing else destructive", () => {
+    const html = buildBlockEditRich(block, "2026-09-10", 0, 0, true).html!;
+    expect(html).toMatch(/data="evdel:yes:2026-09-10:e1"[^>]*style="danger"/);
+    expect(html).toContain('data="block:edit:2026-09-10:e1"');
+    expect(html).not.toContain("evdel:ask");
+  });
+
+  it("keeps the delete callbacks inside the 64-byte budget for a Google-length id", () => {
+    const googleId = { ...block, id: "evt_" + "x".repeat(26) };
+    for (const confirm of [false, true]) {
+      const html = buildBlockEditRich(googleId, "2026-09-10", 0, 0, confirm).html!;
+      for (const m of html.matchAll(/data="([^"]+)"/g)) {
+        expect(new TextEncoder().encode(m[1]!).length).toBeLessThanOrEqual(64);
+      }
+    }
   });
 });
 

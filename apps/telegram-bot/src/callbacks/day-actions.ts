@@ -288,12 +288,57 @@ dayActionHandlers.callbackQuery(/^adjsave:([^:]+):([^:]+):(-?\d+):(-?\d+)$/, asy
   }
 });
 
-dayActionHandlers.callbackQuery(/^cal:(cancel|delete):(.+)$/, async (ctx) => {
-  // Deferred from this ship (spec §6.3, §9): the user chose local dismissal
-  // for now, "cheap and non-destructive", pending real use to see which of the
-  // two they reach for. The buttons are drawn because the layout was approved
-  // with them; they say so rather than silently doing nothing.
+dayActionHandlers.callbackQuery(/^cal:cancel:(.+)$/, async (ctx) => {
+  // Still deferred (spec §6.3, §9). Delete was the one reached for in real use
+  // (2026-09-15), so it is wired below; this one says so rather than silently
+  // doing nothing.
   await ctx.answerCallbackQuery({
     text: "Not wired up yet — ✕ on the day view dismisses it locally.",
   });
+});
+
+dayActionHandlers.callbackQuery(/^evdel:ask:([^:]+):(.+)$/, async (ctx) => {
+  const date = ctx.match[1]!;
+  const eventId = ctx.match[2]!;
+  try {
+    const data = await api.getDaily(date);
+    const block = data.blocks.find((b) => b.id === eventId);
+    if (!block) {
+      await ctx.answerCallbackQuery({ text: "That block is gone — refresh." });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await editRich(ctx, buildBlockEditRich(block, date, 0, 0, true),
+      { reply_markup: buildNavKeyboard("day") });
+  } catch (err) {
+    await toastFailure(ctx, err, "Delete");
+  }
+});
+
+dayActionHandlers.callbackQuery(/^evdel:yes:([^:]+):(.+)$/, async (ctx) => {
+  const date = ctx.match[1]!;
+  const eventId = ctx.match[2]!;
+  try {
+    await api.deleteEvent(date, eventId);
+    await ctx.answerCallbackQuery({ text: "🗑 Deleted" });
+    await rerender(ctx, date);
+  } catch (err) {
+    // The server refuses rather than half-deletes, and each refusal has a
+    // reason the user can act on. toastFailure's 409 text is about unticking
+    // habits, which would be wrong here.
+    const status = String(err);
+    if (status.includes("409")) {
+      logger.warn({ event_type: "event_delete_refused", err: status }, "event_delete_refused");
+      await ctx.answerCallbackQuery({
+        text: "This one would come back from its note, habit or other calendar. ✕ on the day view hides it.",
+      });
+    } else if (status.includes("502") || status.includes("503")) {
+      logger.warn({ event_type: "event_delete_refused", err: status }, "event_delete_refused");
+      await ctx.answerCallbackQuery({
+        text: "Google Calendar didn't respond — nothing was deleted.",
+      });
+    } else {
+      await toastFailure(ctx, err, "Delete");
+    }
+  }
 });

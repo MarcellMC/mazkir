@@ -163,6 +163,148 @@ class TestMergeFromSourcesAvailability:
         assert "habit" not in self._run(vault=self._real_vault(tmp_path, raises=True))
 
 
+class TestDeleteEvent:
+    """DELETE /events/{date}/{id} — the edit view's delete button.
+
+    It was drawn in Ship 5 and wired to nothing: every tap answered "Not wired
+    up yet". A delete here must actually hold: an event whose source would
+    regenerate it is refused rather than removed until the next read."""
+
+    def _install(self, monkeypatch, events, calendar=None):
+        import src.main as main
+        import src.api.routes.events as events_route
+
+        class FakeEvents:
+            def __init__(self):
+                self.saved = {}
+
+            def reconcile(self, date, fresh, available=None):
+                return [dict(e) for e in events]
+
+            def save_events(self, date, evts):
+                self.saved[date] = evts
+
+        fake = FakeEvents()
+        monkeypatch.setattr(main, "get_events", lambda: fake)
+        monkeypatch.setattr(main, "get_calendar", lambda: calendar)
+
+        async def no_sources(date):
+            return [], set()
+
+        monkeypatch.setattr(events_route, "_merge_from_sources", no_sources)
+        return fake
+
+    @staticmethod
+    def _calendar(deleted=True):
+        class FakeCalendar:
+            is_initialized = True
+
+            def __init__(self):
+                self.deleted = []
+
+            async def delete_event(self, event_id):
+                self.deleted.append(event_id)
+                return deleted
+
+        return FakeCalendar()
+
+    def _delete(self, path):
+        from fastapi.testclient import TestClient
+        from src.main import app
+        return TestClient(app).delete(path)
+
+    _KEEP = {"id": "k1", "name": "Lunch", "source": "manual", "source_ids": {}}
+
+    def test_a_block_you_made_is_removed(self, monkeypatch):
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Water the plants", "source": "manual", "source_ids": {}},
+            dict(self._KEEP),
+        ])
+
+        r = self._delete("/events/2026-09-15/e1")
+
+        assert r.status_code == 200, r.text
+        assert [e["id"] for e in fake.saved["2026-09-15"]] == ["k1"]
+        assert r.json()["calendar_sync"]["attempted"] is False
+
+    def test_its_google_entry_goes_too(self, monkeypatch):
+        """Removed only from the store, a Google-synced block is merged straight
+        back on the next read, so the delete would not hold."""
+        calendar = self._calendar()
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Dog walk", "source": "manual",
+             "source_ids": {"calendar_id": "g1"}},
+            dict(self._KEEP),
+        ], calendar=calendar)
+
+        r = self._delete("/events/2026-09-15/e1")
+
+        assert r.status_code == 200, r.text
+        assert calendar.deleted == ["g1"]
+        assert [e["id"] for e in fake.saved["2026-09-15"]] == ["k1"]
+        assert r.json()["calendar_sync"] == {"ok": True, "attempted": True, "event_id": "g1"}
+
+    def test_nothing_is_removed_when_google_refuses(self, monkeypatch):
+        calendar = self._calendar(deleted=False)
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Dog walk", "source": "manual",
+             "source_ids": {"calendar_id": "g1"}},
+        ], calendar=calendar)
+
+        r = self._delete("/events/2026-09-15/e1")
+
+        assert r.status_code == 502
+        assert fake.saved == {}
+
+    def test_nothing_is_removed_when_google_is_unreachable(self, monkeypatch):
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Dog walk", "source": "manual",
+             "source_ids": {"calendar_id": "g1"}},
+        ], calendar=None)
+
+        r = self._delete("/events/2026-09-15/e1")
+
+        assert r.status_code == 503
+        assert fake.saved == {}
+
+    def test_a_block_its_source_regenerates_is_refused(self, monkeypatch):
+        """A timed checkbox, a scheduled habit or a location visit comes back
+        on the next merge; removing the row would be a delete that undoes
+        itself."""
+        calendar = self._calendar()
+        for key in ("note_line", "habit_slug", "visit_id", "transit_id"):
+            fake = self._install(monkeypatch, [
+                {"id": "e1", "name": "Standup", "source": "merged", "source_ids": {key: "x"}},
+            ], calendar=calendar)
+
+            r = self._delete("/events/2026-09-15/e1")
+
+            assert r.status_code == 409, key
+            assert fake.saved == {}, key
+        assert calendar.deleted == []
+
+    def test_an_event_in_another_calendar_is_refused(self, monkeypatch):
+        calendar = self._calendar()
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Standup", "source": "calendar", "calendar": "Work",
+             "source_ids": {"calendar_id": "g1"}},
+        ], calendar=calendar)
+
+        r = self._delete("/events/2026-09-15/e1")
+
+        assert r.status_code == 409
+        assert calendar.deleted == []
+        assert fake.saved == {}
+
+    def test_an_unknown_event_is_404(self, monkeypatch):
+        self._install(monkeypatch, [dict(self._KEEP)])
+
+        assert self._delete("/events/2026-09-15/nope").status_code == 404
+
+    def test_a_malformed_date_is_rejected_at_the_boundary(self):
+        assert self._delete("/events/not-a-date/e1").status_code == 422
+
+
 class TestSetState:
     """POST /events/{date}/{id}/state — spec §2.3."""
 
