@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const api = vi.hoisted(() => ({
   getDaily: vi.fn(), setBlockState: vi.fn(), approveAll: vi.fn(),
-  fillGap: vi.fn(), patchEvent: vi.fn(),
+  fillGap: vi.fn(), patchEvent: vi.fn(), deleteEvent: vi.fn(),
 }));
 vi.mock("../../src/api/client.js", () => ({ api }));
 
@@ -230,11 +230,63 @@ describe("the edit view", () => {
     expect(api.setBlockState).toHaveBeenCalled();
   });
 
-  it("cancel and delete say they are not wired up", async () => {
-    const ctx = await fire("cal:delete:e1");
+  it("cancel in calendar still says it is not wired up", async () => {
+    const ctx = await fire("cal:cancel:e1");
 
     expect(api.patchEvent).not.toHaveBeenCalled();
     expect(ctx.answerCallbackQuery.mock.calls[0][0].text).toContain("Not wired up");
+  });
+});
+
+describe("deleting a block", () => {
+  const dayWithBlock = {
+    ...emptyDay,
+    blocks: [{
+      id: "e1", start: "09:05", end: "10:00", title: "Standup",
+      source: "manual", type: "calendar", completed: false,
+      activity: null, category: null, state: "approved", habit_progress: null,
+    }],
+  };
+
+  it("asks before deleting anything", async () => {
+    // It used to answer "Not wired up yet" to every tap (2026-09-15).
+    api.getDaily.mockResolvedValue(dayWithBlock);
+
+    await fire("evdel:ask:2026-09-10:e1");
+
+    expect(api.deleteEvent).not.toHaveBeenCalled();
+    const html = richMocks.editRich.mock.calls[0][1].html as string;
+    expect(html).toContain('data="evdel:yes:2026-09-10:e1"');
+  });
+
+  it("deletes on confirmation and redraws the day", async () => {
+    api.deleteEvent.mockResolvedValue({ ok: true, deleted: "e1" });
+
+    const ctx = await fire("evdel:yes:2026-09-10:e1");
+
+    expect(api.deleteEvent).toHaveBeenCalledWith("2026-09-10", "e1");
+    expect(ctx.answerCallbackQuery.mock.calls[0][0].text).toContain("Deleted");
+    expect(richMocks.editRich).toHaveBeenCalled();
+  });
+
+  it("says why when the server refuses", async () => {
+    // 409 is a block its source would regenerate, or one in another calendar.
+    // The generic 409 toast talks about unticking habits, which is wrong here.
+    api.deleteEvent.mockRejectedValue(new Error("API error: 409 Conflict"));
+
+    const ctx = await fire("evdel:yes:2026-09-10:e1");
+
+    const text = ctx.answerCallbackQuery.mock.calls[0][0].text as string;
+    expect(text).toContain("✕");
+    expect(text).not.toContain("/habits");
+  });
+
+  it("says nothing was deleted when Google could not be reached", async () => {
+    api.deleteEvent.mockRejectedValue(new Error("API error: 503 Service Unavailable"));
+
+    const ctx = await fire("evdel:yes:2026-09-10:e1");
+
+    expect(ctx.answerCallbackQuery.mock.calls[0][0].text).toContain("nothing was deleted");
   });
 });
 
