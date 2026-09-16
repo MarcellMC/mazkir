@@ -84,8 +84,10 @@ export function buildBlockEditRich(
     "</tg-button-row>",
     "<h3>this event</h3>",
     // Delete asks first: it removes the Google Calendar entry too, and a
-    // one-tap destructive button sits right under the nudge pad. "Cancel in
-    // calendar" is still inert (spec §6.3, §9) and says so when tapped.
+    // one-tap destructive button sits right under the nudge pad. Cancel does
+    // not: Google keeps the entry at status "cancelled", so it is reversible
+    // there (§6.3). Both carry the date, so they act on the day they were
+    // drawn for rather than on today.
     confirmDelete
       ? `<p>Delete <b>${escapeHtml(block.title)}</b>? ` +
         "It also comes off Google Calendar if it is there.</p>" +
@@ -94,7 +96,7 @@ export function buildBlockEditRich(
           button("keep", `block:edit:${date}:${block.id}`) +
         "</tg-button-row>"
       : "<tg-button-row>" +
-          button("cancel in calendar", `cal:cancel:${block.id}`) +
+          button("cancel in calendar", `cal:cancel:${date}:${block.id}`) +
           button("delete", `evdel:ask:${date}:${block.id}`, "danger") +
         "</tg-button-row>",
   ];

@@ -624,6 +624,30 @@ class CalendarService:
             logger.error(f"Failed to update event: {e}")
             return False
 
+    async def cancel_event(self, event_id: str) -> bool:
+        """Mark an event cancelled in Mazkir's own calendar, without deleting it.
+
+        Delete's reversible sibling (design §6.3): the entry stays in Google at
+        `status: "cancelled"`, where it can be restored, while
+        `get_todays_events` — which lists without `showDeleted` — stops
+        returning it, so the block is no longer re-suggested.
+        """
+        if not self._initialized or not self._calendar_id:
+            logger.error("Calendar service not properly initialized")
+            return False
+
+        try:
+            self._service.events().patch(
+                calendarId=self._calendar_id,
+                eventId=event_id,
+                body={"status": "cancelled"},
+            ).execute()
+            logger.info(f"Cancelled event: {event_id}")
+            return True
+        except HttpError as e:
+            logger.error(f"Failed to cancel event: {e}")
+            return False
+
     async def mark_event_complete(self, event_id: str, instance_date: Optional[str] = None) -> bool:
         """Mark a calendar event as complete.
 

@@ -73,6 +73,11 @@ describe("the event actions", () => {
     expect(html).toMatch(/data="evdel:ask:2026-09-10:e1"[^>]*style="danger"/);
   });
 
+  it("gives cancel the date too, so it acts on the day it was drawn for", () => {
+    const html = buildBlockEditRich(block, "2026-09-10", 0, 0).html!;
+    expect(html).toContain('data="cal:cancel:2026-09-10:e1"');
+  });
+
   it("does not delete on the first tap — it asks", () => {
     const html = buildBlockEditRich(block, "2026-09-10", 0, 0).html!;
     expect(html).not.toContain("evdel:yes");

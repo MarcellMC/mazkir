@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const api = vi.hoisted(() => ({
   getDaily: vi.fn(), setBlockState: vi.fn(), approveAll: vi.fn(),
-  fillGap: vi.fn(), patchEvent: vi.fn(), deleteEvent: vi.fn(),
+  fillGap: vi.fn(), patchEvent: vi.fn(), deleteEvent: vi.fn(), cancelEvent: vi.fn(),
 }));
 vi.mock("../../src/api/client.js", () => ({ api }));
 
@@ -230,11 +230,37 @@ describe("the edit view", () => {
     expect(api.setBlockState).toHaveBeenCalled();
   });
 
-  it("cancel in calendar still says it is not wired up", async () => {
-    const ctx = await fire("cal:cancel:e1");
+});
 
-    expect(api.patchEvent).not.toHaveBeenCalled();
-    expect(ctx.answerCallbackQuery.mock.calls[0][0].text).toContain("Not wired up");
+describe("cancelling a block in the calendar", () => {
+  it("cancels in one tap and redraws the day", async () => {
+    // No confirmation step, unlike delete: Google keeps the entry at
+    // status "cancelled", so this is reversible there (design §6.3).
+    api.cancelEvent.mockResolvedValue({ ok: true, cancelled: "e1" });
+
+    const ctx = await fire("cal:cancel:2026-09-10:e1");
+
+    expect(api.cancelEvent).toHaveBeenCalledWith("2026-09-10", "e1");
+    expect(ctx.answerCallbackQuery.mock.calls[0][0].text).toContain("Cancelled");
+    expect(richMocks.editRich).toHaveBeenCalled();
+  });
+
+  it("says why when there is nothing in the calendar to cancel", async () => {
+    api.cancelEvent.mockRejectedValue(new Error("API error: 409 Conflict"));
+
+    const ctx = await fire("cal:cancel:2026-09-10:e1");
+
+    const text = ctx.answerCallbackQuery.mock.calls[0][0].text as string;
+    expect(text).toContain("calendar");
+    expect(text).not.toContain("/habits");
+  });
+
+  it("says nothing was cancelled when Google could not be reached", async () => {
+    api.cancelEvent.mockRejectedValue(new Error("API error: 503 Service Unavailable"));
+
+    const ctx = await fire("cal:cancel:2026-09-10:e1");
+
+    expect(ctx.answerCallbackQuery.mock.calls[0][0].text).toContain("nothing was cancelled");
   });
 });
 
