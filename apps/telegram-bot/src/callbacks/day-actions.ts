@@ -288,13 +288,31 @@ dayActionHandlers.callbackQuery(/^adjsave:([^:]+):([^:]+):(-?\d+):(-?\d+)$/, asy
   }
 });
 
-dayActionHandlers.callbackQuery(/^cal:cancel:(.+)$/, async (ctx) => {
-  // Still deferred (spec §6.3, §9). Delete was the one reached for in real use
-  // (2026-09-15), so it is wired below; this one says so rather than silently
-  // doing nothing.
-  await ctx.answerCallbackQuery({
-    text: "Not wired up yet — ✕ on the day view dismisses it locally.",
-  });
+dayActionHandlers.callbackQuery(/^cal:cancel:([^:]+):(.+)$/, async (ctx) => {
+  const date = ctx.match[1]!;
+  const eventId = ctx.match[2]!;
+  // One tap, no confirmation: Google keeps the entry at status "cancelled",
+  // where it can be restored (§6.3). Delete is the irreversible one and asks.
+  try {
+    await api.cancelEvent(date, eventId);
+    await ctx.answerCallbackQuery({ text: "🚫 Cancelled in calendar" });
+    await rerender(ctx, date);
+  } catch (err) {
+    const status = String(err);
+    if (status.includes("409")) {
+      logger.warn({ event_type: "event_cancel_refused", err: status }, "event_cancel_refused");
+      await ctx.answerCallbackQuery({
+        text: "Nothing to cancel — this block has no entry in Mazkir's calendar. ✕ hides it.",
+      });
+    } else if (status.includes("502") || status.includes("503")) {
+      logger.warn({ event_type: "event_cancel_refused", err: status }, "event_cancel_refused");
+      await ctx.answerCallbackQuery({
+        text: "Google Calendar didn't respond — nothing was cancelled.",
+      });
+    } else {
+      await toastFailure(ctx, err, "Cancel");
+    }
+  }
 });
 
 dayActionHandlers.callbackQuery(/^evdel:ask:([^:]+):(.+)$/, async (ctx) => {

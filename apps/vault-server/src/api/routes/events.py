@@ -249,6 +249,62 @@ async def patch_event(date: date_type, event_id: str, body: PatchEventBody):
 _REGENERATING_KEYS = ("note_line", "habit_slug", "visit_id", "transit_id")
 
 
+@router.post("/{date}/{event_id}/cancel")
+async def cancel_event(date: date_type, event_id: str):
+    """Cancel the block's Google Calendar entry, keeping it restorable there.
+
+    Delete's reversible sibling (design §6.3). Google holds the entry at
+    `status: "cancelled"`, out of the merge because `get_todays_events` lists
+    without `showDeleted`, and the block is stored `dismissed` so the day view
+    stops showing it while the record that it was planned survives.
+    """
+    date_str = date.isoformat()
+    from src.main import get_calendar, get_events as get_events_svc
+    events_svc = get_events_svc()
+    if not events_svc:
+        raise HTTPException(503, "Events service not initialized")
+
+    fresh, available = await _merge_from_sources(date)
+    merged = events_svc.reconcile(date_str, fresh, available)
+
+    event = next((e for e in merged if e.get("id") == event_id), None)
+    if event is None:
+        raise HTTPException(404, f"No event {event_id} on {date_str}")
+
+    calendar_id = (event.get("source_ids") or {}).get("calendar_id")
+    if not calendar_id:
+        raise HTTPException(
+            409,
+            "This block has no Google Calendar entry to cancel. ✕ on the day "
+            "view hides it, and delete removes it.",
+        )
+    if event.get("calendar") not in (None, "Mazkir"):
+        raise HTTPException(
+            409, f"This event lives in your {event['calendar']} calendar — cancel it there.",
+        )
+
+    calendar = get_calendar()
+    if not calendar or not getattr(calendar, "is_initialized", False):
+        raise HTTPException(503, "Google Calendar is not reachable, so nothing was cancelled.")
+    try:
+        cancelled = await calendar.cancel_event(calendar_id)
+    except Exception as exc:
+        logger.warning("Failed to cancel event in Google Calendar: %s", exc)
+        cancelled = False
+    if not cancelled:
+        raise HTTPException(502, "Google Calendar refused the cancellation, so nothing changed.")
+
+    for candidate in merged:
+        if candidate.get("id") == event_id:
+            candidate["state"] = "dismissed"
+    events_svc.save_events(date_str, merged)
+
+    return {
+        "ok": True, "cancelled": event_id,
+        "calendar_sync": {"ok": True, "attempted": True, "event_id": calendar_id},
+    }
+
+
 @router.delete("/{date}/{event_id}")
 async def delete_event(date: date_type, event_id: str):
     """Delete one block, and its Google Calendar entry when it has one.

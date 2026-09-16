@@ -163,6 +163,124 @@ class TestMergeFromSourcesAvailability:
         assert "habit" not in self._run(vault=self._real_vault(tmp_path, raises=True))
 
 
+class TestCancelEvent:
+    """POST /events/{date}/{id}/cancel — the edit view's other deferred button.
+
+    Delete's softer sibling (design §6.3): Google keeps a restorable entry at
+    `status: "cancelled"`, and since `events().list()` is called without
+    `showDeleted` it drops out of the merge and stops being re-suggested."""
+
+    def _install(self, monkeypatch, events, calendar=None):
+        import src.main as main
+        import src.api.routes.events as events_route
+
+        class FakeEvents:
+            def __init__(self):
+                self.saved = {}
+
+            def reconcile(self, date, fresh, available=None):
+                return [dict(e) for e in events]
+
+            def save_events(self, date, evts):
+                self.saved[date] = evts
+
+        fake = FakeEvents()
+        monkeypatch.setattr(main, "get_events", lambda: fake)
+        monkeypatch.setattr(main, "get_calendar", lambda: calendar)
+
+        async def no_sources(date):
+            return [], set()
+
+        monkeypatch.setattr(events_route, "_merge_from_sources", no_sources)
+        return fake
+
+    @staticmethod
+    def _calendar(cancelled=True):
+        class FakeCalendar:
+            is_initialized = True
+
+            def __init__(self):
+                self.cancelled = []
+
+            async def cancel_event(self, event_id):
+                self.cancelled.append(event_id)
+                return cancelled
+
+        return FakeCalendar()
+
+    def _cancel(self, path):
+        from fastapi.testclient import TestClient
+        from src.main import app
+        return TestClient(app).post(path)
+
+    _SYNCED = {
+        "id": "e1", "name": "Dentist", "source": "manual",
+        "source_ids": {"calendar_id": "g1"},
+    }
+
+    def test_cancels_in_google_and_stops_suggesting_the_block(self, monkeypatch):
+        calendar = self._calendar()
+        fake = self._install(monkeypatch, [dict(self._SYNCED)], calendar=calendar)
+
+        r = self._cancel("/events/2026-09-15/e1/cancel")
+
+        assert r.status_code == 200, r.text
+        assert calendar.cancelled == ["g1"]
+        # Dismissed, not deleted: the block stays as the record that it was
+        # planned, and /day omits dismissed blocks.
+        assert fake.saved["2026-09-15"][0]["state"] == "dismissed"
+
+    def test_a_block_with_no_google_entry_is_refused(self, monkeypatch):
+        calendar = self._calendar()
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Reading", "source": "manual", "source_ids": {}},
+        ], calendar=calendar)
+
+        r = self._cancel("/events/2026-09-15/e1/cancel")
+
+        assert r.status_code == 409
+        assert calendar.cancelled == []
+        assert fake.saved == {}
+
+    def test_an_event_in_another_calendar_is_refused(self, monkeypatch):
+        calendar = self._calendar()
+        fake = self._install(monkeypatch, [
+            {"id": "e1", "name": "Standup", "source": "calendar", "calendar": "Work",
+             "source_ids": {"calendar_id": "g1"}},
+        ], calendar=calendar)
+
+        r = self._cancel("/events/2026-09-15/e1/cancel")
+
+        assert r.status_code == 409
+        assert calendar.cancelled == []
+        assert fake.saved == {}
+
+    def test_nothing_changes_when_google_refuses(self, monkeypatch):
+        calendar = self._calendar(cancelled=False)
+        fake = self._install(monkeypatch, [dict(self._SYNCED)], calendar=calendar)
+
+        r = self._cancel("/events/2026-09-15/e1/cancel")
+
+        assert r.status_code == 502
+        assert fake.saved == {}
+
+    def test_nothing_changes_when_google_is_unreachable(self, monkeypatch):
+        fake = self._install(monkeypatch, [dict(self._SYNCED)], calendar=None)
+
+        r = self._cancel("/events/2026-09-15/e1/cancel")
+
+        assert r.status_code == 503
+        assert fake.saved == {}
+
+    def test_an_unknown_event_is_404(self, monkeypatch):
+        self._install(monkeypatch, [dict(self._SYNCED)], calendar=self._calendar())
+
+        assert self._cancel("/events/2026-09-15/nope/cancel").status_code == 404
+
+    def test_a_malformed_date_is_rejected_at_the_boundary(self):
+        assert self._cancel("/events/not-a-date/e1/cancel").status_code == 422
+
+
 class TestDeleteEvent:
     """DELETE /events/{date}/{id} — the edit view's delete button.
 

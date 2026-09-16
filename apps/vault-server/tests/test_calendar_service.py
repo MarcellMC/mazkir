@@ -143,6 +143,66 @@ class TestUpdateEvent:
         assert result is False
 
 
+class TestCancelEvent:
+    """`cancel_event` — delete's reversible sibling (design §6.3).
+
+    Google keeps the entry at `status: "cancelled"`, and `get_todays_events`
+    lists without `showDeleted`, so it drops out of the merge and stops being
+    re-suggested while remaining restorable in Google.
+    """
+
+    def _service(self, calendar_id="cal_123"):
+        from src.services.calendar_service import CalendarService
+
+        cs = CalendarService(
+            credentials_path=MagicMock(),
+            token_path=MagicMock(),
+            timezone="Asia/Jerusalem",
+        )
+        cs._initialized = True
+        cs._calendar_id = calendar_id
+        cs._service = MagicMock()
+        return cs
+
+    def test_patches_the_status_and_nothing_else(self):
+        cs = self._service(calendar_id="cal_999")
+        patch_mock = cs._service.events.return_value.patch
+        patch_mock.return_value.execute.return_value = {}
+
+        result = asyncio.run(cs.cancel_event(event_id="evt_1"))
+
+        assert result is True
+        assert patch_mock.call_args.kwargs["body"] == {"status": "cancelled"}
+        assert patch_mock.call_args.kwargs["calendarId"] == "cal_999"
+        assert patch_mock.call_args.kwargs["eventId"] == "evt_1"
+
+    def test_deletes_nothing(self):
+        cs = self._service()
+        cs._service.events.return_value.patch.return_value.execute.return_value = {}
+
+        asyncio.run(cs.cancel_event(event_id="evt_1"))
+
+        cs._service.events.return_value.delete.assert_not_called()
+
+    def test_http_error_returns_false_rather_than_raising(self):
+        import httplib2
+        from googleapiclient.errors import HttpError
+
+        cs = self._service()
+        resp = httplib2.Response({"status": 404})
+        cs._service.events.return_value.patch.return_value.execute.side_effect = HttpError(
+            resp, b"not found"
+        )
+
+        assert asyncio.run(cs.cancel_event(event_id="evt_1")) is False
+
+    def test_an_uninitialized_service_reports_failure(self):
+        cs = self._service()
+        cs._initialized = False
+
+        assert asyncio.run(cs.cancel_event(event_id="evt_1")) is False
+
+
 class TestEventSpanAndAlerts:
     """A caller chooses the span and the alerts; the defaults are only a floor.
 
