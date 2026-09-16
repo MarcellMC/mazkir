@@ -54,6 +54,7 @@ function nudgePad(
 
 export function buildBlockEditRich(
   block: DailyBlock, date: string, startDelta: number, endDelta: number,
+  confirmDelete = false,
 ): InputRichMessage<InputFile> {
   const start = toClock(toMinutes(block.start) + startDelta);
   const end = toClock(toMinutes(block.end) + endDelta);
@@ -82,13 +83,20 @@ export function buildBlockEditRich(
       button("← back", `day:${date}`) +
     "</tg-button-row>",
     "<h3>this event</h3>",
-    // Rendered but inert in this ship (spec §6.3, §9). Drawn because the
-    // layout was approved with them present and their absence reads as an
-    // unfinished view; they answer with a toast saying they are not wired up.
-    "<tg-button-row>" +
-      button("cancel in calendar", `cal:cancel:${block.id}`) +
-      button("delete", `cal:delete:${block.id}`, "danger") +
-    "</tg-button-row>",
+    // Delete asks first: it removes the Google Calendar entry too, and a
+    // one-tap destructive button sits right under the nudge pad. "Cancel in
+    // calendar" is still inert (spec §6.3, §9) and says so when tapped.
+    confirmDelete
+      ? `<p>Delete <b>${escapeHtml(block.title)}</b>? ` +
+        "It also comes off Google Calendar if it is there.</p>" +
+        "<tg-button-row>" +
+          button("yes, delete", `evdel:yes:${date}:${block.id}`, "danger") +
+          button("keep", `block:edit:${date}:${block.id}`) +
+        "</tg-button-row>"
+      : "<tg-button-row>" +
+          button("cancel in calendar", `cal:cancel:${block.id}`) +
+          button("delete", `evdel:ask:${date}:${block.id}`, "danger") +
+        "</tg-button-row>",
   ];
 
   // No rename button: Ship 4 already renames by talking, and a button whose

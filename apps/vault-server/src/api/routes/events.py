@@ -244,6 +244,69 @@ async def patch_event(date: date_type, event_id: str, body: PatchEventBody):
     raise HTTPException(404, f"Event {event_id} not found")
 
 
+# `source_ids` keys whose source rebuilds the block on every merge, so removing
+# the row cannot make it go away.
+_REGENERATING_KEYS = ("note_line", "habit_slug", "visit_id", "transit_id")
+
+
+@router.delete("/{date}/{event_id}")
+async def delete_event(date: date_type, event_id: str):
+    """Delete one block, and its Google Calendar entry when it has one.
+
+    Every refusal here exists so that a delete holds. A block rebuilt from a
+    note checkbox, a habit or location history comes back on the next read;
+    a Google-synced block removed only from the store is merged straight back
+    in. Either would report success and then quietly undo itself, so they are
+    refused with the reason instead, and nothing is written.
+    """
+    date_str = date.isoformat()
+    from src.main import get_calendar, get_events as get_events_svc
+    events_svc = get_events_svc()
+    if not events_svc:
+        raise HTTPException(503, "Events service not initialized")
+
+    # The reconciled view, as in set_event_state: the block on screen may
+    # have no persisted row yet.
+    fresh, available = await _merge_from_sources(date)
+    merged = events_svc.reconcile(date_str, fresh, available)
+
+    event = next((e for e in merged if e.get("id") == event_id), None)
+    if event is None:
+        raise HTTPException(404, f"No event {event_id} on {date_str}")
+
+    source_ids = event.get("source_ids") or {}
+    if any(source_ids.get(key) for key in _REGENERATING_KEYS):
+        raise HTTPException(
+            409,
+            "This block is rebuilt from a note checkbox, a habit or location "
+            "history on every read, so deleting it would not hold. ✕ on the "
+            "day view hides it.",
+        )
+
+    calendar_id = source_ids.get("calendar_id")
+    if calendar_id and event.get("calendar") not in (None, "Mazkir"):
+        raise HTTPException(
+            409, f"This event lives in your {event['calendar']} calendar — delete it there.",
+        )
+
+    calendar_sync = {"ok": False, "attempted": False, "reason": "not_in_calendar"}
+    if calendar_id:
+        calendar = get_calendar()
+        if not calendar or not getattr(calendar, "is_initialized", False):
+            raise HTTPException(503, "Google Calendar is not reachable, so nothing was deleted.")
+        try:
+            deleted = await calendar.delete_event(calendar_id)
+        except Exception as exc:
+            logger.warning("Failed to delete event from Google Calendar: %s", exc)
+            deleted = False
+        if not deleted:
+            raise HTTPException(502, "Google Calendar refused the delete, so nothing was deleted.")
+        calendar_sync = {"ok": True, "attempted": True, "event_id": calendar_id}
+
+    events_svc.save_events(date_str, [e for e in merged if e.get("id") != event_id])
+    return {"ok": True, "deleted": event_id, "calendar_sync": calendar_sync}
+
+
 def _habit_path(vault, name: str) -> str | None:
     """The vault path of the active habit called `name`, case-insensitively."""
     wanted = name.strip().casefold()
