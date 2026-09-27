@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,7 @@ from src.services.fast_lane.parse import ParseFailure, parse_message
 from src.services.fast_lane.time_resolver import (
     ClauseResolution, ClauseTime, Placement, ResolverContext, resolve,
 )
+from src.services.tracing_helpers import current_trace_id
 
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer("mazkir.fast_lane")
@@ -117,12 +119,22 @@ def _run(ctx: FastContext, claude, settings: ShadowSettings, parse) -> dict[str,
     }
 
 
-def run_shadow(ctx: FastContext, claude, settings: ShadowSettings, parse=parse_message) -> dict[str, Any]:
-    """Parse and resolve one message; return and log the would-be receipt. Never raises."""
+def run_shadow(ctx: FastContext, claude, settings: ShadowSettings, parse=parse_message,
+               complete: Callable[[FastContext], FastContext] | None = None) -> dict[str, Any]:
+    """Parse and resolve one message; return and log the would-be receipt. Never raises.
+
+    `complete`, when given, fills in the parts of the context that are read
+    here, off the event loop, before the parse runs (see
+    `context.complete_fast_context`). The record carries the trace id, so a
+    shadow line leads straight to its trace (spec §11.1).
+    """
     record: dict[str, Any] = {"event": "fast_shadow", "chat_id": ctx.chat_id, "text": ctx.text,
-                              "now": ctx.now.isoformat()}
+                              "now": ctx.now.isoformat(), "trace_id": ""}
     try:
         with _tracer.start_as_current_span("fast.shadow") as span:
+            record["trace_id"] = current_trace_id() or ""
+            if complete is not None:
+                ctx = complete(ctx)
             record.update(_run(ctx, claude, settings, parse))
             clauses = record.get("clauses", [])
             span.set_attribute("mazkir.fast.route", record["route"])

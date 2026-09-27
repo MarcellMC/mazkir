@@ -178,17 +178,19 @@ class ClaudeService:
 
     def create_fast_parse(
         self, *, system: str, content: str, schema: dict, model: str, timeout_s: float,
-    ) -> dict:
+    ):
         """One structured-output call for the fast lane's parse (fast-lane spec §5).
 
         No retries and a short timeout: a slow parse is handed to the router
-        rather than making the user wait for a second attempt.
+        rather than making the user wait for a second attempt. Returns the
+        response itself, not its JSON: the parse reads `stop_reason` so a reply
+        cut off at `max_tokens` is logged as that, not as a generic failure.
+        3000 tokens leaves room for 12 clauses with every field required.
         """
-        response = self.client.with_options(timeout=timeout_s, max_retries=0).messages.create(
+        return self.client.with_options(timeout=timeout_s, max_retries=0).messages.create(
             model=model,
-            max_tokens=1500,
+            max_tokens=3000,
             system=system,
             messages=[{"role": "user", "content": content}],
             output_config={"format": {"type": "json_schema", "schema": schema}},
         )
-        return json.loads(response.content[0].text)

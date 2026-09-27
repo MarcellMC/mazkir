@@ -16,8 +16,9 @@ def make_client(monkeypatch, mode, assemble=None):
     monkeypatch.setattr(settings, "fast_lane_mode", mode)
     ran, seen = threading.Event(), {}
 
-    def fake_run_shadow(ctx, claude, s):
+    def fake_run_shadow(ctx, claude, s, complete=None):
         seen["text"] = ctx.text
+        seen["complete"] = complete
         ran.set()
         return {}
 
@@ -40,6 +41,8 @@ def test_shadow_mode_runs_the_fast_lane_beside_the_agent(monkeypatch):
         assert r.status_code == 200 and r.json()["response"] == "ok"
         assert ran.wait(2)
     assert seen["text"] == "Dog walk 23:15-23:35"
+    # history and habits are read in the shadow's thread, not on the event loop
+    assert seen["complete"].func is context_module.complete_fast_context
 
 
 def test_off_mode_runs_nothing(monkeypatch):

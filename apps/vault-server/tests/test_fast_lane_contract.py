@@ -1,5 +1,7 @@
+import pytest
+
 from src.services.fast_lane.contract import (
-    MAX_CLAUSES, PARSE_SCHEMA, ParseResult, extract_hashtags, validate,
+    MAX_CLAUSES, PARSE_SCHEMA, ParseFailure, ParseResult, extract_hashtags, validate,
 )
 
 
@@ -49,10 +51,11 @@ def test_a_clause_missing_what_its_op_needs_is_dropped():
     assert validate(raw, "move it").clauses == ()
 
 
-def test_too_many_clauses_send_the_whole_message_on():
-    raw = {"clauses": [clause("log_block", "a", name="a")] * (MAX_CLAUSES + 1), "fallthrough_skill": None}
-    result = validate(raw, "a")
-    assert result.clauses == () and result.route == "fallthrough"
+def test_too_many_clauses_send_the_whole_message_to_the_router():
+    # Spec §5.5 and §10: an unusable parse goes to today's router, never to mazkir.
+    raw = {"clauses": [clause("log_block", "a", name="a")] * (MAX_CLAUSES + 1), "fallthrough_skill": "mazkir"}
+    with pytest.raises(ParseFailure, match="13 clauses"):
+        validate(raw, "a")
 
 
 def test_hashtags_are_rules_not_hints():

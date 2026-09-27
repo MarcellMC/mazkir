@@ -24,6 +24,14 @@ ACTIVITY_TAGS = frozenset({"dev", "work", "explore"})
 _HASHTAG = re.compile(r"#(\w[\w/-]*)")
 
 
+class ParseFailure(Exception):
+    """The parse failed or answered with something unusable; the router takes the message.
+
+    Spec §5.5 and §10: never the `mazkir` fallback. The shadow logs it as
+    route "router_fallback".
+    """
+
+
 @dataclass(frozen=True)
 class TimeWords:
     start: str | None = None
@@ -170,12 +178,16 @@ def _apply_hashtags(clauses: list[Clause], skill: str | None) -> tuple[list[Clau
 
 
 def validate(raw: dict[str, Any], message: str) -> ParseResult:
-    """Turn the model's JSON into clauses that passed every check (spec §5.4)."""
+    """Turn the model's JSON into clauses that passed every check (spec §5.4).
+
+    Raises ParseFailure when the answer is unusable as a whole: more than
+    MAX_CLAUSES clauses sends the message to today's router (spec §5.5, §10).
+    """
     items = [i for i in raw.get("clauses") or [] if isinstance(i, dict)]
     skill = raw.get("fallthrough_skill")
     skill = skill if skill in SKILLS else None
     if len(items) > MAX_CLAUSES:
-        return ParseResult((), skill or "mazkir", tuple(str(i.get("evidence", "")) for i in items))
+        raise ParseFailure(f"the parse returned {len(items)} clauses, more than {MAX_CLAUSES}")
     body = _norm(message)
     keep: list[int] = []
     dropped: list[str] = []

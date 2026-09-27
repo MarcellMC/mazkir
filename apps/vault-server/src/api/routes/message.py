@@ -106,14 +106,20 @@ def _start_fast_lane_shadow(body: MessageRequest):
     """Snapshot the day now, before the agent writes, then parse and resolve in the background.
 
     Fast-lane spec §11.3: the shadow writes nothing and the reply never waits
-    for it. Any failure here is logged and forgotten.
+    for it. Only the cheap, changeable state is read here, on the event loop;
+    a month of past durations and the habit list are read in the shadow's
+    thread (`complete_fast_context`). Any failure here is logged and forgotten.
     """
     if settings.fast_lane_mode not in ("shadow", "on"):
         return None
     try:
+        from functools import partial
         from zoneinfo import ZoneInfo
 
-        from src.services.fast_lane.context import assemble_fast_context
+        from src.services.fast_lane.context import (
+            assemble_fast_context,
+            complete_fast_context,
+        )
         from src.services.fast_lane.shadow import ShadowSettings, run_shadow
 
         claude, memory, events, vault = get_fast_lane_deps()
@@ -134,10 +140,11 @@ def _start_fast_lane_shadow(body: MessageRequest):
             day_boundary_hour=settings.fast_lane_day_boundary_hour,
             default_minutes=settings.default_event_duration,
         )
+        complete = partial(complete_fast_context, events=events, vault=vault)
     except Exception:
         logger.warning("fast lane shadow could not start", exc_info=True)
         return None
-    task = asyncio.create_task(asyncio.to_thread(run_shadow, ctx, claude, shadow_settings))
+    task = asyncio.create_task(asyncio.to_thread(run_shadow, ctx, claude, shadow_settings, complete=complete))
     _shadow_tasks.add(task)   # keep a reference until it finishes
     task.add_done_callback(_shadow_tasks.discard)
     return task

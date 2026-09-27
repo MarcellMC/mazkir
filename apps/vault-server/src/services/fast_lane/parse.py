@@ -7,16 +7,14 @@ this moment goes in the user turn.
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Any
 
 from src.services.fast_lane.context import FastContext
-from src.services.fast_lane.contract import PARSE_SCHEMA, ParseResult, validate
+from src.services.fast_lane.contract import PARSE_SCHEMA, ParseFailure, ParseResult, validate
 
 logger = logging.getLogger(__name__)
-
-
-class ParseFailure(Exception):
-    """The parse failed or answered with something unusable; the router takes the message."""
 
 
 SYSTEM_PROMPT = """You read one message sent to Mazkir, a personal assistant that keeps the user's timeline, habits and todos. You do not act and you do not reply. You list what the message says as clauses of evidence, in the user's own words.
@@ -57,41 +55,41 @@ SYSTEM_PROMPT = """You read one message sent to Mazkir, a personal assistant tha
 ## Examples
 Fields not shown are null or empty.
 
-Message (sent 00:48): Dog walk 23:15-23:35
+Message (sent 00:45): Dog walk 23:15-23:35
 Output: {"clauses":[{"op":"log_block","intent":"record","stated":true,"evidence":"Dog walk 23:15-23:35","name":"Dog walk","time":{"start":"23:15","end":"23:35"}}],"fallthrough_skill":null}
 
-Message (sent 01:56): Finished eating, 30 mins. Then brushed my teeth 10 mins
+Message (sent 02:00): Finished eating, 30 mins. Then brushed my teeth 10 mins
 Output: {"clauses":[{"op":"log_block","intent":"record","stated":true,"evidence":"Finished eating, 30 mins","name":"Eating","time":{"end":"now","duration":"30 mins"}},{"op":"log_block","intent":"record","stated":true,"evidence":"Then brushed my teeth 10 mins","name":"Brush teeth","time":{"duration":"10 mins","after":0}}],"fallthrough_skill":null}
 
-Message (sent 05:16): Had a 45 min #dev session between 04:30 and 05:15. Now going to sleep
+Message (sent 05:20): Had a 45 min #dev session between 04:30 and 05:15. Now going to sleep
 Output: {"clauses":[{"op":"log_block","intent":"record","stated":true,"evidence":"45 min #dev session between 04:30 and 05:15","name":"Dev session","tags":["dev"],"time":{"start":"04:30","end":"05:15","duration":"45 min"}},{"op":"start_block","intent":"record","stated":true,"evidence":"Now going to sleep","name":"Sleep","time":{"start":"now"}}],"fallthrough_skill":null}
 
-Message (sent 01:14): At a bar with friends, got an #idea: play a concert for my family
-Output: {"clauses":[{"op":"start_block","intent":"record","stated":false,"evidence":"At a bar with friends","name":"Bar","time":{"start":"now"}},{"op":"other","intent":"record","stated":true,"evidence":"got an #idea: play a concert for my family","name":"Play a concert for my family","tags":["idea"]}],"fallthrough_skill":"knowledge-management"}
+Message (sent 21:15): At the park with friends, got an #idea: label the spice jars
+Output: {"clauses":[{"op":"start_block","intent":"record","stated":false,"evidence":"At the park with friends","name":"Park","time":{"start":"now"}},{"op":"other","intent":"record","stated":true,"evidence":"got an #idea: label the spice jars","name":"Label the spice jars","tags":["idea"]}],"fallthrough_skill":"knowledge-management"}
 
-Message (sent 23:06): Band practice tomorrow 13:30-16:30, room E
-Output: {"clauses":[{"op":"log_block","intent":"plan","stated":true,"evidence":"Band practice tomorrow 13:30-16:30, room E","name":"Band practice","place":"room E","time":{"start":"13:30","end":"16:30","day":"tomorrow"}}],"fallthrough_skill":null}
+Message (sent 23:00): Workshop tomorrow 13:30-16:30, room E
+Output: {"clauses":[{"op":"log_block","intent":"plan","stated":true,"evidence":"Workshop tomorrow 13:30-16:30, room E","name":"Workshop","place":"room E","time":{"start":"13:30","end":"16:30","day":"tomorrow"}}],"fallthrough_skill":null}
 
-Message (sent 23:32): Bought the cough syrup, mark that as done. The rest of the todos roll over to tomorrow
-Output: {"clauses":[{"op":"check_todo","intent":"record","stated":true,"evidence":"Bought the cough syrup, mark that as done","target":"cough syrup"},{"op":"rollover_todos","intent":"plan","stated":true,"evidence":"The rest of the todos roll over to tomorrow","time":{"day":"tomorrow"}}],"fallthrough_skill":null}
+Message (sent 23:30): Bought the batteries, mark that as done. The rest of the todos roll over to tomorrow
+Output: {"clauses":[{"op":"check_todo","intent":"record","stated":true,"evidence":"Bought the batteries, mark that as done","target":"batteries"},{"op":"rollover_todos","intent":"plan","stated":true,"evidence":"The rest of the todos roll over to tomorrow","time":{"day":"tomorrow"}}],"fallthrough_skill":null}
 
-Message (sent 01:14): Today going to the hardware store to #buy a drill
+Message (sent 10:00): Today going to the hardware store to #buy a drill
 Output: {"clauses":[{"op":"add_todo","intent":"plan","stated":true,"evidence":"going to the hardware store to #buy a drill","name":"Buy a drill","place":"hardware store","tags":["buy"],"time":{"day":"Today"}}],"fallthrough_skill":null}
 
-The message replies to (assistant): ✓ 15:59–16:29 Dog walk
-Message (sent 16:30): Move it back 30 mins
+The message replies to (assistant): ✓ 16:00–16:30 Dog walk
+Message (sent 16:35): Move it back 30 mins
 Output: {"clauses":[{"op":"edit_block","intent":"record","stated":true,"evidence":"Move it back 30 mins","target":"Dog walk","time":{"shift":"back 30 mins"}}],"fallthrough_skill":null}
 
-The message replies to (assistant): 00:00–05:00 on 2026-09-12 is unaccounted. What was it?
-Message (sent 20:41): Bar hopping
-Output: {"clauses":[{"op":"log_block","intent":"record","stated":true,"evidence":"Bar hopping","name":"Bar hopping","time":{"start":"00:00","end":"05:00","day":"2026-09-12"}}],"fallthrough_skill":null}
+The message replies to (assistant): 00:00–05:00 on 2026-01-10 is unaccounted. What was it?
+Message (sent 12:00): Sleeping
+Output: {"clauses":[{"op":"log_block","intent":"record","stated":true,"evidence":"Sleeping","name":"Sleep","time":{"start":"00:00","end":"05:00","day":"2026-01-10"}}],"fallthrough_skill":null}
 
-Message (sent 22:22): Explain multi-head attention vs grouped query attention
-Output: {"clauses":[{"op":"other","intent":"record","stated":true,"evidence":"Explain multi-head attention vs grouped query attention"}],"fallthrough_skill":"mazkir"}
+Message (sent 22:00): Explain how a hash map works
+Output: {"clauses":[{"op":"other","intent":"record","stated":true,"evidence":"Explain how a hash map works"}],"fallthrough_skill":"mazkir"}
 
 Recent conversation:
 assistant: Which goal needs the update, 1, 2 or 3?
-Message (sent 06:36): 3
+Message (sent 06:30): 3
 Output: {"clauses":[{"op":"other","intent":"record","stated":true,"evidence":"3"}],"fallthrough_skill":"time-management"}
 """
 
@@ -122,15 +120,26 @@ def build_user_content(ctx: FastContext) -> str:
     return "\n".join(lines)
 
 
-def parse_message(ctx: FastContext, claude, *, model: str, timeout_s: float) -> ParseResult:
+def _decode(response: Any) -> dict[str, Any]:
+    """The reply's JSON object. A reply cut off at max_tokens says so, apart from other failures."""
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        raise ParseFailure("the parse reply hit max_tokens and was cut off")
     try:
-        raw = claude.create_fast_parse(system=SYSTEM_PROMPT, content=build_user_content(ctx),
-                                       schema=PARSE_SCHEMA, model=model, timeout_s=timeout_s)
-    except Exception as e:
-        raise ParseFailure(str(e)) from e
+        raw = json.loads(response.content[0].text)
+    except (AttributeError, IndexError, TypeError, ValueError) as e:
+        raise ParseFailure(f"the parse reply was not JSON: {e}") from e
     if not isinstance(raw, dict):
         raise ParseFailure("the parse returned no object")
-    return validate(raw, ctx.text)
+    return raw
+
+
+def parse_message(ctx: FastContext, claude, *, model: str, timeout_s: float) -> ParseResult:
+    try:
+        response = claude.create_fast_parse(system=SYSTEM_PROMPT, content=build_user_content(ctx),
+                                            schema=PARSE_SCHEMA, model=model, timeout_s=timeout_s)
+    except Exception as e:
+        raise ParseFailure(str(e)) from e
+    return validate(_decode(response), ctx.text)
 
 
 def warm_up(claude, model: str, timeout_s: float) -> None:

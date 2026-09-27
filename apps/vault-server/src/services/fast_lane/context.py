@@ -4,6 +4,13 @@ Spec §5.1. Reads files only: the persisted events, the daily note, the
 habits, the conversation. It never uses the reconcile path, because
 `GET /events` writes to disk and the fast lane must not change anything by
 reading. Every source is optional; a failing one costs context, not the turn.
+
+It is read in two steps. `assemble_fast_context` runs on the event loop
+before the agent is dispatched, and snapshots what the agent could change
+this turn: the day's blocks, the todos, the conversation, the reply. The
+costlier parts the agent cannot meaningfully change, a month of past
+durations and the habit list, are added by `complete_fast_context` in the
+shadow's own thread, so the reply never waits for them.
 """
 
 from __future__ import annotations
@@ -12,7 +19,7 @@ import datetime as dt
 import json
 import logging
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -146,11 +153,16 @@ def _places(path: Path | None) -> tuple[str, ...]:
     return tuple(names)
 
 
-def typical_minutes(events, today: dt.date, days: int = 30) -> dict[str, int]:
-    """Median length per activity name over the last `days`, for filling in an unknown end."""
+def typical_minutes(events, before: dt.date, days: int = 30) -> dict[str, int]:
+    """Median length per activity name over the `days` days before `before`, for an unknown end.
+
+    Never `before` itself. For a replayed message that day holds blocks
+    written after it was sent; live, it is the file the agent may be writing
+    while the shadow's thread reads.
+    """
     lengths: dict[str, list[float]] = {}
-    for k in range(days):
-        for e in events.get_events((today - dt.timedelta(days=k)).isoformat()):
+    for k in range(1, days + 1):
+        for e in events.get_events((before - dt.timedelta(days=k)).isoformat()):
             start, end, name = e.get("start_time"), e.get("end_time"), e.get("name")
             if not (start and end and name):
                 continue
@@ -167,9 +179,13 @@ def assemble_fast_context(
     *, text: str, chat_id: int, now: dt.datetime, memory, events, vault,
     reply_to: dict | None = None, selected_date: str | None = None,
     attachments: list[dict] | None = None, places_path: Path | None = None,
-    day_boundary_hour: int = 5, history_days: int = 30,
+    day_boundary_hour: int = 5,
 ) -> FastContext:
-    """Snapshot everything the parse needs. Never raises."""
+    """Snapshot, before the agent runs, what it could change this turn. Never raises.
+
+    Cheap reads only, because this runs on the event loop: habits and
+    typical durations are left empty for `complete_fast_context`.
+    """
     reply = reply_to or {}
     return FastContext(
         now=now, chat_id=chat_id, text=text,
@@ -177,10 +193,22 @@ def assemble_fast_context(
         recent_turns=_safe(lambda: _recent_turns(memory, chat_id), ()),
         blocks=_safe(lambda: _blocks(events, now, day_boundary_hour), ()),
         todos=_safe(lambda: _todos(vault, now), ()),
-        habits=_safe(lambda: habits_of(vault), ()),
         places=_safe(lambda: _places(places_path), ()),
         hashtags=extract_hashtags(text),
         selected_date=selected_date,
         has_photo=any(a.get("type") == "photo" for a in attachments or ()),
-        typical_minutes=_safe(lambda: typical_minutes(events, now.date(), history_days), {}),
+    )
+
+
+def complete_fast_context(snapshot: FastContext, *, events, vault, history_days: int = 30) -> FastContext:
+    """The snapshot plus the habit list and the typical durations. Never raises.
+
+    Runs in the shadow's thread, before the parse. Durations come only from
+    the days before today, which the agent's writes this turn cannot reach
+    in any way that matters. Returns a new context; the snapshot is frozen.
+    """
+    return replace(
+        snapshot,
+        habits=_safe(lambda: habits_of(vault), ()),
+        typical_minutes=_safe(lambda: typical_minutes(events, snapshot.now.date(), history_days), {}),
     )

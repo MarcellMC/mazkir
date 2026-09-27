@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 import re
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
@@ -14,6 +15,11 @@ from src.services.fast_lane.parse import (
 
 TZ = ZoneInfo("Asia/Jerusalem")
 NOW = dt.datetime(2026, 9, 8, 0, 48, tzinfo=TZ)
+
+
+def reply(text, stop_reason="end_turn"):
+    """The shape of an Anthropic Messages response, as far as the parse reads it."""
+    return SimpleNamespace(stop_reason=stop_reason, content=[SimpleNamespace(text=text)])
 
 
 def test_the_prompt_names_every_operation():
@@ -47,16 +53,16 @@ def test_user_content_carries_the_moment_the_day_and_the_message_last():
 
 def test_parse_message_validates_the_answer():
     claude = MagicMock()
-    claude.create_fast_parse.return_value = {"clauses": [
+    claude.create_fast_parse.return_value = reply(json.dumps({"clauses": [
         {"op": "log_block", "intent": "record", "stated": True, "evidence": "Dog walk 23:15-23:35",
-         "name": "Dog walk", "time": {"start": "23:15", "end": "23:35"}}], "fallthrough_skill": None}
+         "name": "Dog walk", "time": {"start": "23:15", "end": "23:35"}}], "fallthrough_skill": None}))
     result = parse_message(FastContext(now=NOW, chat_id=1, text="Dog walk 23:15-23:35"),
                            claude, model="m", timeout_s=5)
     assert result.route == "fast"
     assert claude.create_fast_parse.call_args.kwargs["model"] == "m"
 
 
-@pytest.mark.parametrize("behaviour", [RuntimeError("timeout"), None])
+@pytest.mark.parametrize("behaviour", [RuntimeError("timeout"), reply("null"), reply("not json"), None])
 def test_parse_message_failures_hand_the_message_on(behaviour):
     claude = MagicMock()
     if isinstance(behaviour, Exception):
@@ -64,6 +70,14 @@ def test_parse_message_failures_hand_the_message_on(behaviour):
     else:
         claude.create_fast_parse.return_value = behaviour
     with pytest.raises(ParseFailure):
+        parse_message(FastContext(now=NOW, chat_id=1, text="x"), claude, model="m", timeout_s=5)
+
+
+def test_a_truncated_parse_says_it_hit_max_tokens():
+    claude = MagicMock()
+    claude.create_fast_parse.return_value = reply('{"clauses": [{"op": "log_block", "intent": "rec',
+                                                  stop_reason="max_tokens")
+    with pytest.raises(ParseFailure, match="max_tokens"):
         parse_message(FastContext(now=NOW, chat_id=1, text="x"), claude, model="m", timeout_s=5)
 
 

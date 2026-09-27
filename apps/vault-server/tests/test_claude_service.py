@@ -178,16 +178,19 @@ class TestClaudeServiceCreateFastParse:
         with patch("src.services.claude_service.anthropic") as mock_anthropic:
             client = MagicMock()
             limited = client.with_options.return_value
-            limited.messages.create.return_value = MagicMock(
-                content=[MagicMock(text='{"clauses": [], "fallthrough_skill": null}')])
+            response = MagicMock(stop_reason="end_turn",
+                                 content=[MagicMock(text='{"clauses": [], "fallthrough_skill": null}')])
+            limited.messages.create.return_value = response
             mock_anthropic.Anthropic.return_value = client
             service = ClaudeService(api_key="test-key")
             result = service.create_fast_parse(
                 system="S", content="C", schema={"type": "object"}, model="m", timeout_s=5.0)
-        assert result == {"clauses": [], "fallthrough_skill": None}
+        # The response itself: the parse reads stop_reason to tell a cut-off reply from a bad one
+        assert result is response
         client.with_options.assert_called_once_with(timeout=5.0, max_retries=0)
         kwargs = limited.messages.create.call_args.kwargs
         assert kwargs["model"] == "m"
+        assert kwargs["max_tokens"] == 3000   # 12 clauses with every field required fit
         assert kwargs["system"] == "S"
         assert kwargs["messages"] == [{"role": "user", "content": "C"}]
         assert kwargs["output_config"] == {"format": {"type": "json_schema", "schema": {"type": "object"}}}
