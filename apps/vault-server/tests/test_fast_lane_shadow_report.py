@@ -49,3 +49,50 @@ def test_questions_and_failures_are_reported():
 def test_the_report_opens_with_totals():
     text = render_report([(run("Dog walk 23:15-23:35", [BLOCK]), [turn("Dog walk 23:15-23:35")])], set())
     assert text.splitlines()[0].startswith("1 message")
+
+
+# Fix (a): anchor old times on the tool's own date
+def test_old_times_anchor_on_tool_date():
+    old = turn("Dog walk", tools=[{"name": "create_event", "params": {
+        "name": "Dog walk", "date": "2026-09-07", "start_time": "23:15", "end_time": "23:35"}}])
+    notes = findings(run("Dog walk", [BLOCK]), [old], set())
+    assert not any("times differ" in n for n in notes)
+
+
+def test_old_times_wrap_end_to_next_day():
+    old = turn("Dog walk", tools=[{"name": "create_event", "params": {
+        "name": "Dog walk", "date": "2026-09-07", "start_time": "23:15", "end_time": "00:05"}}])
+    clause = {"op": "log_block", "intent": "record", "outcome": "fact", "name": "Dog walk",
+              "evidence": "Dog walk 23:15-00:05", "start": "2026-09-07T23:15:00+03:00",
+              "end": "2026-09-08T00:05:00+03:00"}
+    notes = findings(run("Dog walk", [clause], now="2026-09-08T00:48:00+03:00"), [old], set())
+    assert not any("times differ" in n for n in notes)
+
+
+# Fix (b): compare only the times both sides have
+def test_end_only_old_write_matches_end():
+    old = turn("Dog walk", tools=[{"name": "create_event", "params": {
+        "name": "Dog walk", "date": "2026-09-07", "end_time": "23:35"}}])
+    notes = findings(run("Dog walk", [BLOCK]), [old], set())
+    assert not any("times differ" in n for n in notes)
+
+
+def test_end_only_old_write_with_different_end():
+    old = turn("Dog walk", tools=[{"name": "create_event", "params": {
+        "name": "Dog walk", "date": "2026-09-07", "end_time": "23:50"}}])
+    notes = findings(run("Dog walk", [BLOCK]), [old], set())
+    assert any("times differ" in n for n in notes)
+
+
+# Fix (c): check tick_habit clauses
+def test_unticked_habit_without_complete_habit():
+    clause = {"op": "tick_habit", "name": "Stretching", "outcome": None, "evidence": "did my stretching"}
+    notes = findings(run("stretching", [clause]), [turn("stretching")], set())
+    assert notes == ["habit not ticked by the old path: Stretching"]
+
+
+def test_ticked_habit_with_complete_habit():
+    clause = {"op": "tick_habit", "name": "Stretching", "outcome": None, "evidence": "did my stretching"}
+    old = turn("stretching", tools=[{"name": "complete_habit", "params": {"name": "Stretching"}}])
+    notes = findings(run("stretching", [clause]), [old], set())
+    assert not any("not ticked" in n for n in notes)

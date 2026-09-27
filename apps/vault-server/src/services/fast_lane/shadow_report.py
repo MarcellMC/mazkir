@@ -62,12 +62,17 @@ def pair_runs(shadow: list[dict], turns: list[dict]) -> list[tuple[dict, list[di
 
 def _old_times(tool: dict, date: str) -> tuple[dt.datetime | None, dt.datetime | None]:
     params = tool.get("params") or {}
+    anchor_date = params.get("date") or date
 
     def one(value):
-        iso = normalize_time(str(value), date) if value else None
+        iso = normalize_time(str(value), anchor_date) if value else None
         return dt.datetime.fromisoformat(iso).replace(tzinfo=None) if iso else None
 
-    return one(params.get("start_time")), one(params.get("end_time"))
+    old_start, old_end = one(params.get("start_time")), one(params.get("end_time"))
+    # If both times parse and end is before start, add one day to end (midnight wrap)
+    if old_start and old_end and old_end < old_start:
+        old_end += dt.timedelta(days=1)
+    return old_start, old_end
 
 
 def findings(run: dict, turns: list[dict], habit_names: set[str]) -> list[str]:
@@ -93,13 +98,20 @@ def findings(run: dict, turns: list[dict], habit_names: set[str]) -> list[str]:
                     if tool.get("name") != "create_event" or name.casefold() not in old_name:
                         continue
                     old_start, old_end = _old_times(tool, date)
-                    off = old_start is None or abs(old_start - fast_start) > _SLACK or (
-                        fast_end and old_end and abs(old_end - fast_end) > _SLACK)
+                    # Compare only times both sides have
+                    compared = []
+                    if old_start and fast_start:
+                        compared.append(abs(old_start - fast_start) > _SLACK)
+                    if old_end and fast_end:
+                        compared.append(abs(old_end - fast_end) > _SLACK)
+                    off = any(compared) or not compared  # True if any differ or none could compare
                     if off:
                         notes.append(f"times differ for {name}: fast {c['start'][11:16]}–"
                                      f"{(c.get('end') or '')[11:16]}, old {old_start}–{old_end}")
             if name.casefold() in habit_names and "complete_habit" not in wrote:
                 notes.append(f"habit not ticked by the old path: {name}")
+        if c.get("op") == "tick_habit" and "complete_habit" not in wrote:
+            notes.append(f"habit not ticked by the old path: {name}")
     if run.get("route") == "fallthrough" and turns:
         old_skill = turns[-1].get("skill")
         if old_skill and run.get("fallthrough_skill") and old_skill != run["fallthrough_skill"]:
