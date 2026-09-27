@@ -213,3 +213,46 @@ def test_a_now_start_on_the_tail_of_a_chain_anchors_it():
     assert dishes.placement.start == at(2026, 9, 20, 20, 0)
     assert dishes.placement.end is None
     assert (eat.placement.start, eat.placement.end) == (at(2026, 9, 20, 19, 30), at(2026, 9, 20, 20, 0))
+
+
+def edit(op="edit_block", start=None, end=None, shift=None, target=(None, None), stated=True):
+    return ClauseTime(op=op, stated=stated, start=start, end=end, shift=shift,
+                      target_start=target[0], target_end=target[1])
+
+
+def test_an_end_after_midnight_is_the_nearest_one_after_the_start():
+    # "Ended at 00:30" for a walk that started 23:15: 75 minutes, not 25 hours.
+    [r] = resolve([edit("end_block", end="00:30", target=(at(2026, 9, 7, 23, 15), at(2026, 9, 7, 23, 35)))],
+                  ctx(at(2026, 9, 8, 0, 50)))
+    assert r.outcome == "fact"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 7, 23, 15), at(2026, 9, 8, 0, 30))
+    assert (r.placement.start_precision, r.placement.end_precision) == (None, "exact")
+
+
+def test_back_home_now_closes_the_block():
+    [r] = resolve([edit("end_block", end="now", target=(at(2026, 9, 9, 5, 0), None))],
+                  ctx(at(2026, 9, 9, 5, 30)))
+    assert r.placement.end == at(2026, 9, 9, 5, 30)
+
+
+def test_a_shift_moves_both_ends():
+    [r] = resolve([edit(shift="back 30 mins", target=(at(2026, 8, 16, 16, 0), at(2026, 8, 16, 16, 30)))],
+                  ctx(at(2026, 8, 16, 16, 31)))
+    assert (r.placement.start, r.placement.end) == (at(2026, 8, 16, 15, 30), at(2026, 8, 16, 16, 0))
+
+
+def test_new_times_land_nearest_the_block_they_replace():
+    target = (at(2026, 9, 13, 1, 0), at(2026, 9, 13, 8, 0))
+    [r] = resolve([edit(start="01:35", end="06:35", target=target)], ctx(at(2026, 9, 13, 8, 5)))
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 13, 1, 35), at(2026, 9, 13, 6, 35))
+
+
+def test_an_edit_without_its_block_asks_which():
+    [r] = resolve([edit(shift="back 30 mins")], ctx(at(2026, 9, 1, 12, 0)))
+    assert (r.outcome, r.reason) == ("question", "which block?")
+
+
+def test_a_rename_needs_no_placement():
+    [r] = resolve([edit(target=(at(2026, 9, 14, 9, 27), at(2026, 9, 14, 11, 2)))], ctx(at(2026, 9, 14, 11, 8)))
+    assert r.outcome == "fact"
+    assert r.placement is None

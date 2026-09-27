@@ -19,7 +19,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 
 from src.services.fast_lane.time_words import (
-    Clock, DayRef, is_now, parse_clock, parse_day, parse_duration, weekday_date,
+    Clock, DayRef, is_now, parse_clock, parse_day, parse_duration, parse_shift, weekday_date,
 )
 
 TOLERANCE = dt.timedelta(minutes=2)
@@ -449,9 +449,53 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
     return {i: _outcome(clauses[i], best.placed.get(i), best.flags.get(i)) for i in idx}
 
 
+def _nearest(clock: Clock, reference: dt.datetime, tz) -> dt.datetime:
+    days = [reference.date() + dt.timedelta(days=k) for k in (-1, 0, 1)]
+    return min(_instants(clock, days, False, tz), key=lambda instant: abs(instant - reference))
+
+
+def _resolve_edit(c: ClauseTime, ctx: ResolverContext) -> ClauseResolution:
+    """end_block / edit_block: new times relative to the block they change (spec §6.2 rule 9)."""
+    if c.target_start is None and c.target_end is None:
+        return ClauseResolution("question", reason="which block?")
+    tz = ctx.now.tzinfo
+    shift = parse_shift(c.shift)
+    start_clock, end_clock = parse_clock(c.start), parse_clock(c.end)
+    touches_time = (shift is not None or start_clock or end_clock or is_now(c.start) or is_now(c.end))
+    if not touches_time:  # a rename or another edit with nothing to place
+        return ClauseResolution("fact" if c.stated else "proposal")
+    start, end = c.target_start, c.target_end
+    start_precision = end_precision = None   # None: that end is unchanged
+    if shift is not None:
+        delta = dt.timedelta(minutes=shift)
+        if start is not None:
+            start, start_precision = start + delta, "inferred"
+        if end is not None:
+            end, end_precision = end + delta, "inferred"
+    else:
+        if start_clock is not None:
+            start, start_precision = _nearest(start_clock, c.target_start or c.target_end, tz), _precision(start_clock)
+        elif is_now(c.start):
+            start, start_precision = ctx.now, "inferred"
+        if end_clock is not None:
+            end, end_precision = _first_after(end_clock, start or c.target_end, tz, strictly=True), _precision(end_clock)
+        elif is_now(c.end):
+            end, end_precision = ctx.now, "inferred"
+    flag = None
+    if start is not None and end is not None:
+        if end <= start:
+            flag = "ends before it starts"
+        elif end - start > MAX_RECORD:
+            flag = "longer than 16 hours"
+    return _outcome(c, _place(start, end, start_precision, end_precision, c, ctx), flag)
+
+
 def resolve(clauses: list[ClauseTime], ctx: ResolverContext) -> list[ClauseResolution]:
     """One resolution per clause, in order (spec §6.4)."""
     results = [ClauseResolution("fact" if c.stated else "proposal") for c in clauses]
+    for i, c in enumerate(clauses):
+        if c.op in EDIT_OPS:
+            results[i] = _resolve_edit(c, ctx)
     blocks = [i for i, c in enumerate(clauses) if c.op in BLOCK_OPS]
     if blocks:
         for i, resolution in _resolve_blocks(clauses, blocks, ctx).items():
