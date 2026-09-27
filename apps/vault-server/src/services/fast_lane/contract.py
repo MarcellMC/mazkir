@@ -200,7 +200,11 @@ def validate(raw: dict[str, Any], message: str) -> ParseResult:
             if isinstance(t, dict):
                 for link_name in ("after", "with"):
                     link_value = t.get(link_name)
-                    if link_value is not None and isinstance(link_value, int):
+                    # Apply same predicate as _link(): bool or non-int is broken, plus checks for valid int
+                    if link_value is not None:
+                        if isinstance(link_value, bool) or not isinstance(link_value, int):
+                            is_broken = True
+                            break
                         # Check: self-referential, out-of-range, or links to dropped clause
                         if link_value == idx or link_value < 0 or link_value >= len(items) or link_value in dropped_indices:
                             is_broken = True
@@ -214,7 +218,6 @@ def validate(raw: dict[str, Any], message: str) -> ParseResult:
         if not dropped_this_round:
             break
         keep = new_keep
-        dropped_indices = set(range(len(items))) - set(keep)
 
     index = {old: new for new, old in enumerate(keep)}
     clauses = [_clause(items[old], old, index) for old in keep]

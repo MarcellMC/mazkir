@@ -113,3 +113,23 @@ def test_hashtag_override_works_with_enclosing_punctuation():
     result = validate(raw, "(#buy) a drill")
     drill = result.clauses[0]
     assert drill.op == "add_todo"
+
+
+def test_a_clause_with_a_bool_link_is_dropped():
+    raw = {"clauses": [
+        clause("log_block", "first task", name="First", time={"after": True}),
+        clause("log_block", "second task", name="Second"),
+    ], "fallthrough_skill": None}
+    result = validate(raw, "first task, second task")
+    assert [c.name for c in result.clauses] == ["Second"]
+    assert result.dropped == ("first task",)
+
+
+def test_a_clause_with_a_float_link_is_dropped():
+    raw = {"clauses": [
+        clause("log_block", "first task", name="First"),
+        clause("log_block", "second task", name="Second", time={"with": 1.0}),
+    ], "fallthrough_skill": None}
+    result = validate(raw, "first task, second task")
+    assert [c.name for c in result.clauses] == ["First"]
+    assert result.dropped == ("second task",)
