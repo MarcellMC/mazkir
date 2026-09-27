@@ -3,7 +3,8 @@ import datetime as dt
 import pytest
 
 from src.services.fast_lane.time_words import (
-    Clock, DayRef, is_now, parse_clock, parse_day, parse_duration, parse_shift, weekday_date,
+    Clock, DayRef, is_now, parse_clock, parse_day, parse_duration, parse_relative, parse_shift,
+    weekday_date,
 )
 
 
@@ -85,3 +86,29 @@ def test_weekday_date_points_forward_for_plans_and_back_for_records():
     assert weekday_date(4, dt.date(2026, 5, 12), "plan") == dt.date(2026, 5, 15)
     assert weekday_date(4, TUESDAY, "record") == dt.date(2026, 9, 4)
     assert weekday_date(1, TUESDAY, "record") == TUESDAY
+
+
+# --- Final fix F1: relative times ("15 mins ago", "in 20 minutes") ---
+
+
+@pytest.mark.parametrize("text,minutes", [
+    ("15 mins ago", -15), ("10 minutes ago", -10), ("2 hours ago", -120), ("1h ago", -60),
+    ("around 20 min ago", -20), ("in 20 minutes", 20), ("in 1 hour", 60), ("in 5 min", 5),
+    ("15 минут назад", -15), ("2 часа назад", -120), ("через 20 минут", 20), ("через 1 час", 60),
+    ("לפני 10 דקות", -10), ("לפני 2 שעות", -120), ("בעוד 20 דקות", 20), ("בעוד 1 שעה", 60),
+])
+def test_parse_relative(text, minutes):
+    assert parse_relative(text) == dt.timedelta(minutes=minutes)
+
+
+@pytest.mark.parametrize("text", [None, "", "now", "15:00", "at 3", "30 mins", "in the evening", "back 30 mins"])
+def test_parse_relative_needs_a_direction_and_a_number(text):
+    assert parse_relative(text) is None
+
+
+@pytest.mark.parametrize("text", [
+    "15 mins ago", "in 20 minutes", "10 minutes ago", "2h ago", "30 минут назад", "через 20 минут",
+    "לפני 10 דקות", "בעוד 20 דקות", "20 min",
+])
+def test_parse_clock_never_reads_a_duration_as_a_clock(text):
+    assert parse_clock(text) is None

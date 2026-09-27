@@ -16,10 +16,11 @@ A pytz zone would silently use its LMT offset.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from src.services.fast_lane.time_words import (
-    Clock, DayRef, is_now, parse_clock, parse_day, parse_duration, parse_shift, weekday_date,
+    Clock, DayRef, is_now, parse_clock, parse_day, parse_duration, parse_relative, parse_shift,
+    split_run_together, weekday_date,
 )
 
 TOLERANCE = dt.timedelta(minutes=2)
@@ -92,14 +93,30 @@ class _Raw:
     end_now: bool
     minutes: int | None
     day: DayRef | None
+    start_rel: dt.timedelta | None = None   # "15 mins ago", "in 20 minutes": from the message time
+    end_rel: dt.timedelta | None = None
 
     @property
     def anchor(self) -> Clock | None:
-        # "now" is not a clock reading: a start_now clause is placed by
-        # `_fill_relative`, never seeded from a clock (spec §6.2 rule 5).
-        if self.start_now:
+        # "now" is not a clock reading, and neither is "15 mins ago": such a
+        # start is placed by `_fill_relative`, never seeded from a clock
+        # (spec §6.2 rule 5).
+        if self.start_now or self.start_rel is not None:
             return None
         return self.start or self.end
+
+    @property
+    def relative(self) -> bool:
+        return self.start_rel is not None or self.end_rel is not None
+
+
+def _fixed(now_word: bool, rel: dt.timedelta | None, ctx: ResolverContext) -> dt.datetime | None:
+    """An instant pinned to the message time: "now", or "N min ago" / "in N min"."""
+    if now_word:
+        return ctx.now
+    if rel is not None:
+        return ctx.now + rel
+    return None
 
 
 @dataclass
@@ -116,6 +133,7 @@ def _raw(c: ClauseTime, ctx: ResolverContext) -> _Raw:
         start_now=is_now(c.start), end_now=is_now(c.end),
         minutes=parse_duration(c.duration),
         day=parse_day(c.day, ctx.now.date(), c.intent),
+        start_rel=parse_relative(c.start), end_rel=parse_relative(c.end),
     )
 
 
@@ -141,8 +159,27 @@ def _dates(ref: DayRef | None, intent: str, ctx: ResolverContext) -> tuple[list[
         return [ref.date], False
     if ref.kind == "weekday":
         return [weekday_date(ref.weekday, today, intent)], False
-    night = logical_date(ctx.now, ctx.day_boundary_hour) + dt.timedelta(days=ref.night_offset)
-    return [night], True
+    return [_night_of(ref, ctx)], True
+
+
+def _night_of(ref: DayRef, ctx: ResolverContext) -> dt.date:
+    """The calendar day whose evening a night word names ("tonight", "last night")."""
+    return logical_date(ctx.now, ctx.day_boundary_hour) + dt.timedelta(days=ref.night_offset)
+
+
+def _in_night(instant: dt.datetime, ref: DayRef, ctx: ResolverContext) -> bool:
+    """Whether `instant` lies inside the night a night word names (spec §6.2 rule 4).
+
+    The night opens 12 hours after the day boundary on its evening (17:00
+    with the default 05:00) and closes at the boundary the next morning.
+    Those 12 hours make the word decisive: of an ambiguous hour's two
+    readings exactly one lies inside, so "last night at 2" is 02:00, never
+    14:00 the afternoon before, and "tonight at 11" is 23:00.
+    """
+    night = _night_of(ref, ctx)
+    opens = _at(night, 12 + ctx.day_boundary_hour, 0, instant.tzinfo)
+    closes = _at(night + dt.timedelta(days=1), ctx.day_boundary_hour, 0, instant.tzinfo)
+    return opens <= instant < closes
 
 
 def _instants(clock: Clock, dates: list[dt.date], night: bool, tz) -> list[dt.datetime]:
@@ -206,8 +243,8 @@ def _complete(i: int, c: ClauseTime, raw: _Raw, anchor: dt.datetime, r: _Reading
             end, end_precision = _first_after(raw.end, start, tz, strictly=True), _precision(raw.end)
             if raw.minutes is not None and abs((end - start) - dt.timedelta(minutes=raw.minutes)) > AGREE:
                 r.flags[i] = "start, end and duration disagree"
-        elif raw.end_now:
-            end, end_precision = ctx.now, "inferred"
+        elif (fixed_end := _fixed(raw.end_now, raw.end_rel, ctx)) is not None:
+            end, end_precision = fixed_end, "inferred"
         elif raw.minutes is not None:
             end, end_precision = start + dt.timedelta(minutes=raw.minutes), "inferred"
     else:  # anchored on the end
@@ -252,6 +289,8 @@ def _chain(seed: dt.datetime, anchored: list[int], clauses, raws, ctx: ResolverC
             else:
                 dates, night = [previous.date(), previous.date() + dt.timedelta(days=1)], False
             options = _instants(raw.anchor, dates, night, tz)
+            if night:
+                options = [o for o in options if _in_night(o, raw.day, ctx)] or options
             later = [o for o in options if o >= previous - TOLERANCE]
             if later:
                 anchor = min(later)
@@ -269,8 +308,9 @@ def _from_start(start: dt.datetime, start_precision: str, raw: _Raw, c: ClauseTi
         return _place(start, end, start_precision, _precision(raw.end), c, ctx)
     if raw.minutes is not None:
         return _place(start, start + dt.timedelta(minutes=raw.minutes), start_precision, "inferred", c, ctx)
-    if raw.end_now:
-        return _place(start, ctx.now, start_precision, "inferred", c, ctx)
+    fixed_end = _fixed(raw.end_now, raw.end_rel, ctx)
+    if fixed_end is not None:
+        return _place(start, fixed_end, start_precision, "inferred", c, ctx)
     return _place(start, None, start_precision, None, c, ctx)
 
 
@@ -284,7 +324,8 @@ def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCont
         while chain[-1] in follower and follower[chain[-1]] not in chain:
             chain.append(follower[chain[-1]])
         clockless = all(raws[i].anchor is None and i not in r.placed for i in chain)
-        now_anchored = any(raws[i].start_now for i in chain)
+        # "now" and "N min ago" pin a member, and the chain works outward from it
+        now_anchored = any(raws[i].start_now or raws[i].relative for i in chain)
         if len(chain) > 1 and clockless and not now_anchored and clauses[chain[-1]].intent == "record":
             end, end_precision = ctx.now, "inferred"
             for i in reversed(chain):
@@ -304,11 +345,11 @@ def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCont
         elif c.after in r.placed:
             other = r.placed[c.after]
             r.placed[i] = _from_start(other.end or other.start, "inferred", raw, c, ctx)
-        elif raw.start_now:
-            r.placed[i] = _from_start(ctx.now, "inferred", raw, c, ctx)
-        elif raw.end_now:
+        elif (fixed_start := _fixed(raw.start_now, raw.start_rel, ctx)) is not None:
+            r.placed[i] = _from_start(fixed_start, "inferred", raw, c, ctx)
+        elif (fixed_end := _fixed(raw.end_now, raw.end_rel, ctx)) is not None:
             span, assumed = _duration(raw, c, ctx)
-            r.placed[i] = _place(ctx.now - span, ctx.now, "assumed" if assumed else "inferred",
+            r.placed[i] = _place(fixed_end - span, fixed_end, "assumed" if assumed else "inferred",
                                  "inferred", c, ctx)
     # A placed clause whose predecessor has no time of its own: walk back from it.
     for i in sorted(idx, reverse=True):
@@ -321,7 +362,12 @@ def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCont
 
 
 def _check(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverContext) -> None:
-    """Rules 1, 2 and 10: records can't start after the message, plans can't start before it."""
+    """Rules 1, 2, 4 and 10: records can't start after the message, plans can't start before it.
+
+    A clause placed from the message time ("in 20 minutes") has no other
+    reading to fall back on, so breaking rule 1 or 2 flags that clause, as
+    an edit does (Ruling 7), rather than voiding the reading for them all.
+    """
     today = ctx.now.date()
     for i in idx:
         p = r.placed.get(i)
@@ -329,11 +375,20 @@ def _check(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverContext) -> 
             continue
         c, raw = clauses[i], raws[i]
         first = p.start or p.end
-        if c.intent == "record" and first > ctx.now + TOLERANCE:
+        if raw.day is not None and raw.day.kind == "night" and not _in_night(first, raw.day, ctx):
             r.valid = False
+        pinned = raw.anchor is None and raw.relative
+        if c.intent == "record" and first > ctx.now + TOLERANCE:
+            if pinned:
+                r.flags.setdefault(i, "starts after the message")
+            else:
+                r.valid = False
         explicit_past = raw.day is not None and raw.day.kind == "date" and raw.day.date < today
         if c.intent == "plan" and first < ctx.now - TOLERANCE and not explicit_past:
-            r.valid = False
+            if pinned:
+                r.flags.setdefault(i, "starts before the message")
+            else:
+                r.valid = False
         if p.start is not None and p.end is not None:
             if p.end <= p.start:
                 r.flags.setdefault(i, "ends before it starts")
@@ -426,7 +481,9 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
     champions = []
     for group_key in dict.fromkeys(r.group for r in valid):
         members = [r for r in valid if r.group == group_key]
-        members.sort(key=lambda r: _key(r, anchored, clauses, ctx))
+        # Clean readings first: an end pinned to the message ("now", "15 mins
+        # ago") ties both day readings on recency, and the 24 h one is flagged.
+        members.sort(key=lambda r: (bool(r.flags), _key(r, anchored, clauses, ctx)))
         champions.append(members[0])
     # A flagged reading (disagreement, implausible length, out of order) drops out
     # of ranking and alternatives while a clean one survives; kept only when every
@@ -454,18 +511,45 @@ def _nearest(clock: Clock, reference: dt.datetime, tz) -> dt.datetime:
     return min(_instants(clock, days, False, tz), key=lambda instant: abs(instant - reference))
 
 
+def _edit_day(ref: DayRef, anchor: dt.datetime, intent: str, ctx: ResolverContext) -> dt.date:
+    """The calendar day an edit moves a block to. A night keeps small hours on its morning."""
+    if ref.kind == "date":
+        return ref.date
+    if ref.kind == "weekday":
+        return weekday_date(ref.weekday, ctx.now.date(), intent)
+    night = _night_of(ref, ctx)
+    return night + dt.timedelta(days=1) if anchor.hour < 12 else night
+
+
 def _resolve_edit(c: ClauseTime, ctx: ResolverContext) -> ClauseResolution:
-    """end_block / edit_block: new times relative to the block they change (spec §6.2 rule 9)."""
+    """end_block / edit_block: new times relative to the block they change (spec §6.2 rule 9).
+
+    A day word moves the block to that day at the same clock times, and a
+    length on its own keeps the start and sets the end (Ruling 14). Both are
+    real placements, checked like any other edit; nothing that changes the
+    time is reported as done without one.
+    """
     if c.target_start is None and c.target_end is None:
         return ClauseResolution("question", reason="which block?")
     tz = ctx.now.tzinfo
     shift = parse_shift(c.shift)
     start_clock, end_clock = parse_clock(c.start), parse_clock(c.end)
-    touches_time = (shift is not None or start_clock or end_clock or is_now(c.start) or is_now(c.end))
+    fixed_start = _fixed(is_now(c.start), parse_relative(c.start), ctx)
+    fixed_end = _fixed(is_now(c.end), parse_relative(c.end), ctx)
+    day = parse_day(c.day, ctx.now.date(), c.intent)
+    minutes = parse_duration(c.duration)
+    touches_time = (shift is not None or start_clock or end_clock or fixed_start or fixed_end
+                    or day is not None or minutes is not None)
     if not touches_time:  # a rename or another edit with nothing to place
         return ClauseResolution("fact" if c.stated else "proposal")
     start, end = c.target_start, c.target_end
-    start_precision = end_precision = None   # None: that end is unchanged
+    start_precision = end_precision = None   # None: that end keeps the label it had
+    if day is not None:
+        anchor = start or end
+        moved = dt.timedelta(days=(_edit_day(day, anchor, c.intent, ctx) - anchor.date()).days)
+        start = start + moved if start is not None else None
+        end = end + moved if end is not None else None
+    reference = start or end
     if shift is not None:
         delta = dt.timedelta(minutes=shift)
         if start is not None:
@@ -474,13 +558,17 @@ def _resolve_edit(c: ClauseTime, ctx: ResolverContext) -> ClauseResolution:
             end, end_precision = end + delta, "inferred"
     else:
         if start_clock is not None:
-            start, start_precision = _nearest(start_clock, c.target_start or c.target_end, tz), _precision(start_clock)
-        elif is_now(c.start):
-            start, start_precision = ctx.now, "inferred"
+            start, start_precision = _nearest(start_clock, reference, tz), _precision(start_clock)
+        elif fixed_start is not None:
+            start, start_precision = fixed_start, "inferred"
         if end_clock is not None:
-            end, end_precision = _first_after(end_clock, start or c.target_end, tz, strictly=True), _precision(end_clock)
-        elif is_now(c.end):
-            end, end_precision = ctx.now, "inferred"
+            end, end_precision = _first_after(end_clock, start or end, tz, strictly=True), _precision(end_clock)
+        elif fixed_end is not None:
+            end, end_precision = fixed_end, "inferred"
+        elif minutes is not None:
+            if start is None:
+                return ClauseResolution("question", reason="the block has no start to measure the length from")
+            end, end_precision = start + dt.timedelta(minutes=minutes), "inferred"
     flag = None
     if c.intent == "record" and start is not None and start > ctx.now + TOLERANCE:
         flag = "starts after the message"
@@ -494,8 +582,15 @@ def _resolve_edit(c: ClauseTime, ctx: ResolverContext) -> ClauseResolution:
     return _outcome(c, _place(start, end, start_precision, end_precision, c, ctx), flag)
 
 
+def _as_written(c: ClauseTime) -> ClauseTime:
+    """The clause with the run-together typo "06:35:07:35" split into a start and an end (spec §6.6)."""
+    start, end = split_run_together(c.start, c.end)
+    return c if (start, end) == (c.start, c.end) else replace(c, start=start, end=end)
+
+
 def resolve(clauses: list[ClauseTime], ctx: ResolverContext) -> list[ClauseResolution]:
     """One resolution per clause, in order (spec §6.4)."""
+    clauses = [_as_written(c) for c in clauses]   # every later reading sees the split once
     results = [ClauseResolution("fact" if c.stated else "proposal") for c in clauses]
     for i, c in enumerate(clauses):
         if c.op in EDIT_OPS:

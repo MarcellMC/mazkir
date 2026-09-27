@@ -19,6 +19,10 @@ NOW_WORDS = frozenset({
 
 _HEDGE = re.compile(r"around|about|approx|roughly|~|\d\s*-?ish\b|около|примерно|בערך", re.IGNORECASE)
 _CLOCK = re.compile(r"(?<!\d)(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?!\d)", re.IGNORECASE)
+# Units of a length, in the three languages: after a number they make it a duration.
+_HOUR_UNITS = r"hours?|hrs?|h|час(?:а|ов)?|ч|שעות|שעה"
+_MINUTE_UNITS = r"minutes?|mins?|m|минут[аыу]?|мин|דקות|דקה"
+_UNIT_AFTER = re.compile(rf"\s*(?:{_HOUR_UNITS}|{_MINUTE_UNITS})(?!\w)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -42,10 +46,15 @@ def is_now(text: str | None) -> bool:
 
 
 def parse_clock(text: str | None) -> Clock | None:
-    """A clock time in `text`, or None. "now" is not a clock; see `is_now`."""
+    """A clock time in `text`, or None. "now" is not a clock; see `is_now`.
+
+    A number with a unit after it is a length, not a clock: "15 mins ago"
+    sent at 16:00 is 15:45 (see `parse_relative`), never 15:00, and "in 20
+    minutes" is never 20:00.
+    """
     if not text or is_now(text):
         return None
-    match = _CLOCK.search(text)
+    match = next((m for m in _CLOCK.finditer(text) if not _UNIT_AFTER.match(text, m.end())), None)
     if not match:
         return None
     raw_hour, raw_minute, meridiem = match.groups()
@@ -91,6 +100,47 @@ def parse_duration(text: str | None) -> int | None:
     if re.fullmatch(r"(an?|one)?\s*(hour|час|שעה)", lowered):
         return 60
     return None
+
+
+_AMOUNT = rf"(\d+(?:[.,]\d+)?)\s*({_HOUR_UNITS}|{_MINUTE_UNITS})(?!\w)"
+# Relative times: the direction word, and whether it comes before the amount.
+_RELATIVE_TIME = {
+    "ago": (-1, False), "назад": (-1, False), "לפני": (-1, True),
+    "in": (1, True), "через": (1, True), "בעוד": (1, True),
+}
+_RELATIVE_PATTERNS = [
+    (re.compile(rf"(?<!\w){word}\s+{_AMOUNT}" if before else rf"(?<![\w.,]){_AMOUNT}\s+{word}(?!\w)",
+                re.IGNORECASE), sign)
+    for word, (sign, before) in _RELATIVE_TIME.items()
+]
+
+
+def parse_relative(text: str | None) -> dt.timedelta | None:
+    """A time relative to the message: "15 mins ago" → -15 min, "in 20 minutes" → +20 min, else None.
+
+    Russian and Hebrew too: "15 минут назад", "через 20 минут", "לפני 10 דקות",
+    "בעוד 20 דקות". The resolver places it at the message time plus this.
+    """
+    if not text:
+        return None
+    for pattern, sign in _RELATIVE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            value = float(match.group(1).replace(",", "."))
+            hours = re.fullmatch(_HOUR_UNITS, match.group(2), re.IGNORECASE) is not None
+            return dt.timedelta(minutes=sign * round(value * 60 if hours else value))
+    return None
+
+
+_RUN_TOGETHER = re.compile(r"^\s*(\d{1,2}:\d{2}):(\d{1,2}:\d{2})\s*$")
+
+
+def split_run_together(start: str | None, end: str | None) -> tuple[str | None, str | None]:
+    """The typo "06:35:07:35" is a start and an end run together; otherwise both unchanged."""
+    match = _RUN_TOGETHER.match(start or "")
+    if match and not (end or "").strip():
+        return match.group(1), match.group(2)
+    return start, end
 
 
 _EARLIER = ("back", "earlier", "before", "назад", "раньше")

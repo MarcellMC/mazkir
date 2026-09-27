@@ -278,3 +278,159 @@ def test_an_edited_end_crossing_midnight_is_too_long_not_ends_before_it_starts()
     [r] = resolve([edit(end="08:00", target=(at(2026, 9, 10, 9, 0), at(2026, 9, 10, 10, 0)))],
                   ctx(at(2026, 9, 10, 12, 0)))
     assert (r.outcome, r.reason) == ("proposal", "longer than 16 hours")
+
+
+# --- Final fix F1: relative times sit at now + delta, never on a clock ---
+
+
+def test_a_start_some_minutes_ago_is_placed_from_the_message_time():
+    [r] = resolve([log("Dog walk", start="15 mins ago", op="start_block")], ctx(at(2026, 9, 20, 16, 0)))
+    assert r.outcome == "fact"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 20, 15, 45), None)
+    assert r.placement.start_precision == "inferred"
+    assert r.placement.logical_date == dt.date(2026, 9, 20)
+
+
+def test_a_plan_in_some_minutes_starts_after_the_message():
+    [r] = resolve([log("Dog walk", start="in 20 minutes", intent="plan", op="start_block")],
+                  ctx(at(2026, 9, 20, 14, 0)))
+    assert r.outcome == "plan"
+    assert r.placement.start == at(2026, 9, 20, 14, 20)
+    assert r.placement.start_precision == "inferred"
+
+
+def test_minutes_ago_never_asks_which_twelve_hour_reading():
+    [r] = resolve([log("Dog walk", start="10 minutes ago", duration="10 min")], ctx(at(2026, 9, 20, 14, 0)))
+    assert r.outcome == "fact"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 20, 13, 50), at(2026, 9, 20, 14, 0))
+    assert r.alternatives == ()
+
+
+def test_an_end_some_minutes_ago_is_placed_from_the_message_time():
+    [r] = resolve([log("Dog walk", end="10 minutes ago", duration="30 mins")], ctx(at(2026, 9, 20, 14, 0)))
+    assert r.outcome == "fact"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 20, 13, 20), at(2026, 9, 20, 13, 50))
+    assert (r.placement.start_precision, r.placement.end_precision) == ("inferred", "inferred")
+
+
+def test_a_record_in_some_minutes_is_flagged_not_placed_as_a_fact():
+    [r] = resolve([log("Dog walk", start="in 20 minutes", op="start_block")], ctx(at(2026, 9, 20, 14, 0)))
+    assert (r.outcome, r.reason) == ("proposal", "starts after the message")
+    assert r.placement.start == at(2026, 9, 20, 14, 20)
+
+
+def test_russian_minutes_ago():
+    [r] = resolve([log("Dog walk", start="15 минут назад", op="start_block")], ctx(at(2026, 9, 20, 16, 0)))
+    assert (r.outcome, r.placement.start) == ("fact", at(2026, 9, 20, 15, 45))
+
+
+def test_hebrew_in_some_minutes():
+    [r] = resolve([log("Dog walk", start="בעוד 20 דקות", intent="plan", op="start_block")],
+                  ctx(at(2026, 9, 20, 14, 0)))
+    assert (r.outcome, r.placement.start) == ("plan", at(2026, 9, 20, 14, 20))
+
+
+def test_an_edit_ended_some_minutes_ago():
+    [r] = resolve([edit("end_block", end="10 minutes ago", target=(at(2026, 9, 20, 13, 0), None))],
+                  ctx(at(2026, 9, 20, 14, 0)))
+    assert r.outcome == "fact"
+    assert r.placement.end == at(2026, 9, 20, 13, 50)
+    assert r.placement.end_precision == "inferred"
+
+
+# --- Final fix F2: a night word keeps only readings inside that night ---
+
+
+def test_last_night_across_midnight_has_one_reading():
+    # Sent 10:00 on 20 Sep: the 23:00 start can only be the night of the 19th.
+    [r] = resolve([log("Visit friends", "23:00", "1:00", day="last night")], ctx(at(2026, 9, 20, 10, 0)))
+    assert r.outcome == "fact"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 19, 23, 0), at(2026, 9, 20, 1, 0))
+    assert r.alternatives == ()
+    assert r.placement.logical_date == dt.date(2026, 9, 19)
+
+
+def test_last_night_at_two_is_two_in_the_morning():
+    [r] = resolve([log("Dog walk", "2", day="last night")], ctx(at(2026, 9, 20, 10, 0)))
+    assert r.outcome == "fact"
+    assert r.placement.start == at(2026, 9, 20, 2, 0)
+    assert r.alternatives == ()
+
+
+def test_tonight_at_eleven_is_eleven_at_night():
+    [r] = resolve([log("Dog walk", "11", day="tonight", intent="plan")], ctx(at(2026, 9, 20, 15, 0)))
+    assert (r.outcome, r.placement.start) == ("plan", at(2026, 9, 20, 23, 0))
+
+
+def test_tonight_at_three_is_not_three_this_afternoon():
+    [r] = resolve([log("Dog walk", "3", day="tonight", intent="plan")], ctx(at(2026, 9, 20, 15, 0)))
+    assert (r.outcome, r.placement.start) == ("plan", at(2026, 9, 21, 3, 0))
+
+
+def test_a_night_that_ends_after_the_boundary_is_still_that_night():
+    # Sleep runs past 05:00; the night word binds the start, not the end.
+    [r] = resolve([log("Sleep", "23:00", "9:00", day="last night")], ctx(at(2026, 9, 20, 10, 0)))
+    assert r.outcome == "fact"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 19, 23, 0), at(2026, 9, 20, 9, 0))
+
+
+# --- Final fix F4: a day-only or length-only edit gets a real placement ---
+
+
+def test_moving_a_block_to_tomorrow_keeps_its_clock_times():
+    c = ClauseTime(op="edit_block", intent="plan", day="tomorrow",
+                   target_start=at(2026, 9, 20, 15, 0), target_end=at(2026, 9, 20, 15, 30))
+    [r] = resolve([c], ctx(at(2026, 9, 20, 10, 0)))
+    assert r.outcome == "plan"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 21, 15, 0), at(2026, 9, 21, 15, 30))
+    assert (r.placement.start_precision, r.placement.end_precision) == (None, None)
+    assert r.placement.logical_date == dt.date(2026, 9, 21)
+
+
+def test_a_record_moved_past_the_message_is_a_proposal():
+    c = ClauseTime(op="edit_block", day="tomorrow",
+                   target_start=at(2026, 9, 20, 9, 0), target_end=at(2026, 9, 20, 9, 30))
+    [r] = resolve([c], ctx(at(2026, 9, 20, 10, 0)))
+    assert (r.outcome, r.reason) == ("proposal", "starts after the message")
+    assert r.placement.start == at(2026, 9, 21, 9, 0)
+
+
+def test_changing_only_the_length_keeps_the_start():
+    c = ClauseTime(op="edit_block", duration="45 min",
+                   target_start=at(2026, 9, 20, 9, 0), target_end=at(2026, 9, 20, 9, 30))
+    [r] = resolve([c], ctx(at(2026, 9, 20, 10, 0)))
+    assert r.outcome == "fact"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 20, 9, 0), at(2026, 9, 20, 9, 45))
+    assert (r.placement.start_precision, r.placement.end_precision) == (None, "inferred")
+
+
+def test_a_day_or_length_edit_without_its_block_asks_which():
+    for c in (ClauseTime(op="edit_block", day="tomorrow"), ClauseTime(op="edit_block", duration="45 min")):
+        [r] = resolve([c], ctx(at(2026, 9, 20, 10, 0)))
+        assert (r.outcome, r.reason) == ("question", "which block?")
+
+
+def test_a_length_edit_on_a_block_with_no_start_asks():
+    c = ClauseTime(op="edit_block", duration="45 min", target_end=at(2026, 9, 20, 9, 30))
+    [r] = resolve([c], ctx(at(2026, 9, 20, 10, 0)))
+    assert r.outcome == "question"
+    assert r.placement is None and r.reason
+
+
+# --- Final fix F7: the run-together typo "06:35:07:35" is a start and an end ---
+
+
+def test_a_run_together_start_and_end_is_split():
+    [r] = resolve([log("Reading", "06:35:07:35")], ctx(at(2026, 9, 20, 8, 0)))
+    assert r.outcome == "fact"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 20, 6, 35), at(2026, 9, 20, 7, 35))
+    assert (r.placement.start_precision, r.placement.end_precision) == ("exact", "exact")
+
+
+def test_a_clock_start_with_an_end_pinned_to_the_message_is_today():
+    # Both day readings end at the same instant, so recency ties; the one
+    # 24 h too long must not win the tie and turn a plain log into a proposal.
+    for end in ("15 mins ago", "now"):
+        [r] = resolve([log("Gym", "13:00", end)], ctx(at(2026, 9, 20, 14, 0)))
+        assert r.outcome == "fact", end
+        assert r.placement.start == at(2026, 9, 20, 13, 0)
