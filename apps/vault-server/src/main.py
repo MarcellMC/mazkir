@@ -164,6 +164,13 @@ async def lifespan(app: FastAPI):
         if not warnings:
             logger.info("Skill validation: all references OK")
 
+    if claude and settings.fast_lane_mode in ("shadow", "on"):
+        if settings.fast_lane_mode == "on":
+            logger.warning("FAST_LANE_MODE=on arrives with piece A2; running in shadow")
+        from src.services.fast_lane.parse import warm_up
+        app.state.fast_lane_warmup = asyncio.create_task(asyncio.to_thread(
+            warm_up, claude, settings.fast_parse_model, settings.fast_parse_timeout_s * 4))
+
     from src.services.timeline_service import TimelineService
     if settings.timeline_data_path.exists():
         timeline = TimelineService(
