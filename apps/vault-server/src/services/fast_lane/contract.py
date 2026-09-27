@@ -21,7 +21,7 @@ _NEEDS = {"log_block": "name", "start_block": "name", "end_block": "target", "ed
 KNOWLEDGE_TAGS = frozenset({"idea", "green"})
 TODO_TAGS = frozenset({"buy"})
 ACTIVITY_TAGS = frozenset({"dev", "work", "explore"})
-_HASHTAG = re.compile(r"#([^\s#.,!?;:]+)")
+_HASHTAG = re.compile(r"#(\w[\w/-]*)")
 
 
 @dataclass(frozen=True)
@@ -115,7 +115,9 @@ def extract_hashtags(text: str | None) -> tuple[str, ...]:
     """Hashtags in order, lowercased; "#explore/watch" also yields "explore"."""
     seen: list[str] = []
     for raw in _HASHTAG.findall(text or ""):
-        for tag in (raw.lower(), raw.lower().split("/")[0]):
+        full = raw.lower().rstrip("/-")
+        first = full.split("/")[0].split("-")[0]
+        for tag in (full, first):
             if tag and tag not in seen:
                 seen.append(tag)
     return tuple(seen)
@@ -185,6 +187,35 @@ def validate(raw: dict[str, Any], message: str) -> ParseResult:
             dropped.append(evidence)
         else:
             keep.append(i)
+
+    # Cascade: drop clauses with broken links until the kept set stops changing
+    while True:
+        dropped_this_round = []
+        new_keep = []
+        dropped_indices = set(range(len(items))) - set(keep)
+        for idx in keep:
+            item = items[idx]
+            t = item.get("time")
+            is_broken = False
+            if isinstance(t, dict):
+                for link_name in ("after", "with"):
+                    link_value = t.get(link_name)
+                    if link_value is not None and isinstance(link_value, int):
+                        # Check: self-referential, out-of-range, or links to dropped clause
+                        if link_value == idx or link_value < 0 or link_value >= len(items) or link_value in dropped_indices:
+                            is_broken = True
+                            break
+            if is_broken:
+                dropped_this_round.append(idx)
+                dropped.append(str(item.get("evidence") or ""))
+            else:
+                new_keep.append(idx)
+
+        if not dropped_this_round:
+            break
+        keep = new_keep
+        dropped_indices = set(range(len(items))) - set(keep)
+
     index = {old: new for new, old in enumerate(keep)}
     clauses = [_clause(items[old], old, index) for old in keep]
     clauses, skill = _apply_hashtags(clauses, skill)

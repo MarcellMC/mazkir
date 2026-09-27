@@ -74,3 +74,42 @@ def test_extract_hashtags_keeps_the_first_segment_of_a_path():
 
 def test_route():
     assert ParseResult((), None).route == "fallthrough"
+
+
+def test_a_clause_with_an_out_of_range_link_is_dropped():
+    raw = {"clauses": [clause("log_block", "something", name="Task", time={"after": 99})],
+           "fallthrough_skill": None}
+    result = validate(raw, "something")
+    assert result.clauses == ()
+    assert result.dropped == ("something",)
+
+
+def test_a_clause_with_a_self_referential_link_is_dropped():
+    raw = {"clauses": [clause("log_block", "task", name="Task", time={"after": 0})],
+           "fallthrough_skill": None}
+    result = validate(raw, "task")
+    assert result.clauses == ()
+    assert result.dropped == ("task",)
+
+
+def test_a_clause_with_a_link_to_a_dropped_clause_is_dropped():
+    raw = {"clauses": [
+        clause("log_block", "not in message", name="First"),
+        clause("log_block", "second task", name="Second", time={"with": 0}),
+    ], "fallthrough_skill": None}
+    result = validate(raw, "second task")
+    assert result.clauses == ()
+    assert result.dropped == ("not in message", "second task")
+
+
+def test_extract_hashtags_handles_punctuation_around_tags():
+    assert extract_hashtags('(#idea) and "#buy", #dev-session') == ("idea", "buy", "dev-session", "dev")
+
+
+def test_hashtag_override_works_with_enclosing_punctuation():
+    raw = {"clauses": [
+        clause("other", "(#buy) a drill"),
+    ], "fallthrough_skill": None}
+    result = validate(raw, "(#buy) a drill")
+    drill = result.clauses[0]
+    assert drill.op == "add_todo"
