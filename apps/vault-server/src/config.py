@@ -73,6 +73,17 @@ class Settings(BaseSettings):
     )
     otel_service_name: str = os.getenv("OTEL_SERVICE_NAME", "vault-server")
 
+    # Fast lane (docs/superpowers/specs/2026-09-27-fast-lane-design.md).
+    # off: nothing runs. shadow: every message is parsed and resolved beside
+    # the normal path, and only a log line is written. "on" arrives with
+    # piece A2; until then it behaves as shadow.
+    fast_lane_mode: str = "off"
+    # Before this hour a moment still belongs to last night (spec §6.3):
+    # your median sleep onset is 03:15.
+    fast_lane_day_boundary_hour: int = 5
+    fast_parse_model: str = "claude-haiku-4-5-20251001"
+    fast_parse_timeout_s: float = 5.0
+
     # Replicate API (for image generation)
     replicate_api_token: str | None = os.getenv("REPLICATE_API_TOKEN")
 

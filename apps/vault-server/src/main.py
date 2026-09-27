@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
-from src.logging_setup import configure_audit_log, configure_logging
+from src.logging_setup import configure_audit_log, configure_fast_lane_log, configure_logging
 from src.tracing_setup import configure_tracing, instrument_fastapi
 from src.services.vault_service import VaultService
 from src.services.claude_service import ClaudeService
@@ -19,6 +19,7 @@ from src.services.coding_tasks_service import CodingTasksService
 
 configure_logging(settings.log_level, settings.logs_dir)
 configure_audit_log(settings.logs_dir)
+configure_fast_lane_log(settings.logs_dir)
 configure_tracing(
     endpoint=settings.otel_exporter_otlp_endpoint,
     service_name=settings.otel_service_name,
