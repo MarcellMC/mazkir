@@ -91,3 +91,32 @@ def test_expected_parse_feeds_the_resolver_the_labelled_words():
 def test_summarize_guards_empty_denominators():
     summary = summarize([], [])
     assert summary["rows"] == 0 and summary["clause_recall"] is None
+
+
+# --- Final fix F10 ---
+
+
+def test_scoring_reads_expected_times_written_with_an_offset():
+    # 01:15 local on the 8th is 22:15 UTC on the 7th: same instant, same local date.
+    now = dt.datetime(2026, 9, 8, 1, 30, tzinfo=TZ)
+    placement = Placement(dt.datetime(2026, 9, 8, 1, 15, tzinfo=TZ), dt.datetime(2026, 9, 8, 1, 25, tzinfo=TZ),
+                          "exact", "exact", dt.date(2026, 9, 7))
+    result = ParseResult((Clause("log_block", "record", True, "x", name="Dog walk"),), None)
+    for start, end in (("2026-09-08T01:15:00+03:00", "2026-09-08T01:25:00+03:00"),
+                       ("2026-09-07T22:15:00+00:00", "2026-09-07T22:25:00+00:00")):
+        expected = {"route": "fast", "clauses": [{"op": "log_block", "name": "Dog walk",
+                                                  "expect": {"outcome": "fact", "start": start, "end": end}}]}
+        score = score_row(expected, result, [ClauseResolution("fact", placement)], now)
+        assert (score.placed, score.placed_ok, score.wrong_date) == (1, 1, 0), start
+
+
+def test_a_line_with_a_missing_or_bad_timestamp_is_skipped(tmp_path):
+    path = tmp_path / "agent-turns.jsonl"
+    path.write_text("\n".join([
+        turn("2026-09-08T00:48:10+0300", "Dog walk 23:15-23:35"),
+        json.dumps({"chat_id": 1, "user_text": "no timestamp"}),
+        turn("yesterday-ish", "bad timestamp"),
+        turn(None, "null timestamp"),
+        turn("2026-09-08T00:50:00+0300", "Ended at 00:30"),
+    ]))
+    assert [m.text for m in load_messages(path, 1, TZ)] == ["Dog walk 23:15-23:35", "Ended at 00:30"]

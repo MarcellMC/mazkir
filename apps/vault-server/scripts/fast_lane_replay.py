@@ -85,7 +85,10 @@ def main(argv: list[str] | None = None) -> int:
     with out_path.open("w", encoding="utf-8") as out:
         for index, msg in rows:
             expected = golden[msg.id]["expected"]
-            ctx = context_for(msg, messages[:index], habits, typical_minutes(events, msg.ts.date()))
+            # Only the days before the message's date, as live: the ledger's
+            # own day for the message holds blocks written after it was sent.
+            typical = typical_minutes(events, before=msg.ts.date())
+            ctx = context_for(msg, messages[:index], habits, typical)
             if args.resolver_only:
                 result = expected_parse(expected, msg.text)
             else:

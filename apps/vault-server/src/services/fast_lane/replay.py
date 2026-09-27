@@ -63,7 +63,10 @@ def load_messages(turns_path: Path, chat_id: int, tz: ZoneInfo) -> list[Message]
         if not isinstance(rec, dict) or rec.get("chat_id") != chat_id:
             continue
         raw = rec.get("user_text") or ""
-        ts = dt.datetime.strptime(rec["ts"], "%Y-%m-%dT%H:%M:%S%z").astimezone(tz)
+        try:   # a line with no usable time is skipped like one that isn't JSON
+            ts = dt.datetime.strptime(rec["ts"], "%Y-%m-%dT%H:%M:%S%z").astimezone(tz)
+        except (KeyError, TypeError, ValueError):
+            continue
         tools = [{"name": t.get("name"), "params": t.get("params") or {}, "result": t.get("result_summary")}
                  for t in rec.get("tools") or []]
         if out and raw == last_raw and ts - out[-1].ts <= HOP_WINDOW:
@@ -173,10 +176,17 @@ def _same_name(a: str | None, b: str | None) -> bool:
     return a == b or a in b or b in a
 
 
+def _local(moment: dt.datetime, tz) -> dt.datetime:
+    """Naive wall time in `tz`. A label with an offset is converted first; one without is local already."""
+    if moment.tzinfo is not None and tz is not None:
+        moment = moment.astimezone(tz)
+    return moment.replace(tzinfo=None)
+
+
 def _close(got: dt.datetime | None, want: str | None) -> bool:
     if got is None or want is None:
         return got is None and want is None
-    return abs(got.replace(tzinfo=None) - dt.datetime.fromisoformat(want)) <= MINUTE
+    return abs(_local(got, got.tzinfo) - _local(dt.datetime.fromisoformat(want), got.tzinfo)) <= MINUTE
 
 
 def score_row(expected: dict[str, Any], result: ParseResult,
@@ -205,7 +215,8 @@ def score_row(expected: dict[str, Any], result: ParseResult,
             if p is not None and p.start is not None:
                 if _close(p.start, expect["start"]) and _close(p.end, expect.get("end")):
                     placed_ok += 1
-                if p.start.date() != dt.datetime.fromisoformat(expect["start"]).date():
+                want_start = _local(dt.datetime.fromisoformat(expect["start"]), p.start.tzinfo)
+                if _local(p.start, p.start.tzinfo).date() != want_start.date():
                     wrong_date += 1
     future = sum(1 for c, r in got
                  if r is not None and r.outcome == "fact" and c.intent == "record" and r.placement
