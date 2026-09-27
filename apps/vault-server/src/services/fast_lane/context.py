@@ -118,7 +118,14 @@ def _blocks(events, now: dt.datetime, boundary: int) -> tuple[BlockView, ...]:
 
 def _todos(vault, now: dt.datetime) -> tuple[str, ...]:
     note = vault.read_daily_note(now.date().isoformat())
-    return tuple(t.text for t in parse_all_todos(note.get("content", "")) if t.state == "unchecked")
+    out = []
+    for t in parse_all_todos(note.get("content", "")):
+        if t.state == "unchecked":
+            if t.scheduled_at:
+                out.append(f"{t.scheduled_at} {t.text}")
+            else:
+                out.append(t.text)
+    return tuple(out)
 
 
 def habits_of(vault) -> tuple[HabitView, ...]:

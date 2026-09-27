@@ -66,3 +66,18 @@ def test_assemble_reads_the_day_and_never_raises(tmp_path):
     assert ctx.hashtags == ("dev",)
     assert ctx.reply_to == "Logged!" and ctx.reply_from == "assistant"
     assert ctx.has_photo is True
+
+
+def test_todos_distinguish_timed_from_untimed():
+    vault = MagicMock()
+    vault.read_daily_note.return_value = {"content": """## Tasks
+- [ ] 09:00 — Team meeting
+- [ ] Buy milk
+- [x] Done thing
+"""}
+    ctx = assemble_fast_context(
+        text="", chat_id=1, now=dt.datetime(2026, 9, 8, 0, 48, tzinfo=TZ),
+        memory=MagicMock(load_conversation=MagicMock(return_value={"messages": []})),
+        events=events_with({}), vault=vault,
+    )
+    assert ctx.todos == ("09:00 Team meeting", "Buy milk")
