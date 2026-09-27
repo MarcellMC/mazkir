@@ -44,7 +44,7 @@ SYSTEM_PROMPT = """You read one message sent to Mazkir, a personal assistant tha
 9. name is the activity or todo as the user would title it, kept short ("Dog walk", "Buy a drill"). target names the existing block or todo that an edit, end or check refers to. When the message says "it" or "this" and replies to a message about a block, target is that block's name.
 10. Fill place, people and project only when the message says them.
 11. tags are the hashtags belonging to this clause, without the "#".
-12. An answer to a question the assistant just asked takes its details from that question.
+12. An answer to a question the assistant asked (in a prior message or as the last turn) takes its details from that question.
 13. A short answer to the assistant's last question that is not about a time ("3", "yes, attach it") is a single "other" clause.
 14. When any clause is "other", set fallthrough_skill to the skill for the rest:
     - time-management: tasks, priorities, calendar questions;
@@ -82,14 +82,15 @@ The message replies to (assistant): ✓ 15:59–16:29 Dog walk
 Message (sent 16:30): Move it back 30 mins
 Output: {"clauses":[{"op":"edit_block","intent":"record","stated":true,"evidence":"Move it back 30 mins","target":"Dog walk","time":{"shift":"back 30 mins"}}],"fallthrough_skill":null}
 
-The assistant just asked: 00:00–05:00 on 2026-09-12 is unaccounted. What was it?
+The message replies to (assistant): 00:00–05:00 on 2026-09-12 is unaccounted. What was it?
 Message (sent 20:41): Bar hopping
 Output: {"clauses":[{"op":"log_block","intent":"record","stated":true,"evidence":"Bar hopping","name":"Bar hopping","time":{"start":"00:00","end":"05:00","day":"2026-09-12"}}],"fallthrough_skill":null}
 
 Message (sent 22:22): Explain multi-head attention vs grouped query attention
 Output: {"clauses":[{"op":"other","intent":"record","stated":true,"evidence":"Explain multi-head attention vs grouped query attention"}],"fallthrough_skill":"mazkir"}
 
-The assistant just asked: Which goal needs the update, 1, 2 or 3?
+Recent conversation:
+assistant: Which goal needs the update, 1, 2 or 3?
 Message (sent 06:36): 3
 Output: {"clauses":[{"op":"other","intent":"record","stated":true,"evidence":"3"}],"fallthrough_skill":"time-management"}
 """

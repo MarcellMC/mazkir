@@ -72,3 +72,8 @@ def test_warm_up_never_raises():
     claude.create_fast_parse.side_effect = RuntimeError("down")
     warm_up(claude, "m", 20)
     assert claude.create_fast_parse.called
+
+
+def test_prompt_does_not_use_assistant_just_asked_header():
+    """Examples must use context formats that build_user_content actually produces."""
+    assert "The assistant just asked" not in SYSTEM_PROMPT
