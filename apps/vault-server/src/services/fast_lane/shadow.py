@@ -135,5 +135,8 @@ def run_shadow(ctx: FastContext, claude, settings: ShadowSettings, parse=parse_m
     except Exception as e:  # the shadow must never cost the real turn anything
         logger.warning("fast lane shadow failed", exc_info=True)
         record.update({"route": "error", "error": repr(e)})
-    emit_fast_lane(record)
+    try:
+        emit_fast_lane(record)
+    except Exception:  # the shadow must never cost the real turn anything
+        logger.warning("fast lane log write failed", exc_info=True)
     return record

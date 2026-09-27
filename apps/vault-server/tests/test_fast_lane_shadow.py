@@ -74,3 +74,16 @@ def test_other_clauses_carry_no_outcome(tmp_path):
     record = run_shadow(ctx, None, SETTINGS, parse=fixed(result))
     assert record["route"] == "fallthrough" and record["fallthrough_skill"] == "mazkir"
     assert "outcome" not in record["clauses"][0]
+
+
+def test_a_failing_log_write_never_reaches_the_caller(tmp_path, monkeypatch):
+    configure_fast_lane_log(tmp_path)
+
+    def exploding_emit(record):
+        raise RuntimeError("emit exploded")
+
+    monkeypatch.setattr("src.services.fast_lane.shadow.emit_fast_lane", exploding_emit)
+    result = ParseResult((Clause("other", "record", True, "hello"),), "mazkir")
+    ctx = FastContext(now=dt.datetime(2026, 9, 8, 0, 50, tzinfo=TZ), chat_id=7, text="hello")
+    record = run_shadow(ctx, None, SETTINGS, parse=fixed(result))
+    assert record["route"] == "fallthrough" and record["fallthrough_skill"] == "mazkir"
