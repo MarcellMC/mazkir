@@ -171,3 +171,23 @@ class TestClaudeServiceComplete:
 
             call_kwargs = mock_client.messages.create.call_args[1]
             assert "haiku" in call_kwargs["model"]
+
+
+class TestClaudeServiceCreateFastParse:
+    def test_sends_the_schema_with_a_short_timeout_and_no_retries(self):
+        with patch("src.services.claude_service.anthropic") as mock_anthropic:
+            client = MagicMock()
+            limited = client.with_options.return_value
+            limited.messages.create.return_value = MagicMock(
+                content=[MagicMock(text='{"clauses": [], "fallthrough_skill": null}')])
+            mock_anthropic.Anthropic.return_value = client
+            service = ClaudeService(api_key="test-key")
+            result = service.create_fast_parse(
+                system="S", content="C", schema={"type": "object"}, model="m", timeout_s=5.0)
+        assert result == {"clauses": [], "fallthrough_skill": None}
+        client.with_options.assert_called_once_with(timeout=5.0, max_retries=0)
+        kwargs = limited.messages.create.call_args.kwargs
+        assert kwargs["model"] == "m"
+        assert kwargs["system"] == "S"
+        assert kwargs["messages"] == [{"role": "user", "content": "C"}]
+        assert kwargs["output_config"] == {"format": {"type": "json_schema", "schema": {"type": "object"}}}

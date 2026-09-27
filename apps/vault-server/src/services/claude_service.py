@@ -175,3 +175,20 @@ class ClaudeService:
             },
         )
         return json.loads(response.content[0].text)
+
+    def create_fast_parse(
+        self, *, system: str, content: str, schema: dict, model: str, timeout_s: float,
+    ) -> dict:
+        """One structured-output call for the fast lane's parse (fast-lane spec §5).
+
+        No retries and a short timeout: a slow parse is handed to the router
+        rather than making the user wait for a second attempt.
+        """
+        response = self.client.with_options(timeout=timeout_s, max_retries=0).messages.create(
+            model=model,
+            max_tokens=1500,
+            system=system,
+            messages=[{"role": "user", "content": content}],
+            output_config={"format": {"type": "json_schema", "schema": schema}},
+        )
+        return json.loads(response.content[0].text)
