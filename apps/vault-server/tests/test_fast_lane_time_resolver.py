@@ -256,3 +256,25 @@ def test_a_rename_needs_no_placement():
     [r] = resolve([edit(target=(at(2026, 9, 14, 9, 27), at(2026, 9, 14, 11, 2)))], ctx(at(2026, 9, 14, 11, 8)))
     assert r.outcome == "fact"
     assert r.placement is None
+
+
+# --- Fix round 1: edits must reapply rule 1/2 validity ---
+
+
+def test_an_edit_landing_after_the_message_is_a_proposal():
+    [r] = resolve([edit(start="9", target=(at(2026, 9, 10, 8, 50), None))], ctx(at(2026, 9, 10, 8, 55)))
+    assert (r.outcome, r.reason) == ("proposal", "starts after the message")
+    assert r.placement.start == at(2026, 9, 10, 9, 0)
+
+
+def test_a_plan_edit_landing_before_the_message_is_a_proposal():
+    c = ClauseTime(op="edit_block", intent="plan", start="10:00",
+                   target_start=at(2026, 9, 10, 11, 0), target_end=at(2026, 9, 10, 12, 0))
+    [r] = resolve([c], ctx(at(2026, 9, 10, 10, 30)))
+    assert (r.outcome, r.reason) == ("proposal", "starts before the message")
+
+
+def test_an_edited_end_crossing_midnight_is_too_long_not_ends_before_it_starts():
+    [r] = resolve([edit(end="08:00", target=(at(2026, 9, 10, 9, 0), at(2026, 9, 10, 10, 0)))],
+                  ctx(at(2026, 9, 10, 12, 0)))
+    assert (r.outcome, r.reason) == ("proposal", "longer than 16 hours")

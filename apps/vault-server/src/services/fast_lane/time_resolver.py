@@ -482,7 +482,11 @@ def _resolve_edit(c: ClauseTime, ctx: ResolverContext) -> ClauseResolution:
         elif is_now(c.end):
             end, end_precision = ctx.now, "inferred"
     flag = None
-    if start is not None and end is not None:
+    if c.intent == "record" and start is not None and start > ctx.now + TOLERANCE:
+        flag = "starts after the message"
+    elif c.intent == "plan" and start is not None and start < ctx.now - TOLERANCE:
+        flag = "starts before the message"
+    elif start is not None and end is not None:
         if end <= start:
             flag = "ends before it starts"
         elif end - start > MAX_RECORD:
