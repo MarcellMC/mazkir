@@ -95,6 +95,10 @@ class _Raw:
 
     @property
     def anchor(self) -> Clock | None:
+        # "now" is not a clock reading: a start_now clause is placed by
+        # `_fill_relative`, never seeded from a clock (spec §6.2 rule 5).
+        if self.start_now:
+            return None
         return self.start or self.end
 
 
@@ -103,6 +107,7 @@ class _Reading:
     placed: dict[int, Placement] = field(default_factory=dict)
     flags: dict[int, str] = field(default_factory=dict)
     valid: bool = True
+    group: int | None = None  # the seed's hour: which 12-hour reading this is (§6.4 refinement)
 
 
 def _raw(c: ClauseTime, ctx: ResolverContext) -> _Raw:
@@ -150,12 +155,29 @@ def _instants(clock: Clock, dates: list[dt.date], night: bool, tz) -> list[dt.da
     return sorted(out)
 
 
+def _seeded_instants(clock: Clock, dates: list[dt.date], night: bool, tz) -> list[tuple[dt.datetime, int]]:
+    """`(instant, hour)` pairs: `hour` is the 12-hour reading chosen, for grouping (spec §6.4)."""
+    out: dict[dt.datetime, int] = {}
+    for day in dates:
+        for hour in _hours(clock):
+            on = day + dt.timedelta(days=1) if night and hour < 12 else day
+            out[_at(on, hour, clock.minute, tz)] = hour
+    return sorted(out.items())
+
+
 def _first_after(clock: Clock, after: dt.datetime, tz, strictly: bool) -> dt.datetime:
     """The earliest reading of `clock` after `after` (at or after, within tolerance, if not strict)."""
     days = [after.date(), after.date() + dt.timedelta(days=1)]
     options = [i for i in _instants(clock, days, False, tz)
                if (i > after if strictly else i >= after - TOLERANCE)]
     return min(options)
+
+
+def _last_before(clock: Clock, before: dt.datetime, tz) -> dt.datetime:
+    """The latest reading of `clock` strictly before `before` (its date and the day before)."""
+    days = [before.date() - dt.timedelta(days=1), before.date()]
+    options = [i for i in _instants(clock, days, False, tz) if i < before]
+    return max(options)
 
 
 def _duration(raw: _Raw, c: ClauseTime, ctx: ResolverContext) -> tuple[dt.timedelta, bool]:
@@ -195,6 +217,22 @@ def _complete(i: int, c: ClauseTime, raw: _Raw, anchor: dt.datetime, r: _Reading
     r.placed[i] = _place(start, end, start_precision, end_precision, c, ctx)
 
 
+def _complete_end_seeded(i: int, c: ClauseTime, raw: _Raw, end: dt.datetime, r: _Reading, ctx: ResolverContext) -> None:
+    """Place a first clause with both a start and an end clock, seeded on its end.
+
+    Rule 9: an edit moves both ends. The seed is the end clock's reading (it is
+    usually unambiguous where the start alone would not be), and the start is
+    the latest reading of the start clock strictly before it.
+    """
+    tz = ctx.now.tzinfo
+    end_precision = _precision(raw.end)
+    start = _last_before(raw.start, end, tz)
+    start_precision = _precision(raw.start)
+    if raw.minutes is not None and abs((end - start) - dt.timedelta(minutes=raw.minutes)) > AGREE:
+        r.flags[i] = "start, end and duration disagree"
+    r.placed[i] = _place(start, end, start_precision, end_precision, c, ctx)
+
+
 def _chain(seed: dt.datetime, anchored: list[int], clauses, raws, ctx: ResolverContext) -> _Reading:
     """One reading: the first anchor at `seed`, every later one at its earliest time after the one before."""
     r = _Reading()
@@ -203,6 +241,10 @@ def _chain(seed: dt.datetime, anchored: list[int], clauses, raws, ctx: ResolverC
     for position, i in enumerate(anchored):
         raw = raws[i]
         if position == 0:
+            if raw.start is not None and raw.end is not None:
+                _complete_end_seeded(i, clauses[i], raw, seed, r, ctx)
+                previous = r.placed[i].start or r.placed[i].end
+                continue
             anchor = seed
         else:
             if raw.day is not None:
@@ -222,6 +264,9 @@ def _chain(seed: dt.datetime, anchored: list[int], clauses, raws, ctx: ResolverC
 
 
 def _from_start(start: dt.datetime, start_precision: str, raw: _Raw, c: ClauseTime, ctx) -> Placement:
+    if raw.end is not None:
+        end = _first_after(raw.end, start, ctx.now.tzinfo, strictly=True)
+        return _place(start, end, start_precision, _precision(raw.end), c, ctx)
     if raw.minutes is not None:
         return _place(start, start + dt.timedelta(minutes=raw.minutes), start_precision, "inferred", c, ctx)
     if raw.end_now:
@@ -239,7 +284,8 @@ def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCont
         while chain[-1] in follower and follower[chain[-1]] not in chain:
             chain.append(follower[chain[-1]])
         clockless = all(raws[i].anchor is None and i not in r.placed for i in chain)
-        if len(chain) > 1 and clockless and clauses[chain[-1]].intent == "record":
+        now_anchored = any(raws[i].start_now for i in chain)
+        if len(chain) > 1 and clockless and not now_anchored and clauses[chain[-1]].intent == "record":
             end, end_precision = ctx.now, "inferred"
             for i in reversed(chain):
                 span, assumed = _duration(raws[i], clauses[i], ctx)
@@ -359,8 +405,13 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
     if anchored:
         first = raws[anchored[0]]
         dates, night = _dates(first.day, clauses[anchored[0]].intent, ctx)
-        seeds = _instants(first.anchor, dates, night, ctx.now.tzinfo)
-        readings = [_chain(seed, anchored, clauses, raws, ctx) for seed in seeds]
+        # Both clocks given: seed on the end and derive the start backward (rule 9).
+        seed_clock = first.end if (first.start is not None and first.end is not None) else first.anchor
+        readings = []
+        for seed, hour in _seeded_instants(seed_clock, dates, night, ctx.now.tzinfo):
+            r = _chain(seed, anchored, clauses, raws, ctx)
+            r.group = hour
+            readings.append(r)
     else:
         readings = [_Reading()]
     for r in readings:
@@ -369,10 +420,23 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
     valid = _unique([r for r in readings if r.valid])
     if not valid:
         return {i: ClauseResolution("question", reason="no reading of these times fits") for i in idx}
-    valid.sort(key=lambda r: _key(r, anchored, clauses, ctx))
-    best = valid[0]
-    if anchored and len(valid) > 1:
-        second = valid[1]
+    # One best reading per 12-hour reading (spec §6.4 refinement): an unambiguous
+    # clock's "today vs. yesterday" pair collapses to whichever is more plausible,
+    # rather than surfacing both as if they were genuinely different readings.
+    champions = []
+    for group_key in dict.fromkeys(r.group for r in valid):
+        members = [r for r in valid if r.group == group_key]
+        members.sort(key=lambda r: _key(r, anchored, clauses, ctx))
+        champions.append(members[0])
+    # A flagged reading (disagreement, implausible length, out of order) drops out
+    # of ranking and alternatives while a clean one survives; kept only when every
+    # surviving reading is flagged, so the best still becomes a proposal.
+    unflagged = [r for r in champions if not r.flags]
+    survivors = unflagged or champions
+    survivors.sort(key=lambda r: _key(r, anchored, clauses, ctx))
+    best = survivors[0]
+    if anchored and len(survivors) > 1:
+        second = survivors[1]
         apart = abs(_first(best, anchored) - _first(second, anchored)) >= ASK_APART
         if apart and not _dominates(best, second, anchored, clauses, ctx):
             return {

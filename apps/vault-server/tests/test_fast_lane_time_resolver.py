@@ -162,3 +162,54 @@ def test_ops_without_a_time_pass_through():
     tick = ClauseTime(op="tick_habit", name="Workout")
     other = ClauseTime(op="other")
     assert [r.outcome for r in resolve([tick, other], ctx(at(2026, 9, 1, 12, 0)))] == ["fact", "fact"]
+
+
+# --- Fix round 1: I1-I4 (spec §6.2 rules 3 and 9, §6.4 refinement) ---
+
+
+def test_an_unambiguous_clock_does_not_get_a_24h_away_reading():
+    [r] = resolve([log("Gym", "14:00", "15:30")], ctx(at(2026, 9, 20, 21, 0)))
+    assert r.outcome == "fact"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 20, 14, 0), at(2026, 9, 20, 15, 30))
+
+
+def test_a_plan_with_an_unambiguous_clock_does_not_ask_today_vs_tomorrow():
+    [r] = resolve([log("Party", "20:00", intent="plan")], ctx(at(2026, 9, 20, 2, 0)))
+    assert r.outcome == "plan"
+    assert r.placement.start == at(2026, 9, 20, 20, 0)
+
+
+def test_a_start_end_pair_seeded_on_its_end_survives_an_ambiguous_start():
+    [r] = resolve([log("Work", "9:00", "17:00")], ctx(at(2026, 9, 20, 17, 30)))
+    assert r.outcome == "fact"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 20, 9, 0), at(2026, 9, 20, 17, 0))
+
+
+def test_a_short_ambiguous_start_end_pair_is_not_offered_a_bogus_alternative():
+    [r] = resolve([log("Lunch", "12:30", "13:00")], ctx(at(2026, 9, 20, 13, 15)))
+    assert r.outcome == "fact"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 20, 12, 30), at(2026, 9, 20, 13, 0))
+
+
+def test_the_correct_reading_is_offered_even_hours_later():
+    [r] = resolve([log("Work", "8:00", "17:00")], ctx(at(2026, 9, 20, 23, 0)))
+    assert r.outcome == "fact"
+    assert (r.placement.start, r.placement.end) == (at(2026, 9, 20, 8, 0), at(2026, 9, 20, 17, 0))
+
+
+def test_a_now_start_with_an_end_clock_is_not_ignored():
+    [r] = resolve([log("Meeting", start="now", end="18:00", op="start_block")],
+                  ctx(at(2026, 9, 20, 14, 0)))
+    assert r.outcome == "fact"
+    assert r.placement.start == at(2026, 9, 20, 14, 0)
+    assert r.placement.start_precision == "inferred"
+    assert r.placement.end == at(2026, 9, 20, 18, 0)
+    assert r.placement.end_precision == "expected"
+
+
+def test_a_now_start_on_the_tail_of_a_chain_anchors_it():
+    clauses = [log("Eating", duration="30 mins"), log("Dishes", start="now", after=0)]
+    eat, dishes = resolve(clauses, ctx(at(2026, 9, 20, 20, 0)))
+    assert dishes.placement.start == at(2026, 9, 20, 20, 0)
+    assert dishes.placement.end is None
+    assert (eat.placement.start, eat.placement.end) == (at(2026, 9, 20, 19, 30), at(2026, 9, 20, 20, 0))
