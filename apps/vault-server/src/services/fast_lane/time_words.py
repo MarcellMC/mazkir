@@ -152,13 +152,13 @@ def _dated(day: int, month: int, year: int | None, today: dt.date, intent: str) 
         if year is not None:
             return DayRef("date", date=dt.date(year + 2000 if year < 100 else year, month, day))
         candidate = dt.date(today.year, month, day)
+        if intent == "plan" and candidate < today - dt.timedelta(days=1):
+            candidate = candidate.replace(year=today.year + 1)
+        if intent == "record" and candidate > today + dt.timedelta(days=1):
+            candidate = candidate.replace(year=today.year - 1)
+        return DayRef("date", date=candidate)
     except ValueError:
         return None
-    if intent == "plan" and candidate < today - dt.timedelta(days=1):
-        candidate = candidate.replace(year=today.year + 1)
-    if intent == "record" and candidate > today + dt.timedelta(days=1):
-        candidate = candidate.replace(year=today.year - 1)
-    return DayRef("date", date=candidate)
 
 
 def parse_day(text: str | None, today: dt.date, intent: str) -> DayRef | None:

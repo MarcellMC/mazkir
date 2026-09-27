@@ -74,6 +74,8 @@ TUESDAY = dt.date(2026, 9, 8)
     ("пятницу", "plan", DayRef("weekday", weekday=4)),
     (None, "record", None),
     ("soonish", "record", None),
+    ("February 29th", "plan", None),  # 2026-02-29 doesn't exist; year shift would land on 2027-02-29 (not a leap year)
+    ("February 29th", "record", None),  # 2026-02-29 doesn't exist; year shift would land on 2025-02-29 (not a leap year)
 ])
 def test_parse_day(text, intent, expected):
     assert parse_day(text, TUESDAY, intent) == expected
