@@ -1,7 +1,7 @@
 # Time Management Phase 2 — Capture Surface (Design)
 
 **Status:** Design, approved in conversation 2026-08-21. Not yet planned.
-**Parent:** `docs/plans/2026-07-27-time-management-system-design.md` (Block A). That doc owns the *data model*; this one owns the *interaction*.
+**Parent:** `docs/specs/2026-07-27-time-management-system-design.md` (Block A). That doc owns the *data model*; this one owns the *interaction*.
 **Phase 1 shipped:** PR #8 (`c911d43`), vault commit `cf14ac1`.
 **Ship 1 shipped:** PR #9 (`3eb8b2c`), vault commit `fb824da`.
 **Ship 2 shipped:** PR #11 (`934c003`).

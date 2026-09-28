@@ -14,7 +14,7 @@
 
 **Tech Stack:** Python 3.14, FastAPI, OpenTelemetry. Telegram bot updates for the `/day` formatter.
 
-**Spec source:** `docs/plans/2026-06-01-mazkir-usability-design.md` — Blocks D1, D2 (daily-tier tools), E2 (media), and the P3 rollover.
+**Spec source:** `docs/specs/2026-06-01-mazkir-usability-design.md` — Blocks D1, D2 (daily-tier tools), E2 (media), and the P3 rollover.
 
 **Out of scope (P5):** GCal sync as `sync_to_calendar` post-hook, parallel tool execution, streaming responses, B5 snapshot caching, schema migration for existing file-tier tasks.
 

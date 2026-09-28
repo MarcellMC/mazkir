@@ -1,7 +1,7 @@
 # Coding-Handoff (v1): Supervised Container-Based Coding Sessions — Design
 
 **Status:** Design, not yet planned/implemented.
-**Parent doc:** `docs/plans/2026-07-27-p6-roadmap-and-agentic-frameworks.md` (Block C)
+**Parent doc:** `docs/specs/2026-07-27-p6-roadmap-and-agentic-frameworks.md` (Block C)
 **Scope:** v1 only — the "Tier 1+" hybrid described below. Tier 2 (custom hook/defer checkpoints without Remote Control), Tier 3 (fully unsupervised, task-classifier-routed autonomy), and multi-agent teams remain future extensions, not part of this design.
 
 ## 1. Problem

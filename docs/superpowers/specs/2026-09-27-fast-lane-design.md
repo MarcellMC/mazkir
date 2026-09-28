@@ -2,7 +2,7 @@
 
 **Status:** Design, approved section by section in conversation 2026-09-26/27. Not yet planned.
 **Piece A** of the message-pipeline redesign (pieces A–D, §3). B, C and D get their own brainstorm and spec.
-**Parent:** `docs/plans/2026-08-21-time-management-phase2-capture-design.md`. This design supersedes its ship order from Ship 6 on (§3.2), and absorbs Ship 7 and Ship 4b into pieces C and D.
+**Parent:** `docs/specs/2026-08-21-time-management-phase2-capture-design.md`. This design supersedes its ship order from Ship 6 on (§3.2), and absorbs Ship 7 and Ship 4b into pieces C and D.
 **Research behind it:**
 - `reports/Jev for message routing.md` and `research_notes/Jev for message routing/`: router baseline, routing patterns, the Jev evaluation.
 - Private artifacts: *Mazkir Message Routing* (primer), *Your Reconstructed Timeline* (history reconstruction), *Mazkir Readout Lab* (readout prototype).
@@ -494,7 +494,7 @@ A1's shadow logs are the evidence A2's gates are checked against.
 
 ## 14. Docs updated in the implementation PR
 
-- `docs/plans/2026-08-21-time-management-phase2-capture-design.md`: the ship list is rebuilt around pieces A–D. §13 already records the 4b/7 overlap that led here.
+- `docs/specs/2026-08-21-time-management-phase2-capture-design.md`: the ship list is rebuilt around pieces A–D. §13 already records the 4b/7 overlap that led here.
 - `CLAUDE.md`:
   - the §1.1 wording as the project overview;
   - correct "up to 42 times a day" (the 42 were pytest fixtures; the real peak was 9, on 2026-09-12);

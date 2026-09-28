@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14 / FastAPI / pytest on the server; TypeScript / grammY / vitest on the bot; `@mazkir/shared-types` between them.
 
-**Spec:** `docs/plans/2026-08-21-time-management-phase2-capture-design.md` §8
+**Spec:** `docs/specs/2026-08-21-time-management-phase2-capture-design.md` §8
 
 ## Global Constraints
 

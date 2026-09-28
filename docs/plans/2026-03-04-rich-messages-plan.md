@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript (grammY bot), Python (FastAPI server), Anthropic Claude API (vision), shared-types package
 
-**Design doc:** `docs/plans/2026-03-04-rich-messages-design.md`
+**Design doc:** `docs/specs/2026-03-04-rich-messages-design.md`
 
 ---
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14, FastAPI, Anthropic SDK (with ephemeral cache_control), OpenTelemetry. Tests via `pytest`.
 
-**Spec source:** `docs/plans/2026-06-01-mazkir-usability-design.md` — Blocks B (context optimization) and C (observability gaps).
+**Spec source:** `docs/specs/2026-06-01-mazkir-usability-design.md` — Blocks B (context optimization) and C (observability gaps).
 
 **Out of scope (deferred to later P-plans):**
 - B5 vault snapshot cache (modest win, ship after measurement signal warrants it)

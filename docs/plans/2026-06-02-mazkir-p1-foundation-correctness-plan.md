@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14, FastAPI, Pydantic, `jsonschema` (new dependency for schema validation), `rapidfuzz` (new dependency for resolver). Tests via `pytest`. The vault is markdown with YAML frontmatter (`python-frontmatter`).
 
-**Spec source:** `docs/plans/2026-06-01-mazkir-usability-design.md` — Blocks A and D-schema/D2.
+**Spec source:** `docs/specs/2026-06-01-mazkir-usability-design.md` — Blocks A and D-schema/D2.
 
 **Out of scope for this plan (deferred to later P-plans):**
 - Skill registry, router, sub-agents (P2)

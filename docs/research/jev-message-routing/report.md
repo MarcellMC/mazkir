@@ -107,7 +107,7 @@ The code change itself is small, but it has four side effects:
 
 ## Ships 7 and 4b need an action list that Jev cannot write
 
-The capture design's §13 (2026-09-26) records that Ships 7 and 4b are one four-step pipeline ([capture design §13](file:///home/marcellmc/dev/mazkir/docs/plans/2026-08-21-time-management-phase2-capture-design.md)):
+The capture design's §13 (2026-09-26) records that Ships 7 and 4b are one four-step pipeline ([capture design §13](file:///home/marcellmc/dev/mazkir/docs/specs/2026-08-21-time-management-phase2-capture-design.md)):
 
 1. One message becomes **N intents**.
 2. Each intent is **resolved to a concrete target**.
@@ -132,7 +132,7 @@ Jev's plausible role is a set of smaller, faster decisions *around* that extract
 - **A cascade gate.** One Jev call can combine the five-skill Choice with several yes/no questions ("more than one request?", "a statement rather than a request?", "refers to blocks on screen?") at the latency of a single question. Simple single-intent messages would go straight to a skill, and only compound or ambient ones would pay for extraction. The payoff depends on how many messages carry a single request, a share nobody has measured. 86% of post-fix turns went to time-management, which suggests the simple path is the common one.
 - **Ship 4b's "does this statement deserve an action?" judgment.** This is exactly the compound judgment where Jev performs worst. The best published proactive-assistance model reached only **66.47% F1** at deciding when to offer help ([Proactive Agent, arXiv 2410.12361](https://arxiv.org/abs/2410.12361)). Whatever makes this call, its output must land as a `proposed: true` suggestion, never as a write.
 - **Habit matching.** A Choice over habits whose options carry `what`, `not_for` and `examples` is literally the fix §12 asks for: "a description the matcher can see", not a lower threshold.
-- **Ship 6's classification queue.** Its candidates are "ranked by the classifier's best guesses" over the activity matrix ([capture design §5](file:///home/marcellmc/dev/mazkir/docs/plans/2026-08-21-time-management-phase2-capture-design.md)). That is a batch of per-block Choice questions with probabilities, the shape Jev handles cheapest.
+- **Ship 6's classification queue.** Its candidates are "ranked by the classifier's best guesses" over the activity matrix ([capture design §5](file:///home/marcellmc/dev/mazkir/docs/specs/2026-08-21-time-management-phase2-capture-design.md)). That is a batch of per-block Choice questions with probabilities, the shape Jev handles cheapest.
 
 The batch preview also has a security payoff. Committing to a plan before touching untrusted content is one of the recognised defences against prompt injection ([Beurer-Kellner et al., arXiv 2506.08837](https://arxiv.org/abs/2506.08837)). That matters because Jev, like Haiku, can be steered by instructions inside forwarded text.
 

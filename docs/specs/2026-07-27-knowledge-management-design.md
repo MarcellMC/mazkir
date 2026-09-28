@@ -1,7 +1,7 @@
 # Knowledge Management — Design
 
 **Status:** Design, not yet planned/implemented.
-**Parent doc:** `docs/plans/2026-07-27-p6-roadmap-and-agentic-frameworks.md` (Block B)
+**Parent doc:** `docs/specs/2026-07-27-p6-roadmap-and-agentic-frameworks.md` (Block B)
 **Scope:** Tags/links convention (v1: prompt-only), Task/Rigidity-levels decision, and a new command-center webapp page (v1: live overview + CRUD; linking deferred to v2, sketched below for complexity purposes only — not part of this build).
 
 ## 1. Background

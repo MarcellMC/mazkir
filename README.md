@@ -109,8 +109,9 @@ Observability ports are listed under [Observability](#observability) below.
 
 - [`CLAUDE.md`](CLAUDE.md) - Full project reference (start here for development)
 - [`memory/AGENTS.md`](memory/AGENTS.md) - Vault schemas and data formats
-- [`personal-ai-assistant-roadmap.md`](personal-ai-assistant-roadmap.md) - Project roadmap
+- [`docs/roadmap.md`](docs/roadmap.md) - Project roadmap
 - [`docs/observability.md`](docs/observability.md) - Logs, traces, dashboards
+- [`docs/README.md`](docs/README.md) - Index of `docs/` (specs, plans, superpowers, research, archive)
 
 ## Observability
 
