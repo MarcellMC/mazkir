@@ -28,9 +28,6 @@ Mazkir is a very capable personal assistant. Its main purpose is to organize tim
 │   │   ├── package.json
 │   │   └── tsconfig.json
 │   │
-│   ├── telegram-py-client/            # [DEPRECATED] Old Python bot (kept for reference)
-│   │   └── ...
-│   │
 │   ├── vault-server/                  # FastAPI backend (Python)
 │   │   ├── src/
 │   │   │   ├── main.py               # FastAPI app with lifespan
@@ -127,6 +124,7 @@ Mazkir is a very capable personal assistant. Its main purpose is to organize tim
 │   └── logs/                          # Structured JSON logs (vault-server.jsonl, agent-turns.jsonl, telegram-bot.jsonl, tool-calls.jsonl)
 ├── infra/observability/               # Local Loki + Alloy + Grafana docker-compose stack
 ├── docs/                              # specs/, plans/, research/, archive/, roadmap.md — see docs/README.md
+├── archive/telegram-py-client/        # [RETIRED] Old Python bot — its docs are in docs/archive/
 ├── turbo.json                         # Turborepo config
 ├── package.json                       # Root workspace config
 └── CLAUDE.md                          # This file
@@ -378,26 +376,36 @@ you must never guess at absolute host paths.
 
 ## Related Documentation
 
+`docs/README.md` indexes every spec and plan; both folders sort chronologically
+by filename, so anything not listed below is findable there. A ship's spec is
+`YYYY-MM-DD-<topic>-design.md` and its plan is the same date and slug without
+the suffix. Listed here are only the docs worth reaching for directly.
+
+### The current arc — time-management capture
+
+The Ship 1–5 and fast-lane work the architecture notes above keep referring to.
+
+- **Parent design:** `docs/specs/2026-08-21-time-management-phase2-capture-design.md` — the ship table everything below implements
+- **Time ledger foundations:** `docs/plans/2026-08-17-time-ledger-foundations.md` — the events store the ships write to
+- **Ship 1 — visible todos:** `docs/plans/2026-08-21-ship1-visible-todos.md` (no separate spec; covered by the parent design)
+- **Ship 2 — navigable day:** `docs/specs/2026-08-29-ship2-navigable-day-design.md`
+- **Ship 3 — agent action memory:** `docs/specs/2026-09-05-ship3-agent-action-memory-design.md`
+- **Ship 4 — NL logging:** `docs/specs/2026-09-08-ship4-nl-logging-design.md`
+- **Ship 5 — inferred capture:** `docs/specs/2026-09-10-ship5-inferred-capture-design.md`
+- **Fast lane:** `docs/specs/2026-09-27-fast-lane-design.md` + `docs/plans/2026-09-27-fast-lane-a1.md` — piece A1 (shadow) is what shipped
+
+### Coding sessions
+
+- **Conventions:** `infra/coding-agent/CONVENTIONS.md` — rules for agents working inside a containerized session (two repos, isolated clone, landing changes)
+- **Setup:** `infra/coding-agent/SETUP.md` — one-time setup; `session.sh` usage, modes, and cleanup
+- **Design:** `docs/specs/2026-08-08-agent-sessions-design.md` — two-lane design (autonomous vs hand-off)
+
+### Reference
+
 - **Docs Index:** `docs/README.md` — what lives in each `docs/` folder, plus the key docs
-- **Coding Session Conventions:** `infra/coding-agent/CONVENTIONS.md` — rules for agents working inside a containerized session (two repos, isolated clone, landing changes)
-- **Coding Session Setup:** `infra/coding-agent/SETUP.md` — one-time setup; `session.sh` usage, modes, and cleanup
-- **Agent Sessions Design:** `docs/specs/2026-08-08-agent-sessions-design.md` — two-lane design (autonomous vs hand-off)
 - **Vault Schemas:** `memory/AGENTS.md`
+- **Skill Definitions:** `memory/00-system/skills/*.md` — Mazkir sub-agent skill definitions (mazkir / time-management / knowledge-management / motivation-management)
 - **Observability:** `docs/observability.md` — structured logs + Loki/Grafana stack + Phoenix distributed tracing
 - **Project Roadmap:** `docs/roadmap.md`
-- **Memory System Design:** `docs/specs/2026-03-02-memory-system-design.md`
-- **Memory System Plan:** `docs/plans/2026-03-02-memory-system-plan.md`
-- **Migration Design:** `docs/specs/2026-02-28-monorepo-migration-design.md`
-- **Bot Rewrite Design:** `docs/specs/2026-03-02-telegram-bot-rewrite-design.md`
-- **Bot Rewrite Plan:** `docs/plans/2026-03-02-telegram-bot-rewrite-plan.md`
-- **Legacy Bot Architecture:** `apps/telegram-py-client/tg-mazkir-AGENTS.md`
-- **WebApp Design:** `docs/specs/2026-02-28-telegram-webapp-design.md`
-- **WebApp Implementation Plan:** `docs/plans/2026-02-28-telegram-webapp-plan.md`
-- **Rich Messages Design:** `docs/specs/2026-03-04-rich-messages-design.md`
-- **Rich Messages Plan:** `docs/plans/2026-03-04-rich-messages-plan.md`
-- **Photo Events Pipeline Design:** `docs/specs/2026-03-05-photo-events-pipeline-design.md`
-- **Photo Events Pipeline Plan:** `docs/plans/2026-03-05-photo-events-pipeline-plan.md`
-- **Skill Definitions:** `memory/00-system/skills/*.md` — Mazkir sub-agent skill definitions (mazkir / time-management / knowledge-management / motivation-management)
-- **P4 Daily Tier + Media Plan:** `docs/plans/2026-06-04-mazkir-p4-daily-tier-media-plan.md`
-- **P5 Integrations + Latency Plan:** `docs/plans/2026-06-04-mazkir-p5-integrations-latency-plan.md`
 - **Jev Message-Routing Research:** `docs/research/jev-message-routing/report.md` — whether TypeSafe AI's Jev fits Mazkir's router, plus supporting notes
+- **Legacy Bot Architecture:** `docs/archive/tg-mazkir-AGENTS.md` — the retired Python bot (`archive/telegram-py-client/`), kept for reference
