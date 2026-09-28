@@ -6,7 +6,9 @@
 **Ship 1 shipped:** PR #9 (`3eb8b2c`), vault commit `fb824da`.
 **Ship 2 shipped:** PR #11 (`934c003`).
 **Ship 3 shipped:** see `docs/superpowers/specs/2026-09-05-ship3-agent-action-memory-design.md`.
+**Ship 4 shipped:** see `docs/superpowers/specs/2026-09-08-ship4-nl-logging-design.md`.
 **Ship 5 shipped:** see `docs/superpowers/specs/2026-09-10-ship5-inferred-capture-design.md`. Reordered ahead of 4b — see that spec's §1.3.
+**Next:** Ship 6 (classification, §5 — the only remaining ship with a design). Then 7 before 4b — see §13.
 
 > **Two decisions from the Ship 2 design supersede parts of this document.**
 > 1. The events ledger is the source of truth for temporal data; daily notes are a worksurface. A timed checkbox becomes a block by *inference*, regenerated on every open — so promotion needs no write path. See the Ship 2 design §2.1.
@@ -35,9 +37,10 @@ Value-ordered rather than phase-ordered. Each ships independently.
 | 3 | Bug B — the agent can't deny its own work | ~3 | Before any new write path inherits it |
 | 4 | NL logging + simple single edits | ~5 | The only capture path sleep and meals will ever have |
 | 5 | Inferred capture: suggested→approved, gaps | ~6 | Reduces typing once capture already works |
-| 4b | [Ambient capture: knowing what to log](#12-ambient-capture-ship-4b) | ~6 | Ship 4 gives Mazkir hands; this gives it judgment; now after 5 — see the Ship 5 spec §1.3 |
 | 6 | Classification | ~4 | Needs blocks to classify |
-| 7 | Batch edit → preview → accept all | ~4 | Needs blocks *and* addressing |
+| A | Fast lane (piece A of the message pipeline) | ~8 | Supersedes the router for time, habits and todos; A1 shadow shipped with plan 2026-09-27; see docs/superpowers/specs/2026-09-27-fast-lane-design.md |
+| 7 | Batch edit → preview → accept all | ~5 | Needs blocks *and* addressing. Now before 4b, and grown by the batch-preview machinery both need — see §13. Now pieces C and D of the fast-lane spec. |
+| 4b | [Ambient capture: knowing what to log](#12-ambient-capture-ship-4b) | ~4 | Ship 4 gives Mazkir hands; this gives it judgment. Now after 7, and shrunk by it — see §13. Now pieces C and D of the fast-lane spec. |
 | 8 | Timers | ~2 | NL already covers this ground retrospectively |
 | 9 | Weekly readout | ~5 | The old "2b" |
 
@@ -206,6 +209,56 @@ So a habit is spotted when the user happens to use its own words and missed sile
 **Past and planned are mechanically identical.** `create_event` accepts any date, so both work, but nothing distinguishes recording what happened from scheduling what will. Related to Ship 5's `suggested`/`approved` axis without being the same question.
 
 **Not yet designed.** This section states the problem and its obstacles; it needs its own brainstorm and spec before planning.
+
+## 13. Ships 4b and 7 are one pipeline (2026-09-26)
+
+§12 and §6 were written six weeks apart, out of two different failures, and
+neither was checked against the other. They describe the same four-step
+pipeline:
+
+1. one message → **N intents** (4b: fan-out across skills; 7: several edits)
+2. each intent → **resolved to a concrete target** (4b: which habit, which
+   block; 7: which block)
+3. all N → **one preview** of what would change
+4. one tap → **all N commit**
+
+Steps 1, 3 and 4 are the same code. Step 2 differs less than it looks: 4b's
+habit matching and 7's addressing are both "turn a description into a
+record", and Ship 4 built half of it already as `block_reference` →
+`_resolve_reference` (`agent_service.py:2981`).
+
+**Step 3 does not exist.** `services/preview.py` is 29 lines: one registered
+function per tool, returning a string, wired only to destructive tools, one
+call at a time. Neither ship can be built on it, and whichever ships first
+pays for replacing it with something that previews a *set*.
+
+The differences that are real:
+
+| | 4b | 7 |
+|---|---|---|
+| Does an intent exist at all? | The hard part — *"I'm at the dentist"* asked for nothing | Given: it is an imperative |
+| Creates or modifies | Creates | Modifies |
+| Resolution | Fuzzy, against habits and prose | Exact-ish, against blocks on screen |
+
+**So 7 precedes 4b**, by the same argument that moved 5 ahead of 4b (the
+Ship 5 spec §1.3): do not build shared machinery inside the ship whose own
+hard part is unsolved. Ship 7's intents are explicit, which makes it a clean
+test bed for multi-intent resolution, batch preview and accept-all. 4b then
+inherits a working pipeline and has only judgment left to solve — the one
+thing genuinely new about it. Sizes adjusted accordingly: 7 ~4 → ~5, 4b ~6 →
+~4.
+
+**The rejected alternative** is one merged ship, "one message, many actions,
+one preview". Architecturally honest, but ~9 — larger than Ship 5, which the
+Ship 5 spec §9 already called the upper end of a single plan.
+
+**Fold in when specced:** `proposed: true` (2026-09-13) is already a
+single-intent preview-that-waits, rendered as a `/day` row rather than as a
+message. Once batch preview exists that is its natural surface — a proposal
+*set*, not a proposal.
+
+**Still needs a brainstorm** before either is specced. This section records
+the overlap, not the design.
 
 ## 10. Open questions
 

@@ -1,6 +1,7 @@
 """Natural language message endpoint — agent loop."""
 
 import asyncio
+import datetime
 import json
 import logging
 
@@ -9,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.auth import verify_api_key
+from src.config import settings
 from src.services.tracing_helpers import set_payload_provenance
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,63 @@ def get_agent():
     return _get_agent()
 
 
+def get_fast_lane_deps():
+    """Module-level shim so tests can patch the services without importing src.main."""
+    from src.main import get_claude, get_events, get_memory, get_vault
+    return get_claude(), get_memory(), get_events(), get_vault()
+
+
+_shadow_tasks: set = set()
+
+
+def _start_fast_lane_shadow(body: MessageRequest):
+    """Snapshot the day now, before the agent writes, then parse and resolve in the background.
+
+    Fast-lane spec §11.3: the shadow writes nothing and the reply never waits
+    for it. Only the cheap, changeable state is read here, on the event loop;
+    a month of past durations and the habit list are read in the shadow's
+    thread (`complete_fast_context`). Any failure here is logged and forgotten.
+    """
+    if settings.fast_lane_mode not in ("shadow", "on"):
+        return None
+    try:
+        from functools import partial
+        from zoneinfo import ZoneInfo
+
+        from src.services.fast_lane.context import (
+            assemble_fast_context,
+            complete_fast_context,
+        )
+        from src.services.fast_lane.shadow import ShadowSettings, run_shadow
+
+        claude, memory, events, vault = get_fast_lane_deps()
+        if claude is None:
+            return None
+        kwargs = _prepare_agent_kwargs(body)
+        ctx = assemble_fast_context(
+            text=body.text, chat_id=body.chat_id,
+            now=datetime.datetime.now(ZoneInfo(settings.vault_timezone)),
+            memory=memory, events=events, vault=vault,
+            reply_to=kwargs["reply_to"], selected_date=body.selected_date,
+            attachments=kwargs["attachments"],
+            places_path=settings.events_data_path.parent / "places.json",
+            day_boundary_hour=settings.fast_lane_day_boundary_hour,
+        )
+        shadow_settings = ShadowSettings(
+            model=settings.fast_parse_model, timeout_s=settings.fast_parse_timeout_s,
+            day_boundary_hour=settings.fast_lane_day_boundary_hour,
+            default_minutes=settings.default_event_duration,
+        )
+        complete = partial(complete_fast_context, events=events, vault=vault)
+    except Exception:
+        logger.warning("fast lane shadow could not start", exc_info=True)
+        return None
+    task = asyncio.create_task(asyncio.to_thread(run_shadow, ctx, claude, shadow_settings, complete=complete))
+    _shadow_tasks.add(task)   # keep a reference until it finishes
+    task.add_done_callback(_shadow_tasks.discard)
+    return task
+
+
 @router.post("/message")
 async def handle_message(body: MessageRequest, stream: bool = False):
     agent = get_agent()
@@ -122,6 +181,8 @@ async def handle_message(body: MessageRequest, stream: bool = False):
         has_forwarded_from=body.forwarded_from is not None,
         attachment_types=attachment_types,
     )
+
+    _start_fast_lane_shadow(body)
 
     kwargs = _prepare_agent_kwargs(body)
 

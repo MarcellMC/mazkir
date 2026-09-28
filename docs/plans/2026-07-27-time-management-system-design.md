@@ -175,7 +175,7 @@ Only user approval promotes `suggested` → `approved`. **Only `approved` blocks
 
 This is an invariant, not a bugfix. §3.3 guarantees nothing is logged without approval; this is its mirror, and without it the guarantee is worthless. A ledger that silently diverges from what the user believes it contains poisons every number downstream, and unlike a missed write, the user has no way to notice.
 
-Observed live on 2026-08-16 (`memory/00-system/conversations/2026-08-16/156175834.md`): Mazkir reported *"Dog Walk + Dog Food Pickup moved back to 15:59"* when the write had not landed, and separately implied a calendar sync it had not performed — retracting only when challenged, with *"my previous response overstated what happened."*
+Observed live on 2026-08-16 (`memory/00-system/conversations/2026-08-16/<your-chat-id>.md`): Mazkir reported *"Dog Walk + Dog Food Pickup moved back to 15:59"* when the write had not landed, and separately implied a calendar sync it had not performed — retracting only when challenged, with *"my previous response overstated what happened."*
 
 Concretely: the agent prompt states the rule; write tools return the persisted state rather than the requested state, so the agent narrates what is on disk; and best-effort hooks surface their failure in the tool result instead of only logging at WARNING.
 
