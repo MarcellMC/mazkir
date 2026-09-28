@@ -126,7 +126,7 @@ Mazkir is a very capable personal assistant. Its main purpose is to organize tim
 │   ├── timeline/                      # Google Takeout Semantic Location History
 │   └── logs/                          # Structured JSON logs (vault-server.jsonl, agent-turns.jsonl, telegram-bot.jsonl, tool-calls.jsonl)
 ├── infra/observability/               # Local Loki + Alloy + Grafana docker-compose stack
-├── docs/                              # specs/, plans/, superpowers/, research/, archive/, roadmap.md — see docs/README.md
+├── docs/                              # specs/, plans/, research/, archive/, roadmap.md — see docs/README.md
 ├── turbo.json                         # Turborepo config
 ├── package.json                       # Root workspace config
 └── CLAUDE.md                          # This file
@@ -207,7 +207,7 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 - **telegram-web-app** is a React SPA consuming vault-server REST endpoints
 - **@mazkir/shared-types** provides TypeScript interfaces shared between telegram-bot and telegram-web-app
 - **Skill loop:** `AgentService.handle_message` dispatches via `RouterService` (Haiku LLM classifier) to one of five domain skills loaded from `memory/00-system/skills/` (`mazkir`, `time-management`, `knowledge-management`, `motivation-management`, `engineering`). `mazkir` is the conversational router fallback: it converses, answers general questions, reads vault data (incl. `read_knowledge` for note bodies), and owns the daily journal, handing off writes to a domain skill via a `next_skill: <name>` token. The loop caps at 3 hops with cycle detection. **The router's answer is structured output (2026-09-13):** `create_router_choice` sends `output_config.format` with the skill names as an enum, so the reply is valid JSON naming a real skill by construction, and it receives the recent conversation as one quoted transcript rather than as alternating turns. Before, it was only *asked* for JSON while sitting mid-chat in the assistant's seat, and it sometimes continued the chat instead — on 10 days since June, peaking at 9 on 2026-09-12 — each miss silently routed to `mazkir`, which has no write tools. That is how "log reading 06:35–07:35" reached a skill that could only claim to have logged it. A fallback is now logged at ERROR. Each skill has its own model, tool subset, and system prompt. When `skill_registry`/`router` aren't configured, `AgentService` falls back to a single-loop legacy path with all tools loaded.
-- **Fast lane, piece A1: shadow (2026-09-27).** Spec `docs/superpowers/specs/2026-09-27-fast-lane-design.md`, plan `docs/superpowers/plans/2026-09-27-fast-lane-a1.md`. With `FAST_LANE_MODE=shadow`, every `POST /message` snapshots the day before the agent runs (`fast_lane/context.py`, pure file reads, never the reconcile path). A background thread then does two things:
+- **Fast lane, piece A1: shadow (2026-09-27).** Spec `docs/specs/2026-09-27-fast-lane-design.md`, plan `docs/plans/2026-09-27-fast-lane-a1.md`. With `FAST_LANE_MODE=shadow`, every `POST /message` snapshots the day before the agent runs (`fast_lane/context.py`, pure file reads, never the reconcile path). A background thread then does two things:
   - one Haiku call turns the message into clauses of evidence (`fast_lane/parse.py`, schema in `contract.py`; your hashtags override the model);
   - pure code places them on the timeline (`fast_lane/time_resolver.py`).
 
@@ -308,6 +308,22 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 3. Use templates from `memory/00-system/templates/`
 4. File names: lowercase, hyphens (e.g., `buy-groceries.md`)
 
+### When writing a design doc or a plan:
+1. **Design docs go in `docs/specs/`, plans go in `docs/plans/`** — one folder per
+   kind of doc, never one per author. This overrides the `superpowers` skills'
+   own default of `docs/superpowers/specs/` and `docs/superpowers/plans/`
+   (`brainstorming` and `writing-plans` name those paths; write to `docs/specs/`
+   and `docs/plans/` instead). That split existed until 2026-09-28 and produced
+   two parallel spec folders and two parallel plan folders, so "where is the
+   design for X" had two answers and either could be the stale one.
+2. Names are `YYYY-MM-DD-<topic>-design.md` for a spec and `YYYY-MM-DD-<topic>.md`
+   for its plan, so a spec and its plan share a date and slug and both folders
+   sort chronologically.
+3. Research that answers a question rather than designing a change goes in
+   `docs/research/<topic>/`, not `docs/specs/`.
+4. If a file ever appears under `docs/superpowers/`, the override above was
+   missed: move it and delete the directory.
+
 ## Quick Commands
 
 ```bash
@@ -365,7 +381,7 @@ you must never guess at absolute host paths.
 - **Docs Index:** `docs/README.md` — what lives in each `docs/` folder, plus the key docs
 - **Coding Session Conventions:** `infra/coding-agent/CONVENTIONS.md` — rules for agents working inside a containerized session (two repos, isolated clone, landing changes)
 - **Coding Session Setup:** `infra/coding-agent/SETUP.md` — one-time setup; `session.sh` usage, modes, and cleanup
-- **Agent Sessions Design:** `docs/superpowers/specs/2026-08-08-agent-sessions-design.md` — two-lane design (autonomous vs hand-off)
+- **Agent Sessions Design:** `docs/specs/2026-08-08-agent-sessions-design.md` — two-lane design (autonomous vs hand-off)
 - **Vault Schemas:** `memory/AGENTS.md`
 - **Observability:** `docs/observability.md` — structured logs + Loki/Grafana stack + Phoenix distributed tracing
 - **Project Roadmap:** `docs/roadmap.md`

@@ -18,7 +18,7 @@ from src.services.tool_response import ok
 # polled, notified, and auto-cleaned; every hand-off variant stays alive as
 # an interactive Remote Control session, attachable from Claude Mobile, and
 # is never monitored. The variants differ only in the brief's wording --
-# see docs/superpowers/specs/2026-08-08-agent-sessions-design.md §3.1.
+# see docs/specs/2026-08-08-agent-sessions-design.md §3.1.
 SESSION_CHOICES = [
     {"value": "autonomous", "label": "Autonomous (runs alone, notifies)"},
     {"value": "handoff-checkpoints", "label": "Hand-off — checkpoints"},

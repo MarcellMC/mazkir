@@ -8,7 +8,7 @@
 
 **Tech Stack:** bash, Docker + docker compose, pytest (via `apps/vault-server/venv`), git.
 
-**Spec:** `docs/superpowers/specs/2026-08-08-agent-sessions-design.md`
+**Spec:** `docs/specs/2026-08-08-agent-sessions-design.md`
 
 ## Global Constraints
 
@@ -253,7 +253,7 @@ Create `infra/coding-agent/session.sh`:
 # list, clean. Mazkir's vault-server shells out to this rather than
 # building its own `docker run` arguments, so the automated and manual
 # paths cannot drift -- they did before, and the divergence broke every
-# automated session (see docs/superpowers/specs/2026-08-08-agent-sessions-design.md §11.1).
+# automated session (see docs/specs/2026-08-08-agent-sessions-design.md §11.1).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1554,7 +1554,7 @@ Add to the "Related Documentation" list:
 
 ```markdown
 - **Coding Session Conventions:** `infra/coding-agent/CONVENTIONS.md` — rules for agents working inside a containerized session (two repos, isolated clone, landing changes)
-- **Agent Sessions Design:** `docs/superpowers/specs/2026-08-08-agent-sessions-design.md`
+- **Agent Sessions Design:** `docs/specs/2026-08-08-agent-sessions-design.md`
 ```
 
 Add a new top-level section before "Related Documentation":

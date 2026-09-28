@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14 / FastAPI / pytest on the server; TypeScript / grammY / vitest on the bot; `@mazkir/shared-types` between them.
 
-**Spec:** `docs/superpowers/specs/2026-08-29-ship2-navigable-day-design.md`
+**Spec:** `docs/specs/2026-08-29-ship2-navigable-day-design.md`
 
 ## Global Constraints
 
@@ -1881,7 +1881,7 @@ git commit -m "feat(bot): navigate /day by date, editing the message in place"
 
 **Files:**
 - Modify: `CLAUDE.md`
-- Modify: `docs/superpowers/specs/2026-08-29-ship2-navigable-day-design.md`
+- Modify: `docs/specs/2026-08-29-ship2-navigable-day-design.md`
 
 - [ ] **Step 1: Correct the rich-message claims in CLAUDE.md**
 
@@ -1919,7 +1919,7 @@ Under "Development Guidelines → Architecture", add:
 
 - [ ] **Step 4: Record the source_ids discovery in the spec**
 
-In `docs/superpowers/specs/2026-08-29-ship2-navigable-day-design.md`, §3.2 says note-derived blocks reconcile "the same way it matches `calendar_id`". Append to that paragraph:
+In `docs/specs/2026-08-29-ship2-navigable-day-design.md`, §3.2 says note-derived blocks reconcile "the same way it matches `calendar_id`". Append to that paragraph:
 
 ```
 **Correction found during implementation:** calendar events did not reconcile either. `MergerService` emitted no `source_ids` at all, so `refresh_events`' matching could never fire for a merged event — each open assigned a new `id` and dropped the persisted copy. Ship 2 fixes that for every merged source, which is what makes this paragraph true rather than aspirational, and is a precondition for Ship 5 persisting approval.
@@ -1937,7 +1937,7 @@ Expected: no matches.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add CLAUDE.md docs/superpowers/specs/2026-08-29-ship2-navigable-day-design.md
+git add CLAUDE.md docs/specs/2026-08-29-ship2-navigable-day-design.md
 git commit -m "docs: correct rich-message and /daily claims for Ship 2"
 ```
 

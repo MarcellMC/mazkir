@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14, FastAPI, pytest. No new dependencies.
 
-**Spec:** `docs/superpowers/specs/2026-09-05-ship3-agent-action-memory-design.md`
+**Spec:** `docs/specs/2026-09-05-ship3-agent-action-memory-design.md`
 
 ## Global Constraints
 
@@ -1178,7 +1178,7 @@ In `docs/specs/2026-08-21-time-management-phase2-capture-design.md`, update the 
 
 ```markdown
 **Ship 2 shipped:** PR #11 (`934c003`).
-**Ship 3 shipped:** see `docs/superpowers/specs/2026-09-05-ship3-agent-action-memory-design.md`.
+**Ship 3 shipped:** see `docs/specs/2026-09-05-ship3-agent-action-memory-design.md`.
 ```
 
 And in §9, replace the `**Fix, two halves:**` list's first item with:

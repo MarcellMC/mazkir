@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI + Python 3.13 (`apps/vault-server`), grammY + TypeScript (`apps/telegram-bot`), `@mazkir/shared-types`, pytest, vitest.
 
-**Spec:** `docs/superpowers/specs/2026-09-10-ship5-inferred-capture-design.md`
+**Spec:** `docs/specs/2026-09-10-ship5-inferred-capture-design.md`
 
 ## Global Constraints
 
@@ -3634,7 +3634,7 @@ with:
 In `docs/specs/2026-08-21-time-management-phase2-capture-design.md`, add to the status block at the top:
 
 ```markdown
-**Ship 5 shipped:** see `docs/superpowers/specs/2026-09-10-ship5-inferred-capture-design.md`. Reordered ahead of 4b — see that spec's §1.3.
+**Ship 5 shipped:** see `docs/specs/2026-09-10-ship5-inferred-capture-design.md`. Reordered ahead of 4b — see that spec's §1.3.
 ```
 
 In §2's table, swap the `4b` and `5` rows so the order matches reality, and append to 4b's "Why here" cell: `now after 5 — see the Ship 5 spec §1.3`.

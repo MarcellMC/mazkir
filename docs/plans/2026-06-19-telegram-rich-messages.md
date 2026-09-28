@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript, grammY ≥1.44 / @grammyjs/types ≥3.28, vitest, tsx.
 
-**Spec:** `docs/superpowers/specs/2026-06-19-telegram-rich-messages-design.md`
+**Spec:** `docs/specs/2026-06-19-telegram-rich-messages-design.md`
 
 ---
 

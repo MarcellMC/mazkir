@@ -190,8 +190,8 @@ Both ships need the front of the pipeline to turn **one message into N intents, 
   - `create_event` takes "any two of three" of start, end and duration and never invents a missing one.
   - Ship 4 explicitly defers "Multi-intent extraction, habit matching against prose … and a policy for volunteered facts" to 4b.
 
-  — [Ship 4 spec §4.2, §4.4, §5, §8](file:///home/marcellmc/dev/mazkir/docs/superpowers/specs/2026-09-08-ship4-nl-logging-design.md)
-- Ship 5 §1.3: "Once tapping is the primary path and talking the exception, those failures become both rarer and *visible* — a missed block sits in the draft instead of never being learned about." Its approval model (a derived pending state, `proposed: true` waiting for approval) is the existing single-intent preview-that-waits. — [Ship 5 spec §1.3](file:///home/marcellmc/dev/mazkir/docs/superpowers/specs/2026-09-10-ship5-inferred-capture-design.md); [CLAUDE.md](file:///home/marcellmc/dev/mazkir/CLAUDE.md) "A proposal is Mazkir's guess, so it waits"
+  — [Ship 4 spec §4.2, §4.4, §5, §8](file:///home/marcellmc/dev/mazkir/docs/specs/2026-09-08-ship4-nl-logging-design.md)
+- Ship 5 §1.3: "Once tapping is the primary path and talking the exception, those failures become both rarer and *visible* — a missed block sits in the draft instead of never being learned about." Its approval model (a derived pending state, `proposed: true` waiting for approval) is the existing single-intent preview-that-waits. — [Ship 5 spec §1.3](file:///home/marcellmc/dev/mazkir/docs/specs/2026-09-10-ship5-inferred-capture-design.md); [CLAUDE.md](file:///home/marcellmc/dev/mazkir/CLAUDE.md) "A proposal is Mazkir's guess, so it waits"
 - The skill prompts already encode rules an extractor would need to reproduce or pass through:
   - "Just got back from X" anchors the END.
   - An overnight span reported in the morning belongs to the previous date.

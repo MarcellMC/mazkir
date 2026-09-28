@@ -2,7 +2,7 @@
 
 **Status:** Design, approved in conversation 2026-09-10. Not yet planned.
 **Parent:** `docs/specs/2026-08-21-time-management-phase2-capture-design.md` §2 (ship 5), §3 (the `/day` surface), §4 (ledger behaviour).
-**Predecessor:** `docs/superpowers/specs/2026-09-08-ship4-nl-logging-design.md`.
+**Predecessor:** `docs/specs/2026-09-08-ship4-nl-logging-design.md`.
 **Reordered:** Ship 5 was scheduled after Ship 4b. Swapped on 2026-09-10 — see §1.3.
 
 ## 1. What this ship is

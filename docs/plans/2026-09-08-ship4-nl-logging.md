@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 / FastAPI / pydantic / pytest (`apps/vault-server`); TypeScript / grammY 1.46 / vitest (`apps/telegram-bot`); `@mazkir/shared-types`.
 
-**Spec:** `docs/superpowers/specs/2026-09-08-ship4-nl-logging-design.md`
+**Spec:** `docs/specs/2026-09-08-ship4-nl-logging-design.md`
 
 ## Global Constraints
 

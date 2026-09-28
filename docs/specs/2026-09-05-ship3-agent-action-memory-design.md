@@ -1,7 +1,7 @@
 # Ship 3 — The agent can't deny its own work (Design)
 
 **Status:** Implemented. All seven plan tasks landed on `feat/ship3-agent-action-memory`, reviewed and merge-ready.
-**Plan:** `docs/superpowers/plans/2026-09-05-ship3-agent-action-memory.md`
+**Plan:** `docs/plans/2026-09-05-ship3-agent-action-memory.md`
 **Parent:** `docs/specs/2026-08-21-time-management-phase2-capture-design.md` §2 ship 3, §9. That doc owns the interaction model across all nine ships; this one owns Ship 3.
 **Ship 1 shipped:** PR #9 (`3eb8b2c`), vault commit `fb824da`.
 **Ship 2 shipped:** PR #11 (`934c003`).
