@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, FastAPI, Anthropic SDK (tool-use API), python-frontmatter, pytest, pytest-asyncio
 
-**Design Doc:** `docs/plans/2026-03-02-memory-system-design.md`
+**Design Doc:** `docs/specs/2026-03-02-memory-system-design.md`
 
 ---
 

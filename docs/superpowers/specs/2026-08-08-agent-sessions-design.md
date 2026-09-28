@@ -1,8 +1,8 @@
 # Agent Sessions (v2): Two-Lane Coding Sessions on a Shared Devcontainer — Design
 
 **Status:** Design, approved. Not yet planned/implemented.
-**Supersedes the session-launch portion of:** `docs/plans/2026-07-27-coding-handoff-design.md` (v1).
-**Parent doc:** `docs/plans/2026-07-27-p6-roadmap-and-agentic-frameworks.md` (Block C).
+**Supersedes the session-launch portion of:** `docs/specs/2026-07-27-coding-handoff-design.md` (v1).
+**Parent doc:** `docs/specs/2026-07-27-p6-roadmap-and-agentic-frameworks.md` (Block C).
 
 ## 1. Why this exists
 

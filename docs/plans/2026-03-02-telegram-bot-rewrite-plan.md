@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript, grammY, Vitest, node-fetch (native), dotenv
 
-**Design doc:** `docs/plans/2026-03-02-telegram-bot-rewrite-design.md`
+**Design doc:** `docs/specs/2026-03-02-telegram-bot-rewrite-design.md`
 
 **Reference implementation:** `apps/telegram-py-client/src/bot/handlers.py` (port all formatting logic from here)
 

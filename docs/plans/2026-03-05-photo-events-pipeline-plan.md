@@ -8,7 +8,7 @@
 
 **Tech Stack:** Pillow (EXIF), FastAPI, Pydantic, Vitest, pytest
 
-**Design doc:** `docs/plans/2026-03-05-photo-events-pipeline-design.md`
+**Design doc:** `docs/specs/2026-03-05-photo-events-pipeline-design.md`
 
 ---
 

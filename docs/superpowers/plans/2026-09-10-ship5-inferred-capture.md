@@ -3605,7 +3605,7 @@ git commit -m "feat(bot): the block edit view"
 
 **Files:**
 - Modify: `apps/vault-server/src/services/events_service.py` (delete the line-45 comment)
-- Modify: `docs/plans/2026-08-21-time-management-phase2-capture-design.md`
+- Modify: `docs/specs/2026-08-21-time-management-phase2-capture-design.md`
 - Modify: `CLAUDE.md`
 
 Three documentation debts the code now contradicts.
@@ -3631,7 +3631,7 @@ with:
 
 - [ ] **Step 2: Update the phase doc**
 
-In `docs/plans/2026-08-21-time-management-phase2-capture-design.md`, add to the status block at the top:
+In `docs/specs/2026-08-21-time-management-phase2-capture-design.md`, add to the status block at the top:
 
 ```markdown
 **Ship 5 shipped:** see `docs/superpowers/specs/2026-09-10-ship5-inferred-capture-design.md`. Reordered ahead of 4b — see that spec's §1.3.
@@ -3673,7 +3673,7 @@ Expected: server ≥ 1066 + new, bot ≥ 159 + new, both typechecks clean.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add CLAUDE.md docs/plans/2026-08-21-time-management-phase2-capture-design.md apps/vault-server/src/services/events_service.py
+git add CLAUDE.md docs/specs/2026-08-21-time-management-phase2-capture-design.md apps/vault-server/src/services/events_service.py
 git commit -m "docs: record Ship 5"
 ```
 

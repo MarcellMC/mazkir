@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14, FastAPI, pytest. Vault notes are markdown + YAML frontmatter. Tests run from `apps/vault-server` with the venv active.
 
-**Spec:** `docs/plans/2026-06-09-unified-timed-event-capture-design.md`
+**Spec:** `docs/specs/2026-06-09-unified-timed-event-capture-design.md`
 
 **Setup (run once before Task 1):**
 ```bash

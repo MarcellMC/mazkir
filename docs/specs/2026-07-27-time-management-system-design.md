@@ -1,7 +1,7 @@
 # Time Management System — Design
 
 **Status:** Design. Revised 2026-08-17 after a full brainstorming pass; supersedes the 2026-07-27 draft.
-**Parent doc:** `docs/plans/2026-07-27-p6-roadmap-and-agentic-frameworks.md` (Block A)
+**Parent doc:** `docs/specs/2026-07-27-p6-roadmap-and-agentic-frameworks.md` (Block A)
 **Scope:** a time-accounting ledger, a weekly proportional readout, and a multi-completions-per-day fix for habits. The day-schedule suggestion feature is deferred to v2 — see §9.
 
 ## 1. What this is
@@ -362,7 +362,7 @@ Habits also gain `activity` and `default_duration_minutes`, and their existing `
 ## 11. Open questions
 
 > **Phase 2 update (2026-08-21).** Several of these are resolved in
-> `docs/plans/2026-08-21-time-management-phase2-capture-design.md`, which owns
+> `docs/specs/2026-08-21-time-management-phase2-capture-design.md`, which owns
 > the capture *interaction* design (this doc owns the data model):
 > **retention of `suggested` blocks** — dissolved; suggestions are ephemeral and
 > regenerated on every open, so no retention policy is needed.

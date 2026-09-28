@@ -8,8 +8,8 @@
 
 **Tech Stack:** React 18 + Vite + Tailwind CSS + Zustand (webapp), FastAPI + Pydantic (server), Replicate API (generation), Wikimedia/Mapillary APIs (imagery), @twa-dev/sdk (Telegram)
 
-**Design doc:** `docs/plans/2026-02-28-telegram-webapp-design.md`
-**Handoff doc:** `docs/plans/mazkir-webapp-handoff.md`
+**Design doc:** `docs/specs/2026-02-28-telegram-webapp-design.md`
+**Handoff doc:** `docs/specs/mazkir-webapp-handoff.md`
 
 ---
 

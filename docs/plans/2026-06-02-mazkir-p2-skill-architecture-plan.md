@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14, FastAPI, Anthropic SDK (Haiku for router/capture/recall, Sonnet for manager), `python-frontmatter` for skill files. Tests via `pytest`.
 
-**Spec source:** `docs/plans/2026-06-01-mazkir-usability-design.md` — Blocks D3 (sub-agent architecture) and D4 (confidence gate + preview + hooks).
+**Spec source:** `docs/specs/2026-06-01-mazkir-usability-design.md` — Blocks D3 (sub-agent architecture) and D4 (confidence gate + preview + hooks).
 
 **Out of scope for this plan (deferred to later P-plans):**
 - Daily-tier tools (`daily_add_task`, `daily_set_task_state`, `daily_rollover`, `promote_daily_task`) — P4

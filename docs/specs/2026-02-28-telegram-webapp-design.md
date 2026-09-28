@@ -2,7 +2,7 @@
 
 **Date:** 2026-02-28
 **Status:** Approved
-**Handoff doc:** `docs/plans/mazkir-webapp-handoff.md`
+**Handoff doc:** `docs/specs/mazkir-webapp-handoff.md`
 
 ---
 
@@ -66,7 +66,7 @@ lat/lng ──→ /imagery/search ──→ Wikimedia/Mapillary ──→ Contex
 
 ### MergedEvent Model
 
-As defined in handoff doc (`docs/plans/mazkir-webapp-handoff.md`, lines 129-179). Implemented as:
+As defined in handoff doc (`docs/specs/mazkir-webapp-handoff.md`, lines 129-179). Implemented as:
 - Pydantic model in vault-server (Python)
 - TypeScript interface in webapp (mirrored)
 

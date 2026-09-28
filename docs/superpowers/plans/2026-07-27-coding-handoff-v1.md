@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Parent design: `docs/plans/2026-07-27-coding-handoff-design.md`. Parent roadmap: `docs/plans/2026-07-27-p6-roadmap-and-agentic-frameworks.md` (Block C).
+- Parent design: `docs/specs/2026-07-27-coding-handoff-design.md`. Parent roadmap: `docs/specs/2026-07-27-p6-roadmap-and-agentic-frameworks.md` (Block C).
 - v1 only: no `PreToolUse`/`defer` hook-based checkpoints, no deeper sandboxing than Docker, no task-complexity auto-routing, no multi-agent teams. These are explicitly out of scope per the design doc.
 - The tool must **always** require user confirmation before provisioning anything, regardless of `_confidence` — achieved via the existing `preview` flag (forces `needs_confirmation` even at auto-execute confidence, per `agent_service.py:1333-1344`), not a new mechanism.
 - GitHub branch protection on `master`, PAT creation, and `claude auth login` are manual, one-time, human-executed steps — not automatable by this plan. They are documented in Task 11's `SETUP.md`, not implemented as code.
@@ -1461,7 +1461,7 @@ Expected: prints a Claude Code CLI version string
 
 One-time manual steps required before the Coding-Handoff feature works
 end-to-end. None of these are automated by application code — see
-`docs/plans/2026-07-27-coding-handoff-design.md` for why.
+`docs/specs/2026-07-27-coding-handoff-design.md` for why.
 
 ## 1. Build the image
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Turborepo, FastAPI, uvicorn, httpx, Telethon, python-frontmatter, anthropic SDK, Google Calendar API
 
-**Design doc:** `docs/plans/2026-02-28-monorepo-migration-design.md`
+**Design doc:** `docs/specs/2026-02-28-monorepo-migration-design.md`
 
 ---
 

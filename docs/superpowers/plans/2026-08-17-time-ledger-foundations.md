@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14, FastAPI, pytest, PyYAML, Pydantic settings. Vault is markdown-with-YAML-frontmatter; the event store is JSON at `data/events/{date}.json`.
 
-**Spec:** `docs/plans/2026-07-27-time-management-system-design.md`
+**Spec:** `docs/specs/2026-07-27-time-management-system-design.md`
 
 ## Global Constraints
 

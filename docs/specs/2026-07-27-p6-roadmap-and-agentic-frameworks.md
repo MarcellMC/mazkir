@@ -46,7 +46,7 @@ Requirements captured so far:
 - **Open question (unresolved):** how and when should Mazkir actually *suggest* the plan, without adding friction. This is the key design question for the eventual brainstorming session.
 - Related prior notes surfaced during research: *Track and Plan* ("track → analyze → plan"), *Habitica-style Tasks*, *Periodic Tasks* (laundry, shopping, hygiene, workout, work-report) — all relevant background for habit tracking / gamification decisions in this block.
 
-**Design written:** `docs/plans/2026-07-27-time-management-system-design.md` — reuses the existing Habit schema for untracked habits; adopts the Todo/Task rename now (pure naming); fixes a real multi-completions-per-day bug found via live testing (`daily_target` field + completion-log-based counting); resolves the "how/when to suggest" question as pull-only (compute on access, no proactive push); formalizes the matrix into a structured config file separate from the original knowledge note.
+**Design written:** `docs/specs/2026-07-27-time-management-system-design.md` — reuses the existing Habit schema for untracked habits; adopts the Todo/Task rename now (pure naming); fixes a real multi-completions-per-day bug found via live testing (`daily_target` field + completion-log-based counting); resolves the "how/when to suggest" question as pull-only (compute on access, no proactive push); formalizes the matrix into a structured config file separate from the original knowledge note.
 
 **New future candidate block (parked, not scheduled):** full Habitica-style reclassification — splitting "Habit" into strict Habits vs. streak-bound Dailies (Habitica's three-way Habits/Dailies/Todos model). Raised during the Time Management brainstorm but deliberately deferred — large, cross-cutting change touching vault schemas, tool names, `CLAUDE.md`, `memory/AGENTS.md`, templates, and terminology already committed in the Knowledge Management design doc. Revisit as its own dedicated brainstorm if it still seems worth it later.
 
@@ -57,12 +57,12 @@ To be brainstormed separately. Scope so far:
 - Action item before brainstorming: search old notes on tags-vs-links, hierarchies, rigidity, to help formalize conventions.
 - Open question: whether a dedicated frontend page (MOC / "command center") is needed for linking data, adding context to tasks/goals, tracking/managing, and pulling relevant info while working with Mazkir.
 
-**Design written:** `docs/plans/2026-07-27-knowledge-management-design.md` — tags-vs-links convention (prompt-only, no retrofit/validation), `daily_rollover` kept as-is, and a new command-center webapp page (v1: live overview + status/metadata CRUD for tasks/goals/notes; linking workbench sketched but deferred to v2).
+**Design written:** `docs/specs/2026-07-27-knowledge-management-design.md` — tags-vs-links convention (prompt-only, no retrofit/validation), `daily_rollover` kept as-is, and a new command-center webapp page (v1: live overview + status/metadata CRUD for tasks/goals/notes; linking workbench sketched but deferred to v2).
 
 ### Block C — Coding-Handoff (analyzed in depth this session, see §3)
 Framed by the user as potentially high-impact for dev velocity, but with real risk of large implementation cost without payoff — deliberately treated as risk/payoff analysis first, not an immediate spec.
 
-**v1 design written:** `docs/plans/2026-07-27-coding-handoff-design.md` — a "Tier 1+" hybrid (always-confirm trigger, containerized worktree session via a real `claude --dangerously-skip-permissions` CLI process, supervised via Remote Control rather than custom hook-based checkpoints). Tier 2/3 and multi-agent teams remain future extensions.
+**v1 design written:** `docs/specs/2026-07-27-coding-handoff-design.md` — a "Tier 1+" hybrid (always-confirm trigger, containerized worktree session via a real `claude --dangerously-skip-permissions` CLI process, supervised via Remote Control rather than custom hook-based checkpoints). Tier 2/3 and multi-agent teams remain future extensions.
 
 ## 3. Coding-Handoff: analysis
 

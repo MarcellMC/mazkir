@@ -2,7 +2,7 @@
 
 One-time manual steps required before the Coding-Handoff feature works
 end-to-end. None of these are automated by application code — see
-`docs/plans/2026-07-27-coding-handoff-design.md` for why.
+`docs/specs/2026-07-27-coding-handoff-design.md` for why.
 
 ## 1. Build the image
 

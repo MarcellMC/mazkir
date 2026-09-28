@@ -1,7 +1,7 @@
 # Ship 2 — Navigable `/day` (Design)
 
 **Status:** Design, approved in conversation 2026-08-29. Not yet planned.
-**Parent:** `docs/plans/2026-08-21-time-management-phase2-capture-design.md` §2, ship 2. That doc owns the interaction model across all nine ships; this one owns Ship 2.
+**Parent:** `docs/specs/2026-08-21-time-management-phase2-capture-design.md` §2, ship 2. That doc owns the interaction model across all nine ships; this one owns Ship 2.
 **Ship 1 shipped:** PR #9 (`3eb8b2c`), vault commit `fb824da`.
 
 ## 1. What this ship is

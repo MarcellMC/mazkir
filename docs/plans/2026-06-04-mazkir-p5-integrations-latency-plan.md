@@ -13,7 +13,7 @@
 
 **Tech Stack:** Python 3.14, FastAPI, Anthropic SDK (streaming + tool use), Google Calendar API, OpenTelemetry, grammY (Telegram bot).
 
-**Spec source:** `docs/plans/2026-06-01-mazkir-usability-design.md` — Blocks E1, F1, F2, F4.
+**Spec source:** `docs/specs/2026-06-01-mazkir-usability-design.md` — Blocks E1, F1, F2, F4.
 
 **Out of scope:**
 - Extract remaining tool handlers (tasks/habits/goals/knowledge) into their own packages — defer until pattern proven in T2.

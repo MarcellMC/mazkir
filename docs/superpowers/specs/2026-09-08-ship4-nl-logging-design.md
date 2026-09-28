@@ -1,7 +1,7 @@
 # Ship 4 — NL logging and single-block edits (Design)
 
 **Status:** Design, approved in conversation 2026-09-08. Not yet planned.
-**Parent:** `docs/plans/2026-08-21-time-management-phase2-capture-design.md` §6 — this is ship #4 of that document's ship order.
+**Parent:** `docs/specs/2026-08-21-time-management-phase2-capture-design.md` §6 — this is ship #4 of that document's ship order.
 **Builds on:** Ship 2 (PR #11), Ship 3 (PR #14, `ce960e5`), and PR #15 (`c3ffcee`).
 
 ## 1. What this ship is for

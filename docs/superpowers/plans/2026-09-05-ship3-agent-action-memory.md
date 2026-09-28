@@ -1072,7 +1072,7 @@ Reconstruct the failure end to end. The test cannot assert the model's behaviour
 **Files:**
 - Test: `tests/test_memory_service.py`
 - Modify: `CLAUDE.md`
-- Modify: `docs/plans/2026-08-21-time-management-phase2-capture-design.md`
+- Modify: `docs/specs/2026-08-21-time-management-phase2-capture-design.md`
 
 **Interfaces:**
 - Consumes: everything from Tasks 1–6.
@@ -1174,7 +1174,7 @@ In the **Agent tool risk levels** section, leave the tool lists alone — Ship 3
 
 - [ ] **Step 5: Mark Ship 3 shipped in the phase doc**
 
-In `docs/plans/2026-08-21-time-management-phase2-capture-design.md`, update the header block to add a line beneath `**Ship 1 shipped:**`:
+In `docs/specs/2026-08-21-time-management-phase2-capture-design.md`, update the header block to add a line beneath `**Ship 1 shipped:**`:
 
 ```markdown
 **Ship 2 shipped:** PR #11 (`934c003`).
@@ -1193,7 +1193,7 @@ Leave the `**Secondary finding**` paragraph, but append: *"Fixed in Ship 3 — `
 
 ```bash
 git add apps/vault-server/tests/test_memory_service.py CLAUDE.md \
-        docs/plans/2026-08-21-time-management-phase2-capture-design.md
+        docs/specs/2026-08-21-time-management-phase2-capture-design.md
 git commit -m "test(memory): pin the 2026-08-20 denial; document Ship 3"
 ```
 
