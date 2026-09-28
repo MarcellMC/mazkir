@@ -6,7 +6,7 @@ of its own. This is the arithmetic the agent kept getting wrong: "3:00-3:20"
 sent at 04:17 was stored at 15:00 the same day, in the future, and "ended at
 00:30" became a 25-hour walk. Here a test can pin it down.
 
-Spec: docs/superpowers/specs/2026-09-27-fast-lane-design.md §6.
+Spec: docs/specs/2026-09-27-fast-lane-design.md §6.
 
 `ResolverContext.now` must carry a `zoneinfo.ZoneInfo`: instants are built
 with `datetime(..., tzinfo=now.tzinfo)`, which is only correct for zoneinfo.

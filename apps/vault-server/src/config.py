@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     )
     otel_service_name: str = os.getenv("OTEL_SERVICE_NAME", "vault-server")
 
-    # Fast lane (docs/superpowers/specs/2026-09-27-fast-lane-design.md).
+    # Fast lane (docs/specs/2026-09-27-fast-lane-design.md).
     # off: nothing runs. shadow: every message is parsed and resolved beside
     # the normal path, and only a log line is written. "on" arrives with
     # piece A2; until then it behaves as shadow.

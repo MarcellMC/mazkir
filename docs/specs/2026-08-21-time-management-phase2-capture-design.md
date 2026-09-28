@@ -5,9 +5,9 @@
 **Phase 1 shipped:** PR #8 (`c911d43`), vault commit `cf14ac1`.
 **Ship 1 shipped:** PR #9 (`3eb8b2c`), vault commit `fb824da`.
 **Ship 2 shipped:** PR #11 (`934c003`).
-**Ship 3 shipped:** see `docs/superpowers/specs/2026-09-05-ship3-agent-action-memory-design.md`.
-**Ship 4 shipped:** see `docs/superpowers/specs/2026-09-08-ship4-nl-logging-design.md`.
-**Ship 5 shipped:** see `docs/superpowers/specs/2026-09-10-ship5-inferred-capture-design.md`. Reordered ahead of 4b — see that spec's §1.3.
+**Ship 3 shipped:** see `docs/specs/2026-09-05-ship3-agent-action-memory-design.md`.
+**Ship 4 shipped:** see `docs/specs/2026-09-08-ship4-nl-logging-design.md`.
+**Ship 5 shipped:** see `docs/specs/2026-09-10-ship5-inferred-capture-design.md`. Reordered ahead of 4b — see that spec's §1.3.
 **Next:** Ship 6 (classification, §5 — the only remaining ship with a design). Then 7 before 4b — see §13.
 
 > **Two decisions from the Ship 2 design supersede parts of this document.**
@@ -33,12 +33,12 @@ Value-ordered rather than phase-ordered. Each ships independently.
 | # | Ship | Size | Why here |
 |---|------|------|----------|
 | 1 | See my todos (Bug A) | ~2 | Highest value, no dependencies |
-| 2 | [Navigable `/day`, rendering blocks read-only](../superpowers/specs/2026-08-29-ship2-navigable-day-design.md) | ~6 | The surface everything later writes to |
+| 2 | [Navigable `/day`, rendering blocks read-only](2026-08-29-ship2-navigable-day-design.md) | ~6 | The surface everything later writes to |
 | 3 | Bug B — the agent can't deny its own work | ~3 | Before any new write path inherits it |
 | 4 | NL logging + simple single edits | ~5 | The only capture path sleep and meals will ever have |
 | 5 | Inferred capture: suggested→approved, gaps | ~6 | Reduces typing once capture already works |
 | 6 | Classification | ~4 | Needs blocks to classify |
-| A | Fast lane (piece A of the message pipeline) | ~8 | Supersedes the router for time, habits and todos; A1 shadow shipped with plan 2026-09-27; see docs/superpowers/specs/2026-09-27-fast-lane-design.md |
+| A | Fast lane (piece A of the message pipeline) | ~8 | Supersedes the router for time, habits and todos; A1 shadow shipped with plan 2026-09-27; see docs/specs/2026-09-27-fast-lane-design.md |
 | 7 | Batch edit → preview → accept all | ~5 | Needs blocks *and* addressing. Now before 4b, and grown by the batch-preview machinery both need — see §13. Now pieces C and D of the fast-lane spec. |
 | 4b | [Ambient capture: knowing what to log](#12-ambient-capture-ship-4b) | ~4 | Ship 4 gives Mazkir hands; this gives it judgment. Now after 7, and shrunk by it — see §13. Now pieces C and D of the fast-lane spec. |
 | 8 | Timers | ~2 | NL already covers this ground retrospectively |

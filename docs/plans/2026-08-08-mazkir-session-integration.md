@@ -8,8 +8,8 @@
 
 **Tech Stack:** Python (FastAPI, pytest), TypeScript (grammY, vitest), bash, Docker.
 
-**Spec:** `docs/superpowers/specs/2026-08-08-agent-sessions-design.md`
-**Depends on:** `docs/superpowers/plans/2026-08-08-devcontainer-foundation.md` (complete — `session.sh` exists with `provision`, `launch`, `list`, `clean`, `start`).
+**Spec:** `docs/specs/2026-08-08-agent-sessions-design.md`
+**Depends on:** `docs/plans/2026-08-08-devcontainer-foundation.md` (complete — `session.sh` exists with `provision`, `launch`, `list`, `clean`, `start`).
 
 ## Global Constraints
 

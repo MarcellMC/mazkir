@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python/FastAPI/pytest (backend); React 18 + Vite + Tailwind + Zustand-era webapp, adding `@tanstack/react-virtual`, `@tanstack/react-query`, `react-markdown`, `remark-gfm`; Vitest + Testing Library.
 
-**Design reference:** `docs/prototype.html` (paper/editorial design language). Spec: `docs/superpowers/specs/2026-06-20-time-management-webapp-design.md`. When building UI, consult the `frontend-design:frontend-design` skill.
+**Design reference:** `docs/prototype.html` (paper/editorial design language). Spec: `docs/specs/2026-06-20-time-management-webapp-design.md`. When building UI, consult the `frontend-design:frontend-design` skill.
 
 ---
 
@@ -1745,7 +1745,7 @@ git commit -m "feat(web): TimeManagementPage + route swap, remove dayplanner"
 
 - [ ] **Step 1: Add the layout CSS**
 
-Add classes to `theme.css` matching the approved mockup (`docs/superpowers/specs/2026-06-20-time-management-webapp-design.md` references the companion mockups): sticky `.tm-day-hd` with backdrop blur + hairline rule; `.tm-day-bd` padding with photos bled to the edges (`img { margin-inline: -18px; width: calc(100% + 36px) }` wrapper or `.tm-img` full-bleed); right-edge `.tm-scrub` track + terra thumb + ink bubble; ink circular `.tm-fab` bottom-right; `.tm-featured` paper-deep card with a terra top rule; month divider hairlines. Consult the `frontend-design:frontend-design` skill for spacing/hierarchy.
+Add classes to `theme.css` matching the approved mockup (`docs/specs/2026-06-20-time-management-webapp-design.md` references the companion mockups): sticky `.tm-day-hd` with backdrop blur + hairline rule; `.tm-day-bd` padding with photos bled to the edges (`img { margin-inline: -18px; width: calc(100% + 36px) }` wrapper or `.tm-img` full-bleed); right-edge `.tm-scrub` track + terra thumb + ink bubble; ink circular `.tm-fab` bottom-right; `.tm-featured` paper-deep card with a terra top rule; month divider hairlines. Consult the `frontend-design:frontend-design` skill for spacing/hierarchy.
 
 - [ ] **Step 2: Manual visual verification**
 

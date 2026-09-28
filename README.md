@@ -111,7 +111,7 @@ Observability ports are listed under [Observability](#observability) below.
 - [`memory/AGENTS.md`](memory/AGENTS.md) - Vault schemas and data formats
 - [`docs/roadmap.md`](docs/roadmap.md) - Project roadmap
 - [`docs/observability.md`](docs/observability.md) - Logs, traces, dashboards
-- [`docs/README.md`](docs/README.md) - Index of `docs/` (specs, plans, superpowers, research, archive)
+- [`docs/README.md`](docs/README.md) - Index of `docs/` (specs, plans, research, archive)
 
 ## Observability
 
