@@ -25,10 +25,10 @@ SYSTEM_PROMPT = """You read one message sent to Mazkir, a personal assistant tha
 - end_block: a block listed under "Blocks on the timeline" ends ("woke up at 09:10" ends Sleep, "back home" ends the walk, "sleep until 15:45"). When no such block is listed, it is a log_block with time.end instead.
 - edit_block: an existing block's start moves, the whole block shifts or moves to another day, or it is renamed.
 - tick_habit: a habit done, with no time given.
-- add_todo: something to remember, buy or do some day, with no scheduling words.
-- check_todo: something done that is one of the "Open todos"; target is that todo's words as listed.
+- add_todo: something to remember, buy or do some day, with no scheduling words. A list under "Tasks for <project>:" is one add_todo per item.
+- check_todo: something done that is one of the "Open todos"; target is that todo's words as listed. "Cross out as done:" followed by a list is one check_todo per item.
 - rollover_todos: move unfinished todos to another day.
-- other: anything else, such as questions, conversation, notes and ideas, tasks with priorities, coding requests, describing a photo, or deleting something.
+- other: anything else, such as questions, conversation, notes and ideas, coding requests, describing a photo, or deleting something. Task files and habits belong here too: "#task", "create task", "log it as a task", "complete it" about a task, and creating or changing a habit or goal are all "other", never add_todo.
 
 ## Rules
 1. One clause per action. "Dog walk, then a bar" is two clauses.
@@ -44,7 +44,11 @@ SYSTEM_PROMPT = """You read one message sent to Mazkir, a personal assistant tha
 11. An "other" clause carries only op, intent, stated and evidence. Leave its name, target, place, people, project and time empty.
 12. An answer to a question the assistant asked (in a prior message or as the last turn) takes its details from that question.
 13. A short answer to the assistant's last question that is not about a time ("3", "yes, attach it") is a single "other" clause.
-14. When any clause is "other", set fallthrough_skill to the skill for the rest. Choose from the skills listed with the message by what each is used for. If none are listed: time-management for tasks, reminders and the calendar; knowledge-management for notes, ideas and what the user knows; engineering for changes to Mazkir itself; motivation-management for tokens and rewards; mazkir for conversation and anything else. When no clause is "other", set it to null.
+14. When any clause is "other", set fallthrough_skill to the skill for the rest. Choose from the skills listed with the message by what each is used for. Reading or listing tasks, goals, events or the calendar is time-management. Attaching something to the daily note, or keeping a journal entry, is mazkir. A complaint that Mazkir did not do what it said, or that something does not show up ("I don't see it in /day"), is engineering. knowledge-management is only for notes, ideas and facts to keep. If none are listed: time-management for tasks, reminders and the calendar; knowledge-management for notes, ideas and what the user knows; engineering for changes to Mazkir itself; motivation-management for tokens and rewards; mazkir for conversation and anything else. When no clause is "other", set it to null.
+15. Write only what the message says. Never invent a place, target or person it does not name, never work out an end time, and keep hedges such as "around" in the time words. A photo caption or a one-word answer is not a block unless it names an activity done or a time. Something the user says they will do is not done yet.
+16. An interval that had already started or ended when the message was sent is a record, even when the message is worded as an instruction ("log it as 23:00-00:00").
+17. When the message reshapes something Mazkir only proposed ("keep it as proposed, and …"), it is "other" for the skill that proposed it. A bare time answering the assistant's question about a reminder or block sets that item's time: edit_block, with target that item.
+18. A day's intention ("today I want to focus on X") is a log_block with intent plan and no time.
 
 ## Examples
 Fields not shown are null or empty.
@@ -92,6 +96,15 @@ Output: {"clauses":[{"op":"edit_block","intent":"record","stated":true,"evidence
 The message replies to (assistant): 00:00–05:00 on 2026-01-10 is unaccounted. What was it?
 Message (sent 12:00): Sleeping
 Output: {"clauses":[{"op":"log_block","intent":"record","stated":true,"evidence":"Sleeping","name":"Sleep","time":{"start":"00:00","end":"05:00","day":"2026-01-10"}}],"fallthrough_skill":null}
+
+Message (sent 11:00): Create task: fix the printer before Friday
+Output: {"clauses":[{"op":"other","intent":"record","stated":true,"evidence":"Create task: fix the printer before Friday"}],"fallthrough_skill":"time-management"}
+
+Message (sent 18:00): Cross out as done: Buy milk, Call the bank
+Output: {"clauses":[{"op":"check_todo","intent":"record","stated":true,"evidence":"Buy milk","target":"Buy milk"},{"op":"check_todo","intent":"record","stated":true,"evidence":"Call the bank","target":"Call the bank"}],"fallthrough_skill":null}
+
+Message (sent 09:30): You said you added it to my calendar, I don't see it
+Output: {"clauses":[{"op":"other","intent":"record","stated":true,"evidence":"You said you added it to my calendar, I don't see it"}],"fallthrough_skill":"engineering"}
 
 Message (sent 22:00): Explain how a hash map works
 Output: {"clauses":[{"op":"other","intent":"record","stated":true,"evidence":"Explain how a hash map works"}],"fallthrough_skill":"mazkir"}
