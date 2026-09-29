@@ -33,6 +33,7 @@ DOMINANT_GAP = dt.timedelta(hours=8)
 
 BLOCK_OPS = frozenset({"log_block", "start_block"})
 EDIT_OPS = frozenset({"end_block", "edit_block"})
+TODO_OPS = frozenset({"add_todo", "check_todo", "rollover_todos"})
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,18 @@ def logical_date(instant: dt.datetime, boundary_hour: int) -> dt.date:
     """The day a moment belongs to: before the boundary it is still last night."""
     day = instant.date()
     return day - dt.timedelta(days=1) if instant.hour < boundary_hour else day
+
+
+def to_wire(instant: dt.datetime) -> str:
+    """The ledger's form of an instant: local wall clock, no offset, whole seconds.
+
+    Round-trips through UTC first. A wall time the clocks skipped (02:30 on
+    the night Israel springs forward) comes back as the real moment it names
+    (03:30), never as a time no clock showed. Every fast-lane write goes
+    through here (A2 gate from A1's final review).
+    """
+    real = instant.astimezone(dt.timezone.utc).astimezone(instant.tzinfo)
+    return real.replace(tzinfo=None).isoformat(timespec="seconds")
 
 
 @dataclass(frozen=True)
@@ -342,15 +355,17 @@ def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCont
             other = r.placed[c.with_]
             r.placed[i] = _place(other.start, other.end, "inferred",
                                  "inferred" if other.end else None, c, ctx)
-        elif c.after in r.placed:
-            other = r.placed[c.after]
-            r.placed[i] = _from_start(other.end or other.start, "inferred", raw, c, ctx)
         elif (fixed_start := _fixed(raw.start_now, raw.start_rel, ctx)) is not None:
+            # Its own "10 min ago" beats the link: "then shower started 10
+            # min ago" is 13:50, not wherever the walk before it ended.
             r.placed[i] = _from_start(fixed_start, "inferred", raw, c, ctx)
         elif (fixed_end := _fixed(raw.end_now, raw.end_rel, ctx)) is not None:
             span, assumed = _duration(raw, c, ctx)
             r.placed[i] = _place(fixed_end - span, fixed_end, "assumed" if assumed else "inferred",
                                  "inferred", c, ctx)
+        elif c.after in r.placed:
+            other = r.placed[c.after]
+            r.placed[i] = _from_start(other.end or other.start, "inferred", raw, c, ctx)
     # A placed clause whose predecessor has no time of its own: walk back from it.
     for i in sorted(idx, reverse=True):
         j = clauses[i].after
@@ -454,7 +469,8 @@ def _outcome(c: ClauseTime, placement: Placement | None, flag: str | None) -> Cl
     return ClauseResolution("fact", placement)
 
 
-def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverContext) -> dict[int, ClauseResolution]:
+def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverContext,
+                    known: dict[int, Placement] | None = None) -> dict[int, ClauseResolution]:
     raws = {i: _raw(clauses[i], ctx) for i in idx}
     anchored = [i for i in idx if raws[i].anchor is not None]
     if anchored:
@@ -470,6 +486,9 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
     else:
         readings = [_Reading()]
     for r in readings:
+        # Clauses placed elsewhere — edits — that an `after` / `with` may name.
+        for j, p in (known or {}).items():
+            r.placed.setdefault(j, p)
         _fill_relative(r, idx, clauses, raws, ctx)
         _check(r, idx, clauses, raws, ctx)
     valid = _unique([r for r in readings if r.valid])
@@ -588,6 +607,14 @@ def _as_written(c: ClauseTime) -> ClauseTime:
     return c if (start, end) == (c.start, c.end) else replace(c, start=start, end=end)
 
 
+def _todo_day(ref: DayRef, c: ClauseTime, ctx: ResolverContext) -> dt.date:
+    if ref.kind == "date":
+        return ref.date
+    if ref.kind == "weekday":
+        return weekday_date(ref.weekday, ctx.now.date(), c.intent)
+    return _night_of(ref, ctx)
+
+
 def resolve(clauses: list[ClauseTime], ctx: ResolverContext) -> list[ClauseResolution]:
     """One resolution per clause, in order (spec §6.4)."""
     clauses = [_as_written(c) for c in clauses]   # every later reading sees the split once
@@ -595,8 +622,14 @@ def resolve(clauses: list[ClauseTime], ctx: ResolverContext) -> list[ClauseResol
     for i, c in enumerate(clauses):
         if c.op in EDIT_OPS:
             results[i] = _resolve_edit(c, ctx)
+        elif c.op in TODO_OPS and (ref := parse_day(c.day, ctx.now.date(), c.intent)) is not None:
+            # A todo has a day, not a time: "add X for tomorrow" lands on tomorrow's note.
+            results[i] = replace(results[i], placement=Placement(None, None, None, None,
+                                                                 _todo_day(ref, c, ctx)))
+    known = {i: r.placement for i, r in enumerate(results)
+             if clauses[i].op in EDIT_OPS and r.placement is not None}
     blocks = [i for i, c in enumerate(clauses) if c.op in BLOCK_OPS]
     if blocks:
-        for i, resolution in _resolve_blocks(clauses, blocks, ctx).items():
+        for i, resolution in _resolve_blocks(clauses, blocks, ctx, known).items():
             results[i] = resolution
     return results

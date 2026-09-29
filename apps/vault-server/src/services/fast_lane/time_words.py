@@ -23,6 +23,10 @@ _CLOCK = re.compile(r"(?<!\d)(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?!
 _HOUR_UNITS = r"hours?|hrs?|h|час(?:а|ов)?|ч|שעות|שעה"
 _MINUTE_UNITS = r"minutes?|mins?|m|минут[аыу]?|мин|דקות|דקה"
 _UNIT_AFTER = re.compile(rf"\s*(?:{_HOUR_UNITS}|{_MINUTE_UNITS})(?!\w)", re.IGNORECASE)
+# "в 3 часа", "к 5 часам", "at 3 o'clock": the number names an hour on the
+# clock, although "часа" after a bare number would make it a length (A1
+# Ruling 18b).
+_OCLOCK = re.compile(r"(?<!\w)(?:в|к|at)\s+(\d{1,2})\s*(?:час(?:а|ов|ам)?|o'?clock)(?!\w)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,14 @@ def parse_clock(text: str | None) -> Clock | None:
     """
     if not text or is_now(text):
         return None
+    oclock = _OCLOCK.search(text)
+    if oclock:
+        hour = int(oclock.group(1))
+        if hour > 23:
+            return None
+        leading_zero = len(oclock.group(1)) == 2 and oclock.group(1)[0] == "0"
+        return Clock(hour, 0, ambiguous=1 <= hour <= 12 and not leading_zero,
+                     hedged=bool(_HEDGE.search(text)))
     match = next((m for m in _CLOCK.finditer(text) if not _UNIT_AFTER.match(text, m.end())), None)
     if not match:
         return None
@@ -113,6 +125,20 @@ _RELATIVE_PATTERNS = [
                 re.IGNORECASE), sign)
     for word, (sign, before) in _RELATIVE_TIME.items()
 ]
+# Amounts written as words (A1 Ruling 18b): "an hour ago", "через полчаса",
+# "לפני שעה". Longest phrase first, so "half an hour ago" is never read as
+# "an hour ago".
+_WORD_AMOUNTS = sorted({
+    "half an hour": 30, "an hour": 60, "one hour": 60, "a minute": 1,
+    "полчаса": 30, "час": 60, "минуту": 1,
+    "חצי שעה": 30, "שעה": 60, "דקה": 1,
+}.items(), key=lambda kv: -len(kv[0]))
+_WORD_RELATIVE = [
+    (re.compile(rf"(?<!\w){word}\s+{re.escape(phrase)}(?!\w)" if before
+                else rf"(?<!\w){re.escape(phrase)}\s+{word}(?!\w)", re.IGNORECASE), sign * minutes)
+    for phrase, minutes in _WORD_AMOUNTS
+    for word, (sign, before) in _RELATIVE_TIME.items()
+]
 
 
 def parse_relative(text: str | None) -> dt.timedelta | None:
@@ -129,6 +155,9 @@ def parse_relative(text: str | None) -> dt.timedelta | None:
             value = float(match.group(1).replace(",", "."))
             hours = re.fullmatch(_HOUR_UNITS, match.group(2), re.IGNORECASE) is not None
             return dt.timedelta(minutes=sign * round(value * 60 if hours else value))
+    for pattern, minutes in _WORD_RELATIVE:
+        if pattern.search(text):
+            return dt.timedelta(minutes=minutes)
     return None
 
 
