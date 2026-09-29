@@ -215,6 +215,30 @@ def expected_parse(expected: dict[str, Any], message: str) -> ParseResult:
     return ParseResult(tuple(clauses), expected.get("fallthrough_skill"))
 
 
+def saved_parse(row: dict[str, Any]) -> ParseResult | None:
+    """A parse from a saved replay row, to score again without calling the model.
+
+    A saved row keeps the clauses that passed the checks but not the ones
+    that were dropped, so a route of "mixed" over all-fast clauses is kept
+    by marking one dropped clause.
+    """
+    if "clauses" not in row:
+        return None
+    clauses = []
+    for c in row["clauses"]:
+        t = c.get("time")
+        time_words = TimeWords(**{k: t.get(k) for k in ("start", "end", "duration", "shift", "day", "after", "with_")}) \
+            if isinstance(t, dict) else None
+        clauses.append(Clause(op=c["op"], intent=c["intent"], stated=c["stated"], evidence=c["evidence"],
+                              name=c.get("name"), target=c.get("target"), tags=tuple(c.get("tags") or ()),
+                              place=c.get("place"), people=tuple(c.get("people") or ()),
+                              project=c.get("project"), time=time_words))
+    result = ParseResult(tuple(clauses), row.get("fallthrough_skill"))
+    if row.get("route") == "mixed" and result.route == "fast":
+        result = ParseResult(result.clauses, result.fallthrough_skill, dropped=("(dropped)",))
+    return result
+
+
 @dataclass
 class RowScore:
     route_ok: bool
@@ -239,6 +263,44 @@ def _same_name(a: str | None, b: str | None) -> bool:
     return a == b or a in b or b in a or fuzz.token_set_ratio(a, b) >= NAME_MATCH
 
 
+CREATE_OPS = frozenset({"log_block", "start_block"})
+
+
+def _time_word(side: dict[str, Any] | Clause, key: str) -> str | None:
+    """A time word from a label (a dict) or a parsed clause (TimeWords)."""
+    if isinstance(side, dict):
+        return (side.get("time") or {}).get(key)
+    return getattr(side.time, key, None) if side.time is not None else None
+
+
+def _same_write(label: dict[str, Any], clause: Clause) -> bool:
+    """Whether the clause's op makes the write the label's op makes (2026-09-29, the Sonnet sample).
+
+    Both models, and the labels, split the same message between ops whose
+    writes do not differ. The resolver places log_block and start_block
+    alike, and end_block and an edit_block that only sets the end alike. An
+    end with no start matches a block logged by its end, because the matcher
+    closes an open block of that activity either way and an end_block with
+    nothing open becomes that new block (spec §7.1). Ops that write
+    something else, such as a todo tick or an edit that moves the start,
+    still count as misses.
+    """
+    ops = {label["op"], *label.get("also_ops", ())}
+    if clause.op in ops:
+        return True
+    pair = {label["op"], clause.op}
+    by_op = {label["op"]: label, clause.op: clause}
+    if pair <= CREATE_OPS:
+        return True
+    if pair == {"end_block", "edit_block"}:
+        edit = by_op["edit_block"]
+        return _time_word(edit, "start") is None and _time_word(edit, "shift") is None
+    if "end_block" in pair and pair - {"end_block"} <= CREATE_OPS:
+        create = by_op[next(iter(pair - {"end_block"}))]
+        return _time_word(create, "start") is None
+    return False
+
+
 def _local(moment: dt.datetime, tz) -> dt.datetime:
     """Naive wall time in `tz`. A label with an offset is converted first; one without is local already."""
     if moment.tzinfo is not None and tz is not None:
@@ -259,10 +321,9 @@ def score_row(expected: dict[str, Any], result: ParseResult,
     used: set[int] = set()
     matched = fields_ok = placed = placed_ok = wrong_date = outcome_ok = 0
     for e in want:
-        ops = {e["op"], *e.get("also_ops", ())}   # a label may accept a second reading (blind audit)
         names = [e.get("name") or e.get("target"), *e.get("also_names", ())]
         k = next((k for k, (c, _) in enumerate(got)
-                  if k not in used and c.op in ops
+                  if k not in used and _same_write(e, c)
                   and any(_same_name(c.name or c.target, name) for name in names)), None)
         if k is None:
             continue

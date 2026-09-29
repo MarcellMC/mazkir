@@ -164,3 +164,83 @@ def test_a_reply_with_no_text_block_is_a_parse_failure():
     reply = SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="thinking", thinking="")])
     with pytest.raises(ParseFailure, match="no text"):
         _decode(reply)
+
+
+def _scored(label, clause):
+    from src.services.fast_lane.contract import ParseResult
+    from src.services.fast_lane.replay import score_row
+    score = score_row({"route": "fast", "clauses": [label]}, ParseResult((clause,), None), [None], NOW)
+    return score.matched
+
+
+def _label(op, **time):
+    return {"op": op, "name": "Dog walk", "target": "Dog walk", "time": time, "expect": {}}
+
+
+def test_starting_and_logging_with_only_a_start_are_the_same_write():
+    """The resolver places both from the start; the ops differ only in name (2026-09-29 Sonnet sample)."""
+    from src.services.fast_lane.contract import Clause, TimeWords
+    got = Clause("log_block", "record", True, "Dog walk at 12:00", name="Dog walk", time=TimeWords(start="12:00"))
+    assert _scored(_label("start_block", start="12:00"), got) == 1
+
+
+def test_ending_and_setting_only_the_end_of_a_block_are_the_same_write():
+    from src.services.fast_lane.contract import Clause, TimeWords
+    got = Clause("edit_block", "record", True, "walk until 15:45", target="Dog walk", time=TimeWords(end="15:45"))
+    assert _scored(_label("end_block", end="15:45"), got) == 1
+
+
+def test_an_edit_that_moves_the_start_is_not_an_end():
+    from src.services.fast_lane.contract import Clause, TimeWords
+    got = Clause("edit_block", "record", True, "walk from 15:00", target="Dog walk", time=TimeWords(start="15:00"))
+    assert _scored(_label("end_block", end="15:45"), got) == 0
+    shifted = Clause("edit_block", "record", True, "back 30 mins", target="Dog walk", time=TimeWords(shift="back 30 mins"))
+    assert _scored(_label("end_block", end="15:45"), shifted) == 0
+
+
+def test_an_end_with_no_start_matches_a_block_logged_by_its_end():
+    """end_block falls back to a new block with that end when nothing is open (spec §7.1)."""
+    from src.services.fast_lane.contract import Clause, TimeWords
+    got = Clause("end_block", "record", True, "just returned from the walk", target="Dog walk", time=TimeWords(end="now"))
+    assert _scored(_label("log_block", end="just returned"), got) == 1
+    with_start = Clause("log_block", "record", True, "walk 15:00-15:30", name="Dog walk",
+                        time=TimeWords(start="15:00", end="15:30"))
+    assert _scored(_label("end_block", end="15:30"), with_start) == 0
+
+
+def test_ops_that_write_different_things_still_do_not_match():
+    from src.services.fast_lane.contract import Clause, TimeWords
+    todo = Clause("check_todo", "record", True, "walked the dog", target="Dog walk")
+    assert _scored(_label("log_block", start="12:00"), todo) == 0
+    edit = Clause("edit_block", "record", True, "move the walk to 18:00", target="Dog walk", time=TimeWords(start="18:00"))
+    assert _scored(_label("log_block", start="18:00"), edit) == 0
+
+
+def test_a_saved_parse_is_rebuilt_to_be_scored_again_for_free():
+    from src.services.fast_lane.contract import TimeWords
+    from src.services.fast_lane.replay import saved_parse
+    row = {"id": "t0001", "route": "mixed", "fallthrough_skill": "time-management", "clauses": [
+        {"op": "log_block", "intent": "record", "stated": True, "evidence": "Walk 15:00-15:30", "name": "Walk",
+         "target": None, "tags": ["dev"], "place": None, "people": ["Ann"], "project": None,
+         "time": {"start": "15:00", "end": "15:30", "duration": None, "shift": None, "day": None,
+                  "after": None, "with_": 0}},
+        {"op": "other", "intent": "record", "stated": True, "evidence": "and list my tasks", "name": None,
+         "target": None, "tags": [], "place": None, "people": [], "project": None, "time": None}]}
+    result = saved_parse(row)
+    assert result.route == "mixed" and result.fallthrough_skill == "time-management"
+    walk = result.clauses[0]
+    assert walk.time == TimeWords(start="15:00", end="15:30", with_=0)
+    assert walk.tags == ("dev",) and walk.people == ("Ann",)
+
+
+def test_a_saved_parse_keeps_the_route_its_dropped_clauses_gave_it():
+    from src.services.fast_lane.replay import saved_parse
+    clause = {"op": "tick_habit", "intent": "record", "stated": True, "evidence": "gym", "name": "Gym",
+              "target": None, "tags": [], "place": None, "people": [], "project": None, "time": None}
+    assert saved_parse({"id": "t1", "route": "mixed", "fallthrough_skill": None, "clauses": [clause]}).route == "mixed"
+    assert saved_parse({"id": "t1", "route": "fast", "fallthrough_skill": None, "clauses": [clause]}).route == "fast"
+
+
+def test_a_saved_parse_failure_has_nothing_to_rebuild():
+    from src.services.fast_lane.replay import saved_parse
+    assert saved_parse({"id": "t1", "parse_failure": "timed out"}) is None
