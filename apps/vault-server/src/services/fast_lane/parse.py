@@ -23,11 +23,11 @@ SYSTEM_PROMPT = """You read one message sent to Mazkir, a personal assistant tha
 - log_block: an activity with its time: both ends, a duration, or reported as done ("went for a run"). Also an activity to schedule with no time yet ("plan X", "schedule for later: X, Y"): intent plan and time empty; Mazkir proposes the times.
 - start_block: something starting now or at a time, with no end and no duration.
 - end_block: a block listed under "Blocks on the timeline" ends ("woke up at 09:10" ends Sleep, "back home" ends the walk, "sleep until 15:45"). When no such block is listed, it is a log_block with time.end instead.
-- edit_block: an existing block's start moves, the whole block shifts or moves to another day, or it is renamed.
-- tick_habit: a habit done, with no time given.
+- edit_block: an existing block's times, day or name change, without saying that it happened: its start moves, the whole block shifts or moves to another day, or it is renamed. An activity reported as done or started is log_block or start_block even when a plan for it is listed; Mazkir confirms the plan.
+- tick_habit: a habit done, with no clock time given ("today" is a day, not a time). With a clock time it is a log_block, and Mazkir ticks the habit.
 - add_todo: something to remember, buy or do some day, with no scheduling words. A list under "Tasks for <project>:" is one add_todo per item.
-- check_todo: something done that is one of the "Open todos"; target is that todo's words as listed. "Cross out as done:" followed by a list is one check_todo per item.
-- rollover_todos: move unfinished todos to another day.
+- check_todo: something done that is one of the "Open todos", with no clock time; target is that todo's words as listed. With a clock time it is a log_block, and Mazkir crosses the todo out too. "Cross out as done:" followed by a list is one check_todo per item.
+- rollover_todos: move todos to another day, which goes in time.day. target is the todo when one is named ("the drill todo goes to tomorrow", or "I'll call the plumber tonight" when that is an open todo); leave target empty for all the unfinished ones. An open todo given only a day stays a todo: it is moved, not planned as a block.
 - other: anything else, such as questions, conversation, notes and ideas, coding requests, describing a photo, or deleting something. Task files and habits belong here too: "#task", "create task", "log it as a task", "complete it" about a task, and creating or changing a habit or goal are all "other", never add_todo.
 
 ## Rules
@@ -88,6 +88,10 @@ Output: {"clauses":[{"op":"check_todo","intent":"record","stated":true,"evidence
 
 Message (sent 10:00): Today going to the hardware store to #buy a drill
 Output: {"clauses":[{"op":"add_todo","intent":"plan","stated":true,"evidence":"going to the hardware store to #buy a drill","name":"Buy a drill","place":"hardware store","time":{"day":"Today"}}],"fallthrough_skill":null}
+
+Open todos: Pay the electricity bill; Buy a drill
+Message (sent 15:10): Paid the electricity bill at 14:30. The drill todo goes to tomorrow
+Output: {"clauses":[{"op":"log_block","intent":"record","stated":true,"evidence":"Paid the electricity bill at 14:30","name":"Pay the electricity bill","time":{"start":"14:30"}},{"op":"rollover_todos","intent":"plan","stated":true,"evidence":"The drill todo goes to tomorrow","target":"Buy a drill","time":{"day":"tomorrow"}}],"fallthrough_skill":null}
 
 The message replies to (assistant): ✓ 16:00–16:30 Dog walk
 Message (sent 16:35): Move it back 30 mins
