@@ -259,9 +259,11 @@ def score_row(expected: dict[str, Any], result: ParseResult,
     used: set[int] = set()
     matched = fields_ok = placed = placed_ok = wrong_date = outcome_ok = 0
     for e in want:
+        ops = {e["op"], *e.get("also_ops", ())}   # a label may accept a second reading (blind audit)
+        names = [e.get("name") or e.get("target"), *e.get("also_names", ())]
         k = next((k for k, (c, _) in enumerate(got)
-                  if k not in used and c.op == e["op"]
-                  and _same_name(c.name or c.target, e.get("name") or e.get("target"))), None)
+                  if k not in used and c.op in ops
+                  and any(_same_name(c.name or c.target, name) for name in names)), None)
         if k is None:
             continue
         used.add(k)

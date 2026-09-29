@@ -123,3 +123,15 @@ def test_new_rows_are_appended_blind_to_the_old_router():
     rows = new_skeleton_rows(msgs, {"t0001": {}})
     assert [r["id"] for r in rows] == ["t0002"]
     assert "skill" not in rows[0]["old"] and rows[0]["expected"] is None
+
+
+def test_a_label_can_accept_a_second_name_or_op():
+    from src.services.fast_lane.contract import Clause, ParseResult
+    from src.services.fast_lane.replay import score_row
+    expected = {"route": "fast", "clauses": [
+        {"op": "tick_habit", "name": "Gym", "also_names": ["Workout"], "expect": {"outcome": "fact"}},
+        {"op": "start_block", "name": "Dog walk", "also_ops": ["log_block"], "expect": {"outcome": "fact"}}]}
+    got = ParseResult((Clause("tick_habit", "record", True, "Gym", name="Workout"),
+                       Clause("log_block", "record", True, "went for a dog walk", name="Dog walk")), None)
+    score = score_row(expected, got, [None, None], NOW)
+    assert (score.matched, score.expected_clauses) == (2, 2)
