@@ -81,6 +81,7 @@ class FastContext:
     selected_date: str | None = None
     has_photo: bool = False
     typical_minutes: dict[str, int] = field(default_factory=dict)
+    skills: tuple[str, ...] = ()    # the router's catalog, one line per skill, for fallthrough_skill
 
 
 def _safe(fn, default):
@@ -153,6 +154,25 @@ def _places(path: Path | None) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _skill_line(skill) -> str:
+    line = f"{skill.name}: {skill.description.strip()}"
+    when = " ".join(skill.when_to_use.split())
+    return f"{line} Use for: {when}" if when else line
+
+
+def skills_of(skills_dir: Path) -> tuple[str, ...]:
+    """The skill catalog the router reads, one line per skill.
+
+    The parse chooses `fallthrough_skill` from it. With only one-line hints in
+    its prompt it chose right 55 % of the time, against the router's 82 %
+    with this catalog (2026-09-29 replay).
+    """
+    from src.services.skill_registry import SkillRegistry
+    registry = SkillRegistry(skills_dir=Path(skills_dir))
+    registry.load()
+    return tuple(_skill_line(s) for s in registry.list())
+
+
 def typical_minutes(events, before: dt.date, days: int = 30) -> dict[str, int]:
     """Median length per activity name over the `days` days before `before`, for an unknown end.
 
@@ -200,7 +220,8 @@ def assemble_fast_context(
     )
 
 
-def complete_fast_context(snapshot: FastContext, *, events, vault, history_days: int = 30) -> FastContext:
+def complete_fast_context(snapshot: FastContext, *, events, vault, history_days: int = 30,
+                          skills_dir: Path | None = None) -> FastContext:
     """The snapshot plus the habit list and the typical durations. Never raises.
 
     Runs in the shadow's thread, before the parse. Durations come only from
@@ -211,4 +232,5 @@ def complete_fast_context(snapshot: FastContext, *, events, vault, history_days:
         snapshot,
         habits=_safe(lambda: habits_of(vault), ()),
         typical_minutes=_safe(lambda: typical_minutes(events, snapshot.now.date(), history_days), {}),
+        skills=_safe(lambda: skills_of(skills_dir), ()) if skills_dir else snapshot.skills,
     )

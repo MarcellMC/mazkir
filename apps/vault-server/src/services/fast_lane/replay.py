@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from rapidfuzz import fuzz
+
 from src.services.fast_lane.context import BlockView, FastContext, HabitView, clean_turn_text
 from src.services.fast_lane.contract import FAST_OPS, Clause, ParseResult, TimeWords, extract_hashtags
 from src.services.fast_lane.time_resolver import ClauseResolution
@@ -25,6 +27,7 @@ _REPLY = re.compile(r'^\(replying to (\w+): "(.*?)"\)\s*', re.DOTALL)
 _PHOTO = re.compile(r"^\(photo: [^)]*\)\s*")
 HOP_WINDOW = dt.timedelta(minutes=2)
 MINUTE = dt.timedelta(minutes=1)
+NAME_MATCH = 75   # token_set_ratio: "Washed the dishes" ~ "Wash dishes" (79), not "Dog walk" ~ "Dog food" (55)
 
 
 @dataclass
@@ -106,20 +109,23 @@ def _blocks_before(msg: Message, earlier: list[Message]) -> tuple[BlockView, ...
             params = tool["params"]
             date = str(params.get("date") or prev.ts.date().isoformat())
             result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
-            out.append(BlockView(id=str(result.get("event_id", "")), date=date, name=str(params.get("name") or ""),
+            # Newer turns log the normalized {"ok", "data": {...}} shape; older ones the bare dict.
+            data = result.get("data") if isinstance(result.get("data"), dict) else result
+            out.append(BlockView(id=str(data.get("event_id", "")), date=date, name=str(params.get("name") or ""),
                                  start=_ts(params.get("start_time"), date, msg.ts.tzinfo),
                                  end=_ts(params.get("end_time"), date, msg.ts.tzinfo)))
     return tuple(out)
 
 
 def context_for(msg: Message, earlier: list[Message], habits: tuple[HabitView, ...],
-                typical: dict[str, int]) -> FastContext:
+                typical: dict[str, int], skills: tuple[str, ...] = ()) -> FastContext:
     turns: list[tuple[str, str]] = []
     for prev in earlier[-2:]:
         turns += [("user", prev.text), ("assistant", clean_turn_text(prev.old_reply))]
     return FastContext(now=msg.ts, chat_id=0, text=msg.text, reply_to=msg.reply_to, reply_from=msg.reply_from,
                        recent_turns=tuple(turns[-4:]), blocks=_blocks_before(msg, earlier), habits=habits,
-                       hashtags=extract_hashtags(msg.text), has_photo=msg.has_photo, typical_minutes=typical)
+                       hashtags=extract_hashtags(msg.text), has_photo=msg.has_photo, typical_minutes=typical,
+                       skills=skills)
 
 
 def skeleton_row(msg: Message) -> dict[str, Any]:
@@ -128,6 +134,14 @@ def skeleton_row(msg: Message) -> dict[str, Any]:
             "old": {"skill": msg.old_skill,
                     "tools": [{"name": t["name"], "params": t["params"]} for t in msg.old_tools]},
             "expected": None, "unclear": False, "notes": ""}
+
+
+def select_rows(messages: list[Message], golden: dict[str, dict[str, Any]], ids: set[str] | None = None,
+                limit: int | None = None) -> list[tuple[int, Message]]:
+    """The labelled messages to replay, keeping each one's index into the full history."""
+    rows = [(i, m) for i, m in enumerate(messages)
+            if (golden.get(m.id) or {}).get("expected") and (ids is None or m.id in ids)]
+    return rows[:limit] if limit else rows
 
 
 def load_golden(path: Path) -> dict[str, dict[str, Any]]:
@@ -173,7 +187,7 @@ def _same_name(a: str | None, b: str | None) -> bool:
     if not a or not b:
         return False
     a, b = a.casefold(), b.casefold()
-    return a == b or a in b or b in a
+    return a == b or a in b or b in a or fuzz.token_set_ratio(a, b) >= NAME_MATCH
 
 
 def _local(moment: dt.datetime, tz) -> dt.datetime:

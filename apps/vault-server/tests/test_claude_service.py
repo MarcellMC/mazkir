@@ -190,7 +190,7 @@ class TestClaudeServiceCreateFastParse:
         client.with_options.assert_called_once_with(timeout=5.0, max_retries=0)
         kwargs = limited.messages.create.call_args.kwargs
         assert kwargs["model"] == "m"
-        assert kwargs["max_tokens"] == 3000   # 12 clauses with every field required fit
+        assert kwargs["max_tokens"] == 1500   # 12 clauses fit; longer is a runaway
         assert kwargs["system"] == "S"
         assert kwargs["messages"] == [{"role": "user", "content": "C"}]
         assert kwargs["output_config"] == {"format": {"type": "json_schema", "schema": {"type": "object"}}}

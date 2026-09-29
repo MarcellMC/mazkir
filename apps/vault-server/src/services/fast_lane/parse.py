@@ -20,13 +20,13 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """You read one message sent to Mazkir, a personal assistant that keeps the user's timeline, habits and todos. You do not act and you do not reply. You list what the message says as clauses of evidence, in the user's own words.
 
 ## Operations
-- log_block: an activity that happened or is happening, with its time words.
-- start_block: something starting now or at a time, with no end yet.
-- end_block: an open or planned block ends.
-- edit_block: change an existing block's times or name.
+- log_block: an activity with its time: both ends, a duration, or reported as done ("went for a run"). Also an activity to schedule with no time yet ("plan X", "schedule for later: X, Y"): intent plan and time empty; Mazkir proposes the times.
+- start_block: something starting now or at a time, with no end and no duration.
+- end_block: a block listed under "Blocks on the timeline" ends ("woke up at 09:10" ends Sleep, "back home" ends the walk, "sleep until 15:45"). When no such block is listed, it is a log_block with time.end instead.
+- edit_block: an existing block's start moves, the whole block shifts or moves to another day, or it is renamed.
 - tick_habit: a habit done, with no time given.
-- add_todo: something to do, with no fixed time needed.
-- check_todo: a todo is done.
+- add_todo: something to remember, buy or do some day, with no scheduling words.
+- check_todo: something done that is one of the "Open todos"; target is that todo's words as listed.
 - rollover_todos: move unfinished todos to another day.
 - other: anything else, such as questions, conversation, notes and ideas, tasks with priorities, coding requests, describing a photo, or deleting something.
 
@@ -37,20 +37,14 @@ SYSTEM_PROMPT = """You read one message sent to Mazkir, a personal assistant tha
 4. "Then" links a clause to the one before it: set time.after to that clause's 0-based index. An activity running alongside another sets time.with instead.
 5. stated is true when the user asks for something, or reports an activity with a time or with a verb such as started, finished, went, did or walked. A passing mention inside another sentence, such as "I'm at a bar, and I had an idea", has stated false.
 6. Every activity with a time or "now" gets its own clause, whatever the message is mainly about.
-7. intent is "plan" only when the words say it will happen: tomorrow, later, "I'll", "plan", a weekday ahead, or a time later today. Everything else is "record".
-8. evidence is the exact words from the message that the clause came from, copied character for character.
+7. intent is "plan" only when the words say it will happen: tomorrow, later, "I'll", "plan", "schedule", a weekday ahead, or a time later today. A time just minutes after the message ("Gym at 20:50" sent at 20:45, "let the walk start at 23:00") is a plan. Everything else is "record".
+8. evidence is the exact words from the message that the clause came from, copied character for character, and no longer than needed.
 9. name is the activity or todo as the user would title it, kept short ("Dog walk", "Buy a drill"). target names the existing block or todo that an edit, end or check refers to. When the message says "it" or "this" and replies to a message about a block, target is that block's name.
 10. Fill place, people and project only when the message says them.
-11. tags are the hashtags belonging to this clause, without the "#".
+11. An "other" clause carries only op, intent, stated and evidence. Leave its name, target, place, people, project and time empty.
 12. An answer to a question the assistant asked (in a prior message or as the last turn) takes its details from that question.
 13. A short answer to the assistant's last question that is not about a time ("3", "yes, attach it") is a single "other" clause.
-14. When any clause is "other", set fallthrough_skill to the skill for the rest:
-    - time-management: tasks, priorities, calendar questions;
-    - knowledge-management: notes, ideas, what the user knows;
-    - engineering: changes to Mazkir itself;
-    - motivation-management: tokens and rewards;
-    - mazkir: conversation, questions, anything else.
-    Otherwise set it to null.
+14. When any clause is "other", set fallthrough_skill to the skill for the rest. Choose from the skills listed with the message by what each is used for. If none are listed: time-management for tasks, reminders and the calendar; knowledge-management for notes, ideas and what the user knows; engineering for changes to Mazkir itself; motivation-management for tokens and rewards; mazkir for conversation and anything else. When no clause is "other", set it to null.
 
 ## Examples
 Fields not shown are null or empty.
@@ -62,19 +56,34 @@ Message (sent 02:00): Finished eating, 30 mins. Then brushed my teeth 10 mins
 Output: {"clauses":[{"op":"log_block","intent":"record","stated":true,"evidence":"Finished eating, 30 mins","name":"Eating","time":{"end":"now","duration":"30 mins"}},{"op":"log_block","intent":"record","stated":true,"evidence":"Then brushed my teeth 10 mins","name":"Brush teeth","time":{"duration":"10 mins","after":0}}],"fallthrough_skill":null}
 
 Message (sent 05:20): Had a 45 min #dev session between 04:30 and 05:15. Now going to sleep
-Output: {"clauses":[{"op":"log_block","intent":"record","stated":true,"evidence":"45 min #dev session between 04:30 and 05:15","name":"Dev session","tags":["dev"],"time":{"start":"04:30","end":"05:15","duration":"45 min"}},{"op":"start_block","intent":"record","stated":true,"evidence":"Now going to sleep","name":"Sleep","time":{"start":"now"}}],"fallthrough_skill":null}
+Output: {"clauses":[{"op":"log_block","intent":"record","stated":true,"evidence":"45 min #dev session between 04:30 and 05:15","name":"Dev session","time":{"start":"04:30","end":"05:15","duration":"45 min"}},{"op":"start_block","intent":"record","stated":true,"evidence":"Now going to sleep","name":"Sleep","time":{"start":"now"}}],"fallthrough_skill":null}
 
 Message (sent 21:15): At the park with friends, got an #idea: label the spice jars
-Output: {"clauses":[{"op":"start_block","intent":"record","stated":false,"evidence":"At the park with friends","name":"Park","time":{"start":"now"}},{"op":"other","intent":"record","stated":true,"evidence":"got an #idea: label the spice jars","name":"Label the spice jars","tags":["idea"]}],"fallthrough_skill":"knowledge-management"}
+Output: {"clauses":[{"op":"start_block","intent":"record","stated":false,"evidence":"At the park with friends","name":"Park","time":{"start":"now"}},{"op":"other","intent":"record","stated":true,"evidence":"got an #idea: label the spice jars"}],"fallthrough_skill":"knowledge-management"}
 
 Message (sent 23:00): Workshop tomorrow 13:30-16:30, room E
 Output: {"clauses":[{"op":"log_block","intent":"plan","stated":true,"evidence":"Workshop tomorrow 13:30-16:30, room E","name":"Workshop","place":"room E","time":{"start":"13:30","end":"16:30","day":"tomorrow"}}],"fallthrough_skill":null}
+
+Message (sent 20:45): Gym at 20:50
+Output: {"clauses":[{"op":"start_block","intent":"plan","stated":true,"evidence":"Gym at 20:50","name":"Gym","time":{"start":"20:50"}}],"fallthrough_skill":null}
+
+Message (sent 19:00): Schedule for later: water the plants, vacuum the floor
+Output: {"clauses":[{"op":"log_block","intent":"plan","stated":true,"evidence":"water the plants","name":"Water the plants"},{"op":"log_block","intent":"plan","stated":true,"evidence":"vacuum the floor","name":"Vacuum the floor"}],"fallthrough_skill":null}
+
+Blocks on the timeline:
+09-27 23:40–open Sleep
+Message (sent 09:30): Woke up at 09:10
+Output: {"clauses":[{"op":"end_block","intent":"record","stated":true,"evidence":"Woke up at 09:10","target":"Sleep","time":{"end":"09:10"}}],"fallthrough_skill":null}
+
+Open todos: Wash the dishes; Call the plumber
+Message (sent 21:00): Washed the dishes too
+Output: {"clauses":[{"op":"check_todo","intent":"record","stated":true,"evidence":"Washed the dishes too","target":"Wash the dishes"}],"fallthrough_skill":null}
 
 Message (sent 23:30): Bought the batteries, mark that as done. The rest of the todos roll over to tomorrow
 Output: {"clauses":[{"op":"check_todo","intent":"record","stated":true,"evidence":"Bought the batteries, mark that as done","target":"batteries"},{"op":"rollover_todos","intent":"plan","stated":true,"evidence":"The rest of the todos roll over to tomorrow","time":{"day":"tomorrow"}}],"fallthrough_skill":null}
 
 Message (sent 10:00): Today going to the hardware store to #buy a drill
-Output: {"clauses":[{"op":"add_todo","intent":"plan","stated":true,"evidence":"going to the hardware store to #buy a drill","name":"Buy a drill","place":"hardware store","tags":["buy"],"time":{"day":"Today"}}],"fallthrough_skill":null}
+Output: {"clauses":[{"op":"add_todo","intent":"plan","stated":true,"evidence":"going to the hardware store to #buy a drill","name":"Buy a drill","place":"hardware store","time":{"day":"Today"}}],"fallthrough_skill":null}
 
 The message replies to (assistant): ✓ 16:00–16:30 Dog walk
 Message (sent 16:35): Move it back 30 mins
@@ -116,6 +125,9 @@ def build_user_content(ctx: FastContext) -> str:
         lines.append(f"Day open in /day: {ctx.selected_date}")
     if ctx.has_photo:
         lines.append("The message carries a photo.")
+    if ctx.skills:
+        lines.append("Skills for fallthrough_skill:")
+        lines += [f"- {line}" for line in ctx.skills]
     lines += ["", "Message:", ctx.text]
     return "\n".join(lines)
 

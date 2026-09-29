@@ -22,10 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # apps/vault-serv
 
 from src.config import settings  # noqa: E402
 from src.services.events_service import EventsService  # noqa: E402
-from src.services.fast_lane.context import habits_of, typical_minutes  # noqa: E402
+from src.services.fast_lane.context import habits_of, skills_of, typical_minutes  # noqa: E402
 from src.services.fast_lane.parse import ParseFailure, parse_message  # noqa: E402
 from src.services.fast_lane.replay import (  # noqa: E402
-    context_for, expected_parse, load_golden, load_messages, score_row, skeleton_row, summarize,
+    context_for, expected_parse, load_golden, load_messages, score_row, select_rows, skeleton_row, summarize,
 )
 from src.services.fast_lane.shadow import ShadowSettings, resolve_clauses  # noqa: E402
 from src.services.vault_service import VaultService  # noqa: E402
@@ -44,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--resolver-only", action="store_true")
     ap.add_argument("--confirm-cost", action="store_true")
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--ids", help="only these rows: t0001,t0002, or @file with one id per line")
     args = ap.parse_args(argv)
 
     tz = ZoneInfo(settings.vault_timezone)
@@ -60,9 +61,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     golden = load_golden(args.golden)
-    rows = [(i, m) for i, m in enumerate(messages) if (golden.get(m.id) or {}).get("expected")]
-    if args.limit:
-        rows = rows[: args.limit]
+    ids = None
+    if args.ids:
+        raw = Path(args.ids[1:]).read_text(encoding="utf-8") if args.ids.startswith("@") else args.ids
+        ids = {i.strip() for i in raw.replace(",", "\n").splitlines() if i.strip()}
+    rows = select_rows(messages, golden, ids=ids, limit=args.limit)
     if not args.resolver_only and not args.confirm_cost:
         print(f"a live run parses {len(rows)} messages with {settings.fast_parse_model}, "
               f"about ${len(rows) * COST_PER_MESSAGE:.2f}; pass --confirm-cost to go ahead")
@@ -71,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     vault = VaultService(settings.vault_path, settings.vault_timezone)
     events = EventsService(settings.events_data_path)
     habits = habits_of(vault)
+    skills = skills_of(settings.skills_dir)
     claude = None
     if not args.resolver_only:
         from src.services.claude_service import ClaudeService
@@ -88,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
             # Only the days before the message's date, as live: the ledger's
             # own day for the message holds blocks written after it was sent.
             typical = typical_minutes(events, before=msg.ts.date())
-            ctx = context_for(msg, messages[:index], habits, typical)
+            ctx = context_for(msg, messages[:index], habits, typical, skills)
             if args.resolver_only:
                 result = expected_parse(expected, msg.text)
             else:
@@ -107,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             if expected.get("route") in ("fallthrough", "mixed") and msg.old_skill:
                 router_hits.append(msg.old_skill == expected.get("fallthrough_skill"))
             out.write(json.dumps({"id": msg.id, "route": result.route,
+                                  "fallthrough_skill": result.fallthrough_skill,
                                   "clauses": [dataclasses.asdict(c) for c in result.clauses],
                                   "resolutions": [dataclasses.asdict(r) if r else None for r in resolutions],
                                   "score": dataclasses.asdict(score)}, default=str, ensure_ascii=False) + "\n")

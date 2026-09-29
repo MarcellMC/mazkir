@@ -98,13 +98,12 @@ _CLAUSE_SCHEMA = {
         "evidence": _STR,
         "name": _nullable(_STR),
         "target": _nullable(_STR),
-        "tags": {"type": "array", "items": _STR},
         "place": _nullable(_STR),
         "people": {"type": "array", "items": _STR},
         "project": _nullable(_STR),
         "time": _nullable(_TIME_SCHEMA),
     },
-    "required": ["op", "intent", "stated", "evidence", "name", "target", "tags",
+    "required": ["op", "intent", "stated", "evidence", "name", "target",
                  "place", "people", "project", "time"],
     "additionalProperties": False,
 }
@@ -153,26 +152,29 @@ def _clause(item: dict[str, Any], own: int, index: dict[int, int]) -> Clause:
         op=item["op"], intent=intent if intent in ("record", "plan") else "record",
         stated=bool(item.get("stated")), evidence=str(item["evidence"]),
         name=item.get("name") or None, target=item.get("target") or None,
-        tags=tuple(str(tag).lower().lstrip("#") for tag in item.get("tags") or ()),
         place=item.get("place") or None, people=tuple(str(p) for p in item.get("people") or ()),
         project=item.get("project") or None, time=time,
     )
 
 
 def _apply_hashtags(clauses: list[Clause], skill: str | None) -> tuple[list[Clause], str | None]:
-    """Your hashtags are rules, not hints: code wins over the model (spec §5.4)."""
+    """Your hashtags are rules, not hints: code wins over the model (spec §5.4).
+
+    A clause's tags are the hashtags in its own words, read here. The model is
+    no longer asked for them: asked, it invented tags without end ("query",
+    "request", "priorities", …) until it ran out of tokens, on messages as
+    short as "3" (22 of 276 parses failed that way in the 2026-09-29 replay).
+    """
     out = []
     for c in clauses:
-        tags = set(extract_hashtags(c.evidence)) | set(c.tags)
-        if tags & KNOWLEDGE_TAGS:
+        tags = extract_hashtags(c.evidence)
+        c = replace(c, tags=tags)
+        if set(tags) & KNOWLEDGE_TAGS:
             if c.op != "other":
                 c = replace(c, op="other")
             skill = "knowledge-management"
-        elif tags & TODO_TAGS and c.op not in ("add_todo", "check_todo"):
+        elif set(tags) & TODO_TAGS and c.op not in ("add_todo", "check_todo"):
             c = replace(c, op="add_todo", name=c.name or c.evidence)
-        extra = tuple(t for t in sorted(tags & ACTIVITY_TAGS) if t not in c.tags)
-        if extra:
-            c = replace(c, tags=c.tags + extra)
         out.append(c)
     return out, skill
 
