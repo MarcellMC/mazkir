@@ -26,10 +26,6 @@ from src.services.fast_lane.time_words import (
 TOLERANCE = dt.timedelta(minutes=2)
 MAX_RECORD = dt.timedelta(hours=16)
 AGREE = dt.timedelta(minutes=5)
-ASK_APART = dt.timedelta(hours=2)
-RECENT = dt.timedelta(hours=3)
-SOON = dt.timedelta(hours=12)
-DOMINANT_GAP = dt.timedelta(hours=8)
 
 BLOCK_OPS = frozenset({"log_block", "start_block"})
 EDIT_OPS = frozenset({"end_block", "edit_block"})
@@ -137,7 +133,6 @@ class _Reading:
     placed: dict[int, Placement] = field(default_factory=dict)
     flags: dict[int, str] = field(default_factory=dict)
     valid: bool = True
-    group: int | None = None  # the seed's hour: which 12-hour reading this is (§6.4 refinement)
 
 
 def _raw(c: ClauseTime, ctx: ResolverContext) -> _Raw:
@@ -158,8 +153,13 @@ def _at(day: dt.date, hour: int, minute: int, tz) -> dt.datetime:
     return dt.datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz)
 
 
-def _hours(clock: Clock) -> list[int]:
-    return [clock.hour, (clock.hour + 12) % 24] if clock.ambiguous else [clock.hour]
+def _hours(clock: Clock, night: bool) -> list[int]:
+    """The hours a clock can mean. You write the 24-hour clock or say am/pm (spec §6.2 rule 3).
+
+    One exception: after a night word, a bare hour 1-12 may be the evening
+    one ("tonight at 11" is 23:00), and the night itself picks between them.
+    """
+    return [clock.hour, (clock.hour + 12) % 24] if night and clock.ambiguous else [clock.hour]
 
 
 def _dates(ref: DayRef | None, intent: str, ctx: ResolverContext) -> tuple[list[dt.date], bool]:
@@ -198,21 +198,11 @@ def _in_night(instant: dt.datetime, ref: DayRef, ctx: ResolverContext) -> bool:
 def _instants(clock: Clock, dates: list[dt.date], night: bool, tz) -> list[dt.datetime]:
     out = set()
     for day in dates:
-        for hour in _hours(clock):
+        for hour in _hours(clock, night):
             # a night runs from the evening of `day` into the small hours of the next
             on = day + dt.timedelta(days=1) if night and hour < 12 else day
             out.add(_at(on, hour, clock.minute, tz))
     return sorted(out)
-
-
-def _seeded_instants(clock: Clock, dates: list[dt.date], night: bool, tz) -> list[tuple[dt.datetime, int]]:
-    """`(instant, hour)` pairs: `hour` is the 12-hour reading chosen, for grouping (spec §6.4)."""
-    out: dict[dt.datetime, int] = {}
-    for day in dates:
-        for hour in _hours(clock):
-            on = day + dt.timedelta(days=1) if night and hour < 12 else day
-            out[_at(on, hour, clock.minute, tz)] = hour
-    return sorted(out.items())
 
 
 def _first_after(clock: Clock, after: dt.datetime, tz, strictly: bool) -> dt.datetime:
@@ -221,13 +211,6 @@ def _first_after(clock: Clock, after: dt.datetime, tz, strictly: bool) -> dt.dat
     options = [i for i in _instants(clock, days, False, tz)
                if (i > after if strictly else i >= after - TOLERANCE)]
     return min(options)
-
-
-def _last_before(clock: Clock, before: dt.datetime, tz) -> dt.datetime:
-    """The latest reading of `clock` strictly before `before` (its date and the day before)."""
-    days = [before.date() - dt.timedelta(days=1), before.date()]
-    options = [i for i in _instants(clock, days, False, tz) if i < before]
-    return max(options)
 
 
 def _duration(raw: _Raw, c: ClauseTime, ctx: ResolverContext) -> tuple[dt.timedelta, bool]:
@@ -267,22 +250,6 @@ def _complete(i: int, c: ClauseTime, raw: _Raw, anchor: dt.datetime, r: _Reading
     r.placed[i] = _place(start, end, start_precision, end_precision, c, ctx)
 
 
-def _complete_end_seeded(i: int, c: ClauseTime, raw: _Raw, end: dt.datetime, r: _Reading, ctx: ResolverContext) -> None:
-    """Place a first clause with both a start and an end clock, seeded on its end.
-
-    Rule 9: an edit moves both ends. The seed is the end clock's reading (it is
-    usually unambiguous where the start alone would not be), and the start is
-    the latest reading of the start clock strictly before it.
-    """
-    tz = ctx.now.tzinfo
-    end_precision = _precision(raw.end)
-    start = _last_before(raw.start, end, tz)
-    start_precision = _precision(raw.start)
-    if raw.minutes is not None and abs((end - start) - dt.timedelta(minutes=raw.minutes)) > AGREE:
-        r.flags[i] = "start, end and duration disagree"
-    r.placed[i] = _place(start, end, start_precision, end_precision, c, ctx)
-
-
 def _chain(seed: dt.datetime, anchored: list[int], clauses, raws, ctx: ResolverContext) -> _Reading:
     """One reading: the first anchor at `seed`, every later one at its earliest time after the one before."""
     r = _Reading()
@@ -291,10 +258,6 @@ def _chain(seed: dt.datetime, anchored: list[int], clauses, raws, ctx: ResolverC
     for position, i in enumerate(anchored):
         raw = raws[i]
         if position == 0:
-            if raw.start is not None and raw.end is not None:
-                _complete_end_seeded(i, clauses[i], raw, seed, r, ctx)
-                previous = r.placed[i].start or r.placed[i].end
-                continue
             anchor = seed
         else:
             if raw.day is not None:
@@ -431,22 +394,6 @@ def _key(r: _Reading, anchored, clauses, ctx) -> dt.timedelta:
     return lead if lead is not None else dt.timedelta(0)
 
 
-def _dominates(best: _Reading, other: _Reading, anchored, clauses, ctx) -> bool:
-    """Spec §6.4: the best reading is taken without asking when it clearly wins on recency."""
-    a, b = _age(best, anchored, clauses, ctx), _age(other, anchored, clauses, ctx)
-    if a is not None and b is not None:
-        return a <= RECENT and b - a >= DOMINANT_GAP
-    la, lb = _lead(best, anchored, clauses, ctx), _lead(other, anchored, clauses, ctx)
-    if la is not None and lb is not None:
-        return la <= SOON and lb - la >= DOMINANT_GAP
-    return False
-
-
-def _first(r: _Reading, anchored: list[int]) -> dt.datetime:
-    p = r.placed[anchored[0]]
-    return p.start or p.end
-
-
 def _unique(readings: list[_Reading]) -> list[_Reading]:
     seen, out = set(), []
     for r in readings:
@@ -476,13 +423,10 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
     if anchored:
         first = raws[anchored[0]]
         dates, night = _dates(first.day, clauses[anchored[0]].intent, ctx)
-        # Both clocks given: seed on the end and derive the start backward (rule 9).
-        seed_clock = first.end if (first.start is not None and first.end is not None) else first.anchor
-        readings = []
-        for seed, hour in _seeded_instants(seed_clock, dates, night, ctx.now.tzinfo):
-            r = _chain(seed, anchored, clauses, raws, ctx)
-            r.group = hour
-            readings.append(r)
+        # Seeded on the first clause's start: a date names the day a range
+        # begins, so "23:00-00:30 on the 31st" ends on the 1st.
+        readings = [_chain(seed, anchored, clauses, raws, ctx)
+                    for seed in _instants(first.anchor, dates, night, ctx.now.tzinfo)]
     else:
         readings = [_Reading()]
     for r in readings:
@@ -494,34 +438,10 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
     valid = _unique([r for r in readings if r.valid])
     if not valid:
         return {i: ClauseResolution("question", reason="no reading of these times fits") for i in idx}
-    # One best reading per 12-hour reading (spec §6.4 refinement): an unambiguous
-    # clock's "today vs. yesterday" pair collapses to whichever is more plausible,
-    # rather than surfacing both as if they were genuinely different readings.
-    champions = []
-    for group_key in dict.fromkeys(r.group for r in valid):
-        members = [r for r in valid if r.group == group_key]
-        # Clean readings first: an end pinned to the message ("now", "15 mins
-        # ago") ties both day readings on recency, and the 24 h one is flagged.
-        members.sort(key=lambda r: (bool(r.flags), _key(r, anchored, clauses, ctx)))
-        champions.append(members[0])
-    # A flagged reading (disagreement, implausible length, out of order) drops out
-    # of ranking and alternatives while a clean one survives; kept only when every
-    # surviving reading is flagged, so the best still becomes a proposal.
-    unflagged = [r for r in champions if not r.flags]
-    survivors = unflagged or champions
-    survivors.sort(key=lambda r: _key(r, anchored, clauses, ctx))
-    best = survivors[0]
-    if anchored and len(survivors) > 1:
-        second = survivors[1]
-        apart = abs(_first(best, anchored) - _first(second, anchored)) >= ASK_APART
-        if apart and not _dominates(best, second, anchored, clauses, ctx):
-            return {
-                i: ClauseResolution(
-                    "question", reason="two readings of these times fit",
-                    alternatives=tuple(p for p in (best.placed.get(i), second.placed.get(i)) if p),
-                )
-                for i in idx
-            }
+    # The readings differ only in their day (today or the one before, for a
+    # record). A clean one beats a flagged one, then the most recent record or
+    # the soonest plan wins: nothing is left to ask (spec §6.4).
+    best = min(valid, key=lambda r: (bool(r.flags), _key(r, anchored, clauses, ctx)))
     return {i: _outcome(clauses[i], best.placed.get(i), best.flags.get(i)) for i in idx}
 
 
