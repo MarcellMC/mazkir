@@ -2,7 +2,7 @@
 
     python scripts/fast_lane_replay.py --chat <id> --emit-skeleton
     python scripts/fast_lane_replay.py --chat <id> --resolver-only      # free: no model calls
-    python scripts/fast_lane_replay.py --chat <id> --confirm-cost       # live parse, about $0.003 a message
+    python scripts/fast_lane_replay.py --chat <id> --confirm-cost       # live parse, about $0.007 a message on Haiku
 
 Everything real stays under data/eval/ (gitignored). A live run refuses to
 start without --confirm-cost.
@@ -31,7 +31,17 @@ from src.services.fast_lane.replay import (  # noqa: E402
 from src.services.fast_lane.shadow import ShadowSettings, resolve_clauses  # noqa: E402
 from src.services.vault_service import VaultService  # noqa: E402
 
-COST_PER_MESSAGE = 0.003
+# Measured on the live parse spans (2026-09-29): 4-5k tokens in, 100-450 out per message.
+# Sonnet 5's tokenizer counts the same prompt about 30% longer. ($/MTok in, $/MTok out, tokens in)
+PRICES = {"claude-haiku-4-5": (1.0, 5.0, 5000), "claude-sonnet-5": (2.0, 10.0, 6500)}
+OUT_TOKENS = 400
+
+
+def cost_per_message(model: str) -> float | None:
+    for prefix, (p_in, p_out, tokens_in) in PRICES.items():
+        if model.startswith(prefix):
+            return (tokens_in * p_in + OUT_TOKENS * p_out) / 1e6
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,8 +92,10 @@ def main(argv: list[str] | None = None) -> int:
         ids = {i.strip() for i in raw.replace(",", "\n").splitlines() if i.strip()}
     rows = select_rows(messages, golden, ids=ids, limit=args.limit)
     if not args.resolver_only and not args.confirm_cost:
+        each = cost_per_message(settings.fast_parse_model)
+        cost = f"about ${len(rows) * each:.2f}" if each is not None else "at a price this script does not know"
         print(f"a live run parses {len(rows)} messages with {settings.fast_parse_model}, "
-              f"about ${len(rows) * COST_PER_MESSAGE:.2f}; pass --confirm-cost to go ahead")
+              f"{cost}; pass --confirm-cost to go ahead")
         return 2
 
     vault = VaultService(settings.vault_path, settings.vault_timezone)
