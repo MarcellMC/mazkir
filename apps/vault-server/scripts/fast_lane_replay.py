@@ -25,7 +25,8 @@ from src.services.events_service import EventsService  # noqa: E402
 from src.services.fast_lane.context import habits_of, skills_of, typical_minutes  # noqa: E402
 from src.services.fast_lane.parse import ParseFailure, parse_message  # noqa: E402
 from src.services.fast_lane.replay import (  # noqa: E402
-    context_for, expected_parse, load_golden, load_messages, score_row, select_rows, skeleton_row, summarize,
+    context_for, expected_parse, load_conversation_messages, load_golden, load_messages, new_skeleton_rows,
+    score_row, select_rows, skeleton_row, summarize,
 )
 from src.services.fast_lane.shadow import ShadowSettings, resolve_clauses  # noqa: E402
 from src.services.vault_service import VaultService  # noqa: E402
@@ -41,6 +42,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--golden", type=Path, default=eval_dir / "fast-lane-golden.jsonl")
     ap.add_argument("--emit-skeleton", action="store_true")
     ap.add_argument("--force", action="store_true", help="overwrite an existing skeleton (loses labels)")
+    ap.add_argument("--append-skeleton", action="store_true",
+                    help="add rows for messages the golden set lacks; existing labels are kept")
+    ap.add_argument("--no-conversations", action="store_true",
+                    help="leave out the older messages kept only in the vault's conversation files")
     ap.add_argument("--resolver-only", action="store_true")
     ap.add_argument("--confirm-cost", action="store_true")
     ap.add_argument("--limit", type=int)
@@ -49,6 +54,16 @@ def main(argv: list[str] | None = None) -> int:
 
     tz = ZoneInfo(settings.vault_timezone)
     messages = load_messages(args.turns, args.chat, tz)
+    if not args.no_conversations and messages:
+        conversations = settings.vault_path / "00-system" / "conversations"
+        messages = load_conversation_messages(conversations, args.chat, tz, before=messages[0].ts.date()) + messages
+
+    if args.append_skeleton:
+        rows = new_skeleton_rows(messages, load_golden(args.golden) if args.golden.exists() else {})
+        with args.golden.open("a", encoding="utf-8") as out:
+            out.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+        print(f"appended {len(rows)} unlabelled rows to {args.golden}")
+        return 0
 
     if args.emit_skeleton:
         if args.golden.exists() and not args.force:

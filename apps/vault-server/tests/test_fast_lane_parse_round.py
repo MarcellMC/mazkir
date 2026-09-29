@@ -97,3 +97,29 @@ def test_replayed_blocks_keep_their_ids_from_either_result_shape():
     ]
     blocks = _blocks_before(Message(id="t0002", ts=NOW, text="y"), earlier)
     assert [b.id for b in blocks] == ["evt_new", "evt_old"]
+
+
+def test_older_messages_come_from_the_conversation_files(tmp_path):
+    from src.services.fast_lane.replay import load_conversation_messages
+    day = tmp_path / "2026-03-02"
+    day.mkdir()
+    (day / "7.md").write_text(
+        "---\nchat_id: 7\n---\n\n### 22:02 [user]\nDog walk 21:00-21:30\n\n### 22:02 [assistant]\nLogged it.\n\n"
+        '### 22:10 [user]\n(replying to assistant: "Logged it.") make it 21:15\n\n### 22:10 [assistant]\nMoved.\n',
+        encoding="utf-8")
+    later = tmp_path / "2026-05-02"
+    later.mkdir()
+    (later / "7.md").write_text("---\nchat_id: 7\n---\n\n### 09:00 [user]\nin the turn log already\n", encoding="utf-8")
+    msgs = load_conversation_messages(tmp_path, 7, TZ, before=dt.date(2026, 5, 2))
+    assert [(m.id, m.text, m.old_reply) for m in msgs] == [
+        ("c0001", "Dog walk 21:00-21:30", "Logged it."), ("c0002", "make it 21:15", "Moved.")]
+    assert msgs[1].reply_to == "Logged it." and msgs[1].ts == dt.datetime(2026, 3, 2, 22, 10, tzinfo=TZ)
+
+
+def test_new_rows_are_appended_blind_to_the_old_router():
+    from src.services.fast_lane.replay import new_skeleton_rows
+    msgs = [Message(id="t0001", ts=NOW, text="x", old_skill="mazkir"),
+            Message(id="t0002", ts=NOW, text="y", old_skill="time-management")]
+    rows = new_skeleton_rows(msgs, {"t0001": {}})
+    assert [r["id"] for r in rows] == ["t0002"]
+    assert "skill" not in rows[0]["old"] and rows[0]["expected"] is None

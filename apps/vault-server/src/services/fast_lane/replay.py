@@ -86,6 +86,40 @@ def load_messages(turns_path: Path, chat_id: int, tz: ZoneInfo) -> list[Message]
     return out
 
 
+_TURN_HEADER = re.compile(r"^### (\d\d):(\d\d) \[(user|assistant)\]\s*$", re.MULTILINE)
+
+
+def load_conversation_messages(conversations_dir: Path, chat_id: int, tz: ZoneInfo,
+                               before: dt.date) -> list[Message]:
+    """Your messages kept only in the vault's conversation files: the days before the turn log began.
+
+    Each file is one day, `{date}/{chat_id}.md`, in "### HH:MM [user]" and
+    "### HH:MM [assistant]" sections. Ids are c0001… in time order, so they
+    never collide with the turn log's t-ids. No tools were logged then.
+    """
+    out: list[Message] = []
+    for path in sorted(Path(conversations_dir).glob(f"*/{chat_id}.md")):
+        try:
+            day = dt.date.fromisoformat(path.parent.name)
+        except ValueError:
+            continue
+        if day >= before:
+            continue
+        parts = _TURN_HEADER.split(path.read_text(encoding="utf-8"))
+        for k in range(1, len(parts) - 3, 4):
+            hour, minute, role, content = parts[k], parts[k + 1], parts[k + 2], parts[k + 3].strip()
+            ts = dt.datetime(day.year, day.month, day.day, int(hour), int(minute), tzinfo=tz)
+            if role == "user":
+                text, reply_to, reply_from, has_photo = _strip(content)
+                out.append(Message(id="", ts=ts, text=text, reply_to=reply_to, reply_from=reply_from,
+                                   has_photo=has_photo))
+            elif out and out[-1].ts.date() == day and not out[-1].old_reply:
+                out[-1].old_reply = content
+    for n, msg in enumerate(out, 1):
+        msg.id = f"c{n:04d}"
+    return out
+
+
 def _ts(value: Any, date: str, tz) -> dt.datetime | None:
     iso = normalize_time(str(value), date) if value else None
     if not iso:
@@ -142,6 +176,21 @@ def select_rows(messages: list[Message], golden: dict[str, dict[str, Any]], ids:
     rows = [(i, m) for i, m in enumerate(messages)
             if (golden.get(m.id) or {}).get("expected") and (ids is None or m.id in ids)]
     return rows[:limit] if limit else rows
+
+
+def new_skeleton_rows(messages: list[Message], golden: dict[str, Any]) -> list[dict[str, Any]]:
+    """Skeleton rows for messages the golden set does not have yet, without the old router's pick.
+
+    The old skill is left out so a labeller judges the fallthrough skill from
+    the catalog, not by agreeing with the router it is meant to be compared to.
+    """
+    rows = []
+    for msg in messages:
+        if msg.id not in golden:
+            row = skeleton_row(msg)
+            row["old"].pop("skill", None)
+            rows.append(row)
+    return rows
 
 
 def load_golden(path: Path) -> dict[str, dict[str, Any]]:
