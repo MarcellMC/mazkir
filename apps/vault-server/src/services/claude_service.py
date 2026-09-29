@@ -187,10 +187,13 @@ class ClaudeService:
         cut off at `max_tokens` is logged as that, not as a generic failure.
         1500 tokens holds 12 clauses; a longer reply is a model running away
         (it once listed invented tags until 3000), and the cap ends it early.
+        Thinking is off explicitly, not by omission: Sonnet 5 thinks unless
+        told not to, which blew the timeout and the cap on 11 of 100 parses.
         """
         return self.client.with_options(timeout=timeout_s, max_retries=0).messages.create(
             model=model,
             max_tokens=1500,
+            thinking={"type": "disabled"},
             system=system,
             messages=[{"role": "user", "content": content}],
             output_config={"format": {"type": "json_schema", "schema": schema}},

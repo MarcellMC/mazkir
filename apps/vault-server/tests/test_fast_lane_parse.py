@@ -19,7 +19,7 @@ NOW = dt.datetime(2026, 9, 8, 0, 48, tzinfo=TZ)
 
 def reply(text, stop_reason="end_turn"):
     """The shape of an Anthropic Messages response, as far as the parse reads it."""
-    return SimpleNamespace(stop_reason=stop_reason, content=[SimpleNamespace(text=text)])
+    return SimpleNamespace(stop_reason=stop_reason, content=[SimpleNamespace(type="text", text=text)])
 
 
 def test_the_prompt_names_every_operation():

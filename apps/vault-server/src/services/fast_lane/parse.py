@@ -149,9 +149,13 @@ def _decode(response: Any) -> dict[str, Any]:
     """The reply's JSON object. A reply cut off at max_tokens says so, apart from other failures."""
     if getattr(response, "stop_reason", None) == "max_tokens":
         raise ParseFailure("the parse reply hit max_tokens and was cut off")
+    # The first block is not always the answer: a model that thinks puts a thinking block first
+    text = next((b.text for b in getattr(response, "content", None) or () if getattr(b, "type", None) == "text"), None)
+    if text is None:
+        raise ParseFailure("the parse reply had no text block")
     try:
-        raw = json.loads(response.content[0].text)
-    except (AttributeError, IndexError, TypeError, ValueError) as e:
+        raw = json.loads(text)
+    except (TypeError, ValueError) as e:
         raise ParseFailure(f"the parse reply was not JSON: {e}") from e
     if not isinstance(raw, dict):
         raise ParseFailure("the parse returned no object")

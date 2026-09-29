@@ -135,3 +135,32 @@ def test_a_label_can_accept_a_second_name_or_op():
                        Clause("log_block", "record", True, "went for a dog walk", name="Dog walk")), None)
     score = score_row(expected, got, [None, None], NOW)
     assert (score.matched, score.expected_clauses) == (2, 2)
+
+
+def test_the_parse_asks_for_no_thinking():
+    """Sonnet 5 thinks unless told not to: 99 of 100 parses in the 2026-09-29 sample failed on it."""
+    from src.services.claude_service import ClaudeService
+    claude = ClaudeService.__new__(ClaudeService)
+    claude.client = MagicMock()
+    claude.create_fast_parse(system="s", content="c", schema={}, model="m", timeout_s=5)
+    kwargs = claude.client.with_options.return_value.messages.create.call_args.kwargs
+    assert kwargs["thinking"] == {"type": "disabled"}
+
+
+def test_the_reply_is_read_from_its_text_block_not_the_first_block():
+    from types import SimpleNamespace
+    from src.services.fast_lane.parse import _decode
+    thinking = SimpleNamespace(type="thinking", thinking="")
+    text = SimpleNamespace(type="text", text='{"clauses": [], "fallthrough_skill": "mazkir"}')
+    reply = SimpleNamespace(stop_reason="end_turn", content=[thinking, text])
+    assert _decode(reply) == {"clauses": [], "fallthrough_skill": "mazkir"}
+
+
+def test_a_reply_with_no_text_block_is_a_parse_failure():
+    import pytest
+    from types import SimpleNamespace
+    from src.services.fast_lane.contract import ParseFailure
+    from src.services.fast_lane.parse import _decode
+    reply = SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="thinking", thinking="")])
+    with pytest.raises(ParseFailure, match="no text"):
+        _decode(reply)

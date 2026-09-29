@@ -31,7 +31,7 @@ def fixed(result):
 
 def reply(payload, stop_reason="end_turn"):
     """The shape of an Anthropic Messages response, as far as the parse reads it."""
-    return SimpleNamespace(stop_reason=stop_reason, content=[SimpleNamespace(text=json.dumps(payload))])
+    return SimpleNamespace(stop_reason=stop_reason, content=[SimpleNamespace(type="text", text=json.dumps(payload))])
 
 
 def test_a_logged_block_is_placed_and_logged(tmp_path):
