@@ -276,3 +276,13 @@ def test_the_shadow_names_an_end_by_its_target():
     from src.services.fast_lane.shadow import _clause_time
     c = Clause("end_block", "record", True, "Woke up at 11:00", target="Sleep", time=TimeWords(end="11:00"))
     assert _clause_time(c, [], {}).name == "Sleep"
+
+
+def test_the_photo_moment_is_telegrams_send_time_read_as_utc():
+    from zoneinfo import ZoneInfo
+    from src.services.fast_lane.context import photo_sent_at
+    tz = ZoneInfo("Asia/Jerusalem")
+    assert photo_sent_at([{"type": "photo", "telegram_date": "2026-09-27T20:20:05.000Z"}], tz) == \
+        dt.datetime(2026, 9, 27, 23, 20, 5, tzinfo=tz)
+    assert photo_sent_at([{"type": "document"}], tz) is None
+    assert photo_sent_at([{"type": "photo", "telegram_date": "garbage"}], tz) is None

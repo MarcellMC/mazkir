@@ -82,6 +82,7 @@ class FastContext:
     has_photo: bool = False
     typical_minutes: dict[str, int] = field(default_factory=dict)
     bedtime: dt.time | None = None  # your usual Sleep start, for "woke up at …" with no Sleep open
+    photo_at: dt.datetime | None = None   # when the message's photo was sent, for a caption's block
     skills: tuple[str, ...] = ()    # the router's catalog, one line per skill, for fallthrough_skill
 
 
@@ -196,6 +197,24 @@ def typical_minutes(events, before: dt.date, days: int = 30) -> dict[str, int]:
     return {name: round(statistics.median(values)) for name, values in lengths.items()}
 
 
+def photo_sent_at(attachments, tz) -> dt.datetime | None:
+    """When the message's first photo was sent: Telegram's `telegram_date`, which is UTC (spec §5.6).
+
+    A2 refines this with the photo's EXIF time when it has one.
+    """
+    for a in attachments or ():
+        if a.get("type") != "photo" or not a.get("telegram_date"):
+            continue
+        try:
+            sent = dt.datetime.fromisoformat(str(a["telegram_date"]).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if sent.tzinfo is None:
+            sent = sent.replace(tzinfo=dt.timezone.utc)
+        return sent.astimezone(tz).replace(microsecond=0)
+    return None
+
+
 def typical_bedtime(events, before: dt.date, days: int = 30) -> dt.time | None:
     """Your usual Sleep start: the median over the `days` days before `before`.
 
@@ -241,6 +260,7 @@ def assemble_fast_context(
         hashtags=extract_hashtags(text),
         selected_date=selected_date,
         has_photo=any(a.get("type") == "photo" for a in attachments or ()),
+        photo_at=_safe(lambda: photo_sent_at(attachments, now.tzinfo), None),
     )
 
 

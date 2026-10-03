@@ -79,6 +79,7 @@ class ResolverContext:
     typical_minutes: dict[str, int] = field(default_factory=dict)
     default_minutes: int = 30
     bedtime: dt.time | None = None   # your usual Sleep start, from the ledger
+    photo_at: dt.datetime | None = None   # when the message's photo was taken or sent
 
 
 def logical_date(instant: dt.datetime, boundary_hour: int) -> dt.date:
@@ -459,6 +460,24 @@ def _propose_untimed(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCo
         cursor = start + span
 
 
+def _place_by_photo(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverContext) -> None:
+    """A caption naming an activity with no time: proposed around the photo's moment (owner, 2026-09-29).
+
+    "Logged it on the dog walk" with a photo is a walk at about the time the
+    photo was taken, at your usual length, centred on it.
+    """
+    if ctx.photo_at is None:
+        return
+    for i in idx:
+        c, raw = clauses[i], raws[i]
+        if i in r.placed or c.intent != "record" or c.with_ is not None or not _untimed(raw, c, ctx):
+            continue
+        span, _ = _duration(raw, c, ctx)
+        start = ctx.photo_at - span / 2
+        r.placed[i] = _place(start, start + span, "assumed", "assumed", c, ctx)
+        r.flags[i] = "placed around your photo"
+
+
 def _shared_intervals(best: _Reading, idx: list[int], clauses, raws) -> list[list[int]]:
     """Records of different activities given one written interval: their split is unknown.
 
@@ -574,6 +593,7 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
             r.placed.setdefault(j, p)
         _fill_relative(r, idx, clauses, raws, ctx)
         _propose_untimed(r, idx, clauses, raws, ctx)
+        _place_by_photo(r, idx, clauses, raws, ctx)
         _check(r, idx, clauses, raws, ctx)
     valid = _unique([r for r in readings if r.valid])
     if not valid:

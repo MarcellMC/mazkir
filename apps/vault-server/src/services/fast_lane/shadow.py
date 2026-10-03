@@ -64,7 +64,7 @@ def resolve_clauses(result: ParseResult, ctx: FastContext, settings: ShadowSetti
     times = [_clause_time(c, candidates, by_id) for c in result.clauses]
     rctx = ResolverContext(now=ctx.now, day_boundary_hour=settings.day_boundary_hour,
                            typical_minutes=dict(ctx.typical_minutes), default_minutes=settings.default_minutes,
-                           bedtime=ctx.bedtime)
+                           bedtime=ctx.bedtime, photo_at=ctx.photo_at)
     resolved = resolve(times, rctx)
     return [r if c.op in FAST_OPS else None for c, r in zip(result.clauses, resolved)]
 

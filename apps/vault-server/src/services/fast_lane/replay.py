@@ -160,7 +160,8 @@ def context_for(msg: Message, earlier: list[Message], habits: tuple[HabitView, .
     return FastContext(now=msg.ts, chat_id=0, text=msg.text, reply_to=msg.reply_to, reply_from=msg.reply_from,
                        recent_turns=tuple(turns[-4:]), blocks=_blocks_before(msg, earlier), habits=habits,
                        hashtags=extract_hashtags(msg.text), has_photo=msg.has_photo, typical_minutes=typical,
-                       bedtime=bedtime, skills=skills)
+                       bedtime=bedtime, skills=skills,
+                       photo_at=msg.ts if msg.has_photo else None)   # the send time; EXIF is not kept
 
 
 def skeleton_row(msg: Message) -> dict[str, Any]:

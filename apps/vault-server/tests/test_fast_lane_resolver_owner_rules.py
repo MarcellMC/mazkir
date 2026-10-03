@@ -278,3 +278,17 @@ def test_a_plan_minutes_before_its_message_is_proposed_not_moved_to_tomorrow():
 def test_a_record_hours_after_its_message_is_still_yesterdays():
     [r] = resolve([log("Gym", "18:00", "19:00")], ctx(at(9, 8, 10, 0)))
     assert (r.outcome, r.placement.start) == ("fact", at(9, 7, 18, 0))
+
+
+# --- A photo's caption ---
+
+
+def test_a_caption_naming_an_activity_proposes_it_around_the_photo():
+    [r] = resolve([log("Dinner")], ctx(at(9, 12, 20, 31), photo_at=at(9, 12, 20, 30)))
+    assert (r.outcome, r.placement.start, r.placement.end) == ("proposal", at(9, 12, 20, 15), at(9, 12, 20, 45))
+    assert "photo" in r.reason
+
+
+def test_without_a_photo_an_untimed_record_still_asks():
+    [r] = resolve([log("Dinner")], ctx(at(9, 12, 20, 31)))
+    assert r.outcome == "question"
