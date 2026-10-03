@@ -248,3 +248,33 @@ def test_several_activities_given_one_interval_ask_how_it_was_split():
 def test_activities_running_alongside_share_the_interval_without_asking():
     eating, watching = resolve([log("Eating", "23:00", "00:00"), log("Watching", with_=0)], ctx(at(9, 6, 0, 1)))
     assert (eating.outcome, watching.outcome) == ("fact", "fact")
+
+
+# --- Guards found by re-scoring the real parses ---
+
+
+def test_a_plan_mentioned_in_passing_is_not_proposed():
+    [r] = resolve([log("Picnic", day="today's", intent="plan", stated=False)], ctx(at(5, 21, 0, 23)))
+    assert r.outcome == "question"
+
+
+def test_a_plan_on_a_day_mazkir_cannot_read_is_not_proposed_today():
+    [r] = resolve([log("Pill reminder", day="after 1 month", intent="plan")], ctx(at(9, 11, 3, 22)))
+    assert r.outcome == "question"
+
+
+def test_a_record_minutes_after_its_message_is_proposed_not_moved_to_yesterday():
+    breakfast, ride = resolve([log("Breakfast", "11:30", "12:30"), log("Bike ride", "15:00", op="start_block")],
+                              ctx(at(9, 8, 14, 53)))
+    assert (breakfast.outcome, breakfast.placement.start) == ("fact", at(9, 8, 11, 30))
+    assert (ride.outcome, ride.reason, ride.placement.start) == ("proposal", "starts after the message", at(9, 8, 15, 0))
+
+
+def test_a_plan_minutes_before_its_message_is_proposed_not_moved_to_tomorrow():
+    [r] = resolve([log("Gym", "20:50", intent="plan", op="start_block")], ctx(at(9, 8, 20, 55)))
+    assert (r.outcome, r.placement.start) == ("proposal", at(9, 8, 20, 50))
+
+
+def test_a_record_hours_after_its_message_is_still_yesterdays():
+    [r] = resolve([log("Gym", "18:00", "19:00")], ctx(at(9, 8, 10, 0)))
+    assert (r.outcome, r.placement.start) == ("fact", at(9, 7, 18, 0))

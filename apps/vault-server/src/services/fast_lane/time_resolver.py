@@ -26,6 +26,8 @@ from src.services.fast_lane.time_words import (
 TOLERANCE = dt.timedelta(minutes=2)
 MAX_RECORD = dt.timedelta(hours=16)
 AGREE = dt.timedelta(minutes=5)
+SLIP = dt.timedelta(hours=1)
+SLIPS = frozenset({"starts after the message", "starts before the message"})
 
 BLOCK_OPS = frozenset({"log_block", "start_block"})
 EDIT_OPS = frozenset({"end_block", "edit_block"})
@@ -424,11 +426,16 @@ def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCont
                                  "inferred", clauses[j], ctx)
 
 
-def _untimed(raw: _Raw, ctx: ResolverContext) -> bool:
-    """No clock, no "now", no relative time, and no day but today."""
+def _untimed(raw: _Raw, c: ClauseTime, ctx: ResolverContext) -> bool:
+    """No clock, no "now", no relative time, and no day words but today.
+
+    A day the vocabulary cannot read ("after 1 month") is not today.
+    """
     if raw.anchor is not None or raw.start_now or raw.end_now or raw.relative or raw.end_day is not None:
         return False
-    return raw.day is None or (raw.day.kind == "date" and raw.day.date == ctx.now.date())
+    if not (c.day or "").strip():
+        return True
+    return raw.day is not None and raw.day.kind == "date" and raw.day.date == ctx.now.date()
 
 
 def _propose_untimed(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverContext) -> None:
@@ -441,7 +448,8 @@ def _propose_untimed(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCo
     cursor = ctx.now
     for i in idx:
         c, raw = clauses[i], raws[i]
-        if i in r.placed or c.intent != "plan" or c.with_ is not None or not _untimed(raw, ctx):
+        if (i in r.placed or c.intent != "plan" or not c.stated or c.with_ is not None
+                or not _untimed(raw, c, ctx)):
             continue
         linked = r.placed.get(c.after)
         start = (linked.end or linked.start) if linked is not None else cursor
@@ -484,14 +492,17 @@ def _check(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverContext) -> 
         if raw.day is not None and raw.day.kind == "night" and not _in_night(first, raw.day, ctx):
             r.valid = False
         pinned = raw.anchor is None and raw.relative
+        # Within an hour of the message, a record that starts after it or a plan
+        # that starts before it is one clause's slip, proposed as it stands; it
+        # does not move the whole message by a day.
         if c.intent == "record" and first > ctx.now + TOLERANCE:
-            if pinned:
+            if pinned or first - ctx.now <= SLIP:
                 r.flags.setdefault(i, "starts after the message")
             else:
                 r.valid = False
         explicit_past = raw.day is not None and raw.day.kind == "date" and raw.day.date < today
         if c.intent == "plan" and first < ctx.now - TOLERANCE and not explicit_past:
-            if pinned:
+            if pinned or ctx.now - first <= SLIP:
                 r.flags.setdefault(i, "starts before the message")
             else:
                 r.valid = False
@@ -570,7 +581,10 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
     # The readings differ only in their day (today or the one before, for a
     # record). A clean one beats a flagged one, then the most recent record or
     # the soonest plan wins: nothing is left to ask (spec §6.4).
-    best = min(valid, key=lambda r: (bool(r.flags), _key(r, anchored, clauses, ctx)))
+    # A slip (above) does not count against its reading: the clean reading of
+    # the same clock a day away is the less likely one.
+    best = min(valid, key=lambda r: (any(f not in SLIPS for f in r.flags.values()),
+                                     _key(r, anchored, clauses, ctx)))
     results = {i: _outcome(clauses[i], best.placed.get(i), best.flags.get(i)) for i in idx}
     for members in _shared_intervals(best, idx, clauses, raws):
         for i in members:
