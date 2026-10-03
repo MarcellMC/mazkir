@@ -244,3 +244,35 @@ def test_a_saved_parse_keeps_the_route_its_dropped_clauses_gave_it():
 def test_a_saved_parse_failure_has_nothing_to_rebuild():
     from src.services.fast_lane.replay import saved_parse
     assert saved_parse({"id": "t1", "parse_failure": "timed out"}) is None
+
+
+def test_your_bedtime_is_the_median_sleep_start_across_midnight():
+    from src.services.fast_lane.context import typical_bedtime
+
+    class Events:
+        def get_events(self, day):
+            starts = {"2026-09-27": "2026-09-27T23:30:00", "2026-09-26": "2026-09-26T00:30:00",
+                      "2026-09-25": "2026-09-25T01:00:00"}
+            if day not in starts:
+                return [{"name": "Gym", "start_time": f"{day}T18:00:00", "end_time": f"{day}T19:00:00"}]
+            return [{"name": "Sleep", "start_time": starts[day], "end_time": f"{day}T08:00:00"}]
+
+    assert typical_bedtime(Events(), before=dt.date(2026, 9, 28)) == dt.time(0, 30)
+
+
+def test_no_bedtime_without_three_nights():
+    from src.services.fast_lane.context import typical_bedtime
+
+    class Events:
+        def get_events(self, day):
+            return [{"name": "Sleep", "start_time": f"{day}T23:00:00", "end_time": f"{day}T23:59:00"}] \
+                if day == "2026-09-27" else []
+
+    assert typical_bedtime(Events(), before=dt.date(2026, 9, 28)) is None
+
+
+def test_the_shadow_names_an_end_by_its_target():
+    from src.services.fast_lane.contract import Clause, TimeWords
+    from src.services.fast_lane.shadow import _clause_time
+    c = Clause("end_block", "record", True, "Woke up at 11:00", target="Sleep", time=TimeWords(end="11:00"))
+    assert _clause_time(c, [], {}).name == "Sleep"

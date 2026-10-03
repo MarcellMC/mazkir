@@ -30,6 +30,8 @@ AGREE = dt.timedelta(minutes=5)
 BLOCK_OPS = frozenset({"log_block", "start_block"})
 EDIT_OPS = frozenset({"end_block", "edit_block"})
 TODO_OPS = frozenset({"add_todo", "check_todo", "rollover_todos"})
+SLEEP_NAMES = frozenset({"sleep", "sleeping", "night sleep", "сон", "שינה"})
+NIGHT_SLEEP = dt.timedelta(hours=8)
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,7 @@ class ResolverContext:
     day_boundary_hour: int = 5
     typical_minutes: dict[str, int] = field(default_factory=dict)
     default_minutes: int = 30
+    bedtime: dt.time | None = None   # your usual Sleep start, from the ledger
 
 
 def logical_date(instant: dt.datetime, boundary_hour: int) -> dt.date:
@@ -233,6 +236,27 @@ def _open_end(start: dt.datetime, raw: _Raw, c: ClauseTime, ctx: ResolverContext
     return start + span if start + span <= ctx.now else None
 
 
+def _back_from_end(end: dt.datetime, raw: _Raw, c: ClauseTime,
+                   ctx: ResolverContext) -> tuple[dt.datetime, str, str | None]:
+    """The start of a block known only by its end, that start's precision, and a reason to ask.
+
+    A Sleep known only by when you woke starts at your usual bedtime (eight
+    hours before, with none known) and is proposed, not written: the start
+    is a guess hours wide (owner, 2026-09-29).
+    """
+    if raw.minutes is None and (c.name or "").strip().lower() in SLEEP_NAMES:
+        if ctx.bedtime is not None:
+            start = _at(end.date(), ctx.bedtime.hour, ctx.bedtime.minute, end.tzinfo)
+            if start >= end:
+                start -= dt.timedelta(days=1)
+        else:
+            typical = ctx.typical_minutes.get("sleep")
+            start = end - (dt.timedelta(minutes=typical) if typical else NIGHT_SLEEP)
+        return start, "assumed", "start assumed from your usual bedtime"
+    span, assumed = _duration(raw, c, ctx)
+    return end - span, ("assumed" if assumed else "inferred"), None
+
+
 def _duration(raw: _Raw, c: ClauseTime, ctx: ResolverContext) -> tuple[dt.timedelta, bool]:
     """The clause's length, and whether it was assumed from your history."""
     if raw.minutes is not None:
@@ -273,8 +297,9 @@ def _complete(i: int, c: ClauseTime, raw: _Raw, anchor: dt.datetime, r: _Reading
             # "…then a bar until 3:00": the bar starts where the clause before it ended.
             start, start_precision = after, "inferred"
         else:
-            span, assumed = _duration(raw, c, ctx)
-            start, start_precision = end - span, ("assumed" if assumed else "inferred")
+            start, start_precision, why = _back_from_end(end, raw, c, ctx)
+            if why:
+                r.flags[i] = why
     r.placed[i] = _place(start, end, start_precision, end_precision, c, ctx)
 
 
@@ -369,9 +394,10 @@ def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCont
             # min ago" is 13:50, not wherever the walk before it ended.
             r.placed[i] = _from_start(fixed_start, "inferred", raw, c, ctx)
         elif (fixed_end := _fixed(raw.end_now, raw.end_rel, ctx)) is not None:
-            span, assumed = _duration(raw, c, ctx)
-            r.placed[i] = _place(fixed_end - span, fixed_end, "assumed" if assumed else "inferred",
-                                 "inferred", c, ctx)
+            start, start_precision, why = _back_from_end(fixed_end, raw, c, ctx)
+            if why:
+                r.flags.setdefault(i, why)
+            r.placed[i] = _place(start, fixed_end, start_precision, "inferred", c, ctx)
         elif c.after in r.placed:
             other = r.placed[c.after]
             r.placed[i] = _from_start(other.end or other.start, "inferred", raw, c, ctx)
@@ -580,6 +606,17 @@ def _resolve_edit(c: ClauseTime, ctx: ResolverContext) -> ClauseResolution:
     return _outcome(c, _place(start, end, start_precision, end_precision, c, ctx), flag)
 
 
+def _ended_with_nothing_open(c: ClauseTime) -> ClauseTime:
+    """An end whose block is not on the timeline is that block, ending then (spec §7.1).
+
+    "Completed gym at 16:50" with no gym open is a gym block that ended at
+    16:50; asking "which block?" would ask about one that does not exist.
+    """
+    if c.op == "end_block" and c.target_start is None and c.target_end is None and c.end:
+        return replace(c, op="log_block")
+    return c
+
+
 def _as_written(c: ClauseTime) -> ClauseTime:
     """The clause with the run-together typo "06:35:07:35" split into a start and an end (spec §6.6)."""
     start, end = split_run_together(c.start, c.end)
@@ -596,7 +633,7 @@ def _todo_day(ref: DayRef, c: ClauseTime, ctx: ResolverContext) -> dt.date:
 
 def resolve(clauses: list[ClauseTime], ctx: ResolverContext) -> list[ClauseResolution]:
     """One resolution per clause, in order (spec §6.4)."""
-    clauses = [_as_written(c) for c in clauses]   # every later reading sees the split once
+    clauses = [_ended_with_nothing_open(_as_written(c)) for c in clauses]   # every later reading sees these once
     results = [ClauseResolution("fact" if c.stated else "proposal") for c in clauses]
     for i, c in enumerate(clauses):
         if c.op in EDIT_OPS:

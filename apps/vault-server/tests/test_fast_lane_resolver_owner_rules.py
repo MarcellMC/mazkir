@@ -157,3 +157,36 @@ def test_earlier_in_the_day_after_an_evening_block():
     gym, lunch = resolve([log("Gym", "18:00", "19:00"), log("Lunch", "13:00", "13:30")], ctx(at(9, 8, 20, 0)))
     assert (gym.placement.start, lunch.placement.start) == (at(9, 8, 18, 0), at(9, 8, 13, 0))
     assert lunch.outcome == "fact"
+
+
+# --- An end with nothing open, and waking up ---
+
+
+def ended(name, end, target=(None, None)):
+    return ClauseTime(op="end_block", name=name, end=end, target_start=target[0], target_end=target[1])
+
+
+def test_an_end_with_nothing_open_is_a_new_block_ending_then():
+    [r] = resolve([ended("Gym", "16:50")], ctx(at(4, 8, 19, 47), typical_minutes={"gym": 70}))
+    assert (r.outcome, r.placement.start, r.placement.end) == ("fact", at(4, 8, 15, 40), at(4, 8, 16, 50))
+    assert r.placement.start_precision == "assumed"
+    [now] = resolve([ended("Gym", "now")], ctx(at(4, 28, 20, 59)))
+    assert (now.outcome, now.placement.end) == ("fact", at(4, 28, 20, 59))
+
+
+def test_waking_with_no_sleep_open_proposes_a_sleep_from_your_bedtime():
+    [r] = resolve([ended("Sleep", "11:00")], ctx(at(9, 8, 14, 53), bedtime=dt.time(1, 30)))
+    assert (r.outcome, r.placement.start, r.placement.end) == ("proposal", at(9, 8, 1, 30), at(9, 8, 11, 0))
+    assert "bedtime" in r.reason
+    [late] = resolve([log("Sleep", end="08:00")], ctx(at(9, 8, 9, 0), bedtime=dt.time(23, 15)))
+    assert (late.outcome, late.placement.start) == ("proposal", at(9, 7, 23, 15))
+
+
+def test_waking_without_a_known_bedtime_assumes_eight_hours():
+    [r] = resolve([ended("Sleep", "11:00")], ctx(at(9, 8, 14, 53)))
+    assert (r.outcome, r.placement.start) == ("proposal", at(9, 8, 3, 0))
+
+
+def test_a_sleep_with_its_length_given_is_not_a_guess():
+    [r] = resolve([log("Sleep", end="08:00", duration="7 hours")], ctx(at(9, 8, 9, 0), bedtime=dt.time(23, 15)))
+    assert (r.outcome, r.placement.start) == ("fact", at(9, 8, 1, 0))

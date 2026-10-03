@@ -81,6 +81,7 @@ class FastContext:
     selected_date: str | None = None
     has_photo: bool = False
     typical_minutes: dict[str, int] = field(default_factory=dict)
+    bedtime: dt.time | None = None  # your usual Sleep start, for "woke up at …" with no Sleep open
     skills: tuple[str, ...] = ()    # the router's catalog, one line per skill, for fallthrough_skill
 
 
@@ -195,6 +196,29 @@ def typical_minutes(events, before: dt.date, days: int = 30) -> dict[str, int]:
     return {name: round(statistics.median(values)) for name, values in lengths.items()}
 
 
+def typical_bedtime(events, before: dt.date, days: int = 30) -> dt.time | None:
+    """Your usual Sleep start: the median over the `days` days before `before`.
+
+    Counted in minutes from noon, so 23:30 and 00:30 have midnight between
+    them, not noon. None with fewer than three nights.
+    """
+    from src.services.fast_lane.time_resolver import SLEEP_NAMES
+    from_noon: list[int] = []
+    for k in range(1, days + 1):
+        for e in events.get_events((before - dt.timedelta(days=k)).isoformat()):
+            if (e.get("name") or "").strip().lower() not in SLEEP_NAMES or not e.get("start_time"):
+                continue
+            try:
+                start = dt.datetime.fromisoformat(e["start_time"])
+            except (ValueError, TypeError):
+                continue
+            from_noon.append((start.hour * 60 + start.minute - 720) % 1440)
+    if len(from_noon) < 3:
+        return None
+    minutes = (round(statistics.median(from_noon)) + 720) % 1440
+    return dt.time(minutes // 60, minutes % 60)
+
+
 def assemble_fast_context(
     *, text: str, chat_id: int, now: dt.datetime, memory, events, vault,
     reply_to: dict | None = None, selected_date: str | None = None,
@@ -232,5 +256,6 @@ def complete_fast_context(snapshot: FastContext, *, events, vault, history_days:
         snapshot,
         habits=_safe(lambda: habits_of(vault), ()),
         typical_minutes=_safe(lambda: typical_minutes(events, snapshot.now.date(), history_days), {}),
+        bedtime=_safe(lambda: typical_bedtime(events, snapshot.now.date(), history_days), None),
         skills=_safe(lambda: skills_of(skills_dir), ()) if skills_dir else snapshot.skills,
     )

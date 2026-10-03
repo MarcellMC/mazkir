@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # apps/vault-serv
 
 from src.config import settings  # noqa: E402
 from src.services.events_service import EventsService  # noqa: E402
-from src.services.fast_lane.context import habits_of, skills_of, typical_minutes  # noqa: E402
+from src.services.fast_lane.context import habits_of, skills_of, typical_bedtime, typical_minutes  # noqa: E402
 from src.services.fast_lane.parse import ParseFailure, parse_message  # noqa: E402
 from src.services.fast_lane.replay import (  # noqa: E402
     context_for, expected_parse, load_conversation_messages, load_golden, load_messages, new_skeleton_rows,
@@ -132,7 +132,8 @@ def main(argv: list[str] | None = None) -> int:
             # Only the days before the message's date, as live: the ledger's
             # own day for the message holds blocks written after it was sent.
             typical = typical_minutes(events, before=msg.ts.date())
-            ctx = context_for(msg, messages[:index], habits, typical, skills)
+            ctx = context_for(msg, messages[:index], habits, typical, skills,
+                              bedtime=typical_bedtime(events, before=msg.ts.date()))
             if args.resolver_only:
                 result = expected_parse(expected, msg.text)
             elif saved is not None:

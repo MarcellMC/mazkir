@@ -152,14 +152,15 @@ def _blocks_before(msg: Message, earlier: list[Message]) -> tuple[BlockView, ...
 
 
 def context_for(msg: Message, earlier: list[Message], habits: tuple[HabitView, ...],
-                typical: dict[str, int], skills: tuple[str, ...] = ()) -> FastContext:
+                typical: dict[str, int], skills: tuple[str, ...] = (),
+                bedtime: dt.time | None = None) -> FastContext:
     turns: list[tuple[str, str]] = []
     for prev in earlier[-2:]:
         turns += [("user", prev.text), ("assistant", clean_turn_text(prev.old_reply))]
     return FastContext(now=msg.ts, chat_id=0, text=msg.text, reply_to=msg.reply_to, reply_from=msg.reply_from,
                        recent_turns=tuple(turns[-4:]), blocks=_blocks_before(msg, earlier), habits=habits,
                        hashtags=extract_hashtags(msg.text), has_photo=msg.has_photo, typical_minutes=typical,
-                       skills=skills)
+                       bedtime=bedtime, skills=skills)
 
 
 def skeleton_row(msg: Message) -> dict[str, Any]:
