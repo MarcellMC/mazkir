@@ -219,7 +219,7 @@ Before the parse, code places each photo on the timeline:
 
 The photo is attached to the block covering that moment, if one exists. The message then goes to the fallthrough skill for its content.
 
-A caption that names an activity done with no time ("logged it on the dog walk") also proposes a block of that activity around the photo's moment, at your usual length (owner, 2026-09-29). Telegram's send time is the right moment when the image carries no camera time.
+A caption that names an activity done with no time ("logged it on the dog walk") also proposes a block of that activity centred on the photo's moment, at your usual length (owner, 2026-09-29). Telegram's send time is the right moment when the image carries no camera time.
 
 ---
 
@@ -271,7 +271,7 @@ Each block also gets `logical_date`: the start's calendar date, minus one day wh
 |---|---|
 | A reading survives | Fact; soft ends marked by precision, ✎ on the receipt |
 | Part of the time unknown ("just back from the dog walk") | Fact, with the unknown end `assumed` from your typical duration |
-| Mazkir chose the time: an untimed plan, a window, a Sleep from your bedtime | Proposal, with the reason shown |
+| Mazkir chose the time: an untimed plan, a window, a Sleep from your bedtime, a caption's activity around its photo | Proposal, with the reason shown |
 | A slip within an hour of the message, or a sanity rule fails (implausible length, contradiction, overlaps a stated fact, a Sleep overlap) | Proposal, with the reason shown |
 | Several activities given one interval | Question: how was it split? |
 | A record with no time at all, an edit whose block isn't found, or no reading fits | Question |
@@ -490,7 +490,7 @@ Related bug to fix alongside it: when `complete_habit` is called with a past `no
 
 | Measure | Now |
 |---|---|
-| Resolver with the labels as the parse: placement / outcome | 82.5 % / 94.9 % |
+| Resolver with the labels as the parse: placement / outcome | 83.2 % / 95.4 % |
 | Parse recall on tracking clauses | 78.7 % |
 | Fallthrough skill / today's router on the same messages | 70.4 % / 83.8 % |
 | Wrong-day blocks from the real parse | 11 |
