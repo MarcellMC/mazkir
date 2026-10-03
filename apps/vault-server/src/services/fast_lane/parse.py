@@ -31,8 +31,8 @@ SYSTEM_PROMPT = """You read one message sent to Mazkir, a personal assistant tha
 - other: anything else, such as questions, conversation, notes and ideas, coding requests, describing a photo, or deleting something. Task files and habits belong here too: "#task", "create task", "log it as a task", "complete it" about a task, and creating or changing a habit or goal are all "other", never add_todo.
 
 ## Rules
-1. One clause per action. "Dog walk, then a bar" is two clauses.
-2. Copy time words exactly as written into time.start, time.end, time.duration, time.shift and time.day. Never convert, never add a date, never calculate. "3:00" stays "3:00", "7hr" stays "7hr", and "yesterday" goes in time.day.
+1. One clause per action. "Dog walk, then a bar" is two clauses. Several activities given one interval together ("23:00-00:00 as meal prep, eating and a film") are one clause each, each with that interval's time words; Mazkir asks how the time was split. One running alongside another ("eating while watching") sets time.with instead.
+2. Copy time words exactly as written into time.start, time.end, time.duration, time.shift and time.day. Never convert, never add a date, never calculate. "3:00" stays "3:00", "7hr" stays "7hr", and "yesterday" goes in time.day. Keep window words: "somewhere between 20:30 and 22:30" is time.start "somewhere between 20:30" and time.end "22:30".
 3. When the words pin a moment to when the message was sent ("just returned", "back home", "finished", "done", "started", "going to", "now"), write "now" in that field: time.end for endings, time.start for beginnings.
 4. "Then" links a clause to the one before it: set time.after to that clause's 0-based index. An activity running alongside another sets time.with instead.
 5. stated is true when the user asks for something, or reports an activity with a time or with a verb such as started, finished, went, did or walked. A passing mention inside another sentence, such as "I'm at a bar, and I had an idea", has stated false.
