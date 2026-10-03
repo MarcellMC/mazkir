@@ -267,14 +267,41 @@ def _complete(i: int, c: ClauseTime, raw: _Raw, anchor: dt.datetime, r: _Reading
             end, end_precision = assumed, "assumed"
     else:  # anchored on the end
         end, end_precision = anchor, _precision(raw.end)
-        span, assumed = _duration(raw, c, ctx)
-        start, start_precision = end - span, ("assumed" if assumed else "inferred")
+        linked = r.placed.get(c.after)
+        after = (linked.end or linked.start) if linked is not None else None
+        if after is not None and after < end:
+            # "…then a bar until 3:00": the bar starts where the clause before it ended.
+            start, start_precision = after, "inferred"
+        else:
+            span, assumed = _duration(raw, c, ctx)
+            start, start_precision = end - span, ("assumed" if assumed else "inferred")
     r.placed[i] = _place(start, end, start_precision, end_precision, c, ctx)
 
 
-def _chain(seed: dt.datetime, anchored: list[int], clauses, raws, ctx: ResolverContext) -> _Reading:
-    """One reading: the first anchor at `seed`, every later one at its earliest time after the one before."""
+CHAIN_REACH = dt.timedelta(hours=12)
+
+
+def _next_anchor(options: list[dt.datetime], previous: dt.datetime) -> tuple[dt.datetime, bool]:
+    """Where a later clause's clock lands, and whether that is out of order.
+
+    The reading just after the clause before it, when that is within 12
+    hours; otherwise the nearest one before it within 12 hours, so "…before
+    that, 00:33-02:35" lands earlier the same night (spec §6.2 rule 3).
+    """
+    later = sorted(o for o in options if o >= previous - TOLERANCE)
+    if later and later[0] - previous <= CHAIN_REACH:
+        return later[0], False
+    earlier = sorted(o for o in options if o < previous - TOLERANCE)
+    if earlier and previous - earlier[-1] <= CHAIN_REACH:
+        return earlier[-1], False
+    return (later[0], False) if later else (min(options), True)
+
+
+def _chain(seed: dt.datetime, anchored: list[int], clauses, raws, ctx: ResolverContext,
+           known: dict[int, Placement] | None = None) -> _Reading:
+    """One reading: the first anchor at `seed`, every later one nearest the one before."""
     r = _Reading()
+    r.placed.update(known or {})   # edits placed already, which an `after` may name
     tz = ctx.now.tzinfo
     previous: dt.datetime | None = None
     for position, i in enumerate(anchored):
@@ -285,15 +312,12 @@ def _chain(seed: dt.datetime, anchored: list[int], clauses, raws, ctx: ResolverC
             if raw.day is not None:
                 dates, night = _dates(raw.day, clauses[i].intent, ctx)
             else:
-                dates, night = [previous.date(), previous.date() + dt.timedelta(days=1)], False
+                dates, night = [previous.date() + dt.timedelta(days=k) for k in (-1, 0, 1)], False
             options = _instants(raw.anchor, dates, night, tz)
             if night:
                 options = [o for o in options if _in_night(o, raw.day, ctx)] or options
-            later = [o for o in options if o >= previous - TOLERANCE]
-            if later:
-                anchor = min(later)
-            else:
-                anchor = min(options)
+            anchor, out_of_order = _next_anchor(options, previous)
+            if out_of_order:
                 r.flags[i] = "out of order with the clause before it"
         _complete(i, clauses[i], raw, anchor, r, ctx)
         previous = r.placed[i].start or r.placed[i].end
@@ -452,7 +476,7 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
         dates, night = _dates(first.day, clauses[anchored[0]].intent, ctx)
         # Seeded on the first clause's start: a date names the day a range
         # begins, so "23:00-00:30 on the 31st" ends on the 1st.
-        readings = [_chain(seed, anchored, clauses, raws, ctx)
+        readings = [_chain(seed, anchored, clauses, raws, ctx, known)
                     for seed in _instants(first.anchor, dates, night, ctx.now.tzinfo)]
     else:
         readings = [_Reading()]
@@ -523,11 +547,19 @@ def _resolve_edit(c: ClauseTime, ctx: ResolverContext) -> ClauseResolution:
         if end is not None:
             end, end_precision = end + delta, "inferred"
     else:
+        old_start, old_end = start, end
         if start_clock is not None:
             start, start_precision = _nearest(start_clock, reference, tz), _precision(start_clock)
         elif fixed_start is not None:
             start, start_precision = fixed_start, "inferred"
-        if end_clock is not None:
+        moved_whole = (start is not None and old_start is not None and old_end is not None
+                       and start != old_start and start >= old_end
+                       and end_clock is None and fixed_end is None and minutes is None)
+        if moved_whole:
+            # A new start at or past the old end moves the block and keeps its
+            # length; one inside it moves only the start (spec §6.2 rule 9).
+            end, end_precision = old_end + (start - old_start), "inferred"
+        elif end_clock is not None:
             end, end_precision = _first_after(end_clock, start or end, tz, strictly=True), _precision(end_clock)
         elif fixed_end is not None:
             end, end_precision = fixed_end, "inferred"

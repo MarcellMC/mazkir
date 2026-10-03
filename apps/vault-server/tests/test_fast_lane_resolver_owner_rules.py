@@ -106,3 +106,54 @@ def test_a_date_range_with_times_ends_on_its_last_day():
 def test_a_date_range_without_times_covers_the_whole_days():
     [r] = resolve([log("Visit family", day="30.08 - 06.09", intent="plan")], ctx(at(8, 22, 13, 15)))
     assert (r.outcome, r.placement.start, r.placement.end) == ("plan", at(8, 30, 0, 0), at(9, 7, 0, 0))
+
+
+# --- Edits and chains ---
+
+
+def edit(start=None, end=None, target=(None, None), intent="record", op="edit_block"):
+    return ClauseTime(op=op, intent=intent, start=start, end=end, target_start=target[0], target_end=target[1])
+
+
+def test_a_new_start_past_the_blocks_end_moves_the_whole_block():
+    [r] = resolve([edit("15:20", target=(at(9, 2, 13, 15), at(9, 2, 13, 45)), intent="plan")],
+                  ctx(at(9, 2, 15, 16)))
+    assert (r.outcome, r.placement.start, r.placement.end) == ("plan", at(9, 2, 15, 20), at(9, 2, 15, 50))
+
+
+def test_a_new_start_inside_the_block_moves_only_the_start():
+    [r] = resolve([edit("04:00", target=(at(9, 29, 1, 13), at(9, 29, 8, 0)))], ctx(at(9, 29, 11, 14)))
+    assert (r.outcome, r.placement.start, r.placement.end) == ("fact", at(9, 29, 4, 0), at(9, 29, 8, 0))
+
+
+def test_a_clause_after_an_edit_with_only_an_end_starts_where_the_edit_ends():
+    ended = edit(end="2:00", target=(at(9, 5, 23, 0), None), op="end_block")
+    _, bar = resolve([ended, log("Bar", end="3:00", after=0)], ctx(at(9, 6, 1, 58)))
+    assert (bar.outcome, bar.placement.start, bar.placement.end) == ("fact", at(9, 6, 2, 0), at(9, 6, 3, 0))
+
+
+def test_a_clause_after_a_block_with_only_an_end_starts_where_that_block_ends():
+    _, shower = resolve([log("Dog walk", "20:00", "20:30"), log("Shower", end="21:15", after=0)],
+                        ctx(at(9, 6, 22, 0)))
+    assert (shower.placement.start, shower.placement.end) == (at(9, 6, 20, 30), at(9, 6, 21, 15))
+
+
+def test_before_that_places_a_clause_earlier_the_same_night():
+    clauses = [log("Bar", "03:48", "04:17", day="September 7th"), log("Restaurant", "00:33", "02:35"),
+               log("Cycling", after=1), log("Cycling from home", "00:17", "00:33")]
+    bar, restaurant, cycling, from_home = resolve(clauses, ctx(at(9, 8, 0, 57)))
+    assert [r.outcome for r in (bar, restaurant, cycling, from_home)] == ["fact"] * 4
+    assert (bar.placement.start, restaurant.placement.start) == (at(9, 7, 3, 48), at(9, 7, 0, 33))
+    assert cycling.placement.start == at(9, 7, 2, 35)
+    assert (from_home.placement.start, from_home.placement.end) == (at(9, 7, 0, 17), at(9, 7, 0, 33))
+
+
+def test_a_list_running_past_midnight_stays_in_order():
+    walk, bar = resolve([log("Dog walk", "23:00", "23:30"), log("Bar", "00:10", "01:00")], ctx(at(9, 8, 2, 0)))
+    assert (walk.placement.start, bar.placement.start) == (at(9, 7, 23, 0), at(9, 8, 0, 10))
+
+
+def test_earlier_in_the_day_after_an_evening_block():
+    gym, lunch = resolve([log("Gym", "18:00", "19:00"), log("Lunch", "13:00", "13:30")], ctx(at(9, 8, 20, 0)))
+    assert (gym.placement.start, lunch.placement.start) == (at(9, 8, 18, 0), at(9, 8, 13, 0))
+    assert lunch.outcome == "fact"
