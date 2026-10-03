@@ -112,3 +112,26 @@ def test_parse_relative_needs_a_direction_and_a_number(text):
 ])
 def test_parse_clock_never_reads_a_duration_as_a_clock(text):
     assert parse_clock(text) is None
+
+
+def test_word_clocks():
+    from src.services.fast_lane.time_words import Clock, parse_clock
+    assert parse_clock("midnight") == Clock(0, 0, False, False)
+    assert parse_clock("noon") == Clock(12, 0, False, False)
+    assert parse_clock("just before midnight") == Clock(23, 59, False, True)
+    assert parse_clock("just after noon") == Clock(12, 1, False, True)
+
+
+def test_the_next_hour_and_the_previous_day():
+    from src.services.fast_lane.time_words import parse_day, parse_duration
+    assert parse_duration("the next hour") == 60 and parse_duration("for the next hour") == 60
+    assert parse_day("the previous day", dt.date(2026, 3, 8), "record").date == dt.date(2026, 3, 7)
+
+
+def test_a_date_range():
+    from src.services.fast_lane.time_words import parse_day_range
+    today = dt.date(2026, 8, 22)
+    assert parse_day_range("30.08 - 06.09", today, "plan") == (dt.date(2026, 8, 30), dt.date(2026, 9, 6))
+    assert parse_day_range("01.10.2026 - 02.10.2026", today, "plan") == (dt.date(2026, 10, 1), dt.date(2026, 10, 2))
+    assert parse_day_range("30.08", today, "plan") is None
+    assert parse_day_range("tomorrow", today, "plan") is None

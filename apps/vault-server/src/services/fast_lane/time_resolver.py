@@ -19,8 +19,8 @@ import datetime as dt
 from dataclasses import dataclass, field, replace
 
 from src.services.fast_lane.time_words import (
-    Clock, DayRef, is_now, parse_clock, parse_day, parse_duration, parse_relative, parse_shift,
-    split_run_together, weekday_date,
+    Clock, DayRef, ends_next_day, is_now, parse_clock, parse_day, parse_day_range, parse_duration,
+    parse_relative, parse_shift, split_run_together, weekday_date,
 )
 
 TOLERANCE = dt.timedelta(minutes=2)
@@ -104,6 +104,8 @@ class _Raw:
     day: DayRef | None
     start_rel: dt.timedelta | None = None   # "15 mins ago", "in 20 minutes": from the message time
     end_rel: dt.timedelta | None = None
+    end_day: dt.date | None = None          # a range's last day ("30.08 - 06.09")
+    end_next_day: bool = False              # "14:00 next day"
 
     @property
     def anchor(self) -> Clock | None:
@@ -142,6 +144,8 @@ def _raw(c: ClauseTime, ctx: ResolverContext) -> _Raw:
         minutes=parse_duration(c.duration),
         day=parse_day(c.day, ctx.now.date(), c.intent),
         start_rel=parse_relative(c.start), end_rel=parse_relative(c.end),
+        end_day=(span[1] if (span := parse_day_range(c.day, ctx.now.date(), c.intent)) else None),
+        end_next_day=ends_next_day(c.end),
     )
 
 
@@ -213,6 +217,22 @@ def _first_after(clock: Clock, after: dt.datetime, tz, strictly: bool) -> dt.dat
     return min(options)
 
 
+def _end_after(raw: _Raw, start: dt.datetime, tz) -> dt.datetime:
+    """The end clock's reading after `start`: on a range's last day or "next day" when written."""
+    if raw.end_day is not None or raw.end_next_day:
+        day = raw.end_day if raw.end_day is not None else start.date() + dt.timedelta(days=1)
+        return _at(day, raw.end.hour, raw.end.minute, tz)
+    return _first_after(raw.end, start, tz, strictly=True)
+
+
+def _open_end(start: dt.datetime, raw: _Raw, c: ClauseTime, ctx: ResolverContext) -> dt.datetime | None:
+    """A record with only a start: your usual length once that has passed, else still open."""
+    if c.intent != "record":
+        return None
+    span, _ = _duration(raw, c, ctx)
+    return start + span if start + span <= ctx.now else None
+
+
 def _duration(raw: _Raw, c: ClauseTime, ctx: ResolverContext) -> tuple[dt.timedelta, bool]:
     """The clause's length, and whether it was assumed from your history."""
     if raw.minutes is not None:
@@ -236,13 +256,15 @@ def _complete(i: int, c: ClauseTime, raw: _Raw, anchor: dt.datetime, r: _Reading
         start, start_precision = anchor, _precision(raw.start)
         end = end_precision = None
         if raw.end is not None:
-            end, end_precision = _first_after(raw.end, start, tz, strictly=True), _precision(raw.end)
+            end, end_precision = _end_after(raw, start, tz), _precision(raw.end)
             if raw.minutes is not None and abs((end - start) - dt.timedelta(minutes=raw.minutes)) > AGREE:
                 r.flags[i] = "start, end and duration disagree"
         elif (fixed_end := _fixed(raw.end_now, raw.end_rel, ctx)) is not None:
             end, end_precision = fixed_end, "inferred"
         elif raw.minutes is not None:
             end, end_precision = start + dt.timedelta(minutes=raw.minutes), "inferred"
+        elif (assumed := _open_end(start, raw, c, ctx)) is not None:
+            end, end_precision = assumed, "assumed"
     else:  # anchored on the end
         end, end_precision = anchor, _precision(raw.end)
         span, assumed = _duration(raw, c, ctx)
@@ -280,14 +302,14 @@ def _chain(seed: dt.datetime, anchored: list[int], clauses, raws, ctx: ResolverC
 
 def _from_start(start: dt.datetime, start_precision: str, raw: _Raw, c: ClauseTime, ctx) -> Placement:
     if raw.end is not None:
-        end = _first_after(raw.end, start, ctx.now.tzinfo, strictly=True)
-        return _place(start, end, start_precision, _precision(raw.end), c, ctx)
+        return _place(start, _end_after(raw, start, ctx.now.tzinfo), start_precision, _precision(raw.end), c, ctx)
     if raw.minutes is not None:
         return _place(start, start + dt.timedelta(minutes=raw.minutes), start_precision, "inferred", c, ctx)
     fixed_end = _fixed(raw.end_now, raw.end_rel, ctx)
     if fixed_end is not None:
         return _place(start, fixed_end, start_precision, "inferred", c, ctx)
-    return _place(start, None, start_precision, None, c, ctx)
+    assumed = _open_end(start, raw, c, ctx)
+    return _place(start, assumed, start_precision, "assumed" if assumed else None, c, ctx)
 
 
 def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverContext) -> None:
@@ -329,6 +351,11 @@ def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCont
         elif c.after in r.placed:
             other = r.placed[c.after]
             r.placed[i] = _from_start(other.end or other.start, "inferred", raw, c, ctx)
+        elif raw.end_day is not None and raw.day is not None and raw.day.kind == "date":
+            # A range of days with no clock: the whole days, first to last.
+            tz = ctx.now.tzinfo
+            r.placed[i] = _place(_at(raw.day.date, 0, 0, tz), _at(raw.end_day + dt.timedelta(days=1), 0, 0, tz),
+                                 "exact", "exact", c, ctx)
     # A placed clause whose predecessor has no time of its own: walk back from it.
     for i in sorted(idx, reverse=True):
         j = clauses[i].after

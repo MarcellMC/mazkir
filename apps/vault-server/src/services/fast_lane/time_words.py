@@ -68,7 +68,7 @@ def parse_clock(text: str | None) -> Clock | None:
                      hedged=bool(_HEDGE.search(text)))
     match = next((m for m in _CLOCK.finditer(text) if not _UNIT_AFTER.match(text, m.end())), None)
     if not match:
-        return None
+        return _named_clock(text)
     raw_hour, raw_minute, meridiem = match.groups()
     hour, minute = int(raw_hour), int(raw_minute or 0)
     if hour > 23 or minute > 59:
@@ -81,6 +81,33 @@ def parse_clock(text: str | None) -> Clock | None:
         return Clock(hour, minute, ambiguous=False, hedged=hedged)
     leading_zero = len(raw_hour) == 2 and raw_hour[0] == "0"
     return Clock(hour, minute, ambiguous=1 <= hour <= 12 and not leading_zero, hedged=hedged)
+
+
+_NAMED_CLOCKS = {"midnight": 0, "полночь": 0, "полуночи": 0, "חצות": 0,
+                 "noon": 720, "midday": 720, "полдень": 720, "צהריים": 720}
+_NEAR = re.compile(r"(?<!\w)(before|after|до|после|לפני|אחרי)(?!\w)", re.IGNORECASE)
+
+
+def _named_clock(text: str) -> Clock | None:
+    """"midnight", "noon", and a minute either side: "just before midnight" is 23:59, approx."""
+    lowered = text.lower()
+    name = next((n for n in _NAMED_CLOCKS if re.search(rf"(?<!\w){n}(?!\w)", lowered)), None)
+    if name is None:
+        return None
+    moment = _NAMED_CLOCKS[name]
+    near = _NEAR.search(lowered)
+    if near:
+        moment += -1 if near.group(1).lower() in ("before", "до", "לפני") else 1
+    moment %= 24 * 60
+    return Clock(moment // 60, moment % 60, ambiguous=False, hedged=bool(near) or bool(_HEDGE.search(text)))
+
+
+_NEXT_DAY = re.compile(r"next day|the day after|следующего дня|на следующий день|назавтра|למחרת", re.IGNORECASE)
+
+
+def ends_next_day(text: str | None) -> bool:
+    """Whether an end's own words put it on the day after the start ("14:00 next day")."""
+    return bool(text) and bool(_NEXT_DAY.search(text))
 
 
 _HALF_HOUR = ("half an hour", "half hour", "полчаса", "חצי שעה")
@@ -109,7 +136,7 @@ def parse_duration(text: str | None) -> int | None:
         found = True
     if found:
         return round(total)
-    if re.fullmatch(r"(an?|one)?\s*(hour|час|שעה)", lowered):
+    if re.fullmatch(r"(?:for\s+)?(?:the\s+)?(?:next\s+)?(?:an?|one)?\s*(?:hour|час|שעה)", lowered):
         return 60
     return None
 
@@ -204,9 +231,10 @@ _NIGHT = {
 }
 _RELATIVE = {
     "day before yesterday": -2, "позавчера": -2,
-    "yesterday": -1, "вчера": -1, "אתמול": -1,
+    "yesterday": -1, "вчера": -1, "אתמול": -1, "previous day": -1, "the day before": -1,
     "today": 0, "сегодня": 0, "היום": 0,
-    "tomorrow": 1, "завтра": 1, "מחר": 1,
+    "tomorrow": 1, "завтра": 1, "מחר": 1, "next day": 1,
+    "day after tomorrow": 2, "послезавтра": 2,
 }
 _WEEKDAYS = {
     "monday": 0, "понедельник": 0, "tuesday": 1, "вторник": 1, "wednesday": 2, "среда": 2, "среду": 2,
@@ -267,6 +295,28 @@ def parse_day(text: str | None, today: dt.date, intent: str) -> DayRef | None:
         if re.search(_WORD.format(name), lowered):
             return DayRef("weekday", weekday=index)
     return None
+
+
+_DATE_RANGE = re.compile(
+    r"(?<!\d)(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\s*(?:-|–|—|to|until|до)\s*"
+    r"(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?!\d)", re.IGNORECASE)
+
+
+def parse_day_range(text: str | None, today: dt.date, intent: str) -> tuple[dt.date, dt.date] | None:
+    """Two dates written as a range ("30.08 - 06.09"), or None. The second year follows the first."""
+    match = _DATE_RANGE.search(text or "")
+    if not match:
+        return None
+    d1, m1, y1, d2, m2, y2 = match.groups()
+    first = _dated(int(d1), int(m1), int(y1) if y1 else None, today, intent)
+    if first is None:
+        return None
+    year = int(y2) if y2 else first.date.year
+    second = _dated(int(d2), int(m2), year, today, intent)
+    if second is None:
+        return None
+    last = second.date if second.date >= first.date else second.date.replace(year=second.date.year + 1)
+    return first.date, last
 
 
 def weekday_date(weekday: int, today: dt.date, intent: str) -> dt.date:
