@@ -19,8 +19,8 @@ import datetime as dt
 from dataclasses import dataclass, field, replace
 
 from src.services.fast_lane.time_words import (
-    Clock, DayRef, ends_next_day, is_now, parse_clock, parse_day, parse_day_range, parse_duration,
-    parse_relative, parse_shift, split_run_together, weekday_date,
+    Clock, DayRef, ends_next_day, is_now, is_window, parse_clock, parse_day, parse_day_range,
+    parse_duration, parse_relative, parse_shift, split_run_together, weekday_date,
 )
 
 TOLERANCE = dt.timedelta(minutes=2)
@@ -109,6 +109,7 @@ class _Raw:
     end_rel: dt.timedelta | None = None
     end_day: dt.date | None = None          # a range's last day ("30.08 - 06.09")
     end_next_day: bool = False              # "14:00 next day"
+    window: bool = False                    # "somewhere between 20:30 and 22:30"
 
     @property
     def anchor(self) -> Clock | None:
@@ -149,6 +150,7 @@ def _raw(c: ClauseTime, ctx: ResolverContext) -> _Raw:
         start_rel=parse_relative(c.start), end_rel=parse_relative(c.end),
         end_day=(span[1] if (span := parse_day_range(c.day, ctx.now.date(), c.intent)) else None),
         end_next_day=ends_next_day(c.end),
+        window=is_window(c.start),
     )
 
 
@@ -279,7 +281,13 @@ def _complete(i: int, c: ClauseTime, raw: _Raw, anchor: dt.datetime, r: _Reading
     if raw.start is not None:
         start, start_precision = anchor, _precision(raw.start)
         end = end_precision = None
-        if raw.end is not None:
+        if raw.end is not None and raw.window:
+            # A window to fit into, not the block itself: your usual length at its
+            # start, never past its end, proposed (owner, 2026-09-29).
+            span, _ = _duration(raw, c, ctx)
+            end, end_precision = min(start + span, _end_after(raw, start, tz)), "assumed"
+            r.flags[i] = "a time inside your window"
+        elif raw.end is not None:
             end, end_precision = _end_after(raw, start, tz), _precision(raw.end)
             if raw.minutes is not None and abs((end - start) - dt.timedelta(minutes=raw.minutes)) > AGREE:
                 r.flags[i] = "start, end and duration disagree"
@@ -416,6 +424,49 @@ def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCont
                                  "inferred", clauses[j], ctx)
 
 
+def _untimed(raw: _Raw, ctx: ResolverContext) -> bool:
+    """No clock, no "now", no relative time, and no day but today."""
+    if raw.anchor is not None or raw.start_now or raw.end_now or raw.relative or raw.end_day is not None:
+        return False
+    return raw.day is None or (raw.day.kind == "date" and raw.day.date == ctx.now.date())
+
+
+def _propose_untimed(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverContext) -> None:
+    """Plans with no time at all, proposed back to back from now (owner, 2026-09-29).
+
+    "Plan meal prep, eating and a dog walk after that" and "schedule for
+    later: …" name what, not when; Mazkir picks the when from your usual
+    lengths, and you approve or adjust it.
+    """
+    cursor = ctx.now
+    for i in idx:
+        c, raw = clauses[i], raws[i]
+        if i in r.placed or c.intent != "plan" or c.with_ is not None or not _untimed(raw, ctx):
+            continue
+        linked = r.placed.get(c.after)
+        start = (linked.end or linked.start) if linked is not None else cursor
+        span, _ = _duration(raw, c, ctx)
+        r.placed[i] = _place(start, start + span, "assumed", "assumed", c, ctx)
+        r.flags[i] = "times proposed by Mazkir"
+        cursor = start + span
+
+
+def _shared_intervals(best: _Reading, idx: list[int], clauses, raws) -> list[list[int]]:
+    """Records of different activities given one written interval: their split is unknown.
+
+    "23:00-00:00 as meal prep, eating and watching" asks how the hour was
+    split (owner, 2026-09-29); "eating while watching" sets `with` and does not.
+    """
+    groups: dict[tuple, list[int]] = {}
+    for i in idx:
+        c, raw, p = clauses[i], raws[i], best.placed.get(i)
+        if (c.intent == "record" and c.with_ is None and raw.start is not None and raw.end is not None
+                and p is not None and p.start is not None and p.end is not None):
+            groups.setdefault((p.start, p.end), []).append(i)
+    return [members for members in groups.values()
+            if len({(clauses[i].name or "").strip().lower() for i in members}) > 1]
+
+
 def _check(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverContext) -> None:
     """Rules 1, 2, 4 and 10: records can't start after the message, plans can't start before it.
 
@@ -511,6 +562,7 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
         for j, p in (known or {}).items():
             r.placed.setdefault(j, p)
         _fill_relative(r, idx, clauses, raws, ctx)
+        _propose_untimed(r, idx, clauses, raws, ctx)
         _check(r, idx, clauses, raws, ctx)
     valid = _unique([r for r in readings if r.valid])
     if not valid:
@@ -519,7 +571,11 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
     # record). A clean one beats a flagged one, then the most recent record or
     # the soonest plan wins: nothing is left to ask (spec §6.4).
     best = min(valid, key=lambda r: (bool(r.flags), _key(r, anchored, clauses, ctx)))
-    return {i: _outcome(clauses[i], best.placed.get(i), best.flags.get(i)) for i in idx}
+    results = {i: _outcome(clauses[i], best.placed.get(i), best.flags.get(i)) for i in idx}
+    for members in _shared_intervals(best, idx, clauses, raws):
+        for i in members:
+            results[i] = ClauseResolution("question", best.placed[i], reason="how was this time split between them?")
+    return results
 
 
 def _nearest(clock: Clock, reference: dt.datetime, tz) -> dt.datetime:

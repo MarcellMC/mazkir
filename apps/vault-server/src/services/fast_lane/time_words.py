@@ -105,6 +105,15 @@ def _named_clock(text: str) -> Clock | None:
 _NEXT_DAY = re.compile(r"next day|the day after|следующего дня|на следующий день|назавтра|למחרת", re.IGNORECASE)
 
 
+_WINDOW = re.compile(r"(?<!\w)(?:somewhere|sometime|some time|at some point)(?!\w)|где-то|когда-нибудь|מתישהו",
+                     re.IGNORECASE)
+
+
+def is_window(text: str | None) -> bool:
+    """Whether a start's words make the range a window to fit into ("somewhere between 20:30")."""
+    return bool(text) and bool(_WINDOW.search(text))
+
+
 def ends_next_day(text: str | None) -> bool:
     """Whether an end's own words put it on the day after the start ("14:00 next day")."""
     return bool(text) and bool(_NEXT_DAY.search(text))

@@ -190,3 +190,61 @@ def test_waking_without_a_known_bedtime_assumes_eight_hours():
 def test_a_sleep_with_its_length_given_is_not_a_guess():
     [r] = resolve([log("Sleep", end="08:00", duration="7 hours")], ctx(at(9, 8, 9, 0), bedtime=dt.time(23, 15)))
     assert (r.outcome, r.placement.start) == ("fact", at(9, 8, 1, 0))
+
+
+# --- Plans with no time, windows, and one interval for several activities ---
+
+
+def test_plans_with_no_time_are_proposed_back_to_back_from_now():
+    clauses = [log("Meal prep", intent="plan"), log("Eating", intent="plan", after=0),
+               log("Dog walk", intent="plan", after=1)]
+    prep, eating, walk = resolve(clauses, ctx(at(9, 12, 21, 2), typical_minutes={"dog walk": 45}))
+    assert [r.outcome for r in (prep, eating, walk)] == ["proposal"] * 3
+    assert (prep.placement.start, prep.placement.end) == (at(9, 12, 21, 2), at(9, 12, 21, 32))
+    assert (eating.placement.start, walk.placement.start, walk.placement.end) == (
+        at(9, 12, 21, 32), at(9, 12, 22, 2), at(9, 12, 22, 47))
+
+
+def test_a_list_to_schedule_later_is_proposed_in_order_without_links():
+    laundry, plants = resolve([log("Hang laundry", intent="plan"), log("Water the plants", intent="plan")],
+                              ctx(at(9, 13, 15, 20)))
+    assert (laundry.placement.start, plants.placement.start) == (at(9, 13, 15, 20), at(9, 13, 15, 50))
+    assert plants.outcome == "proposal"
+
+
+def test_an_untimed_plan_after_a_timed_one_follows_it():
+    gym, shower = resolve([log("Gym", "18:00", "19:00", intent="plan"), log("Shower", intent="plan", after=0)],
+                          ctx(at(9, 13, 15, 0)))
+    assert (gym.outcome, shower.outcome) == ("plan", "plan")
+    assert shower.placement.start == at(9, 13, 19, 0)
+
+
+def test_a_record_with_no_time_still_asks():
+    [r] = resolve([log("Bar hopping")], ctx(at(9, 12, 20, 0)))
+    assert r.outcome == "question"
+
+
+def test_a_window_proposes_your_usual_length_at_its_start():
+    [r] = resolve([log("Dog walk", "somewhere between 20:30", "22:30", intent="plan")],
+                  ctx(at(5, 12, 16, 8), typical_minutes={"dog walk": 30}))
+    assert (r.outcome, r.placement.start, r.placement.end) == ("proposal", at(5, 12, 20, 30), at(5, 12, 21, 0))
+    assert "window" in r.reason
+
+
+def test_a_window_shorter_than_the_activity_is_the_whole_window():
+    [r] = resolve([log("Gym", "sometime between 18:00", "18:45", intent="plan")],
+                  ctx(at(5, 12, 16, 8), typical_minutes={"gym": 70}))
+    assert (r.placement.start, r.placement.end) == (at(5, 12, 18, 0), at(5, 12, 18, 45))
+
+
+def test_several_activities_given_one_interval_ask_how_it_was_split():
+    clauses = [log("Meal prep", "23:00", "00:00"), log("Eating", "23:00", "00:00"), log("Watching", "23:00", "00:00")]
+    rs = resolve(clauses, ctx(at(9, 6, 0, 1)))
+    assert [r.outcome for r in rs] == ["question"] * 3
+    assert all("split" in r.reason for r in rs)
+    assert rs[0].placement.start == at(9, 5, 23, 0)
+
+
+def test_activities_running_alongside_share_the_interval_without_asking():
+    eating, watching = resolve([log("Eating", "23:00", "00:00"), log("Watching", with_=0)], ctx(at(9, 6, 0, 1)))
+    assert (eating.outcome, watching.outcome) == ("fact", "fact")
