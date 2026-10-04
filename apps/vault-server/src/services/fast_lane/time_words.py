@@ -47,8 +47,15 @@ class DayRef:
     weekday: int | None = None   # Monday = 0
 
 
+_UNTIL = re.compile(r"^(?:until|till|til|up to|up till|to)\s+", re.IGNORECASE)
+
+
 def is_now(text: str | None) -> bool:
-    return bool(text) and text.strip().lower() in NOW_WORDS
+    """ "now", "just returned", and the end of a span written as "until now"."""
+    if not text:
+        return False
+    lowered = text.strip().lower()
+    return lowered in NOW_WORDS or _UNTIL.sub("", lowered) in NOW_WORDS
 
 
 def parse_clock(text: str | None) -> Clock | None:

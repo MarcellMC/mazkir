@@ -319,3 +319,32 @@ def test_moving_a_block_a_day_later():
     [r] = resolve([ClauseTime(op="edit_block", shift="+1 day", intent="plan",
                               target_start=at(10, 1, 12, 0), target_end=at(10, 2, 14, 0))], ctx(at(9, 30, 18, 23)))
     assert (r.placement.start, r.placement.end) == (at(10, 2, 12, 0), at(10, 3, 14, 0))
+
+
+def test_until_now_is_now():
+    [r] = resolve([log("Eat and relax", "18:45", "until now")], ctx(at(9, 29, 21, 58)))
+    assert (r.placement.start, r.placement.end) == (at(9, 29, 18, 45), at(9, 29, 21, 58))
+
+
+def test_an_assumed_end_never_runs_past_the_next_block():
+    beach, ride, cafe = resolve([log("Beach", "8:45", "9:40"), log("Ride to the cafe", after=0),
+                                 log("Cafe", "9:57", "10:38")], ctx(at(9, 29, 11, 58)))
+    assert (ride.placement.start, ride.placement.end) == (at(9, 29, 9, 40), at(9, 29, 9, 57))
+    gym, shower, dinner = resolve([log("Gym", "18:00", "19:00"), log("Shower", after=0), log("Dinner", "20:00", "20:30")],
+                                  ctx(at(9, 29, 21, 0)))
+    assert (shower.placement.start, shower.placement.end) == (at(9, 29, 19, 0), at(9, 29, 19, 30))
+
+
+def test_a_chain_after_an_edit_runs_forward_from_it():
+    ended = ClauseTime(op="end_block", duration="30 mins", target_start=at(10, 4, 0, 42))
+    _, laundry, _ = resolve([ended, log("Hang the laundry", after=0), log("Feed the dog", after=1)],
+                            ctx(at(10, 4, 1, 29)))
+    assert laundry.placement.start == at(10, 4, 1, 12)
+
+
+def test_plans_after_a_block_still_running_are_proposed_after_its_usual_length():
+    eat, dev, video = resolve([log("Eat", "now", op="start_block"), log("Dev", intent="plan", after=0),
+                               log("Watch videos", intent="plan", after=1)], ctx(at(10, 4, 14, 57)))
+    assert eat.outcome == "fact"
+    assert (dev.outcome, dev.placement.start, dev.placement.end) == ("proposal", at(10, 4, 15, 27), at(10, 4, 15, 57))
+    assert (video.outcome, video.placement.start) == ("proposal", at(10, 4, 15, 57))

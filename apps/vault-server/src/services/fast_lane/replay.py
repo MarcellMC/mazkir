@@ -11,7 +11,7 @@ import datetime as dt
 import json
 import re
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -131,24 +131,60 @@ def _ts(value: Any, date: str, tz) -> dt.datetime | None:
     return moment.replace(tzinfo=tz) if moment.tzinfo is None else moment.astimezone(tz)
 
 
-def _blocks_before(msg: Message, earlier: list[Message]) -> tuple[BlockView, ...]:
-    """Blocks the old path created in the 30 h before this message: the day as it stood then."""
-    out = []
+def _find_block(blocks: dict[str, BlockView], params: dict[str, Any]) -> str | None:
+    """The key of the block an update or delete named: its id, else the latest of that name."""
+    if str(params.get("event_id") or "") in blocks:
+        return str(params["event_id"])
+    reference = str(params.get("block_reference") or "").casefold()
+    if reference:
+        for key in reversed(blocks):
+            name = blocks[key].name.casefold()
+            if name == reference or reference in name:
+                return key
+    return None
+
+
+def _blocks_before(msg: Message, earlier: list[Message], boundary_hour: int = 5) -> tuple[BlockView, ...]:
+    """The day as the old path left it before this message: what it created, updated and deleted.
+
+    Only the days the live context shows (spec §5.1): today's file, and the
+    evening before while it is still before the day boundary. A call that
+    waited on a confirmation logged no result and never ran.
+    """
+    days = {msg.ts.date().isoformat()}
+    if msg.ts.hour < boundary_hour:
+        days.add((msg.ts.date() - dt.timedelta(days=1)).isoformat())
+    tz = msg.ts.tzinfo
+    blocks: dict[str, BlockView] = {}
     for prev in earlier:
         if msg.ts - prev.ts > dt.timedelta(hours=30):
             continue
         for tool in prev.old_tools:
-            if tool["name"] != "create_event":
+            result = tool.get("result")
+            if not isinstance(result, dict) or result.get("ok") is False:
                 continue
-            params = tool["params"]
-            date = str(params.get("date") or prev.ts.date().isoformat())
-            result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
+            params = tool.get("params") or {}
             # Newer turns log the normalized {"ok", "data": {...}} shape; older ones the bare dict.
             data = result.get("data") if isinstance(result.get("data"), dict) else result
-            out.append(BlockView(id=str(data.get("event_id", "")), date=date, name=str(params.get("name") or ""),
-                                 start=_ts(params.get("start_time"), date, msg.ts.tzinfo),
-                                 end=_ts(params.get("end_time"), date, msg.ts.tzinfo)))
-    return tuple(out)
+            if tool["name"] == "create_event":
+                date = str(params.get("date") or prev.ts.date().isoformat())
+                key = str(data.get("event_id", "")) or f"{prev.id}:{len(blocks)}"
+                blocks[key] = BlockView(id=str(data.get("event_id", "")), date=date, name=str(params.get("name") or ""),
+                                        start=_ts(params.get("start_time"), date, tz),
+                                        end=_ts(params.get("end_time"), date, tz))
+            elif tool["name"] in ("update_event", "delete_event"):
+                key = _find_block(blocks, params)
+                if key is None:
+                    continue
+                if tool["name"] == "delete_event":
+                    del blocks[key]
+                    continue
+                b = blocks[key]
+                blocks[key] = replace(
+                    b, name=str(params.get("name") or b.name),
+                    start=_ts(params["start_time"], b.date, tz) if params.get("start_time") else b.start,
+                    end=_ts(params["end_time"], b.date, tz) if params.get("end_time") else b.end)
+    return tuple(b for b in blocks.values() if b.date in days)
 
 
 def context_for(msg: Message, earlier: list[Message], habits: tuple[HabitView, ...],

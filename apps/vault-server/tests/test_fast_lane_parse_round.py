@@ -301,3 +301,28 @@ def test_an_end_closes_the_open_block_of_its_name_not_an_earlier_closed_one():
     assert t.target_start == now_walk.start
     with_article = Clause("end_block", "record", True, "the walk is over", target="the dog walk", time=TimeWords(end="now"))
     assert _clause_time(with_article, [b.as_candidate() for b in blocks], {b.id: b for b in blocks}).target_start == now_walk.start
+
+
+def _created(name, start, end, event_id, date="2026-10-01"):
+    return {"name": "create_event", "params": {"name": name, "date": date, "start_time": start, "end_time": end},
+            "result": {"ok": True, "data": {"event_id": event_id}}}
+
+
+def test_replayed_blocks_take_later_updates_and_deletes():
+    walk = Message(id="t1", ts=dt.datetime(2026, 10, 1, 9, 0, tzinfo=TZ), text="x",
+                   old_tools=[_created("Dog walk", "08:45", None, "w1"), _created("Gym", "07:00", "08:00", "g1")])
+    closed = Message(id="t2", ts=dt.datetime(2026, 10, 1, 9, 20, tzinfo=TZ), text="y", old_tools=[
+        {"name": "update_event", "params": {"block_reference": "Dog walk", "end_time": "09:15"}, "result": {"ok": True}},
+        {"name": "delete_event", "params": {"event_id": "g1"}, "result": {"ok": True}}])
+    later = Message(id="t3", ts=dt.datetime(2026, 10, 1, 10, 0, tzinfo=TZ), text="z")
+    [b] = _blocks_before(later, [walk, closed])
+    assert (b.id, b.end) == ("w1", dt.datetime(2026, 10, 1, 9, 15, tzinfo=TZ))
+
+
+def test_replayed_blocks_are_the_days_the_live_context_shows():
+    yesterday = Message(id="t1", ts=dt.datetime(2026, 9, 30, 14, 0, tzinfo=TZ), text="x",
+                        old_tools=[_created("Dog walk", "14:55", None, "w0", date="2026-09-30")])
+    morning = Message(id="t2", ts=dt.datetime(2026, 10, 1, 10, 0, tzinfo=TZ), text="y")
+    assert _blocks_before(morning, [yesterday]) == ()
+    small_hours = Message(id="t3", ts=dt.datetime(2026, 10, 1, 1, 0, tzinfo=TZ), text="z")
+    assert [b.id for b in _blocks_before(small_hours, [yesterday])] == ["w0"]

@@ -407,7 +407,10 @@ def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCont
         today_only = raws[head].day is None or (raws[head].day.kind == "date" and raws[head].day.date == ctx.now.date())
         single = (len(chain) == 1 and raws[head].minutes is not None and today_only
                   and clauses[head].with_ is None and clauses[head].after is None)
-        if (len(chain) > 1 or single) and clockless and not now_anchored and clauses[chain[-1]].intent == "record":
+        # A chain that follows a clause already placed (an edit) runs forward from it, below.
+        linked = clauses[head].after in r.placed
+        if ((len(chain) > 1 or single) and clockless and not now_anchored and not linked
+                and clauses[chain[-1]].intent == "record"):
             end, end_precision = ctx.now, "inferred"
             for i in reversed(chain):
                 span, assumed = _duration(raws[i], clauses[i], ctx)
@@ -432,7 +435,8 @@ def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCont
             if why:
                 r.flags.setdefault(i, why)
             r.placed[i] = _place(start, fixed_end, start_precision, "inferred", c, ctx)
-        elif c.after in r.placed:
+        elif c.after in r.placed and not (c.intent == "plan" and r.placed[c.after].end is None
+                                          and _untimed(raw, c, ctx)):
             other = r.placed[c.after]
             r.placed[i] = _from_start(other.end or other.start, "inferred", raw, c, ctx)
         elif raw.end_day is not None and raw.day is not None and raw.day.kind == "date":
@@ -476,7 +480,14 @@ def _propose_untimed(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCo
                 or not _untimed(raw, c, ctx)):
             continue
         linked = r.placed.get(c.after)
-        start = (linked.end or linked.start) if linked is not None else cursor
+        if linked is None:
+            start = cursor
+        else:
+            # After a block still running: once its usual length is over.
+            start = linked.end
+            if start is None:
+                usual = _duration(raws[c.after], clauses[c.after], ctx)[0] if c.after in raws else dt.timedelta(0)
+                start = linked.start + usual
         span, _ = _duration(raw, c, ctx)
         r.placed[i] = _place(start, start + span, "assumed", "assumed", c, ctx)
         r.flags[i] = "times proposed by Mazkir"
@@ -499,6 +510,21 @@ def _place_by_photo(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCon
         start = ctx.photo_at - span / 2
         r.placed[i] = _place(start, start + span, "assumed", "assumed", c, ctx)
         r.flags[i] = "placed around your photo"
+
+
+def _clip_to_next(r: _Reading, idx: list[int]) -> None:
+    """An assumed end never runs past the start of the next block in the message.
+
+    "…then cycled to the cafe, stayed there from 9:57" is a ride that ends at
+    9:57, not after a usual half hour that would overlap the cafe.
+    """
+    for i in idx:
+        p = r.placed.get(i)
+        if p is None or p.start is None or p.end is None or p.end_precision != "assumed":
+            continue
+        later = [q.start for j, q in r.placed.items() if j != i and q.start is not None and p.start < q.start < p.end]
+        if later:
+            r.placed[i] = replace(p, end=min(later), end_precision="inferred")
 
 
 def _shared_intervals(best: _Reading, idx: list[int], clauses, raws) -> list[list[int]]:
@@ -617,6 +643,7 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
         _fill_relative(r, idx, clauses, raws, ctx)
         _propose_untimed(r, idx, clauses, raws, ctx)
         _place_by_photo(r, idx, clauses, raws, ctx)
+        _clip_to_next(r, idx)
         _check(r, idx, clauses, raws, ctx)
     valid = _unique([r for r in readings if r.valid])
     if not valid:
