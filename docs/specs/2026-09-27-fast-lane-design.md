@@ -115,7 +115,7 @@ Every message is read once by a fast model and turned into **clauses of evidence
 | Stated record, placed exactly | **Fact.** Written, counted in `confirmed_minutes`, receipt with undo |
 | Stated plan | **Scheduled.** Written, synced to Google, counted as a plan until confirmed |
 | Mentioned in passing, or the resolver had to guess | **Proposal.** Pending on `/day`, ✓ ✕ ✎ on the receipt, not synced, not counted |
-| Can't be placed | **Question.** One tap, or one reply; the answer comes back as evidence |
+| Can't be placed | **Question.** One reply; the answer comes back as evidence |
 
 Clauses outside A's operations fall through to a skill; parse failures fall through to today's router.
 
@@ -350,7 +350,7 @@ Registered as a post-hook on every block write: fast lane, agent, `/day` approva
 | Proposal | now, `proposed: true` | no | no | no, until ✓ |
 | Question | nothing for that clause | | | |
 
-A question's choices are held server-side under a short id for 30 minutes, because of Telegram's 64-byte callback limit, so a tap writes directly.
+*Revised 2026-10-03:* a question offers no buttons to choose between. With 24-hour clocks the resolver never has two readings to offer, so the choice buttons and the server-side store that held them are dropped from A (owner, 2026-10-03). A question is answered by a reply, which comes back as evidence.
 
 ### 7.5 Execution
 
@@ -387,7 +387,7 @@ The stream stays open until background syncs settle (15 s cap). Fallthrough turn
 
 ### 8.2 Receipt layout
 
-These symbols are shared with `/day`: `✓` fact · `◌` scheduled plan · `●` proposal waiting on you · `?` needs one tap.
+These symbols are shared with `/day`: `✓` fact · `◌` scheduled plan · `●` proposal waiting on you · `?` needs your answer.
 
 ```
 ✓ yest 23:15–23:35  Dog walk                          [✎]
@@ -400,7 +400,7 @@ These symbols are shared with `/day`: `✓` fact · `◌` scheduled plan · `●
 - `~` marks an approximate or assumed end; `→` with no end marks a block still running. A date other than today is spelled out ("yest", "Fri", "7 Sep").
 - Anything unplaced says so ("Watched UFC · no time. Reply with one.") and arms the existing open-question hint.
 - The game layer is the habit line: count against target, tokens, streak, and a "longest ever" note, all computed by code.
-- Callback data is `rcpt:<turn>:<line>:<action>`: approve, dismiss, edit (the existing block edit view), choice, add place, confirm habit, suggest habit, undo.
+- Callback data is `rcpt:<turn>:<line>:<action>`: approve, dismiss, edit (the existing block edit view), add place, confirm habit, suggest habit, undo.
 - Undo edits the receipt so each line reads "↶ undone"; a line that can't be undone says why.
 
 The server sends structured receipt data; a new `formatters/receipt-rich.ts` draws it without knowing the rules.
@@ -440,7 +440,6 @@ Related bug to fix alongside it: when `complete_habit` is called with a past `no
 ### 9.4 Other stores
 
 - `data/places.json` (§7.3).
-- Question choices: in memory, 30-minute TTL.
 - Undo snapshots: `data/actions/{turn_id}.json`, pruned after 24 h.
 - Habit files: `aliases:` in frontmatter.
 
@@ -455,7 +454,6 @@ Related bug to fix alongside it: when `complete_habit` is called with a past `no
 | No reading survives | One question |
 | A write fails | ✗ on its line with the reason; the others proceed; nothing is claimed |
 | Google sync fails | ⚠ on its line; the block stays in Mazkir |
-| Server restart before a choice is tapped | "Expired, send it again" |
 | Duplicate Telegram delivery | The turn is keyed by message id; a repeat within 10 min is ignored |
 | Rich message rejected | `sendRich` falls back to plain text; lines survive, buttons are lost |
 | Anything else | `FAST_LANE=off \| shadow \| on` |
