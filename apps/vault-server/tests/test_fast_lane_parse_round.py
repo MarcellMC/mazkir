@@ -286,3 +286,18 @@ def test_the_photo_moment_is_telegrams_send_time_read_as_utc():
         dt.datetime(2026, 9, 27, 23, 20, 5, tzinfo=tz)
     assert photo_sent_at([{"type": "document"}], tz) is None
     assert photo_sent_at([{"type": "photo", "telegram_date": "garbage"}], tz) is None
+
+
+def test_an_end_closes_the_open_block_of_its_name_not_an_earlier_closed_one():
+    from src.services.fast_lane.context import BlockView
+    from src.services.fast_lane.contract import Clause, TimeWords
+    from src.services.fast_lane.shadow import _clause_time
+    morning = BlockView("w1", "2026-10-04", "Dog walk", dt.datetime(2026, 10, 4, 0, 42, tzinfo=TZ),
+                        dt.datetime(2026, 10, 4, 1, 12, tzinfo=TZ))
+    now_walk = BlockView("w2", "2026-10-04", "Dog walk", dt.datetime(2026, 10, 4, 14, 25, tzinfo=TZ), None)
+    blocks = [morning, now_walk]
+    c = Clause("end_block", "record", True, "Got back 5 min ago", target="Dog walk", time=TimeWords(end="5 min ago"))
+    t = _clause_time(c, [b.as_candidate() for b in blocks], {b.id: b for b in blocks})
+    assert t.target_start == now_walk.start
+    with_article = Clause("end_block", "record", True, "the walk is over", target="the dog walk", time=TimeWords(end="now"))
+    assert _clause_time(with_article, [b.as_candidate() for b in blocks], {b.id: b for b in blocks}).target_start == now_walk.start

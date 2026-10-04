@@ -144,6 +144,24 @@ class _Reading:
     valid: bool = True
 
 
+def _end_day(c: ClauseTime, ctx: ResolverContext) -> dt.date | None:
+    """The day an end lands on when the words say so: a range's last day, or the end's own day word.
+
+    "Returning around 14:00 on Saturday" ends on Saturday whatever day the
+    start is on. "Next day" is relative to the start and is read in `_end_after`.
+    """
+    span = parse_day_range(c.day, ctx.now.date(), c.intent)
+    if span:
+        return span[1]
+    if c.end and not ends_next_day(c.end):
+        ref = parse_day(c.end, ctx.now.date(), c.intent)
+        if ref is not None and ref.kind == "date":
+            return ref.date
+        if ref is not None and ref.kind == "weekday":
+            return weekday_date(ref.weekday, ctx.now.date(), c.intent)
+    return None
+
+
 def _raw(c: ClauseTime, ctx: ResolverContext) -> _Raw:
     return _Raw(
         start=parse_clock(c.start), end=parse_clock(c.end),
@@ -151,7 +169,7 @@ def _raw(c: ClauseTime, ctx: ResolverContext) -> _Raw:
         minutes=parse_duration(c.duration),
         day=parse_day(c.day, ctx.now.date(), c.intent),
         start_rel=parse_relative(c.start), end_rel=parse_relative(c.end),
-        end_day=(span[1] if (span := parse_day_range(c.day, ctx.now.date(), c.intent)) else None),
+        end_day=_end_day(c, ctx),
         end_next_day=ends_next_day(c.end),
         window=is_window(c.start),
     )
@@ -384,7 +402,12 @@ def _fill_relative(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverCont
         clockless = all(raws[i].anchor is None and i not in r.placed for i in chain)
         # "now" and "N min ago" pin a member, and the chain works outward from it
         now_anchored = any(raws[i].start_now or raws[i].relative for i in chain)
-        if len(chain) > 1 and clockless and not now_anchored and clauses[chain[-1]].intent == "record":
+        # One record with a length and no other time ("practiced guitar 10 mins")
+        # just ended, as a chain does; with another day's word it asks.
+        today_only = raws[head].day is None or (raws[head].day.kind == "date" and raws[head].day.date == ctx.now.date())
+        single = (len(chain) == 1 and raws[head].minutes is not None and today_only
+                  and clauses[head].with_ is None and clauses[head].after is None)
+        if (len(chain) > 1 or single) and clockless and not now_anchored and clauses[chain[-1]].intent == "record":
             end, end_precision = ctx.now, "inferred"
             for i in reversed(chain):
                 span, assumed = _duration(raws[i], clauses[i], ctx)

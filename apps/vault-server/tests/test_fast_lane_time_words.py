@@ -135,3 +135,25 @@ def test_a_date_range():
     assert parse_day_range("01.10.2026 - 02.10.2026", today, "plan") == (dt.date(2026, 10, 1), dt.date(2026, 10, 2))
     assert parse_day_range("30.08", today, "plan") is None
     assert parse_day_range("tomorrow", today, "plan") is None
+
+
+def test_a_hedged_range_of_minutes_is_a_relative_time_not_a_clock():
+    from src.services.fast_lane.time_words import parse_clock, parse_relative
+    assert parse_clock("in about 15-20 mins") is None
+    assert parse_relative("in about 15-20 mins") == dt.timedelta(minutes=18)
+    assert parse_relative("in 15-20 minutes") == dt.timedelta(minutes=18)
+    assert parse_relative("in about an hour") == dt.timedelta(minutes=60)
+    assert parse_clock("12:00-16:00").hour == 12      # a range of clocks is still a clock
+
+
+def test_a_few_minutes():
+    from src.services.fast_lane.time_words import parse_relative
+    assert parse_relative("in a few minutes") == dt.timedelta(minutes=5)
+    assert parse_relative("a couple of minutes ago") == dt.timedelta(minutes=-2)
+
+
+def test_a_shift_in_days():
+    from src.services.fast_lane.time_words import parse_shift
+    assert parse_shift("+1 day") == 24 * 60
+    assert parse_shift("2 days later") == 2 * 24 * 60
+    assert parse_shift("back 30 mins") == -30

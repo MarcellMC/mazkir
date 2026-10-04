@@ -292,3 +292,30 @@ def test_a_caption_naming_an_activity_proposes_it_around_the_photo():
 def test_without_a_photo_an_untimed_record_still_asks():
     [r] = resolve([log("Dinner")], ctx(at(9, 12, 20, 31)))
     assert r.outcome == "question"
+
+
+# --- From the messages of 2026-09-29 to 2026-10-04 ---
+
+
+def test_a_plan_in_about_some_minutes_is_not_a_clock():
+    [r] = resolve([log("Dog walk", "in about 15-20 mins", intent="plan")], ctx(at(9, 30, 1, 47)))
+    assert (r.outcome, r.placement.start) == ("plan", at(9, 30, 2, 5))
+
+
+def test_a_record_with_only_a_length_ends_at_the_message():
+    [r] = resolve([log("Practice guitar", duration="10 mins")], ctx(at(9, 30, 18, 9)))
+    assert (r.outcome, r.placement.start, r.placement.end) == ("fact", at(9, 30, 17, 59), at(9, 30, 18, 9))
+    [y] = resolve([log("Practice guitar", duration="10 mins", day="yesterday")], ctx(at(9, 30, 18, 9)))
+    assert y.outcome == "question"
+
+
+def test_an_end_naming_its_own_day():
+    [r] = resolve([log("Camping trip", "around 12", "around 14:00 on Saturday", day="Friday", intent="plan")],
+                  ctx(at(9, 30, 18, 26)))
+    assert (r.outcome, r.placement.start, r.placement.end) == ("plan", at(10, 2, 12, 0), at(10, 3, 14, 0))
+
+
+def test_moving_a_block_a_day_later():
+    [r] = resolve([ClauseTime(op="edit_block", shift="+1 day", intent="plan",
+                              target_start=at(10, 1, 12, 0), target_end=at(10, 2, 14, 0))], ctx(at(9, 30, 18, 23)))
+    assert (r.placement.start, r.placement.end) == (at(10, 2, 12, 0), at(10, 3, 14, 0))

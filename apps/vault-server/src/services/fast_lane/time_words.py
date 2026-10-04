@@ -22,7 +22,9 @@ _CLOCK = re.compile(r"(?<!\d)(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?!
 # Units of a length, in the three languages: after a number they make it a duration.
 _HOUR_UNITS = r"hours?|hrs?|h|час(?:а|ов)?|ч|שעות|שעה"
 _MINUTE_UNITS = r"minutes?|mins?|m|минут[аыу]?|мин|דקות|דקה"
-_UNIT_AFTER = re.compile(rf"\s*(?:{_HOUR_UNITS}|{_MINUTE_UNITS})(?!\w)", re.IGNORECASE)
+# A range before the unit is still a length: "15-20 mins" is never a 15:00 clock.
+_UNIT_AFTER = re.compile(rf"\s*(?:-\s*\d+(?:[.,]\d+)?\s*)?(?:{_HOUR_UNITS}|{_MINUTE_UNITS})(?!\w)", re.IGNORECASE)
+_HEDGE_WORDS = r"(?:about|around|approx(?:imately)?|roughly|~|около|примерно|בערך)"
 # "в 3 часа", "к 5 часам", "at 3 o'clock": the number names an hour on the
 # clock, although "часа" after a bare number would make it a length (A1
 # Ruling 18b).
@@ -150,15 +152,15 @@ def parse_duration(text: str | None) -> int | None:
     return None
 
 
-_AMOUNT = rf"(\d+(?:[.,]\d+)?)\s*({_HOUR_UNITS}|{_MINUTE_UNITS})(?!\w)"
+_AMOUNT = rf"(\d+(?:[.,]\d+)?)(?:\s*-\s*(\d+(?:[.,]\d+)?))?\s*({_HOUR_UNITS}|{_MINUTE_UNITS})(?!\w)"
 # Relative times: the direction word, and whether it comes before the amount.
 _RELATIVE_TIME = {
     "ago": (-1, False), "назад": (-1, False), "לפני": (-1, True),
     "in": (1, True), "через": (1, True), "בעוד": (1, True),
 }
 _RELATIVE_PATTERNS = [
-    (re.compile(rf"(?<!\w){word}\s+{_AMOUNT}" if before else rf"(?<![\w.,]){_AMOUNT}\s+{word}(?!\w)",
-                re.IGNORECASE), sign)
+    (re.compile(rf"(?<!\w){word}\s+(?:{_HEDGE_WORDS}\s*)?{_AMOUNT}" if before
+                else rf"(?<![\w.,]){_AMOUNT}\s+{word}(?!\w)", re.IGNORECASE), sign)
     for word, (sign, before) in _RELATIVE_TIME.items()
 ]
 # Amounts written as words (A1 Ruling 18b): "an hour ago", "через полчаса",
@@ -166,11 +168,12 @@ _RELATIVE_PATTERNS = [
 # "an hour ago".
 _WORD_AMOUNTS = sorted({
     "half an hour": 30, "an hour": 60, "one hour": 60, "a minute": 1,
+    "a few minutes": 5, "a few mins": 5, "a couple of minutes": 2, "a couple of mins": 2,
     "полчаса": 30, "час": 60, "минуту": 1,
     "חצי שעה": 30, "שעה": 60, "דקה": 1,
 }.items(), key=lambda kv: -len(kv[0]))
 _WORD_RELATIVE = [
-    (re.compile(rf"(?<!\w){word}\s+{re.escape(phrase)}(?!\w)" if before
+    (re.compile(rf"(?<!\w){word}\s+(?:{_HEDGE_WORDS}\s*)?{re.escape(phrase)}(?!\w)" if before
                 else rf"(?<!\w){re.escape(phrase)}\s+{word}(?!\w)", re.IGNORECASE), sign * minutes)
     for phrase, minutes in _WORD_AMOUNTS
     for word, (sign, before) in _RELATIVE_TIME.items()
@@ -189,7 +192,9 @@ def parse_relative(text: str | None) -> dt.timedelta | None:
         match = pattern.search(text)
         if match:
             value = float(match.group(1).replace(",", "."))
-            hours = re.fullmatch(_HOUR_UNITS, match.group(2), re.IGNORECASE) is not None
+            if match.group(2):   # "15-20 mins": the middle of the range
+                value = (value + float(match.group(2).replace(",", "."))) / 2
+            hours = re.fullmatch(_HOUR_UNITS, match.group(3), re.IGNORECASE) is not None
             return dt.timedelta(minutes=sign * round(value * 60 if hours else value))
     for pattern, minutes in _WORD_RELATIVE:
         if pattern.search(text):
@@ -213,12 +218,16 @@ _LATER = ("forward", "later", "ahead", "позже", "вперед", "вперё
 _SIGN = re.compile(r"(?:^|\s)([+-])\s*\d")
 
 
+_DAYS = re.compile(r"(\d+)\s*(?:days?|дн(?:я|ей)|день|ימים|יום)(?!\w)", re.IGNORECASE)
+
+
 def parse_shift(text: str | None) -> int | None:
-    """Signed minutes for an edit: "back 30 mins" → -30, "+15m" → 15. None without a direction."""
+    """Signed minutes for an edit: "back 30 mins" → -30, "+15m" → 15, "+1 day" → 1440. None without a direction."""
     if not text:
         return None
     lowered = text.lower()
-    minutes = parse_duration(lowered)
+    days = _DAYS.search(lowered)
+    minutes = int(days.group(1)) * 24 * 60 if days else parse_duration(lowered)
     if minutes is None:
         bare = re.search(r"(\d+)", lowered)
         if not bare:
