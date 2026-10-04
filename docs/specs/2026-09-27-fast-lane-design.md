@@ -175,7 +175,7 @@ The prompt defines each operation, gives numbered rules, and carries 19 examples
 - `end_block`: a block listed on the timeline ends. With none listed, it is a `log_block` with only an end.
 - `edit_block`: an existing block's times, day or name change **without saying it happened**. An activity reported as done or started is logged even when its plan is listed; the matcher confirms the plan (§7.1).
 - `tick_habit`, `check_todo`: a habit or open todo done **with no clock time** ("today" is a day, not a time). With a clock time it is a `log_block`, and the habit and todo hooks tick it or cross it out (§7.2, §7.3). "Cross out as done:" followed by a list is one `check_todo` per item.
-- `add_todo`: something to remember, buy or do some day. A list under "Tasks for <project>:" is one per item.
+- `add_todo`: something to remember, buy or do some day. A list under "Tasks for <project>:" is one per item, and so are chores listed inside a longer message, whatever the rest of it is for (owner, 2026-10-05).
 - `rollover_todos`: move todos to another day, in `time.day`. `target` names one todo ("the drill todo goes to tomorrow", or "I'll call the plumber tonight" when that is an open todo); empty means all unfinished ones. An open todo given only a day is moved, not planned as a block.
 - `other`: anything else. Task files and habits belong here: "#task", "create task", "complete it" about a task, and creating or changing a habit or goal.
 
