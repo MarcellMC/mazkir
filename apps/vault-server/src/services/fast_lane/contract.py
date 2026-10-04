@@ -18,7 +18,9 @@ MAX_CLAUSES = 12
 _NEEDS = {"log_block": "name", "start_block": "name", "end_block": "target", "edit_block": "target",
           "tick_habit": "name", "add_todo": "name", "check_todo": "target"}
 
-KNOWLEDGE_TAGS = frozenset({"idea", "green"})
+# #green is the owner's reserved tag (2026-10-05): it means something to him for later
+# analysis, so it stays on the clause and routes nothing.
+KNOWLEDGE_TAGS = frozenset({"idea"})
 TODO_TAGS = frozenset({"buy"})
 ACTIVITY_TAGS = frozenset({"dev", "work", "explore"})
 _HASHTAG = re.compile(r"#(\w[\w/-]*)")

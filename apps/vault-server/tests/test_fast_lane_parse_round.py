@@ -326,3 +326,13 @@ def test_replayed_blocks_are_the_days_the_live_context_shows():
     assert _blocks_before(morning, [yesterday]) == ()
     small_hours = Message(id="t3", ts=dt.datetime(2026, 10, 1, 1, 0, tzinfo=TZ), text="z")
     assert [b.id for b in _blocks_before(small_hours, [yesterday])] == ["w0"]
+
+
+def test_green_is_a_reserved_tag_kept_on_the_block_not_a_knowledge_note():
+    """Owner, 2026-10-05: #green means something to him for later analysis; it routes nothing."""
+    message = "18:45 until now - eat, watch YouTube and relax #green"
+    result = validate({"clauses": [item(message, name="Eat, watch YouTube and relax")], "fallthrough_skill": None}, message)
+    [clause] = result.clauses
+    assert clause.op == "log_block" and "green" in clause.tags and result.route == "fast"
+    idea = "#green #idea label the jars"
+    assert validate({"clauses": [item(idea)], "fallthrough_skill": None}, idea).fallthrough_skill == "knowledge-management"

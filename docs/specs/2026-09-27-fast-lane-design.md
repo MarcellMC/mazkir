@@ -180,7 +180,7 @@ The prompt defines each operation, gives numbered rules, and carries 19 examples
 - `other`: anything else. Task files and habits belong here: "#task", "create task", "complete it" about a task, and creating or changing a habit or goal.
 
 **Rules**
-1. One clause per action. Several activities given one interval together ("23:00–00:00 as meal prep, eating and a film") are one clause each, each with that interval's words; Mazkir asks how it was split. One running alongside another ("eating while watching") sets `with` instead.
+1. One clause per action. Several activities given one interval together ("23:00–00:00 as meal prep, eating and a film") are one clause each, each with that interval's words; Mazkir splits it evenly, in the order written. One running alongside another ("eating while watching") sets `with` instead.
 2. Copy time words exactly; never convert, add a date or calculate. Window words stay in `time.start` ("somewhere between 20:30").
 3. Words that pin a moment to the send time ("just returned", "started", "going to", "now") are written as "now".
 4. "Then" sets `after`; an activity alongside another sets `with`.
@@ -198,7 +198,7 @@ With the catalog, the request is about 5k tokens on Haiku 4.5, above its 4,096-t
 
 ### 5.4 Checks in code after the parse
 
-- **Hashtags override the model.** Code reads each clause's tags from its own evidence. `#idea` and `#green` force a knowledge clause; `#buy` forces `add_todo`; `#dev`, `#work` and `#explore` become activity tags. The map lives in code.
+- **Hashtags override the model.** Code reads each clause's tags from its own evidence. `#idea` forces a knowledge clause. `#green` is the owner's reserved tag (2026-10-05): it stays on the clause and the block for his later analysis, and routes nothing. `#buy` forces `add_todo`; `#dev`, `#work` and `#explore` become activity tags. The map lives in code.
 - Evidence not found in the message: that clause is dropped and its text falls through.
 - Out-of-range `after` / `with`, or fields an op requires missing: the same.
 - More than 12 clauses: the whole message falls through.
@@ -245,7 +245,7 @@ A caption that names an activity done with no time ("logged it on the dog walk")
 4. **Day words are relative to the day the message was sent**, not the day open in `/day`: "yesterday", "the previous day", "Friday", "September 7th", "14.10", plus a small Russian and Hebrew table. "Tonight" and "last night" use the 05:00 boundary. **A date names the day a range starts**: "23:00–00:30 on the 31st" ends on the 1st. A range of dates ("30.08 – 06.09") runs from the first day to the last, as whole days when no clock is given. An end word "next day" puts the end on the day after the start, and an end's own day word ("returning around 14:00 on Saturday") puts it on that day.
 5. **"Just returned", "back home", "finished", "done" and "ended" pin the end** to the message time or the stated time. "Started", "going to" and "now" pin the start.
 6. **A chain with no clock times ends at the message time and runs backwards.** If one clause has a clock time, the chain works outward from it. A later clause's clock takes the reading just after the clause before it when that is within 12 hours, otherwise the nearest before it within 12 hours, so "…before that, 00:33–02:35" lands earlier the same night. A clause with only an end clock that follows another starts where that one ended. A chain that follows an edit runs forward from it. A single record with a length and no clock ("practiced guitar 10 mins") ends at the message time, as a chain does.
-7. **`with` clauses share the referenced clause's interval.** Records of different activities given one written interval without `with` ask how it was split (owner, 2026-09-29).
+7. **`with` clauses share the referenced clause's interval.** Activities given one written interval without `with` share it evenly, in the order written, with the boundaries between them inferred (owner, 2026-10-05: "split in half"). One alongside another takes its partner's piece.
 8. **Start, end and duration, when all three are given, must agree within 5 minutes.**
 9. **Edits.** A shift moves both ends, and may be in days ("+1 day"). A new start alone moves only the start, unless it lands at or after the block's end; then the whole block moves and keeps its length. A shower planned for 13:15–13:45 and moved "to 15:20" becomes 15:20–15:50, while "sleep start at 04:00" inside 01:13–08:00 moves only the start. A new end alone takes its nearest occurrence after the start. An `end_block` whose block is not on the timeline is that block, ending then.
 10. **A record longer than 16 hours is implausible**, unless an explicit date range was written.
@@ -273,7 +273,6 @@ Each block also gets `logical_date`: the start's calendar date, minus one day wh
 | Part of the time unknown ("just back from the dog walk") | Fact, with the unknown end `assumed` from your typical duration |
 | Mazkir chose the time: an untimed plan, a window, a Sleep from your bedtime, a caption's activity around its photo | Proposal, with the reason shown |
 | A slip within an hour of the message, or a sanity rule fails (implausible length, contradiction, overlaps a stated fact, a Sleep overlap) | Proposal, with the reason shown |
-| Several activities given one interval | Question: how was it split? |
 | A record with no time at all, an edit whose block isn't found, or no reading fits | Question |
 
 `stated: false` also yields a proposal, but that is §5's question of whether something happened, not when.
@@ -419,6 +418,7 @@ New optional fields; absent on old rows, which keep their meaning:
 - `project`
 - `habit_completion`: habit path plus completion timestamp; one per block
 - `evidence`: the quoted words and the source message id
+- `tags`: the clause's hashtags, `#green` among them, kept for the owner's analysis
 
 ### 9.2 Approval (`services/approval.py`)
 

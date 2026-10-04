@@ -237,12 +237,29 @@ def test_a_window_shorter_than_the_activity_is_the_whole_window():
     assert (r.placement.start, r.placement.end) == (at(5, 12, 18, 0), at(5, 12, 18, 45))
 
 
-def test_several_activities_given_one_interval_ask_how_it_was_split():
-    clauses = [log("Meal prep", "23:00", "00:00"), log("Eating", "23:00", "00:00"), log("Watching", "23:00", "00:00")]
-    rs = resolve(clauses, ctx(at(9, 6, 0, 1)))
-    assert [r.outcome for r in rs] == ["question"] * 3
-    assert all("split" in r.reason for r in rs)
-    assert rs[0].placement.start == at(9, 5, 23, 0)
+def test_two_activities_given_one_interval_split_it_in_half():
+    """Owner, 2026-10-05: "split in half", in the order written."""
+    cook, dishes = resolve([log("Cooking", "About 18:15", "18:45"), log("Wash the dishes", "About 18:15", "18:45")],
+                           ctx(at(9, 29, 21, 54)))
+    assert (cook.outcome, dishes.outcome) == ("fact", "fact")
+    assert (cook.placement.start, cook.placement.end) == (at(9, 29, 18, 15), at(9, 29, 18, 30))
+    assert (dishes.placement.start, dishes.placement.end) == (at(9, 29, 18, 30), at(9, 29, 18, 45))
+    assert (cook.placement.start_precision, cook.placement.end_precision) == ("approx", "inferred")
+    assert (dishes.placement.start_precision, dishes.placement.end_precision) == ("inferred", "exact")
+
+
+def test_three_activities_share_an_interval_in_whole_minutes():
+    a, b, c = resolve([log("Prep", "20:00", "20:50"), log("Eat", "20:00", "20:50"), log("Read", "20:00", "20:50")],
+                      ctx(at(9, 29, 21, 0)))
+    assert [(r.placement.start, r.placement.end) for r in (a, b, c)] == [
+        (at(9, 29, 20, 0), at(9, 29, 20, 16)), (at(9, 29, 20, 16), at(9, 29, 20, 33)), (at(9, 29, 20, 33), at(9, 29, 20, 50))]
+
+
+def test_an_activity_alongside_takes_its_partners_piece():
+    prep, eating, watching = resolve([log("Meal prep", "23:00", "00:00"), log("Eating", "23:00", "00:00"),
+                                      log("Watching", with_=1)], ctx(at(9, 6, 0, 1)))
+    assert (prep.placement.start, prep.placement.end) == (at(9, 5, 23, 0), at(9, 5, 23, 30))
+    assert (watching.placement.start, watching.placement.end) == (at(9, 5, 23, 30), at(9, 6, 0, 0))
 
 
 def test_activities_running_alongside_share_the_interval_without_asking():

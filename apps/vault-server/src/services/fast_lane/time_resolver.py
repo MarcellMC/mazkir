@@ -527,20 +527,30 @@ def _clip_to_next(r: _Reading, idx: list[int]) -> None:
             r.placed[i] = replace(p, end=min(later), end_precision="inferred")
 
 
-def _shared_intervals(best: _Reading, idx: list[int], clauses, raws) -> list[list[int]]:
-    """Records of different activities given one written interval: their split is unknown.
+def _split_shared(r: _Reading, idx: list[int], clauses, raws) -> None:
+    """Activities given one written interval share it evenly, in the order written (owner, 2026-10-05).
 
-    "23:00-00:00 as meal prep, eating and watching" asks how the hour was
-    split (owner, 2026-09-29); "eating while watching" sets `with` and does not.
+    "18:15 to 18:45 cooked and washed the dishes" is cooking 18:15-18:30 and
+    dishes 18:30-18:45. The boundaries between them are inferred, in whole
+    minutes. An activity alongside another (`with`) takes its partner's piece,
+    which is why this runs before `_fill_relative` copies it.
     """
     groups: dict[tuple, list[int]] = {}
     for i in idx:
-        c, raw, p = clauses[i], raws[i], best.placed.get(i)
-        if (c.intent == "record" and c.with_ is None and raw.start is not None and raw.end is not None
+        c, raw, p = clauses[i], raws[i], r.placed.get(i)
+        if (c.with_ is None and raw.start is not None and raw.end is not None
                 and p is not None and p.start is not None and p.end is not None):
             groups.setdefault((p.start, p.end), []).append(i)
-    return [members for members in groups.values()
-            if len({(clauses[i].name or "").strip().lower() for i in members}) > 1]
+    for (start, end), members in groups.items():
+        if len({(clauses[i].name or "").strip().lower() for i in members}) < 2:
+            continue
+        minutes, n = int((end - start).total_seconds() // 60), len(members)
+        cuts = [start + dt.timedelta(minutes=minutes * k // n) for k in range(n)] + [end]
+        for k, i in enumerate(members):
+            p = r.placed[i]
+            r.placed[i] = replace(p, start=cuts[k], end=cuts[k + 1],
+                                  start_precision=p.start_precision if k == 0 else "inferred",
+                                  end_precision=p.end_precision if k == n - 1 else "inferred")
 
 
 def _check(r: _Reading, idx: list[int], clauses, raws, ctx: ResolverContext) -> None:
@@ -640,6 +650,7 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
         # Clauses placed elsewhere — edits — that an `after` / `with` may name.
         for j, p in (known or {}).items():
             r.placed.setdefault(j, p)
+        _split_shared(r, idx, clauses, raws)
         _fill_relative(r, idx, clauses, raws, ctx)
         _propose_untimed(r, idx, clauses, raws, ctx)
         _place_by_photo(r, idx, clauses, raws, ctx)
@@ -655,11 +666,7 @@ def _resolve_blocks(clauses: list[ClauseTime], idx: list[int], ctx: ResolverCont
     # the same clock a day away is the less likely one.
     best = min(valid, key=lambda r: (any(f not in SLIPS for f in r.flags.values()),
                                      _key(r, anchored, clauses, ctx)))
-    results = {i: _outcome(clauses[i], best.placed.get(i), best.flags.get(i)) for i in idx}
-    for members in _shared_intervals(best, idx, clauses, raws):
-        for i in members:
-            results[i] = ClauseResolution("question", best.placed[i], reason="how was this time split between them?")
-    return results
+    return {i: _outcome(clauses[i], best.placed.get(i), best.flags.get(i)) for i in idx}
 
 
 def _nearest(clock: Clock, reference: dt.datetime, tz) -> dt.datetime:
