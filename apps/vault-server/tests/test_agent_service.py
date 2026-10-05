@@ -1191,6 +1191,12 @@ class TestEventTools:
         events_mock.update_event.return_value = {
             "updated": True, "event": {}, "date": "2026-09-08",
         }
+        # sync_block re-reads the stored event by id rather than trusting
+        # update_event's return value directly (it has to: the fast lane
+        # calls it with only an event_id, not a result dict) — so the fake
+        # store has to agree with itself, same as TestUpdateEventCalendarSync
+        # below.
+        events_mock.get_events.return_value = [{"id": "evt_abc"}]
         events_mock._file_path.side_effect = lambda d: f"data/events/{d}.json"
 
         result = agent._tool_update_event({"event_id": "evt_abc", "start_time": "16:30"})

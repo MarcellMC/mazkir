@@ -3504,12 +3504,7 @@ class AgentService:
         # Push the edit upstream. The ledger holding the change is only half
         # of it: an un-propagated source value gets merged back over the
         # edit on the very next read.
-        stored = result.get("event") or {}
-        calendar_id = (stored.get("source_ids") or {}).get("calendar_id")
-        owning = stored.get("calendar")
-        from src.services.events_service import is_complete
-        from src.services.interval import crosses_midnight
-
+        #
         # A cross-date move is out of scope for this ship: EventsService has
         # detached source_ids, so this block would read the event as "not in
         # the calendar yet" and create a duplicate at the new date — which
@@ -3519,92 +3514,9 @@ class AgentService:
             pass
         elif fast.get("defer_calendar_sync"):
             result["calendar_sync"] = {"ok": False, "attempted": False, "reason": "deferred"}
-        elif not stored.get("start_time"):
-            # Same narrowing as _tool_create_event: only a missing *start*
-            # leaves Google nothing to be told. A start with no end is a
-            # reminder, and `_build_event` defaults its span — gating on
-            # completeness here is why setting the Milpro reminder's time to
-            # 10:00 still did not reach the calendar (2026-09-11 03:23).
-            result["calendar_sync"] = {
-                "ok": False, "attempted": False, "reason": "no_start_time",
-            }
-        elif is_complete(stored) and crosses_midnight(
-            stored.get("start_time"), stored.get("end_time")
-        ):
-            result["calendar_sync"] = {
-                "ok": False, "attempted": False, "reason": "crosses_midnight",
-            }
-        elif stored.get("source") == "photo":
-            result["calendar_sync"] = {"ok": False, "attempted": False, "reason": "not_applicable"}
-        elif not self.calendar or not getattr(self.calendar, "is_initialized", False):
-            result["calendar_sync"] = {
-                "ok": False, "attempted": False, "reason": "calendar_not_configured",
-            }
-        elif calendar_id and owning not in (None, "Mazkir"):
-            result["calendar_sync"] = {
-                "ok": False, "attempted": False, "reason": "not_in_mazkir_calendar",
-            }
-        elif not calendar_id and (stored.get("source_ids") or {}):
-            # The create branch below exists for blocks Mazkir owns. A block
-            # that carries source_ids but no calendar_id is *inferred* — a
-            # timed checkbox, a scheduled habit, a location visit — and is
-            # regenerated from that source on every merge. Creating a Google
-            # entry for it duplicates the thing in the calendar, and writing
-            # the new id back gives the persisted event a second source_ids
-            # key, after which two fresh events (the note one and the
-            # calendar one) both match the same persisted row and the block
-            # renders twice forever. An empty source_ids — a manual block, or
-            # one created while the calendar was unreachable — is the only
-            # case where the create is ours to make.
-            result["calendar_sync"] = {
-                "ok": False, "attempted": False, "reason": "derived_from_source",
-            }
         else:
-            from src.services.async_bridge import maybe_await
-            try:
-                if calendar_id:
-                    pushed = maybe_await(self.calendar.update_event(
-                        event_id=calendar_id,
-                        name=stored.get("name"),
-                        start_time=stored.get("start_time"),
-                        end_time=stored.get("end_time"),
-                    ))
-                    result["calendar_sync"] = {
-                        "ok": bool(pushed), "attempted": True, "event_id": calendar_id,
-                    }
-                    if not pushed:
-                        result["calendar_sync"]["reason"] = "update_failed"
-                else:
-                    gcal_id = maybe_await(self.calendar.create_event(
-                        name=stored.get("name"),
-                        date=stored_date,
-                        start_time=(stored.get("start_time") or "")[11:16],
-                        end_time=(stored.get("end_time") or "")[11:16] or None,
-                    ))
-                    result["calendar_sync"] = {
-                        "ok": bool(gcal_id), "attempted": True, "event_id": gcal_id,
-                    }
-                    if gcal_id:
-                        # "Sync it once it's complete" relies on calendar_id
-                        # recording membership with no flag to remember — so
-                        # the id this create just returned has to land in
-                        # source_ids, or the next edit still reads calendar_id
-                        # as missing and creates a second Google entry.
-                        self.events.update_event(
-                            date=stored_date,
-                            event_id=event_id,
-                            updates={
-                                "source_ids": {
-                                    **(stored.get("source_ids") or {}),
-                                    "calendar_id": gcal_id,
-                                },
-                            },
-                        )
-                    else:
-                        result["calendar_sync"]["reason"] = "create_failed"
-            except Exception as e:
-                logger.warning(f"Failed to sync event edit to Google Calendar: {e}")
-                result["calendar_sync"] = {"ok": False, "attempted": True, "reason": str(e)}
+            from src.services.calendar_push import sync_block
+            result["calendar_sync"] = sync_block(self.calendar, self.events, stored_date, event_id)
 
         items = [str(self.events._file_path(stored_date))]
         moved_from = result.get("moved_from")
