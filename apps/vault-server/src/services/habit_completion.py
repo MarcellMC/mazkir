@@ -28,6 +28,7 @@ from src.services.completion_log import (
     append_completion,
     count_on,
     parse_completion_log,
+    render_completion_log,
 )
 
 
@@ -86,6 +87,7 @@ def complete_habit(vault: Any, path: str, now: dt.datetime | None = None) -> dic
           "path", "name", "date", "old_streak", "new_streak",
           "longest_streak", "tokens_earned", "completions_today",
           "daily_target", "target_met", "google_event_id", "new_token_total",
+          "completed_at", "prior",
         }
 
     On `already_completed` the streak fields describe the untouched habit and
@@ -129,15 +131,24 @@ def complete_habit(vault: Any, path: str, now: dt.datetime | None = None) -> dic
             "completions_today": done_today,
             "target_met": True,
             "new_token_total": None,
+            "completed_at": None,
+            "prior": None,
         }
 
-    new_body = append_completion(body, now)
+    at = now.replace(microsecond=0)
+    new_body = append_completion(body, at)
     count = done_today + 1
     target_met = count >= target
 
     old_streak = meta.get("streak", 0)
     new_streak = old_streak + 1 if target_met else old_streak
     longest = max(meta.get("longest_streak", 0), new_streak)
+    # What undo restores (fast-lane spec §9.3): the fields this write changes.
+    prior = {
+        "streak": old_streak,
+        "longest_streak": meta.get("longest_streak", 0),
+        "last_completed": None if meta.get("last_completed") is None else str(meta.get("last_completed")),
+    }
 
     vault.write_file(path, {
         **meta,
@@ -148,7 +159,7 @@ def complete_habit(vault: Any, path: str, now: dt.datetime | None = None) -> dic
     }, new_body)
 
     tokens = meta.get("tokens_per_completion", 5)
-    token_result = vault.update_tokens(tokens, meta.get("name", "habit"))
+    token_result = vault.update_tokens(tokens, meta.get("name", "habit"), date=today.isoformat())
 
     return {
         **common,
@@ -159,7 +170,48 @@ def complete_habit(vault: Any, path: str, now: dt.datetime | None = None) -> dic
         "tokens_earned": tokens,
         "completions_today": count,
         "target_met": target_met,
+        "completed_at": at.isoformat(),
+        "prior": prior,
         "new_token_total": (token_result or {}).get("new_total")
         if isinstance(token_result, dict)
         else None,
     }
+
+
+def _wall(moment: dt.datetime) -> dt.datetime:
+    return moment.replace(tzinfo=None)
+
+
+def retract_completion(vault: Any, path: str, completed_at: str, prior: dict) -> dict:
+    """Take back one completion that `complete_habit` recorded (fast-lane spec §9.3).
+
+    Removes the log entry stamped `completed_at`, restores `streak`,
+    `longest_streak` and `last_completed` from `prior` (what `complete_habit`
+    returned), and takes the tokens back from the totals and from the note of
+    the completion's own day. Refuses when a later completion exists:
+    restoring the snapshot would erase that one's streak as well.
+    """
+    from src.services.daily_tasks import replace_or_append_section
+
+    at = dt.datetime.fromisoformat(completed_at)
+    habit = vault.read_file(path)
+    meta, body = habit["metadata"], habit.get("content", "")
+    entries = parse_completion_log(body)
+    index = next((k for k, e in enumerate(entries) if _wall(e.at) == _wall(at)), None)
+    if index is None:
+        return {"ok": False, "reason": "completion not found"}
+    if any(_wall(e.at) > _wall(at) for e in entries):
+        return {"ok": False, "reason": "a later completion exists"}
+    kept = entries[:index] + entries[index + 1:]
+    new_body = replace_or_append_section(
+        body, "Completion Log", "## Completion Log\n" + render_completion_log(kept),
+    )
+    vault.write_file(path, {
+        **meta,
+        "streak": prior.get("streak", meta.get("streak", 0)),
+        "longest_streak": prior.get("longest_streak", meta.get("longest_streak", 0)),
+        "last_completed": prior.get("last_completed"),
+    }, new_body)
+    tokens = meta.get("tokens_per_completion", 5)
+    vault.update_tokens(-tokens, f"undo: {meta.get('name', 'habit')}", date=_wall(at).date().isoformat())
+    return {"ok": True, "tokens_retracted": tokens}

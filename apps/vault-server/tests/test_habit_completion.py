@@ -90,9 +90,9 @@ class FakeVault:
     def write_file(self, path, metadata, content):
         self.files[path] = {"path": path, "metadata": metadata, "content": content}
 
-    def update_tokens(self, tokens, activity):
+    def update_tokens(self, tokens, activity, date=None):
         self.total_tokens += tokens
-        self.token_calls.append((tokens, activity))
+        self.token_calls.append((tokens, activity, date))
         return {"new_total": self.total_tokens}
 
     def list_active_habits(self):
@@ -235,7 +235,7 @@ class _RecordingVault:
     def write_token_ledger(self, *a, **kw):
         pass
 
-    def update_tokens(self, tokens, activity):
+    def update_tokens(self, tokens, activity, date=None):
         return {"new_total": tokens}
 
 

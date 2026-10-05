@@ -3734,6 +3734,9 @@ class AgentService:
                 "tokens_earned": outcome["tokens_earned"],
                 "completions_today": outcome["completions_today"],
                 "daily_target": outcome["daily_target"],
+                "path": path,
+                "completed_at": outcome["completed_at"],
+                "prior": outcome["prior"],
             },
             items=[path],
         )

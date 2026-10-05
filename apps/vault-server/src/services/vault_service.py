@@ -392,55 +392,44 @@ class VaultService:
         """Read motivation tokens ledger"""
         return self.read_file("00-system/motivation-tokens.md")
 
-    def update_tokens(self, tokens_earned: int, activity: str) -> Dict:
-        """Award tokens and update ledger
+    def update_tokens(self, tokens_earned: int, activity: str, date: str | None = None) -> Dict:
+        """Award (or, with a negative amount, take back) tokens and update the ledger.
 
         Args:
-            tokens_earned: Amount of tokens to award
-            activity: Description of activity
+            tokens_earned: Amount of tokens; negative when a completion is undone.
+            activity: Description of activity.
+            date: YYYY-MM-DD of the day the tokens belong to. The transaction
+                goes on that day's note; None means today. A backdated
+                completion used to credit today's note (fast-lane spec §9.3).
 
         Returns:
             Updated token data
         """
-        # Read current ledger
         ledger = self.read_token_ledger()
         metadata = ledger['metadata']
 
-        # Reset tokens_today if it's a new day
         today = datetime.now(self.tz).strftime('%Y-%m-%d')
         last_updated = str(metadata.get('updated', ''))
-        if last_updated != today:
-            prior_today = 0
-        else:
-            prior_today = metadata.get('tokens_today', 0)
+        prior_today = metadata.get('tokens_today', 0) if last_updated == today else 0
 
-        # Update totals
         old_total = metadata.get('total_tokens', 0)
         new_total = old_total + tokens_earned
-        tokens_today = prior_today + tokens_earned
 
-        # Update metadata
-        updates = {
+        self.update_file("00-system/motivation-tokens.md", {
             'total_tokens': new_total,
-            'tokens_today': tokens_today,
-            'all_time_tokens': metadata.get('all_time_tokens', 0) + tokens_earned
-        }
+            'tokens_today': max(0, prior_today + tokens_earned),
+            'all_time_tokens': metadata.get('all_time_tokens', 0) + tokens_earned,
+        })
 
-        self.update_file("00-system/motivation-tokens.md", updates)
-
-        # Add transaction to today's daily note
+        note_path = f"10-daily/{date}.md" if date else self.get_daily_note_path()
         try:
-            daily = self.read_daily_note()
-            daily_metadata = daily['metadata']
-
-            daily_updates = {
-                'tokens_earned': daily_metadata.get('tokens_earned', 0) + tokens_earned,
-                'tokens_total': new_total
-            }
-
-            self.update_file(self.get_daily_note_path(), daily_updates)
+            daily_metadata = self.read_file(note_path)['metadata']
+            self.update_file(note_path, {
+                'tokens_earned': max(0, daily_metadata.get('tokens_earned', 0) + tokens_earned),
+                'tokens_total': new_total,
+            })
         except FileNotFoundError:
-            # Daily note doesn't exist yet - that's okay
+            # That day's note doesn't exist yet - that's okay
             pass
 
         return {
