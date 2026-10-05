@@ -17,6 +17,7 @@ from src.services.daily_tasks import (
     parse_tasks_section,
     render_tasks_section,
     replace_or_append_section,
+    set_todo_checked,
 )
 from src.services.tool_response import ErrorCode, err, ok
 
@@ -81,6 +82,25 @@ def daily_set_task_state(vault: Any, params: dict) -> dict:
     )
 
 
+def daily_check_todo(vault: Any, params: dict) -> dict:
+    """Tick (or untick) one checkbox anywhere in a daily note, matched by its text.
+
+    Section-agnostic, like `/day` approval: `daily_set_task_state` only sees
+    `## Tasks` (fast-lane spec §7.3).
+    """
+    date_str = params.get("date") or dt.date.today().isoformat()
+    checked = params.get("checked", True)
+    daily = vault.read_daily_note(date_str)
+    new_body, reason = set_todo_checked(daily["content"], params["text"], checked=checked)
+    if reason == "not_found":
+        return err(ErrorCode.PATH_NOT_FOUND, f"No todo matches '{params['text']}' on {date_str}")
+    if reason == "ambiguous":
+        return err(ErrorCode.AMBIGUOUS_MATCH, f"Several todos match '{params['text']}' on {date_str}")
+    vault.write_daily_note(date_str, new_body)
+    return ok({"date": date_str, "text": params["text"], "checked": checked},
+              items=[f"10-daily/{date_str}.md"])
+
+
 def daily_rollover(vault: Any, params: dict) -> dict:
     today = dt.date.today()
     to_date = params.get("to_date") or today.isoformat()
@@ -89,6 +109,18 @@ def daily_rollover(vault: Any, params: dict) -> dict:
     src = vault.read_daily_note(from_date)
     src_body = src["content"]
     src_tasks = parse_tasks_section(src_body)
+
+    # `text` moves one todo, not them all (fast-lane spec §7.3, revised 2026-10-03).
+    wanted = (params.get("text") or "").strip().lower()
+    only = None
+    if wanted:
+        named = [t for t in src_tasks if t.state == "unchecked" and wanted in t.text.lower()]
+        if not named:
+            return err(ErrorCode.PATH_NOT_FOUND, f"No unfinished todo on {from_date} matches '{params['text']}'")
+        if len(named) > 1:
+            return err(ErrorCode.AMBIGUOUS_MATCH, f"Several todos on {from_date} match '{params['text']}'",
+                       details={"candidates": [t.text for t in named]})
+        only = named[0]
 
     dst = vault.read_daily_note(to_date)
     dst_body = dst["content"]
@@ -100,7 +132,7 @@ def daily_rollover(vault: Any, params: dict) -> dict:
     rolled: list[str] = []
 
     for task in src_tasks:
-        if task.state != "unchecked":
+        if task.state != "unchecked" or (only is not None and task is not only):
             continue
 
         # Determine first-original date

@@ -189,6 +189,43 @@ def parse_all_todos(body: str) -> list[Todo]:
     return todos
 
 
+def _find_todo(lines: list[str], text: str) -> tuple[int | None, str]:
+    """The one checkbox line whose text contains `text`, or (None, "not_found" | "ambiguous").
+
+    Case-insensitive substring; a needle shorter than 3 characters is refused
+    as "not_found" (see `set_todo_checked`). `moved` lines are skipped.
+    """
+    needle = text.strip().lower()
+    if len(needle) < 3:
+        return None, "not_found"
+    hits = []
+    for index, line in enumerate(lines):
+        fields = _parse_todo_line(line)
+        if fields is None or fields["state"] == "moved":
+            continue
+        if needle in fields["text"].strip().lower():
+            hits.append(index)
+    if not hits:
+        return None, "not_found"
+    if len(hits) > 1:
+        return None, "ambiguous"
+    return hits[0], "ok"
+
+
+def remove_todo(body: str, text: str) -> tuple[str | None, str]:
+    """Delete one checkbox line anywhere in the note, matched as `set_todo_checked` matches.
+
+    Undo of an added todo (fast-lane spec §7.6). Only the matched line goes;
+    every other line, in every section, is left byte-for-byte.
+    """
+    lines = body.splitlines(keepends=True)
+    index, reason = _find_todo(lines, text)
+    if index is None:
+        return None, reason
+    del lines[index]
+    return "".join(lines), "ok"
+
+
 def set_todo_checked(body: str, text: str, checked: bool = True) -> tuple[str | None, str]:
     """Tick or untick one checkbox anywhere in the note, matched by its text.
 
@@ -212,25 +249,10 @@ def set_todo_checked(body: str, text: str, checked: bool = True) -> tuple[str | 
     risking a degenerate match against an unrelated line — "ok" would match
     inside "Book flight" just as readily as inside "ok, done".
     """
-    needle = text.strip().lower()
-    if len(needle) < 3:
-        return None, "not_found"
-
     lines = body.splitlines(keepends=True)
-    hits: list[int] = []
-    for index, line in enumerate(lines):
-        fields = _parse_todo_line(line)
-        if fields is None or fields["state"] == "moved":
-            continue
-        if needle in fields["text"].strip().lower():
-            hits.append(index)
-
-    if not hits:
-        return None, "not_found"
-    if len(hits) > 1:
-        return None, "ambiguous"
-
-    index = hits[0]
+    index, reason = _find_todo(lines, text)
+    if index is None:
+        return None, reason
     line = lines[index]
     lm = _LINE_RE.match(line)
     box_start, box_end = lm.span("box")

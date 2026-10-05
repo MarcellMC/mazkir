@@ -410,6 +410,29 @@ class AgentService:
                 "handler": self._tool_daily_set_task_state,
                 "risk": "write",
             },
+            "daily_check_todo": {
+                "schema": {
+                    "name": "daily_check_todo",
+                    "description": (
+                        "Tick a checkbox anywhere in a daily note, matched by its text "
+                        "(any section, not only ## Tasks). checked=false unticks it."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string", "description": "Words from the todo"},
+                            "date": {"type": "string", "description": "YYYY-MM-DD; defaults to today"},
+                            "checked": {"type": "boolean", "description": "false to untick"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["text"],
+                    },
+                },
+                "handler": self._tool_daily_check_todo,
+                "risk": "write",
+                "pre_hooks": ["validate_schema"],
+            },
             "daily_rollover": {
                 "schema": {
                     "name": "daily_rollover",
@@ -425,6 +448,8 @@ class AgentService:
                         "properties": {
                             "from_date": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
                             "to_date":   {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+                            "text": {"type": ["string", "null"],
+                                     "description": "Move only the unfinished todo whose text contains this"},
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
@@ -2901,6 +2926,10 @@ class AgentService:
     def _tool_daily_set_task_state(self, params: dict) -> dict:
         from src.services.tool_handlers.daily import daily_set_task_state
         return daily_set_task_state(self.vault, params)
+
+    def _tool_daily_check_todo(self, params: dict) -> dict:
+        from src.services.tool_handlers.daily import daily_check_todo
+        return daily_check_todo(self.vault, params)
 
     def _tool_daily_rollover(self, params: dict) -> dict:
         from src.services.tool_handlers.daily import daily_rollover
