@@ -11,10 +11,12 @@ import datetime as dt
 import json
 import re
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+
+from rapidfuzz import fuzz
 
 from src.services.fast_lane.context import BlockView, FastContext, HabitView, clean_turn_text
 from src.services.fast_lane.contract import FAST_OPS, Clause, ParseResult, TimeWords, extract_hashtags
@@ -25,6 +27,7 @@ _REPLY = re.compile(r'^\(replying to (\w+): "(.*?)"\)\s*', re.DOTALL)
 _PHOTO = re.compile(r"^\(photo: [^)]*\)\s*")
 HOP_WINDOW = dt.timedelta(minutes=2)
 MINUTE = dt.timedelta(minutes=1)
+NAME_MATCH = 75   # token_set_ratio: "Washed the dishes" ~ "Wash dishes" (79), not "Dog walk" ~ "Dog food" (55)
 
 
 @dataclass
@@ -83,6 +86,40 @@ def load_messages(turns_path: Path, chat_id: int, tz: ZoneInfo) -> list[Message]
     return out
 
 
+_TURN_HEADER = re.compile(r"^### (\d\d):(\d\d) \[(user|assistant)\]\s*$", re.MULTILINE)
+
+
+def load_conversation_messages(conversations_dir: Path, chat_id: int, tz: ZoneInfo,
+                               before: dt.date) -> list[Message]:
+    """Your messages kept only in the vault's conversation files: the days before the turn log began.
+
+    Each file is one day, `{date}/{chat_id}.md`, in "### HH:MM [user]" and
+    "### HH:MM [assistant]" sections. Ids are c0001… in time order, so they
+    never collide with the turn log's t-ids. No tools were logged then.
+    """
+    out: list[Message] = []
+    for path in sorted(Path(conversations_dir).glob(f"*/{chat_id}.md")):
+        try:
+            day = dt.date.fromisoformat(path.parent.name)
+        except ValueError:
+            continue
+        if day >= before:
+            continue
+        parts = _TURN_HEADER.split(path.read_text(encoding="utf-8"))
+        for k in range(1, len(parts) - 3, 4):
+            hour, minute, role, content = parts[k], parts[k + 1], parts[k + 2], parts[k + 3].strip()
+            ts = dt.datetime(day.year, day.month, day.day, int(hour), int(minute), tzinfo=tz)
+            if role == "user":
+                text, reply_to, reply_from, has_photo = _strip(content)
+                out.append(Message(id="", ts=ts, text=text, reply_to=reply_to, reply_from=reply_from,
+                                   has_photo=has_photo))
+            elif out and out[-1].ts.date() == day and not out[-1].old_reply:
+                out[-1].old_reply = content
+    for n, msg in enumerate(out, 1):
+        msg.id = f"c{n:04d}"
+    return out
+
+
 def _ts(value: Any, date: str, tz) -> dt.datetime | None:
     iso = normalize_time(str(value), date) if value else None
     if not iso:
@@ -94,32 +131,73 @@ def _ts(value: Any, date: str, tz) -> dt.datetime | None:
     return moment.replace(tzinfo=tz) if moment.tzinfo is None else moment.astimezone(tz)
 
 
-def _blocks_before(msg: Message, earlier: list[Message]) -> tuple[BlockView, ...]:
-    """Blocks the old path created in the 30 h before this message: the day as it stood then."""
-    out = []
+def _find_block(blocks: dict[str, BlockView], params: dict[str, Any]) -> str | None:
+    """The key of the block an update or delete named: its id, else the latest of that name."""
+    if str(params.get("event_id") or "") in blocks:
+        return str(params["event_id"])
+    reference = str(params.get("block_reference") or "").casefold()
+    if reference:
+        for key in reversed(blocks):
+            name = blocks[key].name.casefold()
+            if name == reference or reference in name:
+                return key
+    return None
+
+
+def _blocks_before(msg: Message, earlier: list[Message], boundary_hour: int = 5) -> tuple[BlockView, ...]:
+    """The day as the old path left it before this message: what it created, updated and deleted.
+
+    Only the days the live context shows (spec §5.1): today's file, and the
+    evening before while it is still before the day boundary. A call that
+    waited on a confirmation logged no result and never ran.
+    """
+    days = {msg.ts.date().isoformat()}
+    if msg.ts.hour < boundary_hour:
+        days.add((msg.ts.date() - dt.timedelta(days=1)).isoformat())
+    tz = msg.ts.tzinfo
+    blocks: dict[str, BlockView] = {}
     for prev in earlier:
         if msg.ts - prev.ts > dt.timedelta(hours=30):
             continue
         for tool in prev.old_tools:
-            if tool["name"] != "create_event":
+            result = tool.get("result")
+            if not isinstance(result, dict) or result.get("ok") is False:
                 continue
-            params = tool["params"]
-            date = str(params.get("date") or prev.ts.date().isoformat())
-            result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
-            out.append(BlockView(id=str(result.get("event_id", "")), date=date, name=str(params.get("name") or ""),
-                                 start=_ts(params.get("start_time"), date, msg.ts.tzinfo),
-                                 end=_ts(params.get("end_time"), date, msg.ts.tzinfo)))
-    return tuple(out)
+            params = tool.get("params") or {}
+            # Newer turns log the normalized {"ok", "data": {...}} shape; older ones the bare dict.
+            data = result.get("data") if isinstance(result.get("data"), dict) else result
+            if tool["name"] == "create_event":
+                date = str(params.get("date") or prev.ts.date().isoformat())
+                key = str(data.get("event_id", "")) or f"{prev.id}:{len(blocks)}"
+                blocks[key] = BlockView(id=str(data.get("event_id", "")), date=date, name=str(params.get("name") or ""),
+                                        start=_ts(params.get("start_time"), date, tz),
+                                        end=_ts(params.get("end_time"), date, tz))
+            elif tool["name"] in ("update_event", "delete_event"):
+                key = _find_block(blocks, params)
+                if key is None:
+                    continue
+                if tool["name"] == "delete_event":
+                    del blocks[key]
+                    continue
+                b = blocks[key]
+                blocks[key] = replace(
+                    b, name=str(params.get("name") or b.name),
+                    start=_ts(params["start_time"], b.date, tz) if params.get("start_time") else b.start,
+                    end=_ts(params["end_time"], b.date, tz) if params.get("end_time") else b.end)
+    return tuple(b for b in blocks.values() if b.date in days)
 
 
 def context_for(msg: Message, earlier: list[Message], habits: tuple[HabitView, ...],
-                typical: dict[str, int]) -> FastContext:
+                typical: dict[str, int], skills: tuple[str, ...] = (),
+                bedtime: dt.time | None = None) -> FastContext:
     turns: list[tuple[str, str]] = []
     for prev in earlier[-2:]:
         turns += [("user", prev.text), ("assistant", clean_turn_text(prev.old_reply))]
     return FastContext(now=msg.ts, chat_id=0, text=msg.text, reply_to=msg.reply_to, reply_from=msg.reply_from,
                        recent_turns=tuple(turns[-4:]), blocks=_blocks_before(msg, earlier), habits=habits,
-                       hashtags=extract_hashtags(msg.text), has_photo=msg.has_photo, typical_minutes=typical)
+                       hashtags=extract_hashtags(msg.text), has_photo=msg.has_photo, typical_minutes=typical,
+                       bedtime=bedtime, skills=skills,
+                       photo_at=msg.ts if msg.has_photo else None)   # the send time; EXIF is not kept
 
 
 def skeleton_row(msg: Message) -> dict[str, Any]:
@@ -128,6 +206,29 @@ def skeleton_row(msg: Message) -> dict[str, Any]:
             "old": {"skill": msg.old_skill,
                     "tools": [{"name": t["name"], "params": t["params"]} for t in msg.old_tools]},
             "expected": None, "unclear": False, "notes": ""}
+
+
+def select_rows(messages: list[Message], golden: dict[str, dict[str, Any]], ids: set[str] | None = None,
+                limit: int | None = None) -> list[tuple[int, Message]]:
+    """The labelled messages to replay, keeping each one's index into the full history."""
+    rows = [(i, m) for i, m in enumerate(messages)
+            if (golden.get(m.id) or {}).get("expected") and (ids is None or m.id in ids)]
+    return rows[:limit] if limit else rows
+
+
+def new_skeleton_rows(messages: list[Message], golden: dict[str, Any]) -> list[dict[str, Any]]:
+    """Skeleton rows for messages the golden set does not have yet, without the old router's pick.
+
+    The old skill is left out so a labeller judges the fallthrough skill from
+    the catalog, not by agreeing with the router it is meant to be compared to.
+    """
+    rows = []
+    for msg in messages:
+        if msg.id not in golden:
+            row = skeleton_row(msg)
+            row["old"].pop("skill", None)
+            rows.append(row)
+    return rows
 
 
 def load_golden(path: Path) -> dict[str, dict[str, Any]]:
@@ -152,6 +253,30 @@ def expected_parse(expected: dict[str, Any], message: str) -> ParseResult:
     return ParseResult(tuple(clauses), expected.get("fallthrough_skill"))
 
 
+def saved_parse(row: dict[str, Any]) -> ParseResult | None:
+    """A parse from a saved replay row, to score again without calling the model.
+
+    A saved row keeps the clauses that passed the checks but not the ones
+    that were dropped, so a route of "mixed" over all-fast clauses is kept
+    by marking one dropped clause.
+    """
+    if "clauses" not in row:
+        return None
+    clauses = []
+    for c in row["clauses"]:
+        t = c.get("time")
+        time_words = TimeWords(**{k: t.get(k) for k in ("start", "end", "duration", "shift", "day", "after", "with_")}) \
+            if isinstance(t, dict) else None
+        clauses.append(Clause(op=c["op"], intent=c["intent"], stated=c["stated"], evidence=c["evidence"],
+                              name=c.get("name"), target=c.get("target"), tags=tuple(c.get("tags") or ()),
+                              place=c.get("place"), people=tuple(c.get("people") or ()),
+                              project=c.get("project"), time=time_words))
+    result = ParseResult(tuple(clauses), row.get("fallthrough_skill"))
+    if row.get("route") == "mixed" and result.route == "fast":
+        result = ParseResult(result.clauses, result.fallthrough_skill, dropped=("(dropped)",))
+    return result
+
+
 @dataclass
 class RowScore:
     route_ok: bool
@@ -173,7 +298,45 @@ def _same_name(a: str | None, b: str | None) -> bool:
     if not a or not b:
         return False
     a, b = a.casefold(), b.casefold()
-    return a == b or a in b or b in a
+    return a == b or a in b or b in a or fuzz.token_set_ratio(a, b) >= NAME_MATCH
+
+
+CREATE_OPS = frozenset({"log_block", "start_block"})
+
+
+def _time_word(side: dict[str, Any] | Clause, key: str) -> str | None:
+    """A time word from a label (a dict) or a parsed clause (TimeWords)."""
+    if isinstance(side, dict):
+        return (side.get("time") or {}).get(key)
+    return getattr(side.time, key, None) if side.time is not None else None
+
+
+def _same_write(label: dict[str, Any], clause: Clause) -> bool:
+    """Whether the clause's op makes the write the label's op makes (2026-09-29, the Sonnet sample).
+
+    Both models, and the labels, split the same message between ops whose
+    writes do not differ. The resolver places log_block and start_block
+    alike, and end_block and an edit_block that only sets the end alike. An
+    end with no start matches a block logged by its end, because the matcher
+    closes an open block of that activity either way and an end_block with
+    nothing open becomes that new block (spec §7.1). Ops that write
+    something else, such as a todo tick or an edit that moves the start,
+    still count as misses.
+    """
+    ops = {label["op"], *label.get("also_ops", ())}
+    if clause.op in ops:
+        return True
+    pair = {label["op"], clause.op}
+    by_op = {label["op"]: label, clause.op: clause}
+    if pair <= CREATE_OPS:
+        return True
+    if pair == {"end_block", "edit_block"}:
+        edit = by_op["edit_block"]
+        return _time_word(edit, "start") is None and _time_word(edit, "shift") is None
+    if "end_block" in pair and pair - {"end_block"} <= CREATE_OPS:
+        create = by_op[next(iter(pair - {"end_block"}))]
+        return _time_word(create, "start") is None
+    return False
 
 
 def _local(moment: dt.datetime, tz) -> dt.datetime:
@@ -196,9 +359,10 @@ def score_row(expected: dict[str, Any], result: ParseResult,
     used: set[int] = set()
     matched = fields_ok = placed = placed_ok = wrong_date = outcome_ok = 0
     for e in want:
+        names = [e.get("name") or e.get("target"), *e.get("also_names", ())]
         k = next((k for k, (c, _) in enumerate(got)
-                  if k not in used and c.op == e["op"]
-                  and _same_name(c.name or c.target, e.get("name") or e.get("target"))), None)
+                  if k not in used and _same_write(e, c)
+                  and any(_same_name(c.name or c.target, name) for name in names)), None)
         if k is None:
             continue
         used.add(k)

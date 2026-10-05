@@ -112,3 +112,48 @@ def test_parse_relative_needs_a_direction_and_a_number(text):
 ])
 def test_parse_clock_never_reads_a_duration_as_a_clock(text):
     assert parse_clock(text) is None
+
+
+def test_word_clocks():
+    from src.services.fast_lane.time_words import Clock, parse_clock
+    assert parse_clock("midnight") == Clock(0, 0, False, False)
+    assert parse_clock("noon") == Clock(12, 0, False, False)
+    assert parse_clock("just before midnight") == Clock(23, 59, False, True)
+    assert parse_clock("just after noon") == Clock(12, 1, False, True)
+
+
+def test_the_next_hour_and_the_previous_day():
+    from src.services.fast_lane.time_words import parse_day, parse_duration
+    assert parse_duration("the next hour") == 60 and parse_duration("for the next hour") == 60
+    assert parse_day("the previous day", dt.date(2026, 3, 8), "record").date == dt.date(2026, 3, 7)
+
+
+def test_a_date_range():
+    from src.services.fast_lane.time_words import parse_day_range
+    today = dt.date(2026, 8, 22)
+    assert parse_day_range("30.08 - 06.09", today, "plan") == (dt.date(2026, 8, 30), dt.date(2026, 9, 6))
+    assert parse_day_range("01.10.2026 - 02.10.2026", today, "plan") == (dt.date(2026, 10, 1), dt.date(2026, 10, 2))
+    assert parse_day_range("30.08", today, "plan") is None
+    assert parse_day_range("tomorrow", today, "plan") is None
+
+
+def test_a_hedged_range_of_minutes_is_a_relative_time_not_a_clock():
+    from src.services.fast_lane.time_words import parse_clock, parse_relative
+    assert parse_clock("in about 15-20 mins") is None
+    assert parse_relative("in about 15-20 mins") == dt.timedelta(minutes=18)
+    assert parse_relative("in 15-20 minutes") == dt.timedelta(minutes=18)
+    assert parse_relative("in about an hour") == dt.timedelta(minutes=60)
+    assert parse_clock("12:00-16:00").hour == 12      # a range of clocks is still a clock
+
+
+def test_a_few_minutes():
+    from src.services.fast_lane.time_words import parse_relative
+    assert parse_relative("in a few minutes") == dt.timedelta(minutes=5)
+    assert parse_relative("a couple of minutes ago") == dt.timedelta(minutes=-2)
+
+
+def test_a_shift_in_days():
+    from src.services.fast_lane.time_words import parse_shift
+    assert parse_shift("+1 day") == 24 * 60
+    assert parse_shift("2 days later") == 2 * 24 * 60
+    assert parse_shift("back 30 mins") == -30

@@ -140,7 +140,8 @@ def _start_fast_lane_shadow(body: MessageRequest):
             day_boundary_hour=settings.fast_lane_day_boundary_hour,
             default_minutes=settings.default_event_duration,
         )
-        complete = partial(complete_fast_context, events=events, vault=vault)
+        complete = partial(complete_fast_context, events=events, vault=vault,
+                           skills_dir=settings.skills_dir)
     except Exception:
         logger.warning("fast lane shadow could not start", exc_info=True)
         return None

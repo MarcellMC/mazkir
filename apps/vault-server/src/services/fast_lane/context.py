@@ -81,6 +81,9 @@ class FastContext:
     selected_date: str | None = None
     has_photo: bool = False
     typical_minutes: dict[str, int] = field(default_factory=dict)
+    bedtime: dt.time | None = None  # your usual Sleep start, for "woke up at …" with no Sleep open
+    photo_at: dt.datetime | None = None   # when the message's photo was sent, for a caption's block
+    skills: tuple[str, ...] = ()    # the router's catalog, one line per skill, for fallthrough_skill
 
 
 def _safe(fn, default):
@@ -153,6 +156,25 @@ def _places(path: Path | None) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _skill_line(skill) -> str:
+    line = f"{skill.name}: {skill.description.strip()}"
+    when = " ".join(skill.when_to_use.split())
+    return f"{line} Use for: {when}" if when else line
+
+
+def skills_of(skills_dir: Path) -> tuple[str, ...]:
+    """The skill catalog the router reads, one line per skill.
+
+    The parse chooses `fallthrough_skill` from it. With only one-line hints in
+    its prompt it chose right 55 % of the time, against the router's 82 %
+    with this catalog (2026-09-29 replay).
+    """
+    from src.services.skill_registry import SkillRegistry
+    registry = SkillRegistry(skills_dir=Path(skills_dir))
+    registry.load()
+    return tuple(_skill_line(s) for s in registry.list())
+
+
 def typical_minutes(events, before: dt.date, days: int = 30) -> dict[str, int]:
     """Median length per activity name over the `days` days before `before`, for an unknown end.
 
@@ -173,6 +195,47 @@ def typical_minutes(events, before: dt.date, days: int = 30) -> dict[str, int]:
             if 0 < minutes <= 16 * 60:
                 lengths.setdefault(name.strip().lower(), []).append(minutes)
     return {name: round(statistics.median(values)) for name, values in lengths.items()}
+
+
+def photo_sent_at(attachments, tz) -> dt.datetime | None:
+    """When the message's first photo was sent: Telegram's `telegram_date`, which is UTC (spec §5.6).
+
+    A2 refines this with the photo's EXIF time when it has one.
+    """
+    for a in attachments or ():
+        if a.get("type") != "photo" or not a.get("telegram_date"):
+            continue
+        try:
+            sent = dt.datetime.fromisoformat(str(a["telegram_date"]).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if sent.tzinfo is None:
+            sent = sent.replace(tzinfo=dt.timezone.utc)
+        return sent.astimezone(tz).replace(microsecond=0)
+    return None
+
+
+def typical_bedtime(events, before: dt.date, days: int = 30) -> dt.time | None:
+    """Your usual Sleep start: the median over the `days` days before `before`.
+
+    Counted in minutes from noon, so 23:30 and 00:30 have midnight between
+    them, not noon. None with fewer than three nights.
+    """
+    from src.services.fast_lane.time_resolver import SLEEP_NAMES
+    from_noon: list[int] = []
+    for k in range(1, days + 1):
+        for e in events.get_events((before - dt.timedelta(days=k)).isoformat()):
+            if (e.get("name") or "").strip().lower() not in SLEEP_NAMES or not e.get("start_time"):
+                continue
+            try:
+                start = dt.datetime.fromisoformat(e["start_time"])
+            except (ValueError, TypeError):
+                continue
+            from_noon.append((start.hour * 60 + start.minute - 720) % 1440)
+    if len(from_noon) < 3:
+        return None
+    minutes = (round(statistics.median(from_noon)) + 720) % 1440
+    return dt.time(minutes // 60, minutes % 60)
 
 
 def assemble_fast_context(
@@ -197,10 +260,12 @@ def assemble_fast_context(
         hashtags=extract_hashtags(text),
         selected_date=selected_date,
         has_photo=any(a.get("type") == "photo" for a in attachments or ()),
+        photo_at=_safe(lambda: photo_sent_at(attachments, now.tzinfo), None),
     )
 
 
-def complete_fast_context(snapshot: FastContext, *, events, vault, history_days: int = 30) -> FastContext:
+def complete_fast_context(snapshot: FastContext, *, events, vault, history_days: int = 30,
+                          skills_dir: Path | None = None) -> FastContext:
     """The snapshot plus the habit list and the typical durations. Never raises.
 
     Runs in the shadow's thread, before the parse. Durations come only from
@@ -211,4 +276,6 @@ def complete_fast_context(snapshot: FastContext, *, events, vault, history_days:
         snapshot,
         habits=_safe(lambda: habits_of(vault), ()),
         typical_minutes=_safe(lambda: typical_minutes(events, snapshot.now.date(), history_days), {}),
+        bedtime=_safe(lambda: typical_bedtime(events, snapshot.now.date(), history_days), None),
+        skills=_safe(lambda: skills_of(skills_dir), ()) if skills_dir else snapshot.skills,
     )

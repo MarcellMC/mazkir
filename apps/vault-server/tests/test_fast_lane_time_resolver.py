@@ -35,9 +35,9 @@ def test_a_block_reported_after_midnight_lands_on_the_evening_before():
     assert r.placement.logical_date == dt.date(2026, 9, 7)
 
 
-def test_twelve_hour_times_take_the_reading_still_going_on():
-    # Sent 04:17: "around 3:00-3:20, then 3:30-5:00". Tonight's reading is
-    # still running; yesterday afternoon's is 11 h older, so tonight wins.
+def test_small_hours_are_tonight_and_a_block_still_going_on_ends_as_expected():
+    # Sent 04:17: "around 3:00-3:20, then 3:30-5:00". The hours are 24-hour,
+    # so this is tonight, and the visit is still running.
     clauses = [log("Dog walk", "around 3:00", "3:20"), log("Visit friends", "3:30", "5:00")]
     walk, visit = resolve(clauses, ctx(at(2026, 9, 3, 4, 17)))
     assert (walk.outcome, visit.outcome) == ("fact", "fact")
@@ -46,14 +46,6 @@ def test_twelve_hour_times_take_the_reading_still_going_on():
     assert (visit.placement.start, visit.placement.end) == (at(2026, 9, 3, 3, 30), at(2026, 9, 3, 5, 0))
     assert visit.placement.end_precision == "expected"
     assert walk.placement.logical_date == dt.date(2026, 9, 2)
-
-
-def test_the_same_message_hours_later_asks_which_it_was():
-    clauses = [log("Dog walk", "around 3:00", "3:20"), log("Visit friends", "3:30", "5:00")]
-    walk, visit = resolve(clauses, ctx(at(2026, 9, 3, 10, 0)))
-    assert walk.outcome == visit.outcome == "question"
-    starts = {p.start for p in walk.alternatives}
-    assert starts == {at(2026, 9, 3, 3, 0), at(2026, 9, 2, 15, 0)}
 
 
 def test_a_recent_time_beats_the_same_time_twelve_hours_earlier():

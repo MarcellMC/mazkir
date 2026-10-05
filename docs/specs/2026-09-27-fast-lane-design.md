@@ -1,6 +1,7 @@
 # Fast Lane: a message becomes evidence on your timeline (Design)
 
-**Status:** Design, approved section by section in conversation 2026-09-26/27. Not yet planned.
+**Status:** Design, approved section by section in conversation 2026-09-26/27. A1 merged; A2 planned.
+**Revised 2026-10-03** after A1's labelled replay: the owner's rules on 24-hour clocks, untimed plans, windows, waking up, shared intervals, todos and routing; the operations both models split the same way; and the resolver fixes the replay found (§5.1–§5.6, §6, §7.1–§7.3, §11.2).
 **Piece A** of the message-pipeline redesign (pieces A–D, §3). B, C and D get their own brainstorm and spec.
 **Parent:** `docs/specs/2026-08-21-time-management-phase2-capture-design.md`. This design supersedes its ship order from Ship 6 on (§3.2), and absorbs Ship 7 and Ship 4b into pieces C and D.
 **Research behind it:**
@@ -114,7 +115,7 @@ Every message is read once by a fast model and turned into **clauses of evidence
 | Stated record, placed exactly | **Fact.** Written, counted in `confirmed_minutes`, receipt with undo |
 | Stated plan | **Scheduled.** Written, synced to Google, counted as a plan until confirmed |
 | Mentioned in passing, or the resolver had to guess | **Proposal.** Pending on `/day`, ✓ ✕ ✎ on the receipt, not synced, not counted |
-| Can't be placed | **Question.** One tap, or one reply; the answer comes back as evidence |
+| Can't be placed | **Question.** One reply; the answer comes back as evidence |
 
 Clauses outside A's operations fall through to a skill; parse failures fall through to today's router.
 
@@ -130,6 +131,7 @@ Clauses outside A's operations fall through to a skill; parse failures fall thro
 - Today's blocks as `HH:MM–HH:MM name` with open ones marked. Before 05:00, also last evening's.
 - Today's untimed todos; habit names with aliases; known place names.
 - Hashtags extracted by code; the day open in `/day`.
+- The router's skill catalog, one line per skill (name, description, when to use), for `fallthrough_skill`. With one-line hints instead, the parse chose the right skill 55 % of the time against the router's 82 % (2026-09-29).
 
 ### 5.2 Output (structured output via `output_config.format`)
 
@@ -146,8 +148,7 @@ Clause {
   stated: boolean
   evidence: string             // exact words from the message
   name: string | null
-  target: string | null        // edits and checks: "the dog walk", "Dev Session", "it"
-  tags: string[]
+  target: string | null        // edits, checks and moved todos: "the dog walk", "Dev Session", "it"
   place: string | null         // as written
   people: string[]             // as written
   project: string | null       // as written
@@ -161,22 +162,43 @@ Schema notes, checked against the structured-outputs docs:
 - Every object sets `additionalProperties: false`.
 - Enums and arrays of objects are supported. Array length and string length can't be constrained, so both are checked in code.
 - A new schema compiles once and is cached for 24 h. The server makes one throwaway parse call at startup so the first real message doesn't pay for compilation.
+- **Tags are not in the schema.** Code reads them from each clause's evidence (§5.4). Asked for tags, Haiku invented them without end ("query", "request", …) until it hit the token cap, on messages as short as "3": 22 of 276 parses failed that way in the first replay. The reply is capped at 1,500 tokens.
+- **Thinking is off explicitly**, not by omission: Sonnet 5 thinks unless told not to, and a thinking block arrives before the text, so the reply is read from its text block.
 
 ### 5.3 Rules in the prompt
 
-1. One clause per action.
-2. Copy time words exactly; never convert them.
-3. `stated` is true for an explicit request; an activity reported with a time; or a log verb ("started", "finished", "back home", "went for"). A present-tense mention in passing is `stated: false`.
-4. **Any activity with a time or "now" gets its own clause, whatever the message is mainly about.**
-5. `intent: plan` only when the words say it will happen: "tomorrow", "later", "I'll", or a time later today.
-6. Leave `place`, `people` and `project` empty unless said.
-7. An answer to a question the assistant just asked (a gap prompt, or a skill's "what was 05:00–15:00?") takes its details from that question. "Sleeping" after such a question is a `log_block` over the named interval, not `other`.
+The prompt defines each operation, gives numbered rules, and carries 19 examples in generic words. *Revised 2026-10-03 from the labelled history and the owner's answers.*
 
-The prompt carries about ten examples taken from §2's history. Haiku 4.5 caches prompts of 4,096 tokens or more; the static part will probably be shorter. Measure latency first and only grow the example set past 4,096 if caching would help.
+**Operations**
+- `log_block`: an activity with its time, or reported as done. Also a plan with no time yet ("plan X", "schedule for later: X, Y", "today I want to focus on X"): intent plan, time empty, and code proposes the times (§6.2 rule 12).
+- `start_block`: something starting now or at a time. It writes what a `log_block` with only a start writes.
+- `end_block`: a block listed on the timeline ends. With none listed, it is a `log_block` with only an end.
+- `edit_block`: an existing block's times, day or name change **without saying it happened**. An activity reported as done or started is logged even when its plan is listed; the matcher confirms the plan (§7.1).
+- `tick_habit`, `check_todo`: a habit or open todo done **with no clock time** ("today" is a day, not a time). With a clock time it is a `log_block`, and the habit and todo hooks tick it or cross it out (§7.2, §7.3). "Cross out as done:" followed by a list is one `check_todo` per item.
+- `add_todo`: something to remember, buy or do some day. A list under "Tasks for <project>:" is one per item, and so are chores listed inside a longer message, whatever the rest of it is for (owner, 2026-10-05).
+- `rollover_todos`: move todos to another day, in `time.day`. `target` names one todo ("the drill todo goes to tomorrow", or "I'll call the plumber tonight" when that is an open todo); empty means all unfinished ones. An open todo given only a day is moved, not planned as a block.
+- `other`: anything else. Task files and habits belong here: "#task", "create task", "complete it" about a task, and creating or changing a habit or goal.
+
+**Rules**
+1. One clause per action. Several activities given one interval together ("23:00–00:00 as meal prep, eating and a film") are one clause each, each with that interval's words; Mazkir splits it evenly, in the order written. One running alongside another ("eating while watching") sets `with` instead.
+2. Copy time words exactly; never convert, add a date or calculate. Window words stay in `time.start` ("somewhere between 20:30").
+3. Words that pin a moment to the send time ("just returned", "started", "going to", "now") are written as "now".
+4. "Then" sets `after`; an activity alongside another sets `with`.
+5. `stated` is true for an explicit request, an activity reported with a time, or a log verb ("started", "finished", "went"). A passing mention is `stated: false`.
+6. Every activity with a time or "now" gets its own clause, whatever the message is mainly about.
+7. `intent: plan` only when the words say it will happen: "tomorrow", "later", "I'll", "plan", "schedule", a weekday ahead, or a time later today, including one minutes after the message ("Gym at 20:50" sent at 20:45). An interval that had already started or ended when the message was sent is a record, even when worded as an instruction.
+8. `evidence` is the exact words, no longer than needed.
+9. Write only what the message says: no invented place, target or person, no computed end, and hedges kept. A photo caption or a one-word answer is not a block unless it names an activity done or a time.
+10. An answer to a question the assistant asked takes its details from that question (a gap prompt's interval). A bare time answering a question about a reminder or block sets that item's time (`edit_block`).
+11. Reshaping something Mazkir only proposed ("keep it as proposed, and …") is `other`, for the skill that proposed it.
+12. A short answer to the assistant's last question that is not about a time ("3", "yes, attach it") is a single `other`.
+13. `fallthrough_skill` comes from the skill catalog (§5.1). Reading tasks, goals, events or the calendar is time-management; attaching to the daily note or keeping a journal entry is mazkir; a complaint that Mazkir did not do what it said, or that something does not show up, is engineering; knowledge-management is only for notes, ideas and facts.
+
+With the catalog, the request is about 5k tokens on Haiku 4.5, above its 4,096-token cache minimum. Whether caching cuts latency is measured in A2 (§13).
 
 ### 5.4 Checks in code after the parse
 
-- **Hashtags override the model.** `#idea` and `#green` force a knowledge clause; `#buy` forces `add_todo`; `#dev`, `#work` and `#explore` become activity tags. The map lives in code.
+- **Hashtags override the model.** Code reads each clause's tags from its own evidence. `#idea` forces a knowledge clause. `#green` is the owner's reserved tag (2026-10-05): it stays on the clause and the block for his later analysis, and routes nothing. `#buy` forces `add_todo`; `#dev`, `#work` and `#explore` become activity tags. The map lives in code.
 - Evidence not found in the message: that clause is dropped and its text falls through.
 - Out-of-range `after` / `with`, or fields an op requires missing: the same.
 - More than 12 clauses: the whole message falls through.
@@ -197,6 +219,8 @@ Before the parse, code places each photo on the timeline:
 
 The photo is attached to the block covering that moment, if one exists. The message then goes to the fallthrough skill for its content.
 
+A caption that names an activity done with no time ("logged it on the dog walk") also proposes a block of that activity centred on the photo's moment, at your usual length (owner, 2026-09-29). Telegram's send time is the right moment when the image carries no camera time.
+
 ---
 
 ## 6. The time resolver
@@ -208,20 +232,27 @@ The photo is attached to the block covering that moment, if one exists. The mess
 - Each clause's raw time words, intent, and `after` / `with` links.
 - **The message's send time**, local.
 - Blocks still open, and each activity's typical duration from the ledger (median; 30 min fallback).
+- Your usual bedtime: the median Sleep start over 30 days, read across midnight; none with fewer than three nights.
 - The day boundary: 05:00 by default, configurable, taken from your sleep data.
 
 ### 6.2 Rules
 
-1. **A record can't have happened after its message.** One that started before and ends after is ongoing, with an `expected` end.
-2. **A plan can't start in the past**, unless an explicit past date is given.
-3. **12-hour ambiguity:** hours ≤ 12 without am/pm have two readings, crossed with day candidates. The whole message is scored together, and clauses are assumed to be in order.
-4. **Day words are calendar-relative** ("yesterday", "Friday", "September 7th", "14.10", plus a small Russian and Hebrew table), **except "tonight" and "last night"**, which use the 05:00 boundary.
+*Revised 2026-10-03.* Rules 3, 4, 6, 7 and 9 changed; 11–14 are new.
+
+1. **A record can't have happened after its message.** One that started before and ends after is ongoing, with an `expected` end. A record starting within an hour after its message is that clause's slip: it is proposed as it stands, and the rest of the message keeps its day.
+2. **A plan can't start in the past**, unless an explicit past date is given. A plan within an hour before its message is proposed as it stands, not moved to tomorrow.
+3. **Hours are 24-hour unless am/pm is written** (owner, 2026-09-29). An hour has one reading. What remains is its day: today or the day before for a record, today or tomorrow for a plan. The most recent record or the soonest plan wins, with no question. One exception: after a night word, a bare hour 1–12 may be the evening one ("tonight at 11" is 23:00).
+4. **Day words are relative to the day the message was sent**, not the day open in `/day`: "yesterday", "the previous day", "Friday", "September 7th", "14.10", plus a small Russian and Hebrew table. "Tonight" and "last night" use the 05:00 boundary. **A date names the day a range starts**: "23:00–00:30 on the 31st" ends on the 1st. A range of dates ("30.08 – 06.09") runs from the first day to the last, as whole days when no clock is given. An end word "next day" puts the end on the day after the start, and an end's own day word ("returning around 14:00 on Saturday") puts it on that day.
 5. **"Just returned", "back home", "finished", "done" and "ended" pin the end** to the message time or the stated time. "Started", "going to" and "now" pin the start.
-6. **A chain with no clock times ends at the message time and runs backwards.** If one clause has a clock time, the chain works outward from it.
-7. **`with` clauses share the referenced clause's interval.**
+6. **A chain with no clock times ends at the message time and runs backwards.** If one clause has a clock time, the chain works outward from it. A later clause's clock takes the reading just after the clause before it when that is within 12 hours, otherwise the nearest before it within 12 hours, so "…before that, 00:33–02:35" lands earlier the same night. A clause with only an end clock that follows another starts where that one ended. A chain that follows an edit runs forward from it. A single record with a length and no clock ("practiced guitar 10 mins") ends at the message time, as a chain does.
+7. **`with` clauses share the referenced clause's interval.** Activities given one written interval without `with` share it evenly, in the order written, with the boundaries between them inferred (owner, 2026-10-05: "split in half"). One alongside another takes its partner's piece.
 8. **Start, end and duration, when all three are given, must agree within 5 minutes.**
-9. **Edits move both ends.** An end time takes the nearest occurrence after the start.
+9. **Edits.** A shift moves both ends, and may be in days ("+1 day"). A new start alone moves only the start, unless it lands at or after the block's end; then the whole block moves and keeps its length. A shower planned for 13:15–13:45 and moved "to 15:20" becomes 15:20–15:50, while "sleep start at 04:00" inside 01:13–08:00 moves only the start. A new end alone takes its nearest occurrence after the start. An `end_block` whose block is not on the timeline is that block, ending then.
 10. **A record longer than 16 hours is implausible**, unless an explicit date range was written.
+11. **A record with only a start** ends after your usual length once that has passed (`assumed`). One still within it stays open. An assumed end never runs past the start of the next block in the message.
+12. **Plans with no time** ("plan meal prep, eating and a walk after that", "schedule for later: …", a day's intention) are proposed back to back from now, at your usual lengths, in message order (owner, 2026-09-29). Plans that follow a block still running start once its usual length is over. Only stated plans with no day word but today: a passing mention, or a day the vocabulary can't read ("after 1 month"), asks instead.
+13. **A window** ("somewhere between 20:30 and 22:30") proposes your usual length at its start, never past its end (owner).
+14. **Waking with no Sleep open** ("woke up at 11:00") proposes a Sleep ending then, starting at your usual bedtime, or eight hours before when no bedtime is known (owner).
 
 ### 6.3 Precision and logical date
 
@@ -238,23 +269,21 @@ Each block also gets `logical_date`: the start's calendar date, minus one day wh
 
 | Situation | Outcome |
 |---|---|
-| One reading survives | Fact; soft ends marked by precision, ✎ on the receipt |
+| A reading survives | Fact; soft ends marked by precision, ✎ on the receipt |
 | Part of the time unknown ("just back from the dog walk") | Fact, with the unknown end `assumed` from your typical duration |
-| Two readings survive, ≥ 2 h apart, and neither dominates | One tap: two buttons, each carrying a full resolution |
-| Two readings survive, but the most recent one ended within 3 h and the other is ≥ 8 h older (for plans: the soonest starts within 12 h and the other ≥ 8 h later) | The dominant reading, as if it were the only one |
-| A sanity rule fails (implausible length, contradiction, overlaps a stated fact, a Sleep overlap) | Proposal, with the reason shown |
+| Mazkir chose the time: an untimed plan, a window, a Sleep from your bedtime, a caption's activity around its photo | Proposal, with the reason shown |
+| A slip within an hour of the message, or a sanity rule fails (implausible length, contradiction, overlaps a stated fact, a Sleep overlap) | Proposal, with the reason shown |
+| A record with no time at all, an edit whose block isn't found, or no reading fits | Question |
 
 `stated: false` also yields a proposal, but that is §5's question of whether something happened, not when.
 
+*Revised 2026-10-03:* the rows for two surviving readings, and the dominance rule that chose between them, are gone. Under rule 3 an hour has one reading, and the remaining candidates differ only by a day, where the most recent record or soonest plan is the one meant.
+
 ### 6.5 Example: #177
 
-"Walked the dog around 3:00 - 3:20, visited two friends at 3:30 - 5:00", sent at 04:17. Two readings survive:
-- **Tonight:** 03:00–03:20, then a visit from 03:30 still running, expected to end at 05:00.
-- **Yesterday afternoon:** 15:00–17:00.
+"Walked the dog around 3:00 - 3:20, visited two friends at 3:30 - 5:00", sent at 04:17. Hours are 24-hour, so this is tonight: 03:00–03:20 with an approximate start, then a visit from 03:30 still running, expected to end at 05:00. The old agent wrote 15:00 *today*, in the future. Sent at 10:00, the same message is the same night, now over.
 
-Tonight is still going on and yesterday afternoon is 11 h older, so tonight dominates and is written without a question. The old agent wrote 15:00 *today*, in the future. The same message sent at 10:00 would ask: tonight's reading would then be 7 h old, yesterday afternoon's 17 h, and neither would dominate.
-
-*Refined while planning (2026-09-27):* this section first said #177 always asks. Checking the rule against your history showed that asking whenever two readings survive would also ask for "Dog walk 11:40-12:00" sent at 12:11, where 23:40 the night before is a valid but absurd reading. The dominance rule keeps the question for real ambiguity.
+*History:* this section first said #177 always asks, then (2026-09-27) that it asks only when neither reading dominates. Both came from reading hours ≤ 12 as 12-hour. The owner writes 24-hour or says am/pm (2026-09-29), which removed the question.
 
 ### 6.6 Tests
 
@@ -266,7 +295,7 @@ Table-driven cases from real messages with a frozen "now":
 - #142 ("back 30 mins");
 - 24-hour, typo ("06:35:07:35"), duration ("7hr") and multilingual ("вчера") forms.
 
-Each case asserts intervals, precision per end, logical date and outcome.
+Each case asserts intervals, precision per end, logical date and outcome. `tests/test_fast_lane_resolver_owner_rules.py` adds one test per kind of message the labelled replay showed the resolver getting wrong, in generic words.
 
 ---
 
@@ -280,10 +309,12 @@ For a record R with a placed interval:
 |---|---|
 | An open block of the same activity | closes or extends it |
 | A planned block of the same activity within ±2 h | confirms it: its times become R's; plan → fact |
-| A fact of the same activity overlapping ≥ 50 % | updates it (later statement wins; pinned via `user_set`) |
+| A fact of the same activity overlapping ≥ 50 % | updates it, taking only the ends R states: an `assumed` or `inferred` end never overwrites a known one (later statement wins; pinned via `user_set`) |
 | An open block of another activity started earlier | is created, plus a **proposal** to close the open one at R's start |
 | An overlapping Sleep block | becomes a proposal with the overlap as reason |
 | None of these | is created |
+
+A **plan** P with a plan or proposal of the same activity within ±2 h moves that one to P's times rather than adding a second. An `end_block` with no open or listed block of its activity is created, placed by its end (§6.2 rule 9).
 
 "Same activity" means the `block_resolver` ladder applied to name and activity tag. Edit targets resolve the same way. The candidates are tried in this order:
 1. the replied-to message;
@@ -296,6 +327,7 @@ Registered as a post-hook on every block write: fast lane, agent, `/day` approva
 - Habit files gain `aliases:` (Workout: "gym"; Tooth brushing: "brush teeth", "teeth"; Dog Walk: "walked the dog").
 - **Exact or alias match:** `complete_habit(vault, path, now=<block end>)`. The tick is stamped at the block's time and respects `daily_target`. The completion is recorded on the block, so a block ticks at most once.
 - **Fuzzy match:** one-tap confirmation.
+- A habit done with no clock time is `tick_habit` and ticks directly; with a clock time it is a block, and this hook ticks it.
 - Plans and proposals tick only when confirmed.
 - **New-habit suggestion:** an activity on 3 or more distinct days in 14, matching no habit, adds one receipt line. It is shown at most once a month per activity; "not now" is remembered.
 
@@ -303,7 +335,9 @@ Registered as a post-hook on every block write: fast lane, agent, `/day` approva
 
 - **Places:** a list in `data/places.json` (gitignored), holding id, name, aliases in English, Russian and Hebrew, and kind. It is bootstrapped from location names already in the ledger. A known place stores `place_id` on the block. An unknown one is kept as `place_text` and the receipt offers "Add … as a place?". Names only in A; coordinates and arrival triggers come later.
 - **People and project** become wikilinks as written; `project` is also stored as its own field.
-- **Todos:** `add_todo` → `daily_add_task`, with tags and place. `check_todo` → `set_todo_checked` (section-agnostic, matched by text). `rollover_todos` → `daily_rollover`.
+- **Todos:** `add_todo` → `daily_add_task`, with tags and place. `check_todo` → `set_todo_checked` (section-agnostic, matched by text). `rollover_todos` → `daily_rollover`; with a `target`, only that todo moves, to `time.day`. With no source day written, the source is today when the destination is after today, and yesterday otherwise.
+- **The todo hook:** a record block whose activity matches an open todo crosses it out, as the habit hook ticks a habit. The history has the owner asking why a logged "sent the invoice" left its todo open.
+- **Task files are not todos:** "#task", "create task" and "complete it" about a task fall through to time-management (owner, 2026-09-29).
 - List numbers ("task 1") belong to piece C.
 
 ### 7.4 What gets written
@@ -315,7 +349,7 @@ Registered as a post-hook on every block write: fast lane, agent, `/day` approva
 | Proposal | now, `proposed: true` | no | no | no, until ✓ |
 | Question | nothing for that clause | | | |
 
-A question's choices are held server-side under a short id for 30 minutes, because of Telegram's 64-byte callback limit, so a tap writes directly.
+*Revised 2026-10-03:* a question offers no buttons to choose between. With 24-hour clocks the resolver never has two readings to offer, so the choice buttons and the server-side store that held them are dropped from A (owner, 2026-10-03). A question is answered by a reply, which comes back as evidence.
 
 ### 7.5 Execution
 
@@ -352,7 +386,7 @@ The stream stays open until background syncs settle (15 s cap). Fallthrough turn
 
 ### 8.2 Receipt layout
 
-These symbols are shared with `/day`: `✓` fact · `◌` scheduled plan · `●` proposal waiting on you · `?` needs one tap.
+These symbols are shared with `/day`: `✓` fact · `◌` scheduled plan · `●` proposal waiting on you · `?` needs your answer.
 
 ```
 ✓ yest 23:15–23:35  Dog walk                          [✎]
@@ -365,7 +399,7 @@ These symbols are shared with `/day`: `✓` fact · `◌` scheduled plan · `●
 - `~` marks an approximate or assumed end; `→` with no end marks a block still running. A date other than today is spelled out ("yest", "Fri", "7 Sep").
 - Anything unplaced says so ("Watched UFC · no time. Reply with one.") and arms the existing open-question hint.
 - The game layer is the habit line: count against target, tokens, streak, and a "longest ever" note, all computed by code.
-- Callback data is `rcpt:<turn>:<line>:<action>`: approve, dismiss, edit (the existing block edit view), choice, add place, confirm habit, suggest habit, undo.
+- Callback data is `rcpt:<turn>:<line>:<action>`: approve, dismiss, edit (the existing block edit view), add place, confirm habit, suggest habit, undo.
 - Undo edits the receipt so each line reads "↶ undone"; a line that can't be undone says why.
 
 The server sends structured receipt data; a new `formatters/receipt-rich.ts` draws it without knowing the rules.
@@ -384,6 +418,7 @@ New optional fields; absent on old rows, which keep their meaning:
 - `project`
 - `habit_completion`: habit path plus completion timestamp; one per block
 - `evidence`: the quoted words and the source message id
+- `tags`: the clause's hashtags, `#green` among them, kept for the owner's analysis
 
 ### 9.2 Approval (`services/approval.py`)
 
@@ -405,7 +440,6 @@ Related bug to fix alongside it: when `complete_habit` is called with a past `no
 ### 9.4 Other stores
 
 - `data/places.json` (§7.3).
-- Question choices: in memory, 30-minute TTL.
 - Undo snapshots: `data/actions/{turn_id}.json`, pruned after 24 h.
 - Habit files: `aliases:` in frontmatter.
 
@@ -420,7 +454,6 @@ Related bug to fix alongside it: when `complete_habit` is called with a past `no
 | No reading survives | One question |
 | A write fails | ✗ on its line with the reason; the others proceed; nothing is claimed |
 | Google sync fails | ⚠ on its line; the block stays in Mazkir |
-| Server restart before a choice is tapped | "Expired, send it again" |
 | Duplicate Telegram delivery | The turn is keyed by message id; a repeat within 10 min is ignored |
 | Rich message rejected | `sendRich` falls back to plain text; lines survive, buttons are lost |
 | Anything else | `FAST_LANE=off \| shadow \| on` |
@@ -439,11 +472,29 @@ Related bug to fix alongside it: when `complete_habit` is called with a past `no
 - A `fast_turn` log line with the trace id.
 - The router ceases to be an unnamed `messages.create` span.
 
-### 11.2 Evaluation: the 282 messages are the test set
+### 11.2 Evaluation: the labelled history is the test set
 
-- A replay script feeds each message at its original send time, with the ledger rebuilt from prior turns.
-- Expected clauses, intent, stated, intervals and outcome are drafted for each message from the history. Your in-conversation corrections are ground truth (#292's 01:55; the 7 Sep night). You review only the cases flagged as unclear.
-- The resolver is tested in `pytest`. The parse runs as a Phoenix experiment on a versioned dataset, at about $0.50 per full run.
+*Revised 2026-10-03 to describe what A1 built.*
+
+- `data/eval/fast-lane-golden.jsonl` (gitignored; the repo is public) holds about 350 labelled messages: the turn log plus the older conversation files. Each row has the expected route, the fallthrough skill, and clauses with op, intent, stated, name, time words, and the expected outcome and interval. The owner answered the ambiguous rows (2026-09-29). A blind A/B audit of the disputes between label and parse found the label right 50 times to the parse's 2 on actions, and 57 to 4 on the skill.
+- `scripts/fast_lane_replay.py` replays each message at its send time:
+  - `--resolver-only` puts the labels in place of the parse, for free;
+  - `--confirm-cost` runs the real parse, at about $0.007 a message on Haiku 4.5 and $0.017 on Sonnet 5;
+  - `--from-results` scores an earlier run's saved parses again, through the current resolver and scorer, for free.
+- **Ops that write the same thing count as a match:** `log_block` and `start_block`; `end_block` and an edit that only sets the end; an end with no start, and a block logged by its end.
+- The resolver is tested in `pytest`.
+
+**Where it stands (2026-10-03).** Haiku 4.5 over 351 messages. The parse figures predate the last two prompt changes, which no paid run has measured yet.
+
+| Measure | Now |
+|---|---|
+| Resolver with the labels as the parse: placement / outcome | 83.2 % / 95.4 % |
+| Parse recall on tracking clauses | 78.7 % |
+| Fallthrough skill / today's router on the same messages | 70.4 % / 83.8 % |
+| Wrong-day blocks from the real parse | 11 |
+| Parse latency p50 / p95 | 1.7 s / 3.1 s |
+
+On the same 100 tracking messages, Sonnet 5 with thinking off found slightly fewer actions than Haiku (77.0 % against 79.7 %) but placed them better (85.5 % against 76.0 %, no wrong days against 8), at 2.4× the price and 1.7× the latency.
 
 **Gates before `on`:**
 
@@ -485,7 +536,7 @@ A1's shadow logs are the evidence A2's gates are checked against.
 ## 13. Verify during planning
 
 - The token ledger's exact write paths for `retract_completion` (§9.3), including the transaction line in the daily note.
-- The size of the parse prompt against Haiku 4.5's 4,096-token cache minimum, and whether caching measurably cuts latency.
+- Whether caching measurably cuts latency. The prompt with the skill catalog is about 5k tokens, above Haiku 4.5's 4,096-token cache minimum.
 - That `messages.parse()` (the SDK's validating helper) or the existing `output_config` plus `json.loads` pattern in `claude_service.py` handles the `anyOf`-null schema. Match the router's current style.
 - The logical-day boundary: 05:00 by default; confirm it against the reconstructed sleep data.
 - Idempotency key: confirm the bot can pass Telegram's `message_id` on `POST /message`.

@@ -22,7 +22,13 @@ _CLOCK = re.compile(r"(?<!\d)(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?!
 # Units of a length, in the three languages: after a number they make it a duration.
 _HOUR_UNITS = r"hours?|hrs?|h|час(?:а|ов)?|ч|שעות|שעה"
 _MINUTE_UNITS = r"minutes?|mins?|m|минут[аыу]?|мин|דקות|דקה"
-_UNIT_AFTER = re.compile(rf"\s*(?:{_HOUR_UNITS}|{_MINUTE_UNITS})(?!\w)", re.IGNORECASE)
+# A range before the unit is still a length: "15-20 mins" is never a 15:00 clock.
+_UNIT_AFTER = re.compile(rf"\s*(?:-\s*\d+(?:[.,]\d+)?\s*)?(?:{_HOUR_UNITS}|{_MINUTE_UNITS})(?!\w)", re.IGNORECASE)
+_HEDGE_WORDS = r"(?:about|around|approx(?:imately)?|roughly|~|около|примерно|בערך)"
+# "в 3 часа", "к 5 часам", "at 3 o'clock": the number names an hour on the
+# clock, although "часа" after a bare number would make it a length (A1
+# Ruling 18b).
+_OCLOCK = re.compile(r"(?<!\w)(?:в|к|at)\s+(\d{1,2})\s*(?:час(?:а|ов|ам)?|o'?clock)(?!\w)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -41,8 +47,15 @@ class DayRef:
     weekday: int | None = None   # Monday = 0
 
 
+_UNTIL = re.compile(r"^(?:until|till|til|up to|up till|to)\s+", re.IGNORECASE)
+
+
 def is_now(text: str | None) -> bool:
-    return bool(text) and text.strip().lower() in NOW_WORDS
+    """ "now", "just returned", and the end of a span written as "until now"."""
+    if not text:
+        return False
+    lowered = text.strip().lower()
+    return lowered in NOW_WORDS or _UNTIL.sub("", lowered) in NOW_WORDS
 
 
 def parse_clock(text: str | None) -> Clock | None:
@@ -54,9 +67,17 @@ def parse_clock(text: str | None) -> Clock | None:
     """
     if not text or is_now(text):
         return None
+    oclock = _OCLOCK.search(text)
+    if oclock:
+        hour = int(oclock.group(1))
+        if hour > 23:
+            return None
+        leading_zero = len(oclock.group(1)) == 2 and oclock.group(1)[0] == "0"
+        return Clock(hour, 0, ambiguous=1 <= hour <= 12 and not leading_zero,
+                     hedged=bool(_HEDGE.search(text)))
     match = next((m for m in _CLOCK.finditer(text) if not _UNIT_AFTER.match(text, m.end())), None)
     if not match:
-        return None
+        return _named_clock(text)
     raw_hour, raw_minute, meridiem = match.groups()
     hour, minute = int(raw_hour), int(raw_minute or 0)
     if hour > 23 or minute > 59:
@@ -69,6 +90,42 @@ def parse_clock(text: str | None) -> Clock | None:
         return Clock(hour, minute, ambiguous=False, hedged=hedged)
     leading_zero = len(raw_hour) == 2 and raw_hour[0] == "0"
     return Clock(hour, minute, ambiguous=1 <= hour <= 12 and not leading_zero, hedged=hedged)
+
+
+_NAMED_CLOCKS = {"midnight": 0, "полночь": 0, "полуночи": 0, "חצות": 0,
+                 "noon": 720, "midday": 720, "полдень": 720, "צהריים": 720}
+_NEAR = re.compile(r"(?<!\w)(before|after|до|после|לפני|אחרי)(?!\w)", re.IGNORECASE)
+
+
+def _named_clock(text: str) -> Clock | None:
+    """"midnight", "noon", and a minute either side: "just before midnight" is 23:59, approx."""
+    lowered = text.lower()
+    name = next((n for n in _NAMED_CLOCKS if re.search(rf"(?<!\w){n}(?!\w)", lowered)), None)
+    if name is None:
+        return None
+    moment = _NAMED_CLOCKS[name]
+    near = _NEAR.search(lowered)
+    if near:
+        moment += -1 if near.group(1).lower() in ("before", "до", "לפני") else 1
+    moment %= 24 * 60
+    return Clock(moment // 60, moment % 60, ambiguous=False, hedged=bool(near) or bool(_HEDGE.search(text)))
+
+
+_NEXT_DAY = re.compile(r"next day|the day after|следующего дня|на следующий день|назавтра|למחרת", re.IGNORECASE)
+
+
+_WINDOW = re.compile(r"(?<!\w)(?:somewhere|sometime|some time|at some point)(?!\w)|где-то|когда-нибудь|מתישהו",
+                     re.IGNORECASE)
+
+
+def is_window(text: str | None) -> bool:
+    """Whether a start's words make the range a window to fit into ("somewhere between 20:30")."""
+    return bool(text) and bool(_WINDOW.search(text))
+
+
+def ends_next_day(text: str | None) -> bool:
+    """Whether an end's own words put it on the day after the start ("14:00 next day")."""
+    return bool(text) and bool(_NEXT_DAY.search(text))
 
 
 _HALF_HOUR = ("half an hour", "half hour", "полчаса", "חצי שעה")
@@ -97,20 +154,35 @@ def parse_duration(text: str | None) -> int | None:
         found = True
     if found:
         return round(total)
-    if re.fullmatch(r"(an?|one)?\s*(hour|час|שעה)", lowered):
+    if re.fullmatch(r"(?:for\s+)?(?:the\s+)?(?:next\s+)?(?:an?|one)?\s*(?:hour|час|שעה)", lowered):
         return 60
     return None
 
 
-_AMOUNT = rf"(\d+(?:[.,]\d+)?)\s*({_HOUR_UNITS}|{_MINUTE_UNITS})(?!\w)"
+_AMOUNT = rf"(\d+(?:[.,]\d+)?)(?:\s*-\s*(\d+(?:[.,]\d+)?))?\s*({_HOUR_UNITS}|{_MINUTE_UNITS})(?!\w)"
 # Relative times: the direction word, and whether it comes before the amount.
 _RELATIVE_TIME = {
     "ago": (-1, False), "назад": (-1, False), "לפני": (-1, True),
     "in": (1, True), "через": (1, True), "בעוד": (1, True),
 }
 _RELATIVE_PATTERNS = [
-    (re.compile(rf"(?<!\w){word}\s+{_AMOUNT}" if before else rf"(?<![\w.,]){_AMOUNT}\s+{word}(?!\w)",
-                re.IGNORECASE), sign)
+    (re.compile(rf"(?<!\w){word}\s+(?:{_HEDGE_WORDS}\s*)?{_AMOUNT}" if before
+                else rf"(?<![\w.,]){_AMOUNT}\s+{word}(?!\w)", re.IGNORECASE), sign)
+    for word, (sign, before) in _RELATIVE_TIME.items()
+]
+# Amounts written as words (A1 Ruling 18b): "an hour ago", "через полчаса",
+# "לפני שעה". Longest phrase first, so "half an hour ago" is never read as
+# "an hour ago".
+_WORD_AMOUNTS = sorted({
+    "half an hour": 30, "an hour": 60, "one hour": 60, "a minute": 1,
+    "a few minutes": 5, "a few mins": 5, "a couple of minutes": 2, "a couple of mins": 2,
+    "полчаса": 30, "час": 60, "минуту": 1,
+    "חצי שעה": 30, "שעה": 60, "דקה": 1,
+}.items(), key=lambda kv: -len(kv[0]))
+_WORD_RELATIVE = [
+    (re.compile(rf"(?<!\w){word}\s+(?:{_HEDGE_WORDS}\s*)?{re.escape(phrase)}(?!\w)" if before
+                else rf"(?<!\w){re.escape(phrase)}\s+{word}(?!\w)", re.IGNORECASE), sign * minutes)
+    for phrase, minutes in _WORD_AMOUNTS
     for word, (sign, before) in _RELATIVE_TIME.items()
 ]
 
@@ -127,8 +199,13 @@ def parse_relative(text: str | None) -> dt.timedelta | None:
         match = pattern.search(text)
         if match:
             value = float(match.group(1).replace(",", "."))
-            hours = re.fullmatch(_HOUR_UNITS, match.group(2), re.IGNORECASE) is not None
+            if match.group(2):   # "15-20 mins": the middle of the range
+                value = (value + float(match.group(2).replace(",", "."))) / 2
+            hours = re.fullmatch(_HOUR_UNITS, match.group(3), re.IGNORECASE) is not None
             return dt.timedelta(minutes=sign * round(value * 60 if hours else value))
+    for pattern, minutes in _WORD_RELATIVE:
+        if pattern.search(text):
+            return dt.timedelta(minutes=minutes)
     return None
 
 
@@ -148,12 +225,16 @@ _LATER = ("forward", "later", "ahead", "позже", "вперед", "вперё
 _SIGN = re.compile(r"(?:^|\s)([+-])\s*\d")
 
 
+_DAYS = re.compile(r"(\d+)\s*(?:days?|дн(?:я|ей)|день|ימים|יום)(?!\w)", re.IGNORECASE)
+
+
 def parse_shift(text: str | None) -> int | None:
-    """Signed minutes for an edit: "back 30 mins" → -30, "+15m" → 15. None without a direction."""
+    """Signed minutes for an edit: "back 30 mins" → -30, "+15m" → 15, "+1 day" → 1440. None without a direction."""
     if not text:
         return None
     lowered = text.lower()
-    minutes = parse_duration(lowered)
+    days = _DAYS.search(lowered)
+    minutes = int(days.group(1)) * 24 * 60 if days else parse_duration(lowered)
     if minutes is None:
         bare = re.search(r"(\d+)", lowered)
         if not bare:
@@ -175,9 +256,10 @@ _NIGHT = {
 }
 _RELATIVE = {
     "day before yesterday": -2, "позавчера": -2,
-    "yesterday": -1, "вчера": -1, "אתמול": -1,
+    "yesterday": -1, "вчера": -1, "אתמול": -1, "previous day": -1, "the day before": -1,
     "today": 0, "сегодня": 0, "היום": 0,
-    "tomorrow": 1, "завтра": 1, "מחר": 1,
+    "tomorrow": 1, "завтра": 1, "מחר": 1, "next day": 1,
+    "day after tomorrow": 2, "послезавтра": 2,
 }
 _WEEKDAYS = {
     "monday": 0, "понедельник": 0, "tuesday": 1, "вторник": 1, "wednesday": 2, "среда": 2, "среду": 2,
@@ -238,6 +320,28 @@ def parse_day(text: str | None, today: dt.date, intent: str) -> DayRef | None:
         if re.search(_WORD.format(name), lowered):
             return DayRef("weekday", weekday=index)
     return None
+
+
+_DATE_RANGE = re.compile(
+    r"(?<!\d)(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\s*(?:-|–|—|to|until|до)\s*"
+    r"(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?!\d)", re.IGNORECASE)
+
+
+def parse_day_range(text: str | None, today: dt.date, intent: str) -> tuple[dt.date, dt.date] | None:
+    """Two dates written as a range ("30.08 - 06.09"), or None. The second year follows the first."""
+    match = _DATE_RANGE.search(text or "")
+    if not match:
+        return None
+    d1, m1, y1, d2, m2, y2 = match.groups()
+    first = _dated(int(d1), int(m1), int(y1) if y1 else None, today, intent)
+    if first is None:
+        return None
+    year = int(y2) if y2 else first.date.year
+    second = _dated(int(d2), int(m2), year, today, intent)
+    if second is None:
+        return None
+    last = second.date if second.date >= first.date else second.date.replace(year=second.date.year + 1)
+    return first.date, last
 
 
 def weekday_date(weekday: int, today: dt.date, intent: str) -> dt.date:

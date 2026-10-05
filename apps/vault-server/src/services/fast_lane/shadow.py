@@ -8,6 +8,7 @@ fast lane would have sent. The normal path is untouched and never waits.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -38,17 +39,28 @@ class ShadowSettings:
     default_minutes: int = 30
 
 
+_ARTICLE = re.compile(r"^(?:the|my|that|this|a|an)\s+", re.IGNORECASE)
+
+
 def _clause_time(c: Clause, candidates: list[dict], by_id: dict) -> ClauseTime:
     t = c.time
     target_start = target_end = None
     if c.op in ("end_block", "edit_block") and c.target and candidates:
-        found = resolve_block(c.target, candidates)
-        if found.get("ok"):
-            block = by_id.get(found["data"]["id"])
+        reference = _ARTICLE.sub("", c.target.strip())   # block_resolver scores "the gym" against "Gym" at 40
+        pools = [candidates]
+        if c.op == "end_block":
+            # An end closes the open block of that name, not an earlier one already closed.
+            still_open = [b for b in candidates if by_id.get(b["id"]) is not None and by_id[b["id"]].end is None]
+            pools = [still_open, candidates] if still_open else [candidates]
+        for pool in pools:
+            found = resolve_block(reference, pool)
+            block = by_id.get(found["data"]["id"]) if found.get("ok") else None
             if block is not None:
                 target_start, target_end = block.start, block.end
+                break
     return ClauseTime(
-        op=c.op if c.op in FAST_OPS else "other", intent=c.intent, stated=c.stated, name=c.name,
+        op=c.op if c.op in FAST_OPS else "other", intent=c.intent, stated=c.stated,
+        name=c.name or c.target,   # an end names its block by target; the resolver needs the activity
         start=t.start if t else None, end=t.end if t else None, duration=t.duration if t else None,
         shift=t.shift if t else None, day=t.day if t else None,
         after=t.after if t else None, with_=t.with_ if t else None,
@@ -62,7 +74,8 @@ def resolve_clauses(result: ParseResult, ctx: FastContext, settings: ShadowSetti
     by_id = {b.id: b for b in ctx.blocks}
     times = [_clause_time(c, candidates, by_id) for c in result.clauses]
     rctx = ResolverContext(now=ctx.now, day_boundary_hour=settings.day_boundary_hour,
-                           typical_minutes=dict(ctx.typical_minutes), default_minutes=settings.default_minutes)
+                           typical_minutes=dict(ctx.typical_minutes), default_minutes=settings.default_minutes,
+                           bedtime=ctx.bedtime, photo_at=ctx.photo_at)
     resolved = resolve(times, rctx)
     return [r if c.op in FAST_OPS else None for c, r in zip(result.clauses, resolved)]
 
