@@ -61,6 +61,13 @@ USER_SETTABLE_FIELDS = frozenset({
     "name", "start_time", "end_time", "location", "activity",
 })
 
+# What a fast-lane block records about itself (fast-lane spec §9.1). Every one
+# is optional: rows written before A2 lack them and keep their meaning.
+FAST_FIELDS = (
+    "intent", "start_precision", "end_precision", "logical_date",
+    "place_id", "place_text", "project", "habit_completion", "evidence", "tags",
+)
+
 
 def is_complete(event: dict[str, Any]) -> bool:
     """Whether the event has enough to be drawn as a block.
@@ -221,6 +228,7 @@ class EventsService:
         category: str | None = None,
         logical_id: str | None = None,
         proposed: bool = False,
+        fields: dict | None = None,
     ) -> dict:
         """Create a new event and persist it.
 
@@ -233,6 +241,9 @@ class EventsService:
         and `category` as two separate axes of the time matrix. `activity`
         wins when both are given. Populating the `category` facet is a
         separate job — this kwarg does not do it.
+
+        `fields` carries the fast lane's `FAST_FIELDS`; anything else, and any
+        None value, is dropped rather than stored.
         """
         from datetime import datetime as _dt
 
@@ -286,6 +297,10 @@ class EventsService:
             )
         if proposed:
             event["proposed"] = True
+
+        for key, value in (fields or {}).items():
+            if key in FAST_FIELDS and value is not None:
+                event[key] = value
 
         events.append(event)
         self.save_events(date, events)

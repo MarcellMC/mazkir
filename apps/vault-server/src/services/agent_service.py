@@ -2231,6 +2231,15 @@ class AgentService:
             ctx={"vault": self.vault, "memory": self.memory, "calendar": self.calendar},
         )
 
+    def run_tool(self, name: str, params: dict, *, source: str = "fast_lane") -> dict:
+        """Run one registered tool the way the agent loop does (fast-lane spec §7.5).
+
+        The same pre-hooks, handler, post-hooks, audit log and span as an agent
+        call, so a write the fast lane makes is indistinguishable in the audit
+        trail from one the agent makes. `source` names the caller on the span.
+        """
+        return self._execute_tool(name, params, confidence=1.0, action=source)
+
     def _execute_tool_batch(self, calls: list[dict], gate_info: dict) -> list[tuple[dict, float, str | None, dict]]:
         """Execute a batch of auto_execute tool calls, using parallel dispatch when safe.
 
@@ -3088,6 +3097,10 @@ class AgentService:
         spans_midnight = complete and crosses_midnight(start_time, end_time)
         proposed = bool(params.get("proposed"))
 
+        # The fast lane's hidden argument (spec §9.1, §7.5): the block's own
+        # fields, and whether Google waits until the receipt has been shown.
+        fast = params.get("_fast") or {}
+
         # Extract HH:MM for GCal (strip date prefix if present)
         def _extract_hhmm(iso_time: str | None) -> str | None:
             if not iso_time:
@@ -3125,6 +3138,10 @@ class AgentService:
             # A suggestion the user has not accepted must not raise alerts on
             # their phone, and a dismissed one must not linger in Google.
             calendar_sync = {"ok": False, "attempted": False, "reason": "proposed"}
+        elif fast.get("defer_calendar_sync"):
+            # The fast lane syncs after its receipt is on screen
+            # (`calendar_push.sync_block`), so the user never waits on Google.
+            calendar_sync = {"ok": False, "attempted": False, "reason": "deferred"}
         elif spans_midnight:
             # Google stores this natively as one event, which would then hand
             # a single fresh event to two per-day fragments on the next
@@ -3210,6 +3227,7 @@ class AgentService:
                 source_ids=source_ids,
                 logical_id=logical_id,
                 proposed=proposed,
+                fields=fast.get("fields"),
             )
             created.append(frag)
             items.append(frag["path"])
@@ -3411,6 +3429,16 @@ class AgentService:
             updates["start_time"] = derived["start_time"]
             updates["end_time"] = derived["end_time"]
 
+        # The fast lane's hidden argument: its own fields and a decided state.
+        # Neither is a user override, so neither is pinned.
+        from src.services.events_service import FAST_FIELDS
+        fast = params.get("_fast") or {}
+        for key, value in (fast.get("fields") or {}).items():
+            if key in FAST_FIELDS:
+                updates[key] = value
+        if fast.get("state") in ("approved", "dismissed"):
+            updates["state"] = fast["state"]
+
         # Every field the user names in an edit is a field they have now
         # claimed: without pinning, the next merge puts the source's value
         # back and the edit silently disappears. A derived endpoint counts —
@@ -3447,6 +3475,8 @@ class AgentService:
         # happened. Leave the calendar alone and let that branch speak.
         if result.get("moved_from"):
             pass
+        elif fast.get("defer_calendar_sync"):
+            result["calendar_sync"] = {"ok": False, "attempted": False, "reason": "deferred"}
         elif not stored.get("start_time"):
             # Same narrowing as _tool_create_event: only a missing *start*
             # leaves Google nothing to be told. A start with no end is a

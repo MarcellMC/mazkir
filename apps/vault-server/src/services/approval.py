@@ -17,8 +17,11 @@ This module must never be imported by `events_service`: it imports from it.
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from src.config import settings
 from src.services.events_service import _SOURCE_SYSTEM_BY_ID_KEY
 
 # Source systems whose blocks a human action created, and which therefore
@@ -51,7 +54,27 @@ def source_systems(event: dict[str, Any]) -> set[str]:
     }
 
 
-def resolve_state(event: dict[str, Any]) -> str:
+def has_begun(event: dict[str, Any], now: dt.datetime) -> bool:
+    """Whether the block's start — or its end, when it has no start — is at or before `now`.
+
+    Local wall clock on both sides, the ledger's convention: an offset on
+    either value is dropped, not converted.
+    """
+    value = event.get("start_time") or event.get("end_time")
+    if not value:
+        return False
+    try:
+        moment = dt.datetime.fromisoformat(str(value))
+    except ValueError:
+        return False
+    return moment.replace(tzinfo=None) <= now.replace(tzinfo=None)
+
+
+def _local_now() -> dt.datetime:
+    return dt.datetime.now(ZoneInfo(settings.vault_timezone)).replace(tzinfo=None)
+
+
+def resolve_state(event: dict[str, Any], now: dt.datetime | None = None) -> str:
     """"approved", "pending" or "dismissed".
 
     A stored value wins; anything else is derived from the source. Note that
@@ -68,6 +91,13 @@ def resolve_state(event: dict[str, Any]) -> str:
     # this it would auto-approve and count as something the user said.
     if event.get("proposed"):
         return "pending"
+
+    # Fast-lane spec §9.2: a plan is intent, as a calendar entry is. Once its
+    # time has come it waits for you to say it happened; until then it is
+    # simply ahead — `/day` draws it ◌, and coverage never reaches the future.
+    # Confirmation (a matching record, or ✓) stores "approved", which wins above.
+    if event.get("intent") == "plan":
+        return "pending" if has_begun(event, now or _local_now()) else "approved"
 
     if event.get("source") in _HUMAN_SOURCES:
         return "approved"
