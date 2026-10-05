@@ -89,3 +89,35 @@ def test_update_event_applies_fast_fields_and_state_without_pinning_them(tmp_pat
     assert stored["end_time"] == "2026-09-28T19:15:00"
     assert "end_time" in stored["user_set"]                       # what the user said is pinned
     assert not {"intent", "end_precision", "state"} & set(stored["user_set"])   # the fast lane's own fields are not
+
+
+def test_a_model_driven_call_cannot_smuggle_fast_fields(tmp_path):
+    """`_fast` is Mazkir's own argument, not a clause's words (spec §1.3): only
+    `run_tool` may deliver it. The agent loop's own path for a model's tool
+    call — `_execute_tool(..., action="auto_execute")` — must drop it, even
+    though nothing in the schema rejects the extra key."""
+    agent, events = make_agent(tmp_path, calendar=None)
+    created = events.create_event("2026-09-28", "Gym", "2026-09-28T18:00:00", "2026-09-28T19:00:00",
+                                  fields={"intent": "plan"})
+    smuggled = {
+        "event_id": created["id"], "date": "2026-09-28", "end_time": "2026-09-28T19:15:00",
+        "_fast": {"defer_calendar_sync": True, "state": "approved",
+                  "fields": {"intent": "record", "end_precision": "exact"}},
+    }
+
+    result = agent._execute_tool("update_event", smuggled, confidence=1.0, action="auto_execute")
+
+    assert result["ok"]
+    assert result["data"]["calendar_sync"]["reason"] == "calendar_not_configured"  # not "deferred"
+    [stored] = events.get_events("2026-09-28")
+    assert stored["intent"] == "plan"                 # the fast lane's fields were not applied
+    assert "end_precision" not in stored
+    assert stored.get("state") is None                # no forced approval
+    assert stored["end_time"] == "2026-09-28T19:15:00"  # the user-stated edit still happened
+    assert "_fast" in smuggled                        # the caller's own dict was not mutated
+
+    # The identical call through run_tool honors _fast.
+    result2 = agent.run_tool("update_event", smuggled)
+    assert result2["data"]["calendar_sync"]["reason"] == "deferred"
+    [stored2] = events.get_events("2026-09-28")
+    assert stored2["intent"] == "record" and stored2["state"] == "approved"

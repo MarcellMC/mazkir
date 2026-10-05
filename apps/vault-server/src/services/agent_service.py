@@ -2175,7 +2175,17 @@ class AgentService:
         *,
         confidence: float | None = None,
         action: str | None = None,
+        _trusted_fast: bool = False,
     ) -> dict:
+        # The model's own tool-call JSON reaches every other caller of this
+        # method unfiltered (spec §1.3: no tool argument comes from model
+        # output except the clause's own words). `_fast` is Mazkir's own
+        # argument, not a clause's words, so only `run_tool` — which never
+        # carries model output — may let it through. Every other path drops
+        # it here, on a copy, so the model's own dict (and the agent loop
+        # that still holds it) is untouched.
+        if not _trusted_fast and "_fast" in params:
+            params = {k: v for k, v in params.items() if k != "_fast"}
         entry = self.tools.get(name, {})
         risk = entry.get("risk", "unknown")
         schema = entry.get("schema", {}) or {}
@@ -2237,8 +2247,11 @@ class AgentService:
         The same pre-hooks, handler, post-hooks, audit log and span as an agent
         call, so a write the fast lane makes is indistinguishable in the audit
         trail from one the agent makes. `source` names the caller on the span.
+
+        This is the only entry point that lets a hidden `_fast` argument
+        reach the handler — see `_execute_tool`'s `_trusted_fast` guard.
         """
-        return self._execute_tool(name, params, confidence=1.0, action=source)
+        return self._execute_tool(name, params, confidence=1.0, action=source, _trusted_fast=True)
 
     def _execute_tool_batch(self, calls: list[dict], gate_info: dict) -> list[tuple[dict, float, str | None, dict]]:
         """Execute a batch of auto_execute tool calls, using parallel dispatch when safe.
