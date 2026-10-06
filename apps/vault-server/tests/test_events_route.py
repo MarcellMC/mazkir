@@ -460,10 +460,16 @@ class TestSetState:
         return TestClient(app)
 
     def test_approving_a_calendar_block_stores_approved(self, monkeypatch):
+        import src.main as main
+
         fake = self._install(monkeypatch, [
             {"id": "e1", "name": "Standup", "source": "calendar",
              "source_ids": {"calendar_id": "g1"}},
         ])
+        # The habit hook (Task 7) calls get_vault() on every approval; this
+        # block has no start/end time so it never reaches list_active_habits,
+        # but get_vault() itself must resolve to something.
+        monkeypatch.setattr(main, "get_vault", lambda: MagicMock())
 
         r = self._client().post("/events/2026-09-10/e1/state",
                                 json={"state": "approved"})
@@ -558,11 +564,17 @@ class TestSetState:
         assert fake.saved["2026-09-13"][0]["state"] == "dismissed"
 
     def test_approving_a_calendar_block_creates_nothing_in_google(self, monkeypatch):
+        import src.main as main
+
         self._install(monkeypatch, [
             {"id": "e1", "name": "Standup", "source": "calendar",
              "source_ids": {"calendar_id": "g1"}},
         ])
         calendar = self._fake_calendar(monkeypatch)
+        # The habit hook (Task 7) calls get_vault() on every approval; this
+        # block has no start/end time so it never reaches list_active_habits,
+        # but get_vault() itself must resolve to something.
+        monkeypatch.setattr(main, "get_vault", lambda: MagicMock())
 
         self._client().post("/events/2026-09-10/e1/state", json={"state": "approved"})
 

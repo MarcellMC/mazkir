@@ -489,4 +489,13 @@ async def set_event_state(date: date_type, event_id: str, body: SetStateBody):
                 "habit": None, "checkbox": None}
     if calendar_sync is not None:
         response["calendar_sync"] = calendar_sync
+
+    # Spec §7.2: approving a block that is a habit ticks it, as every other
+    # block write does. The habit's own blocks returned above.
+    if body.state == "approved":
+        from src.services.fast_lane.habits import tick_if_habit
+        habit = tick_if_habit(get_vault(), events_svc, date_str, event_id)
+        if habit:
+            response["habit"] = {"name": habit["name"], "tokens_earned": habit["tokens_earned"],
+                                 "new_streak": habit["new_streak"]}
     return response
