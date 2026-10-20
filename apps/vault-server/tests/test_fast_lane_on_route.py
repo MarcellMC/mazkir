@@ -129,6 +129,7 @@ def test_a_mixed_turn_tells_the_skill_what_ran(monkeypatch, tmp_path):
     client, agent = make(monkeypatch, tmp_path, fast)
     body = post(client).json()
     assert agent.handle_message.call_args.kwargs["prior_actions"] == ["✓ 18:00–19:00 Gym (block)"]
+    assert agent.handle_message.call_args.kwargs["text_handled"] is False
     assert body["response"] == "skill reply" and body["receipt"]["turn_id"] == "t0000beef"
     assert act.load_turn(tmp_path / "actions", "t0000beef")["response"] == "skill reply"
 
@@ -443,6 +444,7 @@ def test_a_photo_whose_caption_the_fast_lane_handles_still_reaches_the_agent(mon
     assert body["route"] == "mixed" and body["receipt"] and body["response"] == "skill reply"
     spy.assert_called_once()
     assert spy.call_args.kwargs["prior_actions"] and spy.call_args.kwargs["skill"] is None
+    assert spy.call_args.kwargs["text_handled"] is True
     assert list((tmp_path / "media").rglob("*.jpg"))                       # saved
     stored = next(e for e in events.get_events("2026-09-27") if e["id"] == walk["id"])
     assert stored.get("photos")                                            # and attached

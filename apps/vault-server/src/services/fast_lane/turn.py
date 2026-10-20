@@ -57,6 +57,9 @@ class FastTurn:
     ran: list[str] = field(default_factory=list)
     lone_other: bool = False                 # one `other` clause: maybe an answer to the last skill
     repeat: bool = False                     # this message_id was already handled
+    # Every clause was the fast lane's; the turn is `mixed` only for its
+    # attachment, so the agent is told to deal with nothing else (C2).
+    text_handled: bool = False
 
 
 def _safe(fn: Callable[[], Any], default: Any) -> Any:
@@ -193,7 +196,8 @@ def run_fast_turn(ctx: FastContext, deps: FastDeps, settings: ShadowSettings, *,
             return FastTurn(route="router_fallback")
         parse_ms = round((time.monotonic() - started) * 1000)
         route = result.route
-        if route == "fast" and ctx.has_attachment:
+        text_handled = route == "fast" and ctx.has_attachment
+        if text_handled:
             # Spec §5.6: the fast lane writes what the caption says, and the
             # message goes on to the agent, the only code that saves a photo
             # or reads a location. As `mixed`, so the record, the agent's
@@ -256,4 +260,5 @@ def run_fast_turn(ctx: FastContext, deps: FastDeps, settings: ShadowSettings, *,
                                         "clauses": len(result.clauses), "outcomes": dict(outcomes),
                                         "parse_ms": parse_ms})
         return FastTurn(route=route, fallthrough_skill=result.fallthrough_skill, turn=turn,
-                        receipt=receipt, ran=_safe(lambda: ran_summary(turn, ctx.now), []))
+                        receipt=receipt, ran=_safe(lambda: ran_summary(turn, ctx.now), []),
+                        text_handled=text_handled)

@@ -304,3 +304,31 @@ def test_conversation_log_text_matches_the_old_prefixes():
                                  {"text": "x" * 60, "from": "assistant"}) == (
         f'(replying to assistant: "{"x" * 50}") (photo: photo, location: 1.5, 2) hi')
     assert conversation_log_text("", [{"type": "photo", "filename": "a.jpg"}], None) == "(photo: a.jpg)"
+
+
+def _note_for(mock_services, tmp_path, **kw):
+    from src.services.agent_service import AgentResponse, AgentService
+    agent = AgentService(claude=mock_services["claude"], vault=mock_services["vault"],
+                         memory=mock_services["memory"], media_path=tmp_path)
+    seen = {}
+
+    def fake_turn(chat_id, log_text, messages, system, **_):
+        seen["last"] = messages[-1]["content"]
+        return AgentResponse(response="done", iterations=1)
+
+    agent._run_agent_turn = fake_turn
+    agent.handle_message(text="Dog walk 23:15-23:35", chat_id=1,
+                         prior_actions=["✓ yest 23:15–23:35 Dog walk (block)"], **kw)
+    return str(seen["last"])
+
+
+def test_an_ordinary_mixed_turn_gets_the_plain_note(mock_services, tmp_path):
+    note = _note_for(mock_services, tmp_path)
+    assert "do not redo" in note and "only with the attachment" not in note
+
+
+def test_a_turn_whose_words_are_all_done_is_told_to_handle_only_the_attachment(mock_services, tmp_path):
+    """Final re-review: the router would otherwise pick a skill for text already written."""
+    note = _note_for(mock_services, tmp_path, text_handled=True)
+    assert "fully handled" in note and "only with the attachment" in note
+    assert "Dog walk (block)" in note

@@ -287,7 +287,7 @@ def test_a_message_with_an_attachment_is_never_a_pure_fast_turn(tmp_path, vault_
     logged = []
     monkeypatch.setattr(turn_module, "emit_agent_turn", logged.append)
     fast = run_fast_turn(_photo_ctx("Gym 18:00-19:00"), deps, SETTINGS, message_id=5, parse=parse_to(GYM))
-    assert fast.route == "mixed" and fast.turn["route"] == "mixed"
+    assert fast.route == "mixed" and fast.turn["route"] == "mixed" and fast.text_handled
     assert [e["name"] for e in events.get_events("2026-01-10")] == ["Gym"]
     assert fast.ran == ["✓ 18:00–19:00 Gym (block)"]
     # The agent saves the exchange; a mixed record only ever folds into the skill's.
@@ -344,3 +344,11 @@ def test_what_ran_names_a_habit_the_hook_ticked(tmp_path, vault_service, habit_h
     fast = run_fast_turn(_photo_ctx("Dog walk 18:00-18:20"), deps, SETTINGS, parse=parse_to(walk))
     [said] = fast.ran
     assert "habit already ticked: 🎯 Dog Walk 1/2" in said
+
+
+def test_an_ordinary_mixed_turn_has_words_left_for_the_skill(tmp_path, vault_service):
+    deps, _, _ = setup(tmp_path, vault_service)
+    other = Clause("other", "other", False, "what is GQA?", "what is GQA?")
+    fast = run_fast_turn(ctx("Gym 18:00-19:00, what is GQA?"), deps, SETTINGS,
+                         parse=parse_to(GYM, other, skill="knowledge-management"))
+    assert fast.route == "mixed" and not fast.text_handled

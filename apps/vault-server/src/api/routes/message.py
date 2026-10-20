@@ -399,6 +399,7 @@ async def _on_turn_claimed(body: MessageRequest, agent, *, stream: bool, emit) -
         try:
             result = await asyncio.to_thread(
                 agent.handle_message, **kwargs, skill=skill, prior_actions=fast.ran or None,
+                text_handled=fast.text_handled,
                 stream_callback=(lambda text: emit({"text": text})) if stream else None,
                 stage_callback=lambda s: emit({"stage": s}),
             )

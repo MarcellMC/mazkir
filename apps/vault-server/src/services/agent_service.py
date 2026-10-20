@@ -1288,6 +1288,7 @@ class AgentService:
         skill: str | None = None,
         prior_actions: list[str] | None = None,
         stage_callback: "Callable[[str], None] | None" = None,
+        text_handled: bool = False,
     ) -> AgentResponse:
         """Main entry point: process a user message through the agent loop.
 
@@ -1309,6 +1310,9 @@ class AgentService:
                 instruction not to redo it, never to the logged text.
             stage_callback: Called once per tool call with a plain-words stage
                 (spec §8.1). Its failures are logged and swallowed.
+            text_handled: The fast lane wrote everything the words asked for and
+                the message reaches the agent only for its attachment. The note
+                says so, so a skill the router picks does not act on the words.
         """
         self._stream_callback = stream_callback
         self._stage_callback = stage_callback
@@ -1336,7 +1340,7 @@ class AgentService:
                             span.set_attribute("truncated", True)
                         result = self._handle_message_inner(
                             text, chat_id, attachments, reply_to, forwarded_from,
-                            skill=skill, prior_actions=prior_actions,
+                            skill=skill, prior_actions=prior_actions, text_handled=text_handled,
                         )
                     _output_text = result.response[:2000]
                     span.set_attribute(SpanAttributes.OUTPUT_VALUE, _output_text)
@@ -1366,6 +1370,7 @@ class AgentService:
         *,
         skill: str | None = None,
         prior_actions: list[str] | None = None,
+        text_handled: bool = False,
     ) -> AgentResponse:
         t0 = time.perf_counter()
         context = self.memory.assemble_context(chat_id)
@@ -1390,8 +1395,13 @@ class AgentService:
             # directly before the words it is about. Delivered as input, like
             # the turn trace, and never in log_text: turn_trace joins on the
             # exact user_text.
-            note = ("[Already done by Mazkir for this message — do not redo it:\n"
-                    + "\n".join(f"- {a}" for a in prior_actions) + "]")
+            done = "\n".join(f"- {a}" for a in prior_actions)
+            if text_handled:
+                note = ("[The words of this message are fully handled — Mazkir already did all of it:\n"
+                        + done + "\nDo not redo any of it. Deal only with the attachment: save or "
+                        "describe it, or answer about it.]")
+            else:
+                note = "[Already done by Mazkir for this message — do not redo it:\n" + done + "]"
             if isinstance(user_content, list):
                 user_content = [{"type": "text", "text": note}, *user_content]
             else:
