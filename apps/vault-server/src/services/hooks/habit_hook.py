@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from src.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -16,7 +18,16 @@ def _fetch(events, event_id: str, hint: str | None) -> dict | None:
 
 
 def habit_hook(params: dict, output: dict, ctx) -> None:
-    """Side effect only, and never raises: a failed tick must not fail the write."""
+    """Never raises: a failed tick must not fail the write.
+
+    Only with `FAST_LANE_MODE=on` (final review C1). Outside it the agent ticks
+    habits itself with complete_habit, as before the fast lane, and a tick it
+    cannot see would be ticked a second time. In `on` the tick is written into
+    the tool's result as `data["habit"]`, so the agent sees it and the tool
+    descriptions tell it not to tick that habit again.
+    """
+    if settings.fast_lane_mode != "on":
+        return
     try:
         if not isinstance(output, dict) or not output.get("ok"):
             return
@@ -48,6 +59,8 @@ def habit_hook(params: dict, output: dict, ctx) -> None:
         last_id = ids[-1]
         last_date = events.resolve_event_date(last_id, hint)
         if last_date:
-            tick_if_habit(vault, events, last_date, last_id)
+            completion = tick_if_habit(vault, events, last_date, last_id)
+            if completion and isinstance(output.get("data"), dict):
+                output["data"]["habit"] = completion
     except Exception:
         logger.warning("habit hook failed", exc_info=True)

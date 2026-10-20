@@ -5,6 +5,7 @@ import asyncio
 import datetime as dt
 from unittest.mock import MagicMock
 
+from src.config import settings
 from src.services.events_service import EventsService
 from src.services.fast_lane.habits import (
     decline_suggestion, match_habit, suggest_habit, tick_if_habit,
@@ -64,8 +65,9 @@ def test_a_fuzzy_match_is_left_for_a_tap(vault_service, tmp_path):
     assert tick_if_habit(vault_service, events, "2026-09-27", e["id"], now=dt.datetime(2026, 9, 28)) is None
 
 
-def test_the_post_hook_ticks_when_the_agent_creates_a_block(vault_service, tmp_path):
+def test_the_post_hook_ticks_when_the_agent_creates_a_block(vault_service, tmp_path, monkeypatch):
     from src.services.agent_service import AgentService
+    monkeypatch.setattr(settings, "fast_lane_mode", "on")     # the hook runs only in `on`
     with_dog_walk(vault_service)
     events = EventsService(tmp_path / "events")
     agent = AgentService(claude=MagicMock(), vault=vault_service, memory=MagicMock(),
@@ -77,7 +79,7 @@ def test_the_post_hook_ticks_when_the_agent_creates_a_block(vault_service, tmp_p
     assert events.get_events("2026-01-10")[0]["habit_completion"]["name"] == "Dog Walk"
 
 
-def test_a_midnight_block_ticks_only_its_last_fragment(vault_service, tmp_path):
+def test_a_midnight_block_ticks_only_its_last_fragment(vault_service, tmp_path, monkeypatch):
     """Review round 1, finding 2: the hook must not fall back to an earlier
     fragment. Here both fragments have already happened, so the bug (trying
     the last fragment, then falling back to the first when the last
@@ -85,6 +87,7 @@ def test_a_midnight_block_ticks_only_its_last_fragment(vault_service, tmp_path):
     fragment's own result alone — what distinguishes it is that the FIRST
     fragment stays untouched."""
     from src.services.agent_service import AgentService
+    monkeypatch.setattr(settings, "fast_lane_mode", "on")
     with_dog_walk(vault_service)
     events = EventsService(tmp_path / "events")
     agent = AgentService(claude=MagicMock(), vault=vault_service, memory=MagicMock(),
@@ -97,12 +100,13 @@ def test_a_midnight_block_ticks_only_its_last_fragment(vault_service, tmp_path):
     assert events.get_events("2026-01-10")[0].get("habit_completion") is None
 
 
-def test_a_midnight_blocks_unbegun_last_fragment_ticks_nothing(vault_service, tmp_path):
+def test_a_midnight_blocks_unbegun_last_fragment_ticks_nothing(vault_service, tmp_path, monkeypatch):
     """Review round 1, finding 2: the last fragment (tomorrow, just after
     midnight) has not begun. The first fragment (today, since just after
     midnight today) has. The old code fell back to the first fragment and
     ticked it early; the fix must tick nothing at all."""
     from src.services.agent_service import AgentService
+    monkeypatch.setattr(settings, "fast_lane_mode", "on")
     with_dog_walk(vault_service)
     events = EventsService(tmp_path / "events")
     agent = AgentService(claude=MagicMock(), vault=vault_service, memory=MagicMock(),

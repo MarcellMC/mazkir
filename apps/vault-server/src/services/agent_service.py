@@ -39,6 +39,13 @@ logger = logging.getLogger(__name__)
 
 _tracer = _otel_trace.get_tracer("mazkir.agent")
 
+# create_event/update_event can tick a habit themselves (the habit hook, fast
+# lane `on` only); the agent must not tick it a second time (final review C1).
+_HABIT_TICK_NOTE = (
+    "If the result carries `habit`, writing this block already ticked that habit: "
+    "do not call complete_habit for it."
+)
+
 # What a tool call looks like from the user's side while a fallthrough turn
 # works (spec §8.1): plain words, replacing a silent "typing…".
 _TOOL_STAGES = {
@@ -1002,7 +1009,8 @@ class AgentService:
                         "`calendar_sync` before telling the user it is on their calendar: "
                         "if `ok` is false, say what did happen (it is saved in Mazkir) and "
                         "why it did not reach Google. Claiming a sync the result does not "
-                        "confirm is how a reminder silently went missing for a month."
+                        "confirm is how a reminder silently went missing for a month. "
+                        + _HABIT_TICK_NOTE
                     ),
                     "input_schema": {
                         "type": "object",
@@ -1096,7 +1104,8 @@ class AgentService:
                     "name": "update_event",
                     "description": (
                         "Update an existing event's fields (name, start_time, end_time, location, activity). "
-                        "Use list_events first to find the event ID."
+                        "Use list_events first to find the event ID. "
+                        + _HABIT_TICK_NOTE
                     ),
                     "input_schema": {
                         "type": "object",

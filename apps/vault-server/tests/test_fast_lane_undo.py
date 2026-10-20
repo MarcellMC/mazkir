@@ -4,6 +4,9 @@
 import datetime as dt
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from src.config import settings
 from src.services.events_service import EventsService
 from src.services.fast_lane.act import run_lines
 from src.services.fast_lane.actions import PlannedLine, Step
@@ -11,6 +14,13 @@ from src.services.fast_lane.undo import undo_turn
 
 CREATED = "2026-01-10T12:00:00+02:00"
 NOW = dt.datetime(2026, 1, 10, 12, 30)
+
+
+@pytest.fixture(autouse=True)
+def _fast_lane_on(monkeypatch):
+    # Every turn undone here is one the fast lane made, so its writes tick
+    # habits through the hook, which runs only in `on`.
+    monkeypatch.setattr(settings, "fast_lane_mode", "on")
 
 
 def make_agent(tmp_path, vault):
