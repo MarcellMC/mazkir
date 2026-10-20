@@ -38,6 +38,17 @@ logger = logging.getLogger(__name__)
 
 _tracer = _otel_trace.get_tracer("mazkir.agent")
 
+# What a tool call looks like from the user's side while a fallthrough turn
+# works (spec §8.1): plain words, replacing a silent "typing…".
+_TOOL_STAGES = {
+    "list_events": "Checking your day…", "get_daily": "Checking your day…",
+    "read_daily_section": "Reading your notes…", "search_knowledge": "Searching your notes…",
+    "read_knowledge": "Reading a note…", "get_related": "Following links…",
+    "list_tasks": "Checking your tasks…", "list_habits": "Checking your habits…",
+    "list_goals": "Checking your goals…", "get_tokens": "Counting tokens…",
+    "create_event": "Writing…", "update_event": "Writing…", "delete_event": "Writing…",
+}
+
 # Canonical task-priority scale (matches memory/AGENTS.md and the Telegram UI):
 # 5 = highest urgency, 1 = lowest. Keep tool schemas and reply text aligned.
 _PRIORITY_LABELS = {1: "lowest", 2: "low", 3: "medium", 4: "high", 5: "highest"}
@@ -260,6 +271,8 @@ class AgentService:
         self.pending_confirmations: dict[str, PendingAction] = {}
         # Transient: set during a streaming handle_message turn, cleared in finally.
         self._stream_callback: "Callable[[str], None] | None" = None
+        # Transient likewise: one plain-words stage per tool call (spec §8.1).
+        self._stage_callback: "Callable[[str], None] | None" = None
         self.tools = self._register_tools()
         # Register built-in hooks (idempotent — safe to call multiple times)
         register_hook("validate_schema", _validate_schema_hook)
@@ -1262,6 +1275,9 @@ class AgentService:
         forwarded_from: dict | None = None,
         stream_callback: "Callable[[str], None] | None" = None,
         selected_date: str | None = None,
+        skill: str | None = None,
+        prior_actions: list[str] | None = None,
+        stage_callback: "Callable[[str], None] | None" = None,
     ) -> AgentResponse:
         """Main entry point: process a user message through the agent loop.
 
@@ -1275,8 +1291,17 @@ class AgentService:
                 if any. A hint, not a target — it only steers which days
                 `_resolve_reference` searches for a `block_reference`, never
                 the day a write lands on by itself.
+            skill: The skill the fast lane's parse already chose (spec §5.5).
+                A registered name skips the router; an unknown one is logged
+                and the router decides as usual.
+            prior_actions: What the fast lane already did with this message,
+                one receipt line each. Prefixed to the model's input with an
+                instruction not to redo it, never to the logged text.
+            stage_callback: Called once per tool call with a plain-words stage
+                (spec §8.1). Its failures are logged and swallowed.
         """
         self._stream_callback = stream_callback
+        self._stage_callback = stage_callback
         self._current_chat_id = chat_id
         self._selected_date = selected_date
         session_id = str(chat_id)
@@ -1300,7 +1325,8 @@ class AgentService:
                         if len(text or "") > 2000:
                             span.set_attribute("truncated", True)
                         result = self._handle_message_inner(
-                            text, chat_id, attachments, reply_to, forwarded_from
+                            text, chat_id, attachments, reply_to, forwarded_from,
+                            skill=skill, prior_actions=prior_actions,
                         )
                     _output_text = result.response[:2000]
                     span.set_attribute(SpanAttributes.OUTPUT_VALUE, _output_text)
@@ -1317,6 +1343,7 @@ class AgentService:
                 return result
         finally:
             self._stream_callback = None
+            self._stage_callback = None
             self._current_chat_id = None
 
     def _handle_message_inner(
@@ -1326,6 +1353,9 @@ class AgentService:
         attachments: list[dict] | None,
         reply_to: dict | None,
         forwarded_from: dict | None,
+        *,
+        skill: str | None = None,
+        prior_actions: list[str] | None = None,
     ) -> AgentResponse:
         t0 = time.perf_counter()
         context = self.memory.assemble_context(chat_id)
@@ -1353,6 +1383,16 @@ class AgentService:
                 user_content = [{"type": "text", "text": trace}, *user_content]
             else:
                 user_content = f"{trace}\n\n{user_content}"
+        if prior_actions:
+            # What the fast lane already did with this message (spec §5.5).
+            # Delivered as input, like the turn trace, and never in log_text:
+            # turn_trace joins on the exact user_text.
+            note = ("[Already done by Mazkir for this message — do not redo it:\n"
+                    + "\n".join(f"- {a}" for a in prior_actions) + "]")
+            if isinstance(user_content, list):
+                user_content = [{"type": "text", "text": note}, *user_content]
+            else:
+                user_content = f"{note}\n\n{user_content}"
         messages.append({"role": "user", "content": user_content})
 
         # For conversation log, build a text-only version (no base64)
@@ -1374,7 +1414,7 @@ class AgentService:
 
         if self._skill_executor is not None:
             return self._handle_via_skills(
-                chat_id, log_text, messages, system, context,
+                chat_id, log_text, messages, system, context, skill=skill,
             )
 
         return self._run_agent_turn(
@@ -1393,6 +1433,7 @@ class AgentService:
         messages: list[dict],
         system: str,
         context: Any,
+        skill: str | None = None,
     ) -> AgentResponse:
         """Delegate to SkillExecutor for router→skill→handoff loop."""
         assert self._skill_executor is not None
@@ -1402,6 +1443,7 @@ class AgentService:
             context_messages=context.messages,
             messages=messages,
             context=context,
+            skill=skill,
         )
         return AgentResponse(
             response=result.response_text,
@@ -2206,6 +2248,11 @@ class AgentService:
         action: str | None = None,
         _trusted_fast: bool = False,
     ) -> dict:
+        if self._stage_callback is not None:
+            try:
+                self._stage_callback(_TOOL_STAGES.get(name, "Working…"))
+            except Exception:
+                logger.warning("stage callback failed", exc_info=True)
         # The model's own tool-call JSON reaches every other caller of this
         # method unfiltered (spec §1.3: no tool argument comes from model
         # output except the clause's own words). `_fast` is Mazkir's own

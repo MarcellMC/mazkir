@@ -29,7 +29,7 @@ def test_handle_message_accepts_stream_callback(mock_services):
 
     # Patch _handle_message_inner to invoke _stream_callback as if it were
     # the final iteration sending chunks, then return an AgentResponse.
-    def fake_inner(text, chat_id, attachments, reply_to, forwarded_from):
+    def fake_inner(text, chat_id, attachments, reply_to, forwarded_from, **_kw):
         # Simulate the agent flushing chunks via the callback
         if agent._stream_callback is not None:
             agent._stream_callback("chunk1")

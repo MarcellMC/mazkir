@@ -16,6 +16,7 @@ from typing import Any, Callable, NamedTuple, Optional
 from openinference.semconv.trace import SpanAttributes
 from opentelemetry import trace as _otel_trace
 
+from src.services.router_service import RouterDecision
 from src.services.skill_registry import Skill
 from src.services.tracing_helpers import with_span_status
 
@@ -86,14 +87,27 @@ class SkillExecutor:
         context_messages: list[dict],
         messages: list[dict],
         context: Optional[Any] = None,
+        skill: Optional[str] = None,
     ) -> SkillExecutorResult:
-        """Route to a skill via the router and run with handoff support (MAX_HOPS cap)."""
+        """Route to a skill via the router and run with handoff support (MAX_HOPS cap).
+
+        `skill`, when it names a registered skill, is the fast lane's parse
+        having already chosen (spec §5.5): the router is not called. Only the
+        choice is skipped; the skill then runs through the same loop, with
+        the same confidence gate, previews and dispatch as a routed one.
+        """
         skills = self.skill_registry.list()
-        decision = self.router.pick(
-            user_msg=user_msg,
-            recent_messages=context_messages[-10:],
-            skills=skills,
-        )
+        if skill is not None and self.skill_registry.get(skill) is not None:
+            # The fast lane's parse already chose (spec §5.5): no router call.
+            decision = RouterDecision(skill=skill, reason="chosen by the fast lane's parse")
+        else:
+            if skill is not None:
+                logger.warning("Fast lane chose unknown skill %r; asking the router instead", skill)
+            decision = self.router.pick(
+                user_msg=user_msg,
+                recent_messages=context_messages[-10:],
+                skills=skills,
+            )
 
         visited: list[str] = []
         response_text = ""
