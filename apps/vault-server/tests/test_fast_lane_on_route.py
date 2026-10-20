@@ -350,3 +350,32 @@ def test_an_agent_that_raises_leaves_a_failure_on_the_record(monkeypatch, tmp_pa
     raw = client.post("/message?stream=true", json={"text": "hi", "chat_id": 1, "message_id": 9}).text
     assert '"route": "error"' in raw
     assert act.find_repeat(tmp_path / "actions", 1, 9)["response"] == route.AGENT_FAILED
+
+
+def test_a_mixed_turn_whose_skill_raises_does_not_invite_a_resend(monkeypatch, tmp_path):
+    fast = FastTurn(route="mixed", fallthrough_skill="knowledge-management", turn={**a_turn(), "route": "mixed"},
+                    receipt={"turn_id": "t0000beef", "lines": [], "undo": None, "open_question": None, "text": "✓ Gym"},
+                    ran=["✓ 18:00–19:00 Gym (block)"])
+    client, agent = make(monkeypatch, tmp_path, fast)
+    agent.handle_message.side_effect = RuntimeError("boom")
+    client.post("/message?stream=true", json={"text": "Gym and a note", "chat_id": 1, "message_id": 9})
+    assert act.load_turn(tmp_path / "actions", "t0000beef")["response"] == route.MIXED_FAILED
+
+
+def test_a_held_task_that_fails_is_logged_at_error(caplog):
+    import asyncio
+    import logging
+
+    async def boom():
+        raise RuntimeError("late sync broke")
+
+    async def main():
+        task = route._hold(asyncio.create_task(boom()))
+        await asyncio.wait({task})
+        await asyncio.sleep(0)            # done-callbacks run on the next loop pass
+        return task
+
+    with caplog.at_level(logging.ERROR, logger=route.logger.name):
+        task = asyncio.run(main())
+    assert task not in route._fast_tasks
+    assert any("background task failed" in r.getMessage() and r.levelno == logging.ERROR for r in caplog.records)

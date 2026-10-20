@@ -88,9 +88,14 @@ def _google_blocker(event: dict, calendar) -> str | None:
 
 def _delete_google(event: dict, calendar) -> str | None:
     """Remove the block's Google entry (preconditions already checked), or say why not."""
-    google_id = (event.get("source_ids") or {}).get("calendar_id")
+    return _delete_google_id((event.get("source_ids") or {}).get("calendar_id"), calendar)
+
+
+def _delete_google_id(google_id: str | None, calendar) -> str | None:
     if not google_id:
         return None
+    if calendar is None or not getattr(calendar, "is_initialized", False):
+        return "Google Calendar isn't reachable"
     from src.services.async_bridge import maybe_await
     try:
         if not maybe_await(calendar.delete_event(google_id)):
@@ -101,6 +106,11 @@ def _delete_google(event: dict, calendar) -> str | None:
 
 
 def _undo_created(rec: dict, *, events, vault, calendar) -> str | None:
+    # A Google entry a previous attempt removed the block without: only that is left to do.
+    if orphan := rec.get("google_orphan"):
+        if why := _delete_google_id(orphan, calendar):
+            return f"removed here, but its Google entry stays: {why}"
+        rec.pop("google_orphan")
     after = rec.get("after") or {}
     live = [e for e in (find_event(events, eid) for eid in rec["ids"]) if e is not None]
     if any(_changed(e, after.get(e["id"])) for e in live):
@@ -123,7 +133,16 @@ def _undo_created(rec: dict, *, events, vault, calendar) -> str | None:
         completion = event.get("habit_completion")
         if completion and (why := _retract(completion, vault)):
             return f"removed from Google; {why}" if removed else why
-        events.delete_event(event["date"], event["id"])
+        gone = events.delete_event(event["date"], event["id"])
+        # The deferred sync can write a calendar_id after the read above
+        # (sync_block's create landing mid-undo). The deleted row says so; its
+        # Google entry would merge straight back as a pending block, so it goes
+        # too. If Google won't, the line says so and a retry tries again.
+        late = (((gone or {}).get("event") or {}).get("source_ids") or {}).get("calendar_id")
+        if late and late != source_ids.get("calendar_id"):
+            if why := _delete_google_id(late, calendar):
+                rec["google_orphan"] = late
+                return f"removed here, but its Google entry stays: {why}"
     return None
 
 

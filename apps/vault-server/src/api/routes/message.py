@@ -187,6 +187,8 @@ def _previous_skill(chat_id: int, date: str) -> str | None:
 SYNC_CAP_S = 15.0
 STILL_WORKING = "Still working on your previous message."
 AGENT_FAILED = "That message failed; please send it again."
+# A mixed turn's fast lines already ran: a resend (a new message_id) would write them twice.
+MIXED_FAILED = "The rest of that message failed — what I logged above stands."
 
 
 # Work that outlives its request: the syncs past the response's cap, and the
@@ -195,9 +197,17 @@ AGENT_FAILED = "That message failed; please send it again."
 _fast_tasks: set = set()
 
 
+def _report_failure(task: asyncio.Task) -> None:
+    # Nothing may await a task held here (a sync past the cap, a disconnected
+    # stream), so its exception is logged now rather than as "never retrieved".
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("fast lane background task failed", exc_info=task.exception())
+
+
 def _hold(task: asyncio.Task) -> asyncio.Task:
     _fast_tasks.add(task)
     task.add_done_callback(_fast_tasks.discard)
+    task.add_done_callback(_report_failure)
     return task
 
 
@@ -352,7 +362,8 @@ async def _on_turn(body: MessageRequest, agent, *, stream: bool, emit) -> dict:
                 # Kept, so a re-delivery is not run again; told it failed, not "still working".
                 try:
                     await asyncio.to_thread(_patch_turn, deps.actions_dir, record,
-                                            lambda turn: turn.__setitem__("response", AGENT_FAILED))
+                                            lambda turn: turn.__setitem__(
+                                                "response", MIXED_FAILED if fast.route == "mixed" else AGENT_FAILED))
                 except Exception:
                     logger.error("fast lane could not record the failure on turn %s", record.get("turn_id"),
                                  exc_info=True)

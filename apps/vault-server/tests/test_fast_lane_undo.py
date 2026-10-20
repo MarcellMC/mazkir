@@ -380,3 +380,51 @@ def test_a_second_tap_after_a_full_undo_does_nothing(tmp_path, vault_service):
     turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=None, now=NOW)
     assert toast == "Nothing to undo" and turn["lines"][0]["status"] == "undone"
     assert vault_service.read_file("20-habits/workout.md")["metadata"]["streak"] == 5
+
+
+def _sync_lands_before_the_delete(events, google_id="g9"):
+    """sync_block's calendar_id write landing between undo's read of the row and its delete_event."""
+    real_delete = events.delete_event
+
+    def delete_after_sync(date, event_id):
+        events.update_event(date, event_id, {"source_ids": {"calendar_id": google_id}})
+        return real_delete(date, event_id)
+
+    events.delete_event = delete_after_sync
+
+
+def test_a_google_entry_the_sync_wrote_mid_undo_goes_with_the_block(tmp_path, vault_service):
+    agent, events = make_agent(tmp_path, vault_service)
+    turn = run(agent, events, PlannedLine("block", "fact", "Gym", steps=(create("Gym", "2026-01-10T08:00:00", "2026-01-10T09:00:00"),)))
+    _sync_lands_before_the_delete(events)
+    calendar = MagicMock(is_initialized=True)
+    calendar.delete_event = AsyncMock(return_value=True)
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=calendar, now=NOW)
+    assert turn["lines"][0]["status"] == "undone" and toast == "Undone 1"
+    calendar.delete_event.assert_awaited_once_with("g9")
+    assert events.get_events("2026-01-10") == []
+
+
+def test_a_mid_undo_google_entry_google_refuses_is_said_and_retried(tmp_path, vault_service):
+    agent, events = make_agent(tmp_path, vault_service)
+    turn = run(agent, events, PlannedLine("block", "fact", "Gym", steps=(create("Gym", "2026-01-10T08:00:00", "2026-01-10T09:00:00"),)))
+    _sync_lands_before_the_delete(events)
+    calendar = MagicMock(is_initialized=True)
+    calendar.delete_event = AsyncMock(return_value=False)
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=calendar, now=NOW)
+    line = turn["lines"][0]
+    assert line["status"] == "done" and toast == "Nothing undone, 1 kept"
+    assert "Google" in line["undo_note"] and events.get_events("2026-01-10") == []
+    # the retry goes straight for the Google entry it left behind
+    calendar.delete_event = AsyncMock(return_value=True)
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=calendar, now=NOW)
+    assert turn["lines"][0]["status"] == "undone" and toast == "Undone 1"
+    calendar.delete_event.assert_awaited_once_with("g9")
+
+
+def test_no_calendar_at_all_still_leaves_no_silent_orphan(tmp_path, vault_service):
+    agent, events = make_agent(tmp_path, vault_service)
+    turn = run(agent, events, PlannedLine("block", "fact", "Gym", steps=(create("Gym", "2026-01-10T08:00:00", "2026-01-10T09:00:00"),)))
+    _sync_lands_before_the_delete(events)
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=None, now=NOW)
+    assert turn["lines"][0]["status"] == "done" and "Google" in turn["lines"][0]["undo_note"]

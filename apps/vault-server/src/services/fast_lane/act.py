@@ -236,6 +236,10 @@ def update_turn(actions_dir: Path, turn_id: str, change: Callable[[dict], Any],
     function (or hold the same lock), even though its Google calls take
     seconds: a sync patch waits for it rather than overwrite its markers.
 
+    Call it only off the event loop thread (`asyncio.to_thread`): it blocks,
+    it serialises every turn in the process, and undo holds it across Google
+    calls, so on the loop it would stall every request meanwhile.
+
     Returns the saved turn. When there is no saved turn, `default` is changed
     and saved instead; with no default, nothing is written and None returned.
     """
