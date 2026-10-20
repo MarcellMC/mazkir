@@ -316,3 +316,67 @@ def test_an_undone_edit_reports_its_google_push_on_the_line(tmp_path, vault_serv
     assert turn["lines"][0]["calendar_sync"] == {"ok": False, "attempted": True, "event_id": "g7",
                                                  "reason": "update_failed"}
     assert calendar.update_event.await_args.kwargs["end_time"] == "2026-01-10T07:30:00"
+
+
+# --- review round 2: a retry sees only what is left ---------------------------
+
+
+def test_a_retry_does_not_redo_a_todo_it_already_removed(tmp_path, vault_service):
+    agent, events = make_agent(tmp_path, vault_service)
+    turn = run(agent, events, PlannedLine("block", "fact", "Gym", steps=(
+        create("Gym", "2026-01-10T08:00:00", "2026-01-10T09:00:00"),
+        Step("daily_add_task", {"text": "Buy milk", "date": "2026-01-10"}))))
+    events.update_event("2026-01-10", turn["lines"][0]["event_id"], {"source_ids": {"calendar_id": "g1"}})
+    turn, _ = undo_turn(turn, events=events, vault=vault_service, calendar=None, now=NOW)   # todo goes, Google refuses
+    assert turn["lines"][0]["undo_note"] == "can't undo: Google Calendar isn't reachable"
+    assert "Buy milk" not in vault_service.read_daily_note("2026-01-10")["content"]
+    assert [u["kind"] for u in turn["lines"][0]["undo"]] == ["created"]
+    calendar = MagicMock(is_initialized=True)
+    calendar.delete_event = AsyncMock(return_value=True)
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=calendar, now=NOW)
+    assert turn["lines"][0]["status"] == "undone" and toast == "Undone 1"
+    assert "undo_note" not in turn["lines"][0] and events.get_events("2026-01-10") == []
+
+
+def _edit_that_ticks_workout(tmp_path, vault_service):
+    agent, events = make_agent(tmp_path, vault_service)
+    block = events.create_event("2026-01-10", "Workout", "2026-01-10T08:00:00", None)
+    step = Step("update_event", {"event_id": block["id"], "date": "2026-01-10", "end_time": "2026-01-10T09:00:00",
+                                 "_fast": {"defer_calendar_sync": True, "fields": {}}})
+    turn = run(agent, events, PlannedLine("edit", "fact", "Workout", steps=(step,)))
+    assert vault_service.read_file("20-habits/workout.md")["metadata"]["streak"] == 6
+    return turn, events, block["id"]
+
+
+def test_a_retry_after_a_failed_retract_goes_straight_to_the_tick(tmp_path, vault_service, monkeypatch):
+    import src.services.fast_lane.undo as undo_module
+    turn, events, block_id = _edit_that_ticks_workout(tmp_path, vault_service)
+    real = undo_module.retract_completion
+    monkeypatch.setattr(undo_module, "retract_completion", lambda *a: {"ok": False, "reason": "locked"})
+    turn, _ = undo_turn(turn, events=events, vault=vault_service, calendar=None, now=NOW)
+    assert turn["lines"][0]["undo_note"] == "can't undo: block restored; habit: locked"
+    assert events.get_events("2026-01-10")[0]["end_time"] is None
+    monkeypatch.setattr(undo_module, "retract_completion", real)
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=None, now=NOW)
+    assert turn["lines"][0]["status"] == "undone" and toast == "Undone 1"
+    assert vault_service.read_file("20-habits/workout.md")["metadata"]["streak"] == 5
+
+
+def test_a_failed_restore_leaves_the_tick(tmp_path, vault_service, monkeypatch):
+    turn, events, block_id = _edit_that_ticks_workout(tmp_path, vault_service)
+    monkeypatch.setattr(events, "update_event", lambda *a, **k: {"error": "disk full"})
+    turn, _ = undo_turn(turn, events=events, vault=vault_service, calendar=None, now=NOW)
+    assert turn["lines"][0]["undo_note"] == "can't undo: disk full"
+    assert vault_service.read_file("20-habits/workout.md")["metadata"]["streak"] == 6
+    assert not turn["lines"][0]["undo"][0].get("restored")
+
+
+def test_a_second_tap_after_a_full_undo_does_nothing(tmp_path, vault_service):
+    agent, events = make_agent(tmp_path, vault_service)
+    turn = run(agent, events, PlannedLine("habit", "fact", "Workout",
+                                          steps=(Step("complete_habit", {"habit_name": "Workout"}),)))
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=None, now=NOW)
+    assert toast == "Undone 1"
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=None, now=NOW)
+    assert toast == "Nothing to undo" and turn["lines"][0]["status"] == "undone"
+    assert vault_service.read_file("20-habits/workout.md")["metadata"]["streak"] == 5

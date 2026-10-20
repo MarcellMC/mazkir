@@ -128,26 +128,32 @@ def _undo_created(rec: dict, *, events, vault, calendar) -> str | None:
 
 
 def _undo_edited(rec: dict, line: dict, *, events, vault, calendar) -> str | None:
-    current = find_event(events, rec["event_id"])
-    if current is None:
-        return "the block is gone"
     before, after = rec.get("before") or {}, rec.get("after") or {}
-    if not before:
-        return "nothing was kept to restore"
-    if _changed(current, after):
-        return "changed since"
-    keys = (set(before) | set(after)) - _NOT_FIELDS
-    updates = {k: before.get(k) for k in keys if before.get(k) != after.get(k)}
-    if updates:
-        result = events.update_event(current["date"], rec["event_id"], updates)
-        if "error" in result:
-            return result["error"]
-        if result.get("moved_from"):
-            # Moving back re-detaches the upstream ids exactly as the forward
-            # move did; put the provenance the block had before the edit back.
-            events.update_event(result["date"], rec["event_id"], {k: before.get(k) for k in _PROVENANCE})
+    if not rec.get("restored"):
+        current = find_event(events, rec["event_id"])
+        if current is None:
+            return "the block is gone"
+        if not before:
+            return "nothing was kept to restore"
+        if _changed(current, after):
+            return "changed since"
+        keys = (set(before) | set(after)) - _NOT_FIELDS
+        updates = {k: before.get(k) for k in keys if before.get(k) != after.get(k)}
+        if updates:
+            result = events.update_event(current["date"], rec["event_id"], updates)
+            if "error" in result:
+                return result["error"]
+            if result.get("moved_from"):
+                # Moving back re-detaches the upstream ids exactly as the forward
+                # move did; put the provenance the block had before the edit back.
+                events.update_event(result["date"], rec["event_id"], {k: before.get(k) for k in _PROVENANCE})
+        # The fields are back. A retry after a failed retract below must go
+        # straight to the tick: re-comparing the restored block with `after`
+        # would read our own restore as "changed since".
+        rec["restored"] = True
     # Only once the fields are back: a refused restore must leave the tick too.
-    ticked = current.get("habit_completion")
+    # Read from the snapshot, not the block — the restore cleared it there.
+    ticked = after.get("habit_completion")
     if ticked and not before.get("habit_completion") and (why := _retract(ticked, vault)):
         return f"block restored; {why}"
     restored = find_event(events, rec["event_id"])
@@ -206,7 +212,11 @@ def undo_turn(turn: dict, *, events, vault, calendar, now: dt.datetime) -> tuple
         if line.get("status") not in _UNDOABLE or not line.get("undo"):
             continue
         why = None
-        for rec in reversed(line["undo"]):
+        # Each record that is taken back leaves the line, so a retry after a
+        # refusal sees only what is left — never re-attempts what already
+        # succeeded (an added todo it removed itself would read as "gone").
+        while line["undo"]:
+            rec = line["undo"][-1]
             try:
                 why = _undo_one(rec, line, events=events, vault=vault, calendar=calendar)
             except Exception as e:   # one line's failure must not strand the rest
@@ -214,6 +224,7 @@ def undo_turn(turn: dict, *, events, vault, calendar, now: dt.datetime) -> tuple
                 why = str(e) or type(e).__name__
             if why:
                 break
+            line["undo"].pop()
         if why:
             line["undo_note"] = f"can't undo: {why}"
             kept += 1
