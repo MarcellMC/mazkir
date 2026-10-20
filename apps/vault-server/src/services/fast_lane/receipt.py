@@ -83,7 +83,10 @@ def _buttons(tid: str, line: dict) -> list[dict[str, str]]:
         return [tap("Track it", "sy"), tap("Not now", "sn")] if status == "pending" else []
     if status == "pending":
         out += [tap("✓", "ok"), tap("✕", "no")]
-    if line.get("event_id") and status in _LIVE and line["kind"] in ("block", "edit"):
+    # A `google_orphan` means undo already removed the block and kept only the
+    # Google id it could not delete: ✎ would open a block that is gone.
+    orphaned = any(r.get("google_orphan") for r in line.get("undo") or ())
+    if line.get("event_id") and status in _LIVE and line["kind"] in ("block", "edit") and not orphaned:
         out.append({"label": "✎", "data": f"block:edit:{line['date']}:{line['event_id']}"})
     if line.get("habit_candidate") and not line.get("habit") and status in ("done", "approved"):
         out.append(tap(f"{line['habit_candidate']['name']}?", "hb"))

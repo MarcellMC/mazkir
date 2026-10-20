@@ -98,3 +98,11 @@ def test_a_todo_shows_its_day():
 def test_ran_summary_lists_what_ran_for_the_fallthrough_skill():
     assert ran_summary(turn(line(), line(1, status="failed")), NOW) == ["✓ yest 23:15–23:35 Dog walk (block)"]
 
+
+def test_a_line_whose_block_is_gone_but_its_google_entry_stayed_offers_no_edit():
+    # Undo removed the block and kept only the Google id it could not delete:
+    # ✎ would open a block that no longer exists.
+    orphaned = line(undo=[{"kind": "created", "ids": ["evt_1"], "google_orphan": "g1"}],
+                    undo_note="can't undo: removed here, but its Google entry stays")
+    [l] = render_receipt(turn(orphaned), NOW)["lines"]
+    assert all(not b["data"].startswith("block:edit:") for b in l["buttons"])
