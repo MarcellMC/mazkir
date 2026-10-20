@@ -144,4 +144,31 @@ describe("streamMessage", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("a throwing handler does not lose later frames or the final response", async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      makeSseResponse([
+        JSON.stringify({ stage: "Reading…" }),
+        JSON.stringify({ text: "hello" }),
+        JSON.stringify({ done: true, response: { response: "hello", route: "fast" } }),
+      ]),
+    );
+    vi.stubGlobal("fetch", mockFetch);
+    const seen: string[] = [];
+    try {
+      const final = await streamMessage(
+        { text: "hi", chat_id: 1 },
+        {
+          onChunk: (t) => { seen.push(t); },
+          onStage: () => { throw new Error("edit failed"); },
+        },
+        "http://localhost:8000",
+        "test-key",
+      );
+      expect(seen).toEqual(["hello"]);
+      expect(final.response).toBe("hello");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

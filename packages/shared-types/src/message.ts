@@ -64,8 +64,8 @@ export interface MessageResponse {
   confirmation_choices?: { value: string; label: string }[] | null;
   /** Present when the fast lane acted (FAST_LANE_MODE=on). */
   receipt?: Receipt | null;
-  /** "fast" | "mixed" | "fallthrough" | "router_fallback" when the fast lane is on. */
-  route?: string;
+  /** "fast" | "mixed" | "fallthrough" | "router_fallback" | "error" when the fast lane is on. */
+  route?: "fast" | "mixed" | "fallthrough" | "router_fallback" | "error";
 }
 
 export interface ConfirmationRequest {

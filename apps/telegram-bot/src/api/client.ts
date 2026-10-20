@@ -36,6 +36,25 @@ export interface StreamHandlers {
   onReceiptUpdate?: (update: ReceiptUpdate) => void | Promise<void>;
 }
 
+/** A non-2xx answer from vault-server; the message text is unchanged. */
+export class ApiError extends Error {
+  constructor(readonly status: number, statusText: string) {
+    super(`API error: ${status} ${statusText}`);
+    this.name = "ApiError";
+  }
+}
+
+/** Run one stream handler; a handler that throws (a failed Telegram edit) must
+ *  not lose the rest of the stream or its final payload. */
+async function safely(name: string, fn: (() => void | Promise<void>) | undefined): Promise<void> {
+  if (!fn) return;
+  try {
+    await fn();
+  } catch (err) {
+    logger.warn({ event_type: "stream_handler_error", handler: name, err: String(err) }, "stream_handler_error");
+  }
+}
+
 export function createApiClient(baseUrl: string, apiKey: string) {
   async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const method = options?.method ?? "GET";
@@ -62,7 +81,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         "api_call",
       );
       if (!res.ok) {
-        throw new Error(`API error: ${res.status} ${res.statusText}`);
+        throw new ApiError(res.status, res.statusText);
       }
       return res.json() as Promise<T>;
     } catch (err) {
@@ -194,7 +213,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       }),
     // A tap on a fast-lane receipt (spec §8.2): the server acts and re-renders.
     receiptAction: (turnId: string, line: string, action: string) =>
-      request<ReceiptActionResponse>(`/fast/receipts/${turnId}/${line}/${action}`, { method: "POST" }),
+      request<ReceiptActionResponse>(`/fast/receipts/${encodeURIComponent(turnId)}/${encodeURIComponent(line)}/${encodeURIComponent(action)}`, { method: "POST" }),
   };
 }
 
@@ -249,13 +268,17 @@ export async function streamMessage(
       if (data["done"] === true) {
         final = data["response"] as MessageResponse;
       } else if (typeof data["text"] === "string") {
-        await h.onChunk(data["text"]);
+        const t = data["text"];
+        await safely("onChunk", () => h.onChunk(t));
       } else if (typeof data["stage"] === "string") {
-        await h.onStage?.(data["stage"]);
+        const s = data["stage"];
+        await safely("onStage", h.onStage && (() => h.onStage!(s)));
       } else if (data["receipt"]) {
-        await h.onReceipt?.(data["receipt"] as Receipt);
+        const r = data["receipt"] as Receipt;
+        await safely("onReceipt", h.onReceipt && (() => h.onReceipt!(r)));
       } else if (data["receipt_update"]) {
-        await h.onReceiptUpdate?.(data["receipt_update"] as ReceiptUpdate);
+        const u = data["receipt_update"] as ReceiptUpdate;
+        await safely("onReceiptUpdate", h.onReceiptUpdate && (() => h.onReceiptUpdate!(u)));
       }
     }
   }

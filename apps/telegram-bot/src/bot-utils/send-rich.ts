@@ -29,7 +29,7 @@ export async function sendRich(
   ctx: Context,
   msg: InputRichMessage<InputFile>,
   extra?: Record<string, unknown>,
-): Promise<Message | undefined> {
+): Promise<Message> {
   try {
     return (await ctx.replyWithRichMessage(msg, extra as never)) as Message;
   } catch (err) {

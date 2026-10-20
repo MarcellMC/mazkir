@@ -132,4 +132,11 @@ describe("ApiClient", () => {
     expect(spy.mock.calls[0][0]).toBe("http://localhost:8000/fast/receipts/t0000beef/0/ok");
     expect(spy.mock.calls[0][1]?.method).toBe("POST");
   });
+
+  it("receiptAction rejects with an ApiError carrying the status", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 404, statusText: "Not Found" }));
+    const err = await api.receiptAction("t1", "0", "ok").catch((e) => e);
+    expect(err.status).toBe(404);
+    expect(err.message).toBe("API error: 404 Not Found");
+  });
 });
