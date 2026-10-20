@@ -73,8 +73,19 @@ def sync_block(calendar: Any, events: Any, date_str: str, event_id: str) -> dict
         if gcal_id:
             # Membership is recorded by calendar_id alone: without it the next
             # edit would create a second Google entry.
-            events.update_event(date=date_str, event_id=event_id,
-                                updates={"source_ids": {**source_ids, "calendar_id": gcal_id}})
+            saved = events.update_event(date=date_str, event_id=event_id,
+                                        updates={"source_ids": {**source_ids, "calendar_id": gcal_id}})
+            if not (saved or {}).get("updated") and events.resolve_event_date(event_id, date_str) is None:
+                # Undone while Google was creating it: undo saw no calendar_id and
+                # deleted only the ledger row. The new entry would merge back as a
+                # pending calendar block, so it goes too. Not a ⚠: nothing failed
+                # that the user still wants.
+                try:
+                    if not maybe_await(calendar.delete_event(gcal_id)):
+                        logger.warning("Google refused to delete %s, the entry of an undone block", gcal_id)
+                except Exception as e:
+                    logger.warning("Failed to delete the Google entry of an undone block: %s", e)
+                return _skip("undone_meanwhile")
         else:
             sync["reason"] = "create_failed"
         return sync

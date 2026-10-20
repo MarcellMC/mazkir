@@ -282,3 +282,71 @@ def test_shadow_mode_is_unchanged(monkeypatch, tmp_path):
     monkeypatch.setattr(route, "_start_fast_lane_shadow", lambda body: None)
     assert post(client).json()["response"] == "skill reply"
     assert "skill" not in agent.handle_message.call_args.kwargs
+
+
+def test_the_cap_stops_the_wait_not_the_sync(monkeypatch, tmp_path):
+    """§8.1: past 15 s the reply goes out; the late line still reaches Google and its record."""
+    import threading
+    from src.services.fast_lane.receipt import render_receipt
+    import datetime as dt
+    turn = {**a_turn(), "lines": [dict(LINE), {**LINE, "id": 1, "event_id": "evt_2"}]}
+    fast = FastTurn(route="fast", turn=turn, receipt=render_receipt(turn, dt.datetime(2026, 1, 10, 20, 0)))
+    client, agent = make(monkeypatch, tmp_path, fast)
+    monkeypatch.setattr(route, "SYNC_CAP_S", 0.2)
+    release, finished = threading.Event(), threading.Event()
+
+    def slow_second(calendar, events, date, event_id):
+        if event_id == "evt_2":
+            release.wait(5)
+            finished.set()
+        return {"ok": True, "attempted": True, "event_id": "g-" + event_id}
+
+    monkeypatch.setattr(calendar_push, "sync_block", slow_second)
+    with client:                                    # one loop for the request and what outlives it
+        started = time.monotonic()
+        body = post(client).json()
+        assert time.monotonic() - started < 2
+        assert [line["sync"] for line in body["receipt"]["lines"]] == ["✓ calendar", "⏳ calendar"]
+        release.set()
+        assert finished.wait(2)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            stored = act.load_turn(tmp_path / "actions", "t0000beef")
+            if stored["lines"][1]["calendar_sync"].get("ok"):
+                break
+            time.sleep(0.02)
+    assert stored["lines"][1]["calendar_sync"] == {"ok": True, "attempted": True, "event_id": "g-evt_2"}
+    assert stored["response"] == fast.receipt["text"]           # the late patch kept the reply
+
+
+def test_the_stream_closes_at_the_cap_and_a_late_update_goes_nowhere(monkeypatch, tmp_path):
+    import threading
+    client, _ = make(monkeypatch, tmp_path, fast_turn())
+    monkeypatch.setattr(route, "SYNC_CAP_S", 0.2)
+    release, finished = threading.Event(), threading.Event()
+
+    def slow(*a):
+        release.wait(5)
+        finished.set()
+        return {"ok": True, "attempted": True, "event_id": "g1"}
+
+    monkeypatch.setattr(calendar_push, "sync_block", slow)
+    with client:
+        raw = client.post("/message?stream=true", json={"text": "Gym", "chat_id": 1, "message_id": 9}).text
+        kinds = [next(iter(json.loads(c[len("data: "):]))) for c in raw.split("\n\n") if c.startswith("data: ")]
+        assert kinds == ["stage", "receipt", "done"]
+        release.set()
+        assert finished.wait(2)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not act.load_turn(
+                tmp_path / "actions", "t0000beef")["lines"][0]["calendar_sync"].get("ok"):
+            time.sleep(0.02)
+    assert act.load_turn(tmp_path / "actions", "t0000beef")["lines"][0]["calendar_sync"]["ok"] is True
+
+
+def test_an_agent_that_raises_leaves_a_failure_on_the_record(monkeypatch, tmp_path):
+    client, agent = make(monkeypatch, tmp_path, FastTurn(route="fallthrough", fallthrough_skill="mazkir"))
+    agent.handle_message.side_effect = RuntimeError("boom")
+    raw = client.post("/message?stream=true", json={"text": "hi", "chat_id": 1, "message_id": 9}).text
+    assert '"route": "error"' in raw
+    assert act.find_repeat(tmp_path / "actions", 1, 9)["response"] == route.AGENT_FAILED

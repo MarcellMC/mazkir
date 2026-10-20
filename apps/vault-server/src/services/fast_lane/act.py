@@ -17,6 +17,7 @@ import datetime as dt
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -205,14 +206,48 @@ def _path(actions_dir: Path, turn_id: str) -> Path | None:
     return Path(actions_dir) / f"{turn_id}.json" if ok else None
 
 
+# One process serves every request, so one lock is enough: every write to a
+# turn record goes through it, and so does every read-modify-write.
+_TURN_LOCK = threading.RLock()
+
+
 def save_turn(actions_dir: Path, turn: dict) -> None:
     path = _path(actions_dir, turn["turn_id"])
     if path is None:
         raise ValueError(f"not a turn id: {turn['turn_id']!r}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(turn, ensure_ascii=False, default=str), encoding="utf-8")
-    tmp.replace(path)
+    with _TURN_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(turn, ensure_ascii=False, default=str), encoding="utf-8")
+        tmp.replace(path)
+
+
+def update_turn(actions_dir: Path, turn_id: str, change: Callable[[dict], Any],
+                default: dict | None = None) -> dict | None:
+    """Load the saved turn, let `change` mutate it in place, and save it, all under one lock.
+
+    Several things rewrite a turn while it is live: the route patches each
+    line's Google sync and then the reply onto it, and undo marks lines
+    `undone`/`restored`. Any of them writing back a copy read before another
+    one saved would erase the other's change. The lock is module-level and
+    process-wide, which is enough because one process serves every request.
+
+    Undo (Task 16) MUST run its whole load → undo_turn → save through this
+    function (or hold the same lock), even though its Google calls take
+    seconds: a sync patch waits for it rather than overwrite its markers.
+
+    Returns the saved turn. When there is no saved turn, `default` is changed
+    and saved instead; with no default, nothing is written and None returned.
+    """
+    with _TURN_LOCK:
+        turn = load_turn(actions_dir, turn_id)
+        if turn is None:
+            if default is None:
+                return None
+            turn = default
+        change(turn)
+        save_turn(actions_dir, turn)
+        return turn
 
 
 def load_turn(actions_dir: Path, turn_id: str) -> dict | None:

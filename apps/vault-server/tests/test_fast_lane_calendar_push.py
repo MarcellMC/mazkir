@@ -55,3 +55,25 @@ def test_a_failing_calendar_is_reported_not_raised(tmp_path):
     # Not RuntimeError: async_bridge.maybe_await reads that as "already inside a loop".
     c.create_event = AsyncMock(side_effect=ConnectionError("quota"))
     assert sync_block(c, events, "2026-09-28", e["id"]) == {"ok": False, "attempted": True, "reason": "quota"}
+
+
+def test_a_block_undone_while_google_creates_it_takes_its_google_entry_with_it(tmp_path):
+    events = EventsService(tmp_path)
+    e = events.create_event("2026-09-28", "Gym", "2026-09-28T18:00:00", "2026-09-28T19:00:00")
+    c = cal()
+
+    async def create_while_undone(**kw):
+        events.delete_event("2026-09-28", e["id"])     # undo lands mid-create: no calendar_id yet
+        return "g123"
+
+    c.create_event = AsyncMock(side_effect=create_while_undone)
+    c.delete_event = AsyncMock(return_value=True)
+    sync = sync_block(c, events, "2026-09-28", e["id"])
+    assert sync == {"ok": False, "attempted": False, "reason": "undone_meanwhile"}
+    c.delete_event.assert_awaited_once_with("g123")
+    assert events.get_events("2026-09-28") == []
+
+
+def test_undone_meanwhile_draws_no_warning_on_the_receipt():
+    from src.services.fast_lane.receipt import _sync_label
+    assert _sync_label({"ok": False, "attempted": False, "reason": "undone_meanwhile"}) is None

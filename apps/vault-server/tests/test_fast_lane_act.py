@@ -232,3 +232,44 @@ def test_each_step_that_ran_is_recorded_and_a_raise_is_a_failed_step():
     ]
     assert rec["status"] == "done" and rec["undo"][0]["kind"] == "habit"
     assert "couldn't add the todo: error: RuntimeError" in rec["reason"]
+
+
+def test_update_turn_serialises_read_modify_write_so_undo_markers_survive(tmp_path):
+    """Spec §7.6: a sync patch straddling an undo must not erase `undone`."""
+    import threading
+    import time as _time
+
+    from src.services.fast_lane.act import load_turn, save_turn, update_turn
+
+    turn = {"turn_id": "t0000cafe", "chat_id": 1, "message_id": 1, "created_at": "2026-01-10T20:00:00",
+            "lines": [{"id": 0, "status": "done", "calendar_sync": {"reason": "deferred"}},
+                      {"id": 1, "status": "done", "calendar_sync": {"reason": "deferred"}}]}
+    save_turn(tmp_path, turn)
+    undo_started = threading.Event()
+
+    def undo(t):                        # load → seconds of Google calls → save, all under the lock
+        undo_started.set()
+        _time.sleep(0.2)
+        for line in t["lines"]:
+            line.update(status="undone", undo_note="undone")
+
+    def patch(t):
+        t["lines"][1]["calendar_sync"] = {"ok": True, "attempted": True}
+
+    undoer = threading.Thread(target=update_turn, args=(tmp_path, "t0000cafe", undo))
+    undoer.start()
+    assert undo_started.wait(1)
+    update_turn(tmp_path, "t0000cafe", patch)     # straddles the undo: must wait for it
+    undoer.join()
+    stored = load_turn(tmp_path, "t0000cafe")
+    assert [line["status"] for line in stored["lines"]] == ["undone", "undone"]
+    assert stored["lines"][1]["calendar_sync"]["ok"] is True
+
+
+def test_update_turn_on_a_missing_turn_saves_the_default_or_returns_none(tmp_path):
+    from src.services.fast_lane.act import load_turn, update_turn
+
+    assert update_turn(tmp_path, "t0000dead", lambda t: None) is None
+    out = update_turn(tmp_path, "t0000dead", lambda t: t.update(response="x"),
+                      default={"turn_id": "t0000dead", "lines": []})
+    assert out["response"] == "x" and load_turn(tmp_path, "t0000dead")["response"] == "x"

@@ -186,21 +186,31 @@ def _previous_skill(chat_id: int, date: str) -> str | None:
 
 SYNC_CAP_S = 15.0
 STILL_WORKING = "Still working on your previous message."
+AGENT_FAILED = "That message failed; please send it again."
+
+
+# Work that outlives its request: the syncs past the response's cap, and the
+# SSE turn whose client disconnected. Held here until done, so nothing drops
+# the only reference to a running task.
+_fast_tasks: set = set()
+
+
+def _hold(task: asyncio.Task) -> asyncio.Task:
+    _fast_tasks.add(task)
+    task.add_done_callback(_fast_tasks.discard)
+    return task
 
 
 def _patch_turn(actions_dir, turn: dict, change) -> dict:
-    """Re-read the saved turn, apply `change`, save it, and return it.
+    """Apply `change` to the saved turn under `act.update_turn`'s lock, and return it.
 
-    Undo (and the receipt buttons) rewrite the saved record in place while
-    syncs and the agent are still running here; writing back the copy this
-    route holds would erase their `undone`/`restored` markers. Falls back to
-    the in-memory copy only when the saved one is gone.
+    Undo (and the receipt buttons) rewrite the saved record while syncs and
+    the agent are still running here; writing back the copy this route holds,
+    or one read before their save, would erase their `undone`/`restored`
+    markers. The in-memory copy is saved only when the saved one is gone.
     """
     from src.services.fast_lane import act
-    current = act.load_turn(actions_dir, turn["turn_id"]) or turn
-    change(current)
-    act.save_turn(actions_dir, current)
-    return current
+    return act.update_turn(actions_dir, turn["turn_id"], change, default=turn)
 
 
 async def _settle_syncs(turn: dict, deps, calendar, now, emit) -> None:
@@ -230,10 +240,15 @@ async def _settle_syncs(turn: dict, deps, calendar, now, emit) -> None:
 
         try:
             saved = await asyncio.to_thread(_patch_turn, deps.actions_dir, turn, change)
-            emit({"receipt_update": {"line_id": line_id, "receipt": render_receipt(saved, now)}})
         except Exception:
             logger.error("fast lane could not record a calendar sync on turn %s", turn.get("turn_id"),
                          exc_info=True)
+            continue
+        try:
+            # After the response's cap the stream is gone and this goes nowhere.
+            emit({"receipt_update": {"line_id": line_id, "receipt": render_receipt(saved, now)}})
+        except Exception:
+            logger.warning("fast lane could not send a receipt update", exc_info=True)
 
 
 def _on_reply(*, response: str, route: str, receipt: dict | None, result=None) -> dict:
@@ -298,8 +313,9 @@ async def _on_turn(body: MessageRequest, agent, *, stream: bool, emit) -> dict:
 
     if fast.receipt:
         emit({"receipt": fast.receipt})
-    syncs = (asyncio.create_task(asyncio.wait_for(_settle_syncs(fast.turn, deps, calendar, now, emit), SYNC_CAP_S))
-             if fast.turn else None)
+    # Held in `_fast_tasks`, never cancelled: the cap is on how long the reply
+    # waits for Google, not on the syncs themselves (§8.1).
+    syncs = _hold(asyncio.create_task(_settle_syncs(fast.turn, deps, calendar, now, emit))) if fast.turn else None
 
     # Every `on` message with a message_id leaves a turn record, so a repeat never
     # runs the agent twice (§10). Fallthrough turns have none from run_fast_turn;
@@ -332,6 +348,14 @@ async def _on_turn(body: MessageRequest, agent, *, stream: bool, emit) -> dict:
             )
         except Exception:
             await _await_syncs(syncs)    # the fast lane's writes still get their Google entries
+            if record is not None:
+                # Kept, so a re-delivery is not run again; told it failed, not "still working".
+                try:
+                    await asyncio.to_thread(_patch_turn, deps.actions_dir, record,
+                                            lambda turn: turn.__setitem__("response", AGENT_FAILED))
+                except Exception:
+                    logger.error("fast lane could not record the failure on turn %s", record.get("turn_id"),
+                                 exc_info=True)
             raise
         response = result.response
 
@@ -356,14 +380,14 @@ async def _on_turn(body: MessageRequest, agent, *, stream: bool, emit) -> dict:
 
 
 async def _await_syncs(syncs) -> None:
+    """Wait for the syncs up to the cap, without cancelling them: late lines still reach Google."""
     if syncs is None:
         return
-    try:
-        await syncs
-    except asyncio.TimeoutError:
-        logger.warning("fast lane calendar sync still running after %ss", SYNC_CAP_S)
-    except Exception:
-        logger.error("fast lane calendar syncs failed", exc_info=True)
+    done, _ = await asyncio.wait({syncs}, timeout=SYNC_CAP_S)
+    if not done:
+        logger.warning("fast lane calendar sync still running after %ss; replying without it", SYNC_CAP_S)
+    elif not syncs.cancelled() and syncs.exception() is not None:
+        logger.error("fast lane calendar syncs failed", exc_info=syncs.exception())
 
 
 def _sse(payload: dict) -> str:
@@ -392,10 +416,15 @@ async def _handle_on(body: MessageRequest, agent, *, stream: bool):
     def emit(payload: dict) -> None:
         # The fast turn and the agent run in worker threads (the agent's parallel
         # tool calls in pool threads too); asyncio.Queue is not thread-safe.
-        loop.call_soon_threadsafe(queue.put_nowait, payload)
+        # After the stream closes the queue is unread and unbounded, so a late
+        # put neither raises nor blocks; a closed loop is the one thing that can.
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, payload)
+        except RuntimeError:
+            pass
 
     async def _on_stream():
-        task = asyncio.create_task(_on_turn(body, agent, stream=True, emit=emit))
+        task = _hold(asyncio.create_task(_on_turn(body, agent, stream=True, emit=emit)))
         while not task.done():
             try:
                 payload = await asyncio.wait_for(queue.get(), timeout=0.05)
