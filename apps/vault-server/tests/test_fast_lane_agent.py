@@ -205,3 +205,102 @@ def test_the_router_is_its_own_named_span(monkeypatch):
     decision = router_module.RouterService(claude).pick("hi", [], [_skill("mazkir")])
     [span] = [s for s in exporter.get_finished_spans() if s.name == "router.pick"]
     assert decision.skill == "mazkir" and span.attributes["router.skill"] == "mazkir"
+
+
+# ── Task 14b: the fast lane and the skill log one message under one text ──
+
+def _fast_ctx(text, *, reply_to=None, attachments=None):
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    from src.services.fast_lane.context import assemble_fast_context
+    events = MagicMock()
+    events.get_events.return_value = []
+    return assemble_fast_context(
+        text=text, chat_id=7, now=dt.datetime(2026, 9, 8, 12, 0, tzinfo=ZoneInfo("Asia/Jerusalem")),
+        memory=MagicMock(load_conversation=MagicMock(return_value={"messages": []})),
+        events=events, vault=MagicMock(), reply_to=reply_to, attachments=attachments,
+    )
+
+
+def _fast_log(monkeypatch, ctx, route, tool_name):
+    """What `_log_turn` emits and saves for a turn whose one step was `tool_name`."""
+    import src.services.fast_lane.turn as turn_module
+    from src.services.fast_lane.actions import PlannedLine
+    logged = []
+    monkeypatch.setattr(turn_module, "emit_agent_turn", logged.append)
+    step = MagicMock(tool=tool_name, params={"name": "Dog walk"})
+    line = MagicMock(spec=PlannedLine, steps=[step])
+    memory = MagicMock()
+    deps = MagicMock(memory=memory)
+    turn_module._log_turn(ctx, deps, [line], [{"steps": [{"ok": True}]}], "receipt", route=route)
+    [record] = logged
+    return record, memory
+
+
+def _agent_log_text(mock_services, tmp_path, **kwargs):
+    """The text the agent loop remembers this message by (what the skill logs)."""
+    from src.services.agent_service import AgentResponse, AgentService
+    agent = AgentService(claude=mock_services["claude"], vault=mock_services["vault"],
+                         memory=mock_services["memory"], media_path=tmp_path)
+    seen = {}
+
+    def fake_turn(chat_id, log_text, messages, system, **kw):
+        seen["log_text"] = log_text
+        return AgentResponse(response="done", iterations=1)
+
+    agent._run_agent_turn = fake_turn
+    agent.handle_message(chat_id=7, **kwargs)
+    return seen["log_text"]
+
+
+def _skill_record(text, tool_name):
+    return {"chat_id": 7, "skill": "time-management", "user_text": text,
+            "tools": [{"name": tool_name, "params": {}, "result_summary": {"ok": True}}]}
+
+
+def test_a_reply_mixed_turn_after_the_same_words_coalesces_end_to_end(mock_services, tmp_path, monkeypatch):
+    from src.services.turn_trace import attach_traces
+    # 1. an earlier plain fast-route "walked": its own record and its own pair
+    first, first_memory = _fast_log(monkeypatch, _fast_ctx("walked"), "fast", "fast_first")
+    [(_, first_pair_text, _, _)] = [c.args for c in first_memory.save_turn.call_args_list]
+    assert first_pair_text == "walked" == _agent_log_text(mock_services, tmp_path, text="walked")
+    # 2. an ordinary turn between
+    between = _skill_record("two", "tool_two")
+    # 3. a mixed turn replying to a message, with the same raw words
+    reply = {"text": "Logged a dog walk", "from": "assistant"}
+    second, second_memory = _fast_log(monkeypatch, _fast_ctx("walked", reply_to=reply), "mixed", "fast_second")
+    second_memory.save_turn.assert_not_called()
+    skill_text = _agent_log_text(mock_services, tmp_path, text="walked", reply_to=reply)
+    assert second["user_text"] == skill_text and second["route"] == "mixed"
+
+    messages = [{"role": "user", "content": first_pair_text}, {"role": "assistant", "content": "receipt"},
+                {"role": "user", "content": "two"}, {"role": "assistant", "content": "B"},
+                {"role": "user", "content": skill_text}, {"role": "assistant", "content": "Done."}]
+    out, trailing = attach_traces(messages, [first, between, second, _skill_record(skill_text, "skill_tool")])
+
+    assert "fast_first" in out[2]["content"] and "fast_second" not in out[2]["content"]
+    assert "tool_two" in out[4]["content"]
+    assert "fast_second" in trailing and "skill_tool" in trailing and "fast_first" not in trailing
+
+
+def test_a_photo_mixed_turn_coalesces_end_to_end(mock_services, tmp_path, monkeypatch):
+    from src.services.turn_trace import attach_traces
+    attachments = [{"type": "photo", "filename": "walk.jpg"}]
+    fast, _ = _fast_log(monkeypatch, _fast_ctx("dog walk, and what is GQA?", attachments=attachments),
+                        "mixed", "fast_tool")
+    skill_text = _agent_log_text(mock_services, tmp_path, text="dog walk, and what is GQA?",
+                                 attachments=attachments)
+    assert skill_text.startswith("(photo: walk.jpg)") and fast["user_text"] == skill_text
+
+    _, trailing = attach_traces([{"role": "user", "content": skill_text}, {"role": "assistant", "content": "Done."}],
+                                [fast, _skill_record(skill_text, "skill_tool")])
+    assert trailing.index("fast_tool") < trailing.index("skill_tool")
+
+
+def test_conversation_log_text_matches_the_old_prefixes():
+    from src.services.conversation_text import conversation_log_text
+    assert conversation_log_text("hi", None, None) == "hi"
+    assert conversation_log_text("hi", [{"type": "photo"}, {"type": "location", "latitude": 1.5, "longitude": 2}],
+                                 {"text": "x" * 60, "from": "assistant"}) == (
+        f'(replying to assistant: "{"x" * 50}") (photo: photo, location: 1.5, 2) hi')
+    assert conversation_log_text("", [{"type": "photo", "filename": "a.jpg"}], None) == "(photo: a.jpg)"

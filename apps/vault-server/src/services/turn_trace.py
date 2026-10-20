@@ -185,11 +185,10 @@ def attach_traces(
     attached, which absorbs the missing-record case while leaving surplus
     older records unconsumed.
 
-    A mixed fast-lane turn breaks the 1:1 pairing: two records (``fast-lane``,
-    then the skill's) for one pair. The walk folds such a pair of records into
-    one trace -- fast calls first -- and drops a ``fast-lane`` record no pair
-    can claim, so neither shape leaves the record pointer stranded in front of
-    every older pair. See ``_is_fast_half``.
+    A mixed fast-lane turn breaks the 1:1 pairing: two records (``fast-lane``
+    with ``route: mixed``, then the skill's) for one pair. Before the walk
+    they are folded into one record -- fast calls first -- and a mixed record
+    with no skill record to fold into is dropped. See ``_fold_mixed_turns``.
 
     The invariant: a mismatch yields a missing trace, never a wrong one.
     Attaching someone else's trace would be a worse version of the bug this
@@ -216,36 +215,19 @@ def attach_traces(
     user_texts = [m.get("content") for m in out]
     trailing = ""
 
+    records = _fold_mixed_turns(records)
     i = len(pairs) - 1
     j = len(records) - 1
     while i >= 0 and j >= 0:
         user_idx, assistant_idx = pairs[i]
-        record = records[j]
-        text = user_texts[user_idx]
-        if text == record.get("user_text"):
-            span = 1
-            if j >= 1 and _is_fast_half(records[j - 1], record):
-                if i >= 1 and user_texts[pairs[i - 1][0]] == text:
-                    # Same words twice: a fast-route turn followed by a skill
-                    # turn, or one mixed turn after an older pair? The log
-                    # cannot tell, so attach nothing from here back.
-                    break
-                record, span = _coalesce(records[j - 1], record), 2
-            trace = render_trace(record)
+        if user_texts[user_idx] == records[j].get("user_text"):
+            trace = render_trace(records[j])
             following = assistant_idx + 1
             if following == len(out):
                 trailing = trace
             elif out[following].get("role") == "user":
                 out[following]["content"] = f"{trace}\n\n{out[following].get('content', '')}"
             i -= 1
-            j -= span
-        elif _is_fast(record) and not any(
-            user_texts[pairs[k][0]] == record.get("user_text") for k in range(i + 1)
-        ):
-            # A fast-lane record no remaining pair can claim: the skill that
-            # took the rest of a mixed turn raised, or logged a prefixed text
-            # (a reply_to or attachment note). Skipping the *pair* here would
-            # leave this record in front of every older pair; drop the record.
             j -= 1
         else:
             i -= 1  # this pair has no record -- attach nothing, never guess
@@ -255,24 +237,53 @@ def attach_traces(
 _FAST_LANE_SKILL = "fast-lane"
 
 
-def _is_fast(record: dict[str, Any]) -> bool:
+def _is_fast(record: Any) -> bool:
     return isinstance(record, dict) and record.get("skill") == _FAST_LANE_SKILL
 
 
-def _is_fast_half(first: dict[str, Any], second: dict[str, Any]) -> bool:
-    """True when ``first`` is the fast-lane half of the mixed turn ``second`` finished.
+def _is_mixed_fast(record: Any) -> bool:
+    """A fast-lane record with no conversation pair of its own.
 
-    On a mixed turn ``fast_lane/turn.py`` logs a ``fast-lane`` record and the
-    skill then logs its own, both with the message's exact text, while the
-    conversation gains a single pair. Only that shape coalesces: never two
-    ordinary records (a user repeating themselves), never across chats.
+    ``fast_lane/turn.py`` stamps ``route``: ``fast`` saved its own pair and is
+    an ordinary record; ``mixed`` handed the rest to a skill, which saves the
+    one pair. A record without ``route`` predates the stamp and is treated as
+    mixed -- dropping a trace is the safe way to be wrong.
     """
-    return (
-        _is_fast(first)
-        and not _is_fast(second)
-        and first.get("chat_id") == second.get("chat_id")
-        and first.get("user_text") == second.get("user_text")
-    )
+    return _is_fast(record) and record.get("route") != "fast"
+
+
+def _fold_mixed_turns(records: list[Any]) -> list[Any]:
+    """Make records pair 1:1 with turns again before the join.
+
+    A mixed fast-lane record is consumed only by folding into the record
+    immediately after it, when that is a non-fast-lane record from the same
+    chat with the identical ``user_text`` -- the skill that finished the same
+    message. Otherwise (the skill raised, or a mismatch) it is dropped: it is
+    never joined to a pair on its own, because its pair is the skill's, and
+    an orphan left in the list would either strand the walk in front of every
+    older pair or, matching an older message with the same words, attach to
+    a turn it does not belong to.
+    """
+    out: list[Any] = []
+    k = 0
+    while k < len(records):
+        record = records[k]
+        if _is_mixed_fast(record):
+            nxt = records[k + 1] if k + 1 < len(records) else None
+            if (
+                isinstance(nxt, dict)
+                and not _is_fast(nxt)
+                and nxt.get("chat_id") == record.get("chat_id")
+                and nxt.get("user_text") == record.get("user_text")
+            ):
+                out.append(_coalesce(record, nxt))
+                k += 2
+            else:
+                k += 1  # orphan: never attached on its own
+            continue
+        out.append(record)
+        k += 1
+    return out
 
 
 def _coalesce(fast: dict[str, Any], skill: dict[str, Any]) -> dict[str, Any]:

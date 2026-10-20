@@ -131,8 +131,14 @@ def _summary(step: dict) -> dict:
 
 
 def _log_turn(ctx: FastContext, deps: FastDeps, lines: list[PlannedLine], records: list[dict],
-              assistant_text: str, *, save_memory: bool) -> None:
+              assistant_text: str, *, route: str) -> None:
     """Spec §7.6: the turn is part of the agent's memory, as skill `fast-lane`.
+
+    Logged under `ctx.log_text`, the string the agent loop would remember the
+    message by, so on a mixed turn this record and the skill's carry the same
+    `user_text` and `turn_trace` can fold them into one trace. `route` tells
+    the join which kind it is: a `fast` record has its own conversation pair,
+    a `mixed` one only ever coalesces with the skill record after it.
 
     One entry per call that actually ran, with its own outcome; a step after
     a failed one never ran and is not claimed. `records[k].steps[i]` is the
@@ -143,13 +149,14 @@ def _log_turn(ctx: FastContext, deps: FastDeps, lines: list[PlannedLine], record
          "confidence": 1.0, "reasoning": "fast lane", "confirmed": True, "result_summary": _summary(ran)}
         for line, rec in zip(lines, records) for step, ran in zip(line.steps, rec.get("steps", []))
     ]
+    user_text = ctx.log_text or ctx.text
     emit_agent_turn({
-        "chat_id": ctx.chat_id, "skill": "fast-lane", "user_text": ctx.text, "tools": tools,
+        "chat_id": ctx.chat_id, "skill": "fast-lane", "route": route, "user_text": user_text, "tools": tools,
         "assistant_text": assistant_text, "items_referenced": [], "awaiting_confirmation": False,
         "pending_action_id": None, "prior_action_id": None, "iters": 0, "stop_reason": "fast_lane",
     })
-    if save_memory:
-        deps.memory.save_turn(ctx.chat_id, ctx.text, assistant_text, [])
+    if route == "fast":
+        deps.memory.save_turn(ctx.chat_id, user_text, assistant_text, [])
 
 
 def run_fast_turn(ctx: FastContext, deps: FastDeps, settings: ShadowSettings, *, message_id: int | None = None,
@@ -216,7 +223,7 @@ def run_fast_turn(ctx: FastContext, deps: FastDeps, settings: ShadowSettings, *,
             logger.error("fast lane receipt failed to render; the turn %s is saved", turn_id, exc_info=True,
                          extra={"event_type": "fast_turn", "turn_id": turn_id})
         assistant_text = receipt["text"] if receipt else NO_RECEIPT
-        _safe(lambda: _log_turn(ctx, deps, lines, records, assistant_text, save_memory=result.route == "fast"), None)
+        _safe(lambda: _log_turn(ctx, deps, lines, records, assistant_text, route=result.route), None)
 
         outcomes = Counter(rec["outcome"] for rec in records)
         span.set_attribute("mazkir.fast.clauses", len(result.clauses))

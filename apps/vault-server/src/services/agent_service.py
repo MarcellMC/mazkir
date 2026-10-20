@@ -31,6 +31,7 @@ from src.services.tool_handlers.coding_handoff import (
     preview_coding_session as _preview_coding_session,
     propose_coding_session as _propose_coding_session,
 )
+from src.services.conversation_text import conversation_log_text
 from src.services.tool_response import ErrorCode, err, ok
 from src.services.vault_service import VaultService
 
@@ -1397,18 +1398,8 @@ class AgentService:
         messages.append({"role": "user", "content": user_content})
 
         # For conversation log, build a text-only version (no base64)
-        log_text = text
-        if attachments:
-            att_notes = []
-            for att in attachments:
-                if att["type"] == "photo":
-                    att_notes.append(f"photo: {att.get('filename', 'photo')}")
-                elif att["type"] == "location":
-                    att_notes.append(f"location: {att.get('latitude')}, {att.get('longitude')}")
-            if att_notes:
-                log_text = f"({', '.join(att_notes)}) {text}".strip()
-        if reply_to:
-            log_text = f"(replying to {reply_to.get('from', 'user')}: \"{reply_to['text'][:50]}\") {log_text}".strip()
+        # The fast lane logs the same string (turn_trace joins on it exactly).
+        log_text = conversation_log_text(text, attachments, reply_to)
 
         static_prefix = self._build_static_prefix()
         system = self._build_system_prompt(context)
