@@ -75,6 +75,30 @@ def _old_times(tool: dict, date: str) -> tuple[dt.datetime | None, dt.datetime |
     return old_start, old_end
 
 
+_CHECK_STATES = frozenset({"checked", "unchecked"})   # daily_set_task_state's `moved` is not a check
+
+
+def _same_todo_call(op: str, label: str, tool: dict) -> bool:
+    """Is this old-path call the one that carried out this todo clause?
+
+    Matched by the todo's words (casefold substring either way, the block
+    check's tolerance), so two todos in one message are each compared only
+    with their own call.
+    """
+    params = tool.get("params") or {}
+    name = tool.get("name")
+    if op == "add_todo":
+        if name != "daily_add_task":
+            return False
+    elif name == "daily_set_task_state":
+        if params.get("state") not in _CHECK_STATES:
+            return False
+    elif name != "daily_check_todo":
+        return False
+    mine, theirs = label.casefold().strip(), str(params.get("text") or "").casefold().strip()
+    return bool(mine and theirs) and (mine in theirs or theirs in mine)
+
+
 def findings(run: dict, turns: list[dict], habit_names: set[str]) -> list[str]:
     if run.get("route") in ("router_fallback", "error"):
         return [f"parse failed: {run.get('error')}"]
@@ -88,13 +112,13 @@ def findings(run: dict, turns: list[dict], habit_names: set[str]) -> list[str]:
             notes.append(f"the fast lane would ask about \"{c.get('evidence')}\" ({c.get('reason')})")
             continue
         if c.get("op") in ("add_todo", "check_todo") and c.get("logical_date"):
-            names = ("daily_add_task",) if c["op"] == "add_todo" else ("daily_set_task_state", "daily_check_todo")
+            label = c.get("name") or c.get("target") or ""
             for tool in tools:
-                if tool.get("name") in names:
-                    old_day = str((tool.get("params") or {}).get("date") or date)
-                    if old_day != c["logical_date"]:
-                        notes.append(f"todo day differs for {c.get('name') or c.get('target')}: "
-                                     f"fast {c['logical_date']}, old {old_day}")
+                if not _same_todo_call(c["op"], label, tool):
+                    continue
+                old_day = str((tool.get("params") or {}).get("date") or date)
+                if old_day != c["logical_date"]:
+                    notes.append(f"todo day differs for {label}: fast {c['logical_date']}, old {old_day}")
         if c.get("op") in ("log_block", "start_block") and outcome in ("fact", "plan"):
             if not wrote & {"create_event", "update_event"}:
                 notes.append(f"the old path wrote no block for \"{c.get('evidence')}\"")

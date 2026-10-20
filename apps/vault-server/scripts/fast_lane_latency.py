@@ -2,6 +2,9 @@
 
     python scripts/fast_lane_latency.py            # from the shadow log; prompt size estimated
     python scripts/fast_lane_latency.py --count    # exact prompt tokens via count_tokens (free; needs the API key)
+
+It reads the shadow log only. With FAST_LANE_MODE=on, fast turns log parse_ms to vault-server.jsonl
+instead, so this readout is for the shadow period.
 """
 
 from __future__ import annotations

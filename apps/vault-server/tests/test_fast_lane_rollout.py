@@ -36,3 +36,37 @@ def test_caching_verdict():
     assert "try growing the examples" in caching_verdict(3200, 1800)
     assert "leave the prompt" in caching_verdict(1800, 1800)
     assert caching_verdict(None, 1800) == "no parses logged yet"
+
+
+def _todo(name, day):
+    return {"op": "add_todo", "name": name, "outcome": "fact", "logical_date": day, "evidence": name}
+
+
+def _old(*calls):
+    return [{"chat_id": 1, "ts": "2026-09-28T21:00:05+0300", "user_text": "milk today, bread tomorrow",
+             "tools": [{"name": n, "params": p} for n, p in calls]}]
+
+
+TWO = {**RUN, "text": "milk today, bread tomorrow",
+       "clauses": [_todo("Buy milk", "2026-09-28"), _todo("Buy bread", "2026-09-29")]}
+
+
+def test_two_todos_on_different_days_that_both_paths_agree_on():
+    old = _old(("daily_add_task", {"text": "Buy milk"}), ("daily_add_task", {"text": "Buy bread", "date": "2026-09-29"}))
+    assert findings(TWO, old, set()) == []
+
+
+def test_only_the_todo_that_differs_is_named():
+    old = _old(("daily_add_task", {"text": "Buy milk"}), ("daily_add_task", {"text": "buy bread"}))
+    assert findings(TWO, old, set()) == ["todo day differs for Buy bread: fast 2026-09-29, old 2026-09-28"]
+
+
+def test_a_move_is_not_compared_as_a_check():
+    run = {**RUN, "clauses": [{"op": "check_todo", "target": "Buy milk", "outcome": "fact",
+                               "logical_date": "2026-09-29", "evidence": "done milk"}]}
+    moved = _old(("daily_set_task_state", {"text": "milk", "state": "moved", "date": "2026-09-28"}))
+    assert findings(run, moved, set()) == []
+    checked = _old(("daily_set_task_state", {"text": "milk", "state": "checked", "date": "2026-09-28"}))
+    assert findings(run, checked, set()) == ["todo day differs for Buy milk: fast 2026-09-29, old 2026-09-28"]
+    ticked = _old(("daily_check_todo", {"text": "Buy milk"}))
+    assert findings(run, ticked, set()) == ["todo day differs for Buy milk: fast 2026-09-29, old 2026-09-28"]
