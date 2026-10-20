@@ -110,4 +110,38 @@ describe("streamMessage", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("hands stages, the receipt and its updates to their handlers, as they arrive", async () => {
+    const receipt = { turn_id: "t0000beef", lines: [], undo: null, open_question: null, text: "✓ Gym" };
+    const mockFetch = vi.fn().mockResolvedValue(
+      makeSseResponse([
+        JSON.stringify({ stage: "Reading…" }),
+        JSON.stringify({ receipt }),
+        JSON.stringify({ text: "and more" }),
+        JSON.stringify({ receipt_update: { line_id: 0, receipt } }),
+        JSON.stringify({ done: true, response: { response: "and more", route: "mixed", receipt } }),
+      ]),
+    );
+    vi.stubGlobal("fetch", mockFetch);
+    const seen: string[] = [];
+    try {
+      const final = await streamMessage(
+        { text: "hi", chat_id: 1, message_id: 5 },
+        {
+          onChunk: (t) => { seen.push(`text:${t}`); },
+          onStage: (s) => { seen.push(`stage:${s}`); },
+          onReceipt: (r) => { seen.push(`receipt:${r.turn_id}`); },
+          onReceiptUpdate: (u) => { seen.push(`update:${u.line_id}`); },
+        },
+        "http://localhost:8000",
+        "test-key",
+      );
+      // An update may follow the text: the server awaits Google syncs after the agent.
+      expect(seen).toEqual(["stage:Reading…", "receipt:t0000beef", "text:and more", "update:0"]);
+      expect(final.route).toBe("mixed");
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).message_id).toBe(5);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
