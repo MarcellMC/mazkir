@@ -106,3 +106,20 @@ def test_a_line_whose_block_is_gone_but_its_google_entry_stayed_offers_no_edit()
                     undo_note="can't undo: removed here, but its Google entry stays")
     [l] = render_receipt(turn(orphaned), NOW)["lines"]
     assert all(not b["data"].startswith("block:edit:") for b in l["buttons"])
+
+
+TICK = {"name": "Dog Walk", "completions_today": 1, "daily_target": 2, "tokens_earned": 5,
+        "new_streak": 3, "longest_streak": 6, "prior": {"streak": 2, "longest_streak": 6}}
+
+
+def test_ran_summary_tells_the_skill_a_block_ticked_its_habit():
+    """Final re-review: without it a mixed turn's skill ticks a 1/2 habit to 2/2."""
+    assert ran_summary(turn(line(habit=TICK)), NOW) == [
+        "✓ yest 23:15–23:35 Dog walk (block; habit already ticked: 🎯 Dog Walk 1/2 · +5 🪙 · streak 3)"]
+
+
+def test_ran_summary_tells_the_skill_a_tick_habit_line_ticked_it():
+    tick = line(kind="habit", start=None, end=None, event_id=None, calendar_sync=None, text="Dog Walk",
+                habit=TICK)
+    [said] = ran_summary(turn(tick), NOW)
+    assert said.endswith("Dog Walk (habit; habit already ticked: 🎯 Dog Walk 1/2 · +5 🪙 · streak 3)")

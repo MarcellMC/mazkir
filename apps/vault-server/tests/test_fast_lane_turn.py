@@ -332,3 +332,15 @@ def test_a_planner_crash_goes_to_the_router_and_writes_nothing(tmp_path, vault_s
     assert events.get_events("2026-01-10") == [] and not (tmp_path / "actions").exists()
     assert any(r.levelname == "ERROR" and r.exc_info for r in caplog.records)
     memory.save_turn.assert_not_called()
+
+
+def test_what_ran_names_a_habit_the_hook_ticked(tmp_path, vault_service, habit_hook_mode):
+    from tests.test_fast_lane_habits import with_dog_walk
+    habit_hook_mode("on")
+    with_dog_walk(vault_service)
+    deps, _, _ = setup(tmp_path, vault_service)
+    walk = Clause("log_block", "record", True, "Dog walk 18:00-18:20", "Dog walk",
+                  time=TimeWords(start="18:00", end="18:20"))
+    fast = run_fast_turn(_photo_ctx("Dog walk 18:00-18:20"), deps, SETTINGS, parse=parse_to(walk))
+    [said] = fast.ran
+    assert "habit already ticked: 🎯 Dog Walk 1/2" in said

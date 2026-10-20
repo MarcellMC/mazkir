@@ -146,7 +146,11 @@ def ran_summary(turn: dict, now: dt.datetime) -> list[str]:
     out = []
     for line, drawn in zip(turn["lines"], render_receipt(turn, now)["lines"]):
         if line["status"] in _LIVE:
+            # A tick the hook (or a tick_habit clause) made is named, or the
+            # skill would tick the habit again and count it twice.
+            ticked = _habit_detail(line.get("habit"))
+            note = f"{line['kind']}; habit already ticked: {ticked}" if ticked else line["kind"]
             out.append(" ".join(p for p in (drawn["glyph"], drawn["when"], drawn["text"]) if p)
-                       + f" ({line['kind']})")
+                       + f" ({note})")
     return out
 
