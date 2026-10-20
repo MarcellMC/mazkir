@@ -273,3 +273,62 @@ def test_a_failed_save_on_a_fast_route_logs_no_record(tmp_path, vault_service, m
     assert [e["name"] for e in events.get_events("2026-01-10")] == ["Gym"]
     saved = tmp_path / "actions" / f"{fast.turn['turn_id']}.json"
     assert saved.exists() and "create_event" in saved.read_text()
+
+
+def _photo_ctx(text):
+    return FastContext(now=dt.datetime(2026, 1, 10, 20, 0, tzinfo=TZ), chat_id=1, text=text,
+                       has_photo=True, has_attachment=True)
+
+
+def test_a_message_with_an_attachment_is_never_a_pure_fast_turn(tmp_path, vault_service, monkeypatch):
+    """Final review C2: only the agent saves a photo and reads a location, so a
+    caption the fast lane fully handles still goes on to the agent, as mixed."""
+    deps, events, memory = setup(tmp_path, vault_service)
+    logged = []
+    monkeypatch.setattr(turn_module, "emit_agent_turn", logged.append)
+    fast = run_fast_turn(_photo_ctx("Gym 18:00-19:00"), deps, SETTINGS, message_id=5, parse=parse_to(GYM))
+    assert fast.route == "mixed" and fast.turn["route"] == "mixed"
+    assert [e["name"] for e in events.get_events("2026-01-10")] == ["Gym"]
+    assert fast.ran == ["✓ 18:00–19:00 Gym (block)"]
+    # The agent saves the exchange; a mixed record only ever folds into the skill's.
+    memory.save_turn.assert_not_called()
+    assert logged[0]["route"] == "mixed"
+
+
+def test_the_context_knows_a_message_carries_an_attachment(vault_service, tmp_path):
+    from src.services.fast_lane.context import assemble_fast_context
+    events = EventsService(tmp_path / "events")
+    now = dt.datetime(2026, 1, 10, 20, 0, tzinfo=TZ)
+    plain = assemble_fast_context(text="x", chat_id=1, now=now, memory=MagicMock(), events=events,
+                                  vault=vault_service)
+    located = assemble_fast_context(text="x", chat_id=1, now=now, memory=MagicMock(), events=events,
+                                    vault=vault_service,
+                                    attachments=[{"type": "location", "latitude": 1.0, "longitude": 2.0}])
+    assert plain.has_attachment is False and located.has_attachment is True
+
+
+def _crash(*a, **k):
+    raise RuntimeError("placement bug")
+
+
+def test_a_resolver_crash_goes_to_the_router_and_writes_nothing(tmp_path, vault_service, monkeypatch, caplog):
+    """Final review I6: past the parse, a bug in placing or planning is the router's message too."""
+    deps, events, memory = setup(tmp_path, vault_service)
+    monkeypatch.setattr(turn_module, "resolve_clauses", _crash)
+    with caplog.at_level("ERROR", logger=turn_module.logger.name):
+        fast = run_fast_turn(ctx("Gym 18:00-19:00"), deps, SETTINGS, message_id=9, parse=parse_to(GYM))
+    assert fast.route == "router_fallback" and fast.turn is None
+    assert events.get_events("2026-01-10") == [] and not (tmp_path / "actions").exists()
+    assert any(r.levelname == "ERROR" and r.exc_info for r in caplog.records)
+    memory.save_turn.assert_not_called()
+
+
+def test_a_planner_crash_goes_to_the_router_and_writes_nothing(tmp_path, vault_service, monkeypatch, caplog):
+    deps, events, memory = setup(tmp_path, vault_service)
+    monkeypatch.setattr(turn_module, "plan_turn", _crash)
+    with caplog.at_level("ERROR", logger=turn_module.logger.name):
+        fast = run_fast_turn(ctx("Gym 18:00-19:00"), deps, SETTINGS, message_id=9, parse=parse_to(GYM))
+    assert fast.route == "router_fallback" and fast.turn is None
+    assert events.get_events("2026-01-10") == [] and not (tmp_path / "actions").exists()
+    assert any(r.levelname == "ERROR" and r.exc_info for r in caplog.records)
+    memory.save_turn.assert_not_called()

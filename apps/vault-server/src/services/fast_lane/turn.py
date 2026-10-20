@@ -192,7 +192,14 @@ def run_fast_turn(ctx: FastContext, deps: FastDeps, settings: ShadowSettings, *,
             span.set_attribute("mazkir.fast.route", "router_fallback")
             return FastTurn(route="router_fallback")
         parse_ms = round((time.monotonic() - started) * 1000)
-        span.set_attribute("mazkir.fast.route", result.route)
+        route = result.route
+        if route == "fast" and ctx.has_attachment:
+            # Spec §5.6: the fast lane writes what the caption says, and the
+            # message goes on to the agent, the only code that saves a photo
+            # or reads a location. As `mixed`, so the record, the agent's
+            # memory and a repeat all treat it as the turn it is.
+            route = "mixed"
+        span.set_attribute("mazkir.fast.route", route)
         if result.fallthrough_skill:
             span.set_attribute("mazkir.fast.fallthrough_skill", result.fallthrough_skill)
         fast_count = sum(1 for c in result.clauses if c.op in FAST_OPS)
@@ -204,23 +211,29 @@ def run_fast_turn(ctx: FastContext, deps: FastDeps, settings: ShadowSettings, *,
 
         on_stage(f"Placing {fast_count} {'thing' if fast_count == 1 else 'things'}…")
         targets = _safe(lambda: _targets(result, ctx, deps.events), {})
-        with _tracer.start_as_current_span("fast.resolve"):
-            resolutions = resolve_clauses(result, ctx, settings, targets)
         habits = _safe(deps.vault.list_active_habits, [])
-        inputs = PlanInputs(
-            now=ctx.now, message_id=message_id, targets=targets, habits=habits,
-            candidates=_safe(lambda: day_blocks(deps.events, _candidate_days(resolutions, ctx.now)), []),
-            places=_safe(lambda: load_places(deps.places_path), []),
-            todos=list(ctx.todos),
-        )
-        lines = plan_turn(result, resolutions, inputs)
+        try:
+            with _tracer.start_as_current_span("fast.resolve"):
+                resolutions = resolve_clauses(result, ctx, settings, targets)
+            inputs = PlanInputs(
+                now=ctx.now, message_id=message_id, targets=targets, habits=habits,
+                candidates=_safe(lambda: day_blocks(deps.events, _candidate_days(resolutions, ctx.now)), []),
+                places=_safe(lambda: load_places(deps.places_path), []),
+                todos=list(ctx.todos),
+            )
+            lines = plan_turn(result, resolutions, inputs)
+        except Exception as e:   # a bug in placing or planning; nothing has been written yet
+            logger.error("fast lane could not place or plan the message; the router takes it", exc_info=True,
+                         extra={"event_type": "fast_turn", "route": "router_fallback", "error": str(e)})
+            span.set_attribute("mazkir.fast.route", "router_fallback")
+            return FastTurn(route="router_fallback")
 
         on_stage("Writing…")
         records = act.run_lines(lines, run_tool=deps.run_tool, events=deps.events)
         records += _suggestion_lines(records, deps, habits, ctx.now)
         turn_id = act.new_turn_id()
         turn = {"turn_id": turn_id, "chat_id": ctx.chat_id, "message_id": message_id,
-                "created_at": ctx.now.isoformat(), "text": ctx.text, "route": result.route,
+                "created_at": ctx.now.isoformat(), "text": ctx.text, "route": route,
                 "fallthrough_skill": result.fallthrough_skill, "response": "", "lines": records}
         # Saved before the receipt is rendered: the record is what undo needs, and
         # a receipt bug must not cost the writes above their way back.
@@ -233,14 +246,14 @@ def run_fast_turn(ctx: FastContext, deps: FastDeps, settings: ShadowSettings, *,
             logger.error("fast lane receipt failed to render; the turn %s is saved", turn_id, exc_info=True,
                          extra={"event_type": "fast_turn", "turn_id": turn_id})
         assistant_text = receipt["text"] if receipt else NO_RECEIPT
-        _safe(lambda: _log_turn(ctx, deps, lines, records, assistant_text, route=result.route), None)
+        _safe(lambda: _log_turn(ctx, deps, lines, records, assistant_text, route=route), None)
 
         outcomes = Counter(rec["outcome"] for rec in records)
         span.set_attribute("mazkir.fast.clauses", len(result.clauses))
         for outcome in ("fact", "plan", "proposal", "question"):
             span.set_attribute(f"mazkir.fast.{outcome}s", outcomes.get(outcome, 0))
-        logger.info("fast_turn", extra={"event_type": "fast_turn", "turn_id": turn_id, "route": result.route,
+        logger.info("fast_turn", extra={"event_type": "fast_turn", "turn_id": turn_id, "route": route,
                                         "clauses": len(result.clauses), "outcomes": dict(outcomes),
                                         "parse_ms": parse_ms})
-        return FastTurn(route=result.route, fallthrough_skill=result.fallthrough_skill, turn=turn,
+        return FastTurn(route=route, fallthrough_skill=result.fallthrough_skill, turn=turn,
                         receipt=receipt, ran=_safe(lambda: ran_summary(turn, ctx.now), []))
