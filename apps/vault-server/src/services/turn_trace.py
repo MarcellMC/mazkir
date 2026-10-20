@@ -132,6 +132,7 @@ def render_trace(record: dict[str, Any]) -> str:
     lines = [
         f"   {c.get('name', 'unknown')}({_render_params(c.get('params'))})"
         f" → {_render_outcome(c)}"
+        + (f" (by the {c['lane']})" if isinstance(c.get("lane"), str) and c["lane"] else "")
         for c in calls
         if isinstance(c, dict)  # skip non-dict entries rather than raising
     ]
@@ -184,6 +185,12 @@ def attach_traces(
     attached, which absorbs the missing-record case while leaving surplus
     older records unconsumed.
 
+    A mixed fast-lane turn breaks the 1:1 pairing: two records (``fast-lane``,
+    then the skill's) for one pair. The walk folds such a pair of records into
+    one trace -- fast calls first -- and drops a ``fast-lane`` record no pair
+    can claim, so neither shape leaves the record pointer stranded in front of
+    every older pair. See ``_is_fast_half``.
+
     The invariant: a mismatch yields a missing trace, never a wrong one.
     Attaching someone else's trace would be a worse version of the bug this
     ship exists to fix, because it would arrive dressed as evidence.
@@ -213,15 +220,70 @@ def attach_traces(
     j = len(records) - 1
     while i >= 0 and j >= 0:
         user_idx, assistant_idx = pairs[i]
-        if user_texts[user_idx] == records[j].get("user_text"):
-            trace = render_trace(records[j])
+        record = records[j]
+        text = user_texts[user_idx]
+        if text == record.get("user_text"):
+            span = 1
+            if j >= 1 and _is_fast_half(records[j - 1], record):
+                if i >= 1 and user_texts[pairs[i - 1][0]] == text:
+                    # Same words twice: a fast-route turn followed by a skill
+                    # turn, or one mixed turn after an older pair? The log
+                    # cannot tell, so attach nothing from here back.
+                    break
+                record, span = _coalesce(records[j - 1], record), 2
+            trace = render_trace(record)
             following = assistant_idx + 1
             if following == len(out):
                 trailing = trace
             elif out[following].get("role") == "user":
                 out[following]["content"] = f"{trace}\n\n{out[following].get('content', '')}"
             i -= 1
+            j -= span
+        elif _is_fast(record) and not any(
+            user_texts[pairs[k][0]] == record.get("user_text") for k in range(i + 1)
+        ):
+            # A fast-lane record no remaining pair can claim: the skill that
+            # took the rest of a mixed turn raised, or logged a prefixed text
+            # (a reply_to or attachment note). Skipping the *pair* here would
+            # leave this record in front of every older pair; drop the record.
             j -= 1
         else:
             i -= 1  # this pair has no record -- attach nothing, never guess
     return out, trailing
+
+
+_FAST_LANE_SKILL = "fast-lane"
+
+
+def _is_fast(record: dict[str, Any]) -> bool:
+    return isinstance(record, dict) and record.get("skill") == _FAST_LANE_SKILL
+
+
+def _is_fast_half(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    """True when ``first`` is the fast-lane half of the mixed turn ``second`` finished.
+
+    On a mixed turn ``fast_lane/turn.py`` logs a ``fast-lane`` record and the
+    skill then logs its own, both with the message's exact text, while the
+    conversation gains a single pair. Only that shape coalesces: never two
+    ordinary records (a user repeating themselves), never across chats.
+    """
+    return (
+        _is_fast(first)
+        and not _is_fast(second)
+        and first.get("chat_id") == second.get("chat_id")
+        and first.get("user_text") == second.get("user_text")
+    )
+
+
+def _coalesce(fast: dict[str, Any], skill: dict[str, Any]) -> dict[str, Any]:
+    """One record for a mixed turn: the skill's, with the fast lane's calls first.
+
+    The fast calls are tagged with their lane so the rendered trace says the
+    skill did not make them itself.
+    """
+    fast_tools = fast.get("tools") if isinstance(fast.get("tools"), list) else []
+    skill_tools = skill.get("tools") if isinstance(skill.get("tools"), list) else []
+    tagged = [
+        {**c, "lane": "fast lane"} if isinstance(c, dict) else c for c in fast_tools
+    ]
+    return {**skill, "tools": tagged + skill_tools}

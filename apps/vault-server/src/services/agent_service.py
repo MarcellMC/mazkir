@@ -1375,6 +1375,17 @@ class AgentService:
         user_content = self._build_user_content(
             text, attachments, reply_to, forwarded_from,
         )
+        if prior_actions:
+            # What the fast lane already did with this message (spec §5.5),
+            # directly before the words it is about. Delivered as input, like
+            # the turn trace, and never in log_text: turn_trace joins on the
+            # exact user_text.
+            note = ("[Already done by Mazkir for this message — do not redo it:\n"
+                    + "\n".join(f"- {a}" for a in prior_actions) + "]")
+            if isinstance(user_content, list):
+                user_content = [{"type": "text", "text": note}, *user_content]
+            else:
+                user_content = f"{note}\n\n{user_content}"
         # What the previous reply actually did, delivered as input rather than
         # as part of that reply — see turn_trace.attach_traces for why.
         trace = context.trailing_trace
@@ -1383,16 +1394,6 @@ class AgentService:
                 user_content = [{"type": "text", "text": trace}, *user_content]
             else:
                 user_content = f"{trace}\n\n{user_content}"
-        if prior_actions:
-            # What the fast lane already did with this message (spec §5.5).
-            # Delivered as input, like the turn trace, and never in log_text:
-            # turn_trace joins on the exact user_text.
-            note = ("[Already done by Mazkir for this message — do not redo it:\n"
-                    + "\n".join(f"- {a}" for a in prior_actions) + "]")
-            if isinstance(user_content, list):
-                user_content = [{"type": "text", "text": note}, *user_content]
-            else:
-                user_content = f"{note}\n\n{user_content}"
         messages.append({"role": "user", "content": user_content})
 
         # For conversation log, build a text-only version (no base64)
@@ -2248,7 +2249,10 @@ class AgentService:
         action: str | None = None,
         _trusted_fast: bool = False,
     ) -> dict:
-        if self._stage_callback is not None:
+        # The fast lane reports its own stages; `_stage_callback` belongs to
+        # whichever message is in `handle_message` on this shared instance,
+        # so a `run_tool` call must not speak through it.
+        if self._stage_callback is not None and not _trusted_fast:
             try:
                 self._stage_callback(_TOOL_STAGES.get(name, "Working…"))
             except Exception:

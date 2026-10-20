@@ -93,6 +93,31 @@ def test_the_skill_path_logs_the_users_exact_words_and_hears_the_note(mock_servi
     assert "do not redo" in seen["last"] and seen["last"].endswith(text)
 
 
+def test_the_note_sits_between_the_trailing_trace_and_the_users_words(mock_services, tmp_path):
+    """The note is about *this* message, so it goes directly before its words;
+    the previous reply's trace comes first, as it does without a note."""
+    from src.services.agent_service import AgentResponse, AgentService
+    from src.services.memory_service import ConversationContext
+    mock_services["memory"].assemble_context.return_value = ConversationContext(
+        messages=[], summary="", vault_snapshot="", knowledge="",
+        trailing_trace="[Record of your previous reply — tools that actually ran: none]")
+    agent = AgentService(claude=mock_services["claude"], vault=mock_services["vault"],
+                         memory=mock_services["memory"], media_path=tmp_path)
+    seen = {}
+
+    def fake_turn(chat_id, log_text, messages, system, **kw):
+        seen["log_text"], seen["last"] = log_text, messages[-1]["content"]
+        return AgentResponse(response="done", iterations=1)
+
+    agent._run_agent_turn = fake_turn
+    text = "Dog walk 23:15-23:35, and what is GQA?"
+    agent.handle_message(text=text, chat_id=1, prior_actions=["✓ yest 23:15–23:35 Dog walk (block)"])
+    last = seen["last"]
+    assert last.startswith("[Record of your previous reply")
+    assert last.index("Record of your previous reply") < last.index("Already done") < last.index(text)
+    assert last.endswith(text) and seen["log_text"] == text
+
+
 def test_without_prior_actions_the_message_is_untouched(mock_services, tmp_path):
     from src.services.agent_service import AgentResponse, AgentService
     agent = AgentService(claude=mock_services["claude"], vault=mock_services["vault"],
@@ -118,9 +143,23 @@ def test_tool_calls_report_a_stage_in_plain_words(mock_services, tmp_path):
         agent.tools[name]["handler"] = lambda params: {"ok": True, "data": {}}
     stages = []
     agent._stage_callback = stages.append
-    agent.run_tool("list_tasks", {})
-    agent.run_tool("create_goal", {"name": "x"})
+    agent._execute_tool("list_tasks", {})
+    agent._execute_tool("create_goal", {"name": "x"})
     assert stages == ["Checking your tasks…", "Working…"]
+
+
+def test_the_fast_lanes_own_tool_calls_report_no_stage(mock_services, tmp_path):
+    """The fast lane emits its own stages, and `_stage_callback` lives on the
+    shared instance: a `run_tool` call reporting through it would leak
+    "Working…" into whichever message's stream is open at the time."""
+    from src.services.agent_service import AgentService
+    agent = AgentService(claude=mock_services["claude"], vault=mock_services["vault"],
+                         memory=mock_services["memory"], media_path=tmp_path)
+    agent.tools["list_tasks"]["handler"] = lambda params: {"ok": True, "data": {}}
+    stages = []
+    agent._stage_callback = stages.append
+    agent.run_tool("list_tasks", {})
+    assert stages == []
 
 
 def test_a_failing_stage_callback_never_reaches_the_tool(mock_services, tmp_path):
@@ -132,7 +171,7 @@ def test_a_failing_stage_callback_never_reaches_the_tool(mock_services, tmp_path
         raise RuntimeError("bot gone")
 
     agent._stage_callback = boom
-    result = agent.run_tool("list_tasks", {})
+    result = agent._execute_tool("list_tasks", {})
     assert isinstance(result, dict)
 
 

@@ -325,3 +325,108 @@ class TestAttachTraces:
         _, trailing = attach_traces(messages, [_rec("add two todos", skill="time-management")])
 
         assert "as time-management" in trailing
+
+
+def _fast(user_text, tool_name="create_event", chat_id=7):
+    record = _rec(user_text, tool_name=tool_name, skill="fast-lane")
+    record["chat_id"] = chat_id
+    return record
+
+
+def _skill(user_text, tool_name="daily_add_task", skill="time-management", chat_id=7):
+    record = _rec(user_text, tool_name=tool_name, skill=skill)
+    record["chat_id"] = chat_id
+    return record
+
+
+class TestFastLaneRecords:
+    """A mixed fast-lane turn logs two records -- the fast lane's, then the
+    skill's -- with the same user_text, while the conversation gains one
+    pair. Joined naively, the fast-lane writes never reach the agent and the
+    surplus record starves every older pair of its trace (Task 14b)."""
+
+    def test_mixed_turn_trailing_trace_has_fast_tools_then_skill_tools(self):
+        messages = _msgs(("walked 10-11 and remind me to call mom", "Done."))
+        records = [_fast("walked 10-11 and remind me to call mom", tool_name="create_event"),
+                   _skill("walked 10-11 and remind me to call mom", tool_name="daily_add_task")]
+
+        _, trailing = attach_traces(messages, records)
+
+        assert "as time-management" in trailing
+        assert "create_event" in trailing and "daily_add_task" in trailing
+        assert trailing.index("create_event") < trailing.index("daily_add_task")
+        assert "fast lane" in trailing.split("create_event", 1)[1].split("\n", 1)[0]
+
+    def test_mixed_turn_does_not_starve_earlier_pairs(self):
+        messages = _msgs(("one", "A"), ("two", "B"), ("mixed", "C"))
+        records = [_skill("one", tool_name="tool_one"), _skill("two", tool_name="tool_two"),
+                   _fast("mixed", tool_name="fast_tool"), _skill("mixed", tool_name="skill_tool")]
+
+        out, trailing = attach_traces(messages, records)
+
+        assert "tool_one" in out[2]["content"]
+        assert "tool_two" in out[4]["content"]
+        assert "fast_tool" in trailing and "skill_tool" in trailing
+
+    def test_orphan_trailing_fast_record_does_not_hide_earlier_traces(self):
+        """The skill raised after the fast lane logged: no pair was saved."""
+        messages = _msgs(("one", "A"), ("two", "B"))
+        records = [_skill("one", tool_name="tool_one"), _skill("two", tool_name="tool_two"),
+                   _fast("crashed message", tool_name="fast_tool")]
+
+        out, trailing = attach_traces(messages, records)
+
+        assert "tool_one" in out[2]["content"]
+        assert "tool_two" in trailing
+        assert "fast_tool" not in trailing
+
+    def test_orphan_fast_record_from_a_reply_does_not_hide_earlier_traces(self):
+        """With a reply_to the skill logs a prefixed text, so the fast-lane
+        record (raw text) cannot coalesce; it must still not starve the walk."""
+        messages = _msgs(("one", "A"), ('(replying to assistant: "x") walked', "B"))
+        records = [_skill("one", tool_name="tool_one"), _fast("walked", tool_name="fast_tool"),
+                   _skill('(replying to assistant: "x") walked', tool_name="skill_tool")]
+
+        out, trailing = attach_traces(messages, records)
+
+        assert "tool_one" in out[2]["content"]
+        assert "skill_tool" in trailing
+
+    def test_normal_fast_route_turn_still_attaches(self):
+        messages = _msgs(("one", "A"), ("walked 10-11", "Logged."))
+        records = [_skill("one", tool_name="tool_one"), _fast("walked 10-11", tool_name="fast_tool")]
+
+        out, trailing = attach_traces(messages, records)
+
+        assert "tool_one" in out[2]["content"]
+        assert "as fast-lane" in trailing and "fast_tool" in trailing
+
+    def test_two_ordinary_same_text_records_are_not_merged(self):
+        messages = _msgs(("yes", "Did A."), ("yes", "Did B."))
+        records = [_skill("yes", tool_name="tool_a"), _skill("yes", tool_name="tool_b")]
+
+        out, trailing = attach_traces(messages, records)
+
+        assert "tool_a" in out[2]["content"] and "tool_b" not in out[2]["content"]
+        assert "tool_b" in trailing and "tool_a" not in trailing
+
+    def test_fast_then_skill_from_another_chat_is_not_merged(self):
+        messages = _msgs(("walked", "Done."))
+        records = [_fast("walked", tool_name="fast_tool", chat_id=99),
+                   _skill("walked", tool_name="skill_tool", chat_id=7)]
+
+        _, trailing = attach_traces(messages, records)
+
+        assert "skill_tool" in trailing
+        assert "fast_tool" not in trailing
+
+    def test_repeated_text_after_a_fast_route_turn_attaches_nothing_rather_than_guess(self):
+        """A fast-route turn then the same words routed to a skill look like one
+        mixed turn plus an older pair. Ambiguous -- so no trace is invented."""
+        messages = _msgs(("walked", "Logged."), ("walked", "Done."))
+        records = [_fast("walked", tool_name="fast_tool"), _skill("walked", tool_name="skill_tool")]
+
+        out, trailing = attach_traces(messages, records)
+
+        assert "fast_tool" not in trailing
+        assert "skill_tool" not in out[2]["content"]
