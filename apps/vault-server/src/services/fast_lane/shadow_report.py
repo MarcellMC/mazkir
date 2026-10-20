@@ -87,6 +87,14 @@ def findings(run: dict, turns: list[dict], habit_names: set[str]) -> list[str]:
         if outcome == "question":
             notes.append(f"the fast lane would ask about \"{c.get('evidence')}\" ({c.get('reason')})")
             continue
+        if c.get("op") in ("add_todo", "check_todo") and c.get("logical_date"):
+            names = ("daily_add_task",) if c["op"] == "add_todo" else ("daily_set_task_state", "daily_check_todo")
+            for tool in tools:
+                if tool.get("name") in names:
+                    old_day = str((tool.get("params") or {}).get("date") or date)
+                    if old_day != c["logical_date"]:
+                        notes.append(f"todo day differs for {c.get('name') or c.get('target')}: "
+                                     f"fast {c['logical_date']}, old {old_day}")
         if c.get("op") in ("log_block", "start_block") and outcome in ("fact", "plan"):
             if not wrote & {"create_event", "update_event"}:
                 notes.append(f"the old path wrote no block for \"{c.get('evidence')}\"")
@@ -136,3 +144,31 @@ def render_report(pairs: list[tuple[dict, list[dict]]], habit_names: set[str]) -
             body.append(f"{run['now'][11:16]}  {run.get('text', '')[:80]}")
             body += [f"    - {n}" for n in notes]
     return "\n".join(head + (body or ["no disagreements"]))
+
+
+CACHE_MINIMUM_TOKENS = 4096   # Haiku 4.5 caches a prompt only from this size (fast-lane spec §5.3)
+SLOW_PARSE_MS = 2500          # the top of §3.1's parse budget
+
+
+def latency_summary(records: list[dict]) -> dict:
+    """Parse times from shadow or fast-turn records: count, median and 95th percentile, in ms."""
+    ms = sorted(r["parse_ms"] for r in records if isinstance(r.get("parse_ms"), int))
+    if not ms:
+        return {"n": 0, "p50": None, "p95": None}
+
+    def at(q: float) -> int:
+        return ms[min(len(ms) - 1, round(q * (len(ms) - 1)))]
+
+    return {"n": len(ms), "p50": at(0.5), "p95": at(0.95)}
+
+
+def caching_verdict(p50_ms: int | None, prompt_tokens: int) -> str:
+    """Spec §13: grow the prompt past the cache minimum only if the parse is the slow part."""
+    if prompt_tokens >= CACHE_MINIMUM_TOKENS:
+        return "the prompt is already long enough to be cached"
+    if p50_ms is None:
+        return "no parses logged yet"
+    if p50_ms > SLOW_PARSE_MS:
+        return (f"parse p50 {p50_ms} ms is over budget: try growing the examples past "
+                f"{CACHE_MINIMUM_TOKENS} tokens and measure again")
+    return f"parse p50 {p50_ms} ms is within budget: leave the prompt as it is"

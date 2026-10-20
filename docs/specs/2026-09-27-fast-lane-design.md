@@ -1,6 +1,6 @@
 # Fast Lane: a message becomes evidence on your timeline (Design)
 
-**Status:** Design, approved section by section in conversation 2026-09-26/27. A1 merged; A2 planned.
+**Status:** Design, approved section by section in conversation 2026-09-26/27. A1 (shadow) shipped 2026-09-27. A2 (writes, receipts, undo; `FAST_LANE_MODE=on`) implemented on branch `feat/fast-lane-a2` per docs/plans/2026-09-28-fast-lane-a2.md; not yet switched on: rollout waits on the §11.2 gates and a shadow period.
 **Revised 2026-10-03** after A1's labelled replay: the owner's rules on 24-hour clocks, untimed plans, windows, waking up, shared intervals, todos and routing; the operations both models split the same way; and the resolver fixes the replay found (§5.1–§5.6, §6, §7.1–§7.3, §11.2).
 **Piece A** of the message-pipeline redesign (pieces A–D, §3). B, C and D get their own brainstorm and spec.
 **Parent:** `docs/specs/2026-08-21-time-management-phase2-capture-design.md`. This design supersedes its ship order from Ship 6 on (§3.2), and absorbs Ship 7 and Ship 4b into pieces C and D.

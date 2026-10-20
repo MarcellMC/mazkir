@@ -44,7 +44,8 @@ Mazkir is a very capable personal assistant. Its main purpose is to organize tim
 │   │   │   │   ├── timeline.py       # Google Takeout timeline data
 │   │   │   │   ├── events.py         # Unified events: auto-merge + persist + CRUD
 │   │   │   │   ├── generate.py       # AI image generation (Replicate)
-│   │   │   │   └── imagery.py        # Wikimedia Commons search
+│   │   │   │   ├── imagery.py        # Wikimedia Commons search
+│   │   │   │   └── fast_lane.py      # Fast-lane receipts + taps (A2)
 │   │   │   └── services/             # Business logic
 │   │   │       ├── vault_service.py  # Obsidian vault CRUD
 │   │   │       ├── claude_service.py # Claude API (thin wrapper + split system prompt for caching + stream support)
@@ -63,7 +64,9 @@ Mazkir is a very capable personal assistant. Its main purpose is to organize tim
 │   │   │       ├── daily_schedule.py # parse/render daily-note ## Schedule section (timed events)
 │   │   │       ├── parallel_executor.py # Parallel tool dispatch via asyncio.gather (P5)
 │   │   │       ├── hooks/            # Pre/post tool hook registry
-│   │   │       │   └── sync_to_calendar.py # Post-hook: sync task/habit writes to GCal (P5)
+│   │   │       │   ├── sync_to_calendar.py # Post-hook: sync task/habit writes to GCal (P5)
+│   │   │       │   └── habit_hook.py # Post-hook: a confirmed, elapsed block ticks its habit (fast lane A2)
+│   │   │       ├── fast_lane/        # Fast lane: parse → resolve → match → plan → act → receipt/undo (A1 shadow, A2 on)
 │   │   │       ├── tool_handlers/    # Extracted tool handler bodies (P5)
 │   │   │       │   ├── __init__.py
 │   │   │       │   └── daily.py      # daily_add_task, daily_set_task_state, daily_rollover, promote_daily_task
@@ -120,6 +123,8 @@ Mazkir is a very capable personal assistant. Its main purpose is to organize tim
 ├── data/                              # External data (gitignored)
 │   ├── media/                         # [LEGACY] Old photo location — migrated to memory/00-system/media/ in P4
 │   ├── events/                        # Persisted merged events ({YYYY-MM-DD}.json)
+│   ├── actions/                       # Fast-lane turn records ({turn_id}.json: receipt lines, undo snapshots, message_id)
+│   ├── places.json                    # Known places by name + alias (fast lane)
 │   ├── timeline/                      # Google Takeout Semantic Location History
 │   └── logs/                          # Structured JSON logs (vault-server.jsonl, agent-turns.jsonl, telegram-bot.jsonl, tool-calls.jsonl)
 ├── infra/observability/               # Local Loki + Alloy + Grafana docker-compose stack
@@ -180,6 +185,8 @@ Mazkir is a very capable personal assistant. Its main purpose is to organize tim
 - `POST /events/{date}/{event_id}/cancel` - Cancel the block's Google Calendar entry, keeping it restorable there (2026-09-16). Delete's reversible sibling, per design §6.3: `CalendarService.cancel_event` patches the entry to `status: "cancelled"`, and since `get_todays_events` lists without `showDeleted` it drops out of the merge and stops being re-suggested, while the block is stored `dismissed` so `/day` omits it and the record that it was planned survives. Same guards as delete — 409 with no Google entry or in another calendar, 503/502 when Google is unreachable or refuses — and one bot tap with no confirmation, because Google can restore it
 - `DELETE /events/{date}/{event_id}` - Delete one block, and its Google Calendar entry when it has one (2026-09-15). Behind the `/day` edit view's delete button, which asks first (`evdel:ask` → `evdel:yes`); it had been drawn since Ship 5 and answered "Not wired up yet" to every tap. Resolves the block from the reconciled day, like `/state`. Refuses rather than half-deletes, writing nothing: 409 for a block rebuilt from a note checkbox, habit or location history (it would reappear on the next read — ✕ hides it instead) or an event in another calendar; 503/502 when Google is unreachable or refuses, since removing only Mazkir's copy of a synced block merges it straight back. "Cancel in calendar" is still inert
 - `GET /imagery/search?lat=&lng=` - Wikimedia Commons geosearch for location imagery
+- `GET /fast/receipts/{turn_id}` - A fast-lane receipt, rendered from its turn record (A2); 404 once the record is gone
+- `POST /fast/receipts/{turn_id}/{line}/{action}` - A tap on a receipt line (`ok`, `no`, `pl`, `hb`, `sy`, `sn`), or `u/un` to undo the turn within 24 h. Returns `{receipt, toast}`; a tap that does not apply answers 200 "Nothing to do" rather than 404, which the bot reads as "receipt gone"
 - `GET /media/{date}/{file}` - Serve photo from vault media dir; falls back to vault-wide filename search when date URL doesn't match storage location
 
 ## Data Schemas
@@ -197,7 +204,7 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 
 ### Architecture
 - **vault-server** owns ALL business logic (vault CRUD, Claude AI, calendar sync, timeline, generation)
-- **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 34 registered tools (incl. `propose_coding_session`, `attach_to_daily`, `list_events`, `attach_photo_to_event`, `create_event`, `update_event`, `delete_event`, `update_task`, `update_habit`, `update_goal`, `read_daily_section`, `read_knowledge`, `edit_daily_section`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`, `daily_add_task`, `daily_set_task_state`, `daily_rollover`, `promote_daily_task`), max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation, Claude vision for photo messages with EXIF context. All tool calls return `{ok, data|error, _items}`; agent reacts to `error.code` (PATH_NOT_FOUND, AMBIGUOUS_MATCH, SCHEMA_INVALID, STATE_CONFLICT, ALREADY_DONE, EXTERNAL_FAILURE, AUTH_REQUIRED, CANCELLED_BY_USER).
+- **Agent loop** (`AgentService`) replaces intent-parse-then-route: Claude tool-use with 35 registered tools (incl. `propose_coding_session`, `attach_to_daily`, `list_events`, `attach_photo_to_event`, `create_event`, `update_event`, `delete_event`, `update_task`, `update_habit`, `update_goal`, `read_daily_section`, `read_knowledge`, `edit_daily_section`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`, `daily_add_task`, `daily_set_task_state`, `daily_check_todo`, `daily_rollover`, `promote_daily_task`), max 10 iterations, confidence-based auto-execute (≥0.85) or human confirmation, Claude vision for photo messages with EXIF context. All tool calls return `{ok, data|error, _items}`; agent reacts to `error.code` (PATH_NOT_FOUND, AMBIGUOUS_MATCH, SCHEMA_INVALID, STATE_CONFLICT, ALREADY_DONE, EXTERNAL_FAILURE, AUTH_REQUIRED, CANCELLED_BY_USER).
 - **Events persistence** (`EventsService`): merged events stored in `data/events/{date}.json`, supports create/attach/refresh with source-ID matching to preserve photos across re-merges
 - **EXIF extraction** (`exif_service`): extracts GPS coordinates, timestamp, camera info from photo EXIF data using Pillow
 - **Memory system** (`MemoryService`): short-term (conversation sliding window, 20 messages + decay), mid-term (vault state snapshot in system prompt), long-term (knowledge graph + keyword search)
@@ -209,7 +216,29 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
   - one Haiku call turns the message into clauses of evidence (`fast_lane/parse.py`, schema in `contract.py`; your hashtags override the model);
   - pure code places them on the timeline (`fast_lane/time_resolver.py`).
 
-  It writes nothing except one line to `data/logs/fast-lane-shadow.jsonl`, plus the `fast.shadow`, `fast.parse` and `fast.resolve` spans. The receipt it would have sent can be checked against what the old path did with `scripts/fast_lane_shadow_report.py [date]`. `scripts/fast_lane_replay.py` scores the parse and resolver against the labelled history in `data/eval/`, which is gitignored because the repo is public. Live runs need `--confirm-cost` (about $0.007 a message on Haiku); `--resolver-only` and `--from-results` (rescore a saved run) are free. Resolver rules: a record can't start after its message, and a plan can't start before it, except within an hour, which is proposed as it stands. A day ends at 05:00 (`FAST_LANE_DAY_BOUNDARY_HOUR`). Clock-less chains end at the message time and run backwards. `on` arrives with piece A2.
+  It writes nothing except one line to `data/logs/fast-lane-shadow.jsonl`, plus the `fast.shadow`, `fast.parse` and `fast.resolve` spans. The receipt it would have sent can be checked against what the old path did with `scripts/fast_lane_shadow_report.py [date]`. `scripts/fast_lane_replay.py` scores the parse and resolver against the labelled history in `data/eval/`, which is gitignored because the repo is public. Live runs need `--confirm-cost` (about $0.007 a message on Haiku); `--resolver-only` and `--from-results` (rescore a saved run) are free. Resolver rules: a record can't start after its message, and a plan can't start before it, except within an hour, which is proposed as it stands. A day ends at 05:00 (`FAST_LANE_DAY_BOUNDARY_HOUR`). Clock-less chains end at the message time and run backwards. `on` is piece A2, below.
+- **Fast lane, piece A2: on (2026-09-28; built on `feat/fast-lane-a2`, not yet switched on).** Plan `docs/plans/2026-09-28-fast-lane-a2.md`. With `FAST_LANE_MODE=on`, `POST /message` runs `fast_lane/turn.run_fast_turn` first (in `on`, the shadow does not run; `shadow`/`off` stay the kill switch):
+  - **Parse, resolve, match.** A1's parse and resolver; `matching.py` then applies spec §7.1: close an open block, confirm a plan, update an overlapping fact, create, or offer to close another open block.
+  - **Plan.** `actions.py` turns each clause into registered tool calls. No argument comes from model output except the clause's own words.
+  - **Act.** `act.py` runs them through `AgentService.run_tool`: the agent's own executor, audit log and hooks. `run_tool` is the **only** caller whose hidden `_fast` argument (precision, intent, deferred sync…) reaches a handler; a model-driven call has any `_fast` key dropped first, so the model cannot forge one. A step that raises becomes a failed step, earlier undo records are kept, and a later step failing leaves the line ✓ with the failure in its reason, because the block *was* written.
+  - **Receipt.** `receipt.py` renders it from the turn record in `data/actions/{turn_id}.json`, saved **before** the receipt is rendered. The record also holds the undo snapshots and Telegram's `message_id`, so a redelivered message is answered from the record rather than written twice. Every read-modify-write of a turn record goes through `act.update_turn`, under one process-wide lock shared with `save_turn` — an undo spans seconds of Google calls, and a sync patch straddling it could otherwise erase `undone` and make a line undoable twice. Callers stay off the event loop.
+  - **Undo** (`undo.py`, 24 h): restores from the snapshots and refuses a line changed since (times compared as instants, so Google's offset-form echo is not a change). It checks Google's preconditions before taking back a habit tick, drops each undo record as it is done so a retry sees only what is left, and deletes a Google entry an in-flight sync wrote meanwhile (`calendar_push.sync_block` returns `undone_meanwhile` when its row vanished mid-create).
+
+  Outcomes are ✓ fact, ◌ plan (`intent: "plan"`, pending once begun until confirmed, `approval.py`), ● proposal (`proposed: true`), and ? question (answered by a plain reply). Blocks carry `intent`, `start_precision` / `end_precision`, `logical_date`, `place_id` / `place_text`, `project`, `evidence` and `habit_completion` (spec §9.1). A fuzzy habit match is a proposal waiting for a tap, and no match is a question that writes nothing.
+
+  The habit hook (`hooks/habit_hook.py`, a post-hook on `create_event` / `update_event`, and on `/day` approval, guarded so a habit failure never blocks the approval) ticks a habit whose name or `aliases:` a confirmed, elapsed block matches. It ticks once per block, on a split block's last fragment only, stamped at the block's end — a tick credits its own day (`completed_at`). `habit_completion.retract_completion` takes a tick back for undo. Todos get `daily_check_todo` (any section, via `set_todo_checked`) and `remove_todo` for undoing an add.
+
+  Google syncs after the receipt (`calendar_push.sync_block`, also used by `update_event`) and streams `receipt_update` frames. The reply waits at most 15 s (`SYNC_CAP_S`) for syncs; only the *wait* is capped, so a late sync still runs and patches the record, and the next tap redraws it. The stream carries `{stage}`, `{receipt}`, `{receipt_update}`, `{text}` and `{done}`. Routing (spec §5.5):
+  - clauses outside the fast lane go straight to the parse's `fallthrough_skill`, with no router call;
+  - a lone answer goes back to the skill that asked;
+  - a mixed turn's skill hears what already ran (`prior_actions`);
+  - a parse failure, or a fast lane that cannot start, goes to the router.
+
+  **Memory of a fast turn.** It is logged to `agent-turns.jsonl` as skill `fast-lane`, with a `route` stamp, per **step** in the `{ok, error}` shape `turn_trace` reads (a per-line `{status}` shape made every write render as failed). A mixed turn writes two records sharing one `user_text`, so `turn_trace` coalesces a `route: "mixed"` record only with the same-chat skill record immediately after it and never attaches one on its own — anything looser attached a wrong trace to an earlier message with the same words. The join stays exact because both records use `conversation_log_text` (the reply-to/attachment prefix), and a fast turn saves its conversation pair before its record, so a crash leaves a pair with no record rather than an orphan record.
+
+  **Photos.** Telegram's send time is UTC; `_save_photo` now converts it to `VAULT_TIMEZONE` (this fixes every mode). In `on`, `fast_lane/photos.py` attaches a photo to the block covering its moment, idempotently by path. It reads the persisted store, not the reconciled day, so a calendar-only block nobody has opened is invisible to it, and the agent is told honestly that nothing covers the moment.
+
+  **Telegram.** `formatters/receipt-rich.ts` draws the receipt, and `callbacks/receipt.ts` handles `rcpt:<turn>:<line>:<action>` (and `rcpt:<turn>:u:un`) taps via `POST /fast/receipts/{turn}/{line}/{action}`; a 404 toasts that the receipt is gone. A tap redraw is an edit, which `dropPerMessageHints` would treat as a send, so the handler takes the pending open question before the edit and restores it after; `sendFinal` arms a new one only after every send. Places live in `data/places.json` (`scripts/fast_lane_bootstrap_places.py`). `scripts/fast_lane_latency.py` answers the prompt-caching question (spec §13: Haiku caches only from 4,096 tokens, so grow the prompt only if the parse is the slow part), and the shadow report now also flags a todo the two paths put on different days. Known, deferred: the one turn lock is held through Google calls, so a tap on an old receipt can delay a new reply by seconds; a stream that breaks mid-turn is retried with the same `message_id`, which answers `STILL_WORKING` ("…anything it logs will show in /day"), so the real reply never reaches the chat (writes are not duplicated).
 - **The resolver follows the owner's rules (2026-10-03):** spec §6.2, tests in `tests/test_fast_lane_resolver_owner_rules.py`. Hours are 24-hour unless am/pm is written, so an hour has one reading and nothing asks "which one" (the 12-hour readings and their dominance rule are gone; only a bare hour after a night word keeps its evening reading). Mazkir's own guesses arrive as proposals: plans with no time (back to back from now), a window ("somewhere between…", your usual length at its start), a Sleep known only by when you woke (from your median bedtime), and an activity in a photo's caption (centred on the photo). Several activities given one interval split it evenly, in the order written. `#green` is the owner's reserved tag: kept on the block for his analysis, never routed. An `end_block` with no block open becomes that block, ending then. The parse is never asked for tags (it invented them until the token cap) and runs with thinking off. The replay's scorer counts ops that write the same thing as a match (`log_block`/`start_block`; an end and an edit that only sets the end).
 - **Skill executor module (P3):** Skill loop extracted to `services/skill_executor.py`. `AgentService` constructs a `SkillExecutor` when both `skill_registry` and `router` are present and delegates the per-turn loop to it.
 - **Two-tier tasks (P4):** Default capture is a `- [ ]` line in the daily note's `## Tasks` section. Multi-day items promote to `40-tasks/active/{slug}.md` files via `promote_daily_task`. Daily-tier tools: `daily_add_task`, `daily_set_task_state` (check/uncheck/move), `daily_rollover` (yesterday's unfinished → today, anchored to first-original date via the `moved from [[...]]` chain), `promote_daily_task`. The `## Tasks` section is parsed/rendered by module functions in `services/daily_tasks.py` (there is no `DailyTasksService` class).
@@ -269,7 +298,7 @@ All vault files use YAML frontmatter. See `memory/AGENTS.md` for complete schema
 
 ### Agent tool risk levels
 - **safe** (read-only): `list_tasks`, `list_habits`, `list_goals`, `get_daily`, `get_tokens`, `search_knowledge`, `read_knowledge`, `get_related`, `read_daily_section`, `list_events` (Ship 4: now merges from calendar/timeline via `day_assembly.merge_from_sources`, so it reaches the network and is not free — still `safe` risk-class since it writes nothing)
-- **write** (auto-execute at ≥0.85 confidence): `create_task`, `create_habit`, `create_goal`, `update_task`, `update_habit`, `update_goal`, `save_knowledge`, `attach_to_daily`, `edit_daily_section`, `attach_photo_to_event`, `create_event`, `update_event`, `daily_add_task`, `daily_set_task_state`, `daily_rollover`, `promote_daily_task`, `propose_coding_session` (write tier but `preview: True`, so always confirmed regardless of confidence)
+- **write** (auto-execute at ≥0.85 confidence): `create_task`, `create_habit`, `create_goal`, `update_task`, `update_habit`, `update_goal`, `save_knowledge`, `attach_to_daily`, `edit_daily_section`, `attach_photo_to_event`, `create_event`, `update_event`, `daily_add_task`, `daily_set_task_state`, `daily_check_todo`, `daily_rollover`, `promote_daily_task`, `propose_coding_session` (write tier but `preview: True`, so always confirmed regardless of confidence)
 - **destructive** (auto-execute at ≥0.95 confidence): `complete_task`, `complete_habit`, `delete_task`, `archive_task`, `delete_habit`, `archive_goal`, `delete_event`
 - Confidence thresholds are per-tool with risk-class defaults: `safe` ungated, `write` ≥0.85, `destructive` ≥0.95.
 - Destructive tools always render a preview ("Would delete X / Would archive Y") and require explicit yes/no confirmation before execution, regardless of confidence.
@@ -352,6 +381,8 @@ curl http://localhost:8000/events/2026-03-05
 # Fast lane shadow (A1): parse + resolve every message, write nothing but a log line
 FAST_LANE_MODE=shadow python -m uvicorn src.main:app --reload --port 8000
 python scripts/fast_lane_shadow_report.py            # today's disagreements with the old path
+python scripts/fast_lane_bootstrap_places.py         # place candidates from the ledger (--write to save)
+python scripts/fast_lane_latency.py                  # parse p50/p95 and whether prompt caching would help
 ```
 
 ## Ending a Coding Session
@@ -393,7 +424,7 @@ The Ship 1–5 and fast-lane work the architecture notes above keep referring to
 - **Ship 3 — agent action memory:** `docs/specs/2026-09-05-ship3-agent-action-memory-design.md`
 - **Ship 4 — NL logging:** `docs/specs/2026-09-08-ship4-nl-logging-design.md`
 - **Ship 5 — inferred capture:** `docs/specs/2026-09-10-ship5-inferred-capture-design.md`
-- **Fast lane:** `docs/specs/2026-09-27-fast-lane-design.md` + `docs/plans/2026-09-27-fast-lane-a1.md` — piece A1 (shadow) is what shipped
+- **Fast lane:** `docs/specs/2026-09-27-fast-lane-design.md` + `docs/plans/2026-09-27-fast-lane-a1.md` (A1, shadow, shipped) + `docs/plans/2026-09-28-fast-lane-a2.md` (A2, `on`, built and pending rollout)
 
 ### Coding sessions
 
