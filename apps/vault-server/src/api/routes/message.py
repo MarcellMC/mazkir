@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import json
 import logging
+import threading
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -272,12 +273,48 @@ def _on_reply(*, response: str, route: str, receipt: dict | None, result=None) -
     }
 
 
+# Final review I3: a message_id being handled right now. The saved-record
+# repeat check only sees a turn once run_fast_turn has saved it, so a re-POST
+# of the same message (the bot's stream fallback) during the parse would
+# parse and write again. Claimed before the parse, released on every exit.
+_in_flight: set[tuple[int, int]] = set()
+_in_flight_lock = threading.Lock()
+
+
+def _claim(key: tuple[int, int]) -> bool:
+    with _in_flight_lock:
+        if key in _in_flight:
+            return False
+        _in_flight.add(key)
+        return True
+
+
+def _release(key: tuple[int, int]) -> None:
+    with _in_flight_lock:
+        _in_flight.discard(key)
+
+
 async def _on_turn(body: MessageRequest, agent, *, stream: bool, emit) -> dict:
     """One message with the fast lane on (spec §3.1, §5.5). `emit` sends an SSE payload.
 
     A pending yes/no never arrives here: the bot sends it to /message/confirm
     (spec §3.1 step 2, unchanged).
     """
+    key = (body.chat_id, body.message_id) if body.message_id is not None else None
+    if key is not None and not _claim(key):
+        # Nothing is parsed, written or asked of the agent: the first delivery
+        # is still running and will answer for both.
+        logger.info("message already being handled", extra={
+            "event_type": "fast_turn", "route": "in_flight", "chat_id": body.chat_id})
+        return _on_reply(response=STILL_WORKING, route="in_flight", receipt=None)
+    try:
+        return await _on_turn_claimed(body, agent, stream=stream, emit=emit)
+    finally:
+        if key is not None:
+            _release(key)
+
+
+async def _on_turn_claimed(body: MessageRequest, agent, *, stream: bool, emit) -> dict:
     from zoneinfo import ZoneInfo
 
     from src.services.fast_lane import act
@@ -341,36 +378,39 @@ async def _on_turn(body: MessageRequest, agent, *, stream: bool, emit) -> dict:
             logger.error("fast lane could not save the fallthrough turn record", exc_info=True)
 
     result = None
+    route = fast.route
     if fast.route == "fast":
         # Never the agent: the writes already ran, and it would make them twice.
         response = fast.receipt["text"] if fast.receipt else turn_module.NO_RECEIPT
+        await _await_syncs(syncs)
     else:
         skill = None
         if fast.route != "router_fallback":
             if fast.lone_other:
                 skill = _previous_skill(body.chat_id, now.date().isoformat())
             skill = skill or fast.fallthrough_skill
+        # Final review I5: the fast lane's Google syncs write the day's events
+        # file (calendar ids) and so can the agent; EventsService has no lock,
+        # so the syncs settle before the agent starts. The receipt is already
+        # out; the agent only starts a second or two later. A sync still
+        # running past the cap is NOT stopped and may overlap the agent's
+        # writes — a known gap, left to a lock in EventsService.
+        await _await_syncs(syncs)
         try:
             result = await asyncio.to_thread(
                 agent.handle_message, **kwargs, skill=skill, prior_actions=fast.ran or None,
                 stream_callback=(lambda text: emit({"text": text})) if stream else None,
                 stage_callback=lambda s: emit({"stage": s}),
             )
+            response = result.response
         except Exception:
-            await _await_syncs(syncs)    # the fast lane's writes still get their Google entries
-            if record is not None:
-                # Kept, so a re-delivery is not run again; told it failed, not "still working".
-                try:
-                    await asyncio.to_thread(_patch_turn, deps.actions_dir, record,
-                                            lambda turn: turn.__setitem__(
-                                                "response", MIXED_FAILED if fast.route == "mixed" else AGENT_FAILED))
-                except Exception:
-                    logger.error("fast lane could not record the failure on turn %s", record.get("turn_id"),
-                                 exc_info=True)
-            raise
-        response = result.response
-
-    await _await_syncs(syncs)
+            # Final review I1: never raise after writes. The reply says what
+            # happened and carries the receipt; the record keeps the same
+            # words, so a re-delivery is answered from it rather than run again.
+            logger.error("the agent failed on a %s turn", fast.route, exc_info=True,
+                         extra={"event_type": "fast_turn", "route": fast.route})
+            response = MIXED_FAILED if fast.route == "mixed" else AGENT_FAILED
+            route = "error"
 
     saved = None
     if record is not None:
@@ -387,7 +427,7 @@ async def _on_turn(body: MessageRequest, agent, *, stream: bool, emit) -> dict:
             receipt = render_receipt(saved, now)     # with each line's sync result
         except Exception:
             logger.error("fast lane receipt failed to re-render on turn %s", record.get("turn_id"), exc_info=True)
-    return _on_reply(response=response, route=fast.route, receipt=receipt, result=result)
+    return _on_reply(response=response, route=route, receipt=receipt, result=result)
 
 
 async def _await_syncs(syncs) -> None:
@@ -489,9 +529,12 @@ async def handle_message(body: MessageRequest, stream: bool = False):
     )
 
     if settings.fast_lane_mode == "on":
-        return await _handle_on(body, agent, stream=stream)
-
-    _start_fast_lane_shadow(body)
+        if body.forwarded_from is None:
+            return await _handle_on(body, agent, stream=stream)
+        # Final review I4: a forwarded message is someone else's words, not
+        # something the user did; it takes the agent path exactly as in `off`.
+    else:
+        _start_fast_lane_shadow(body)
 
     kwargs = _prepare_agent_kwargs(body)
 

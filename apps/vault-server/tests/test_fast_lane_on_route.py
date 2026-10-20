@@ -379,3 +379,249 @@ def test_a_held_task_that_fails_is_logged_at_error(caplog):
         task = asyncio.run(main())
     assert task not in route._fast_tasks
     assert any("background task failed" in r.getMessage() and r.levelno == logging.ERROR for r in caplog.records)
+
+
+# --- final whole-branch review fixes ---------------------------------------
+
+
+def _jpeg_b64():
+    import base64
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(buf, "JPEG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _real_stack(monkeypatch, tmp_path, vault_service, parse):
+    """A real AgentService and run_fast_turn; the parse and the model's reply are fakes."""
+    from src.services.agent_service import AgentService
+    from src.services.events_service import EventsService
+    from src.services.memory_service import ConversationContext
+    import src.config
+    # test_config.py drops src.config from sys.modules, and agent_service
+    # imports settings lazily: patch the object it will read as well as ours.
+    for live in {id(settings): settings, id(src.config.settings): src.config.settings}.values():
+        monkeypatch.setattr(live, "fast_lane_mode", "on")
+        monkeypatch.setattr(live, "vault_timezone", "Asia/Jerusalem")
+    events = EventsService(tmp_path / "events")
+    claude = MagicMock()
+    reply = MagicMock(type="text", text="skill reply")
+    claude.create.return_value = MagicMock(stop_reason="end_turn", content=[reply])
+    memory = MagicMock()
+    memory.assemble_context.return_value = ConversationContext(messages=[], summary="", vault_snapshot="",
+                                                               knowledge="")
+    agent = AgentService(claude=claude, vault=vault_service, memory=memory, media_path=tmp_path / "media",
+                         events=events)
+    spy = MagicMock(wraps=agent.handle_message)
+    monkeypatch.setattr(agent, "handle_message", spy)
+    deps = FastDeps(claude=None, run_tool=agent.run_tool, events=events, vault=vault_service, memory=MagicMock(),
+                    actions_dir=tmp_path / "actions", places_path=tmp_path / "p.json",
+                    suggestions_path=tmp_path / "s.json", skills_dir=None)
+    monkeypatch.setattr(route, "get_agent", lambda: agent)
+    monkeypatch.setattr(route, "get_fast_turn_deps", lambda a: (deps, None))
+    monkeypatch.setattr(turn_module, "parse_message", parse)
+    app = FastAPI()
+    app.include_router(route.router)
+    return TestClient(app), spy, events
+
+
+def _gym(ctx, claude, **kw):
+    from src.services.fast_lane.contract import Clause, ParseResult, TimeWords
+    return ParseResult((Clause("log_block", "record", True, "Gym 08:00-09:00", "Gym",
+                               time=TimeWords(start="08:00", end="09:00")),), None)
+
+
+def test_a_photo_whose_caption_the_fast_lane_handles_still_reaches_the_agent(monkeypatch, tmp_path, vault_service):
+    """Final review C2 (the reviewer's repro): the photo is saved and attached."""
+    client, spy, events = _real_stack(monkeypatch, tmp_path, vault_service, _gym)
+    walk = events.create_event("2026-09-27", "Dog walk", "2026-09-27T23:15:00", "2026-09-27T23:35:00")
+    body = client.post("/message", json={
+        "text": "Gym 08:00-09:00", "chat_id": 1, "message_id": 9,
+        "attachments": [{"type": "photo", "data": _jpeg_b64(), "filename": "p.jpg",
+                         "telegram_date": "2026-09-27T20:20:05Z"}]}).json()
+    assert body["route"] == "mixed" and body["receipt"] and body["response"] == "skill reply"
+    spy.assert_called_once()
+    assert spy.call_args.kwargs["prior_actions"] and spy.call_args.kwargs["skill"] is None
+    assert list((tmp_path / "media").rglob("*.jpg"))                       # saved
+    stored = next(e for e in events.get_events("2026-09-27") if e["id"] == walk["id"])
+    assert stored.get("photos")                                            # and attached
+    # A repeat answers from the saved turn and runs nothing.
+    again = client.post("/message", json={"text": "Gym 08:00-09:00", "chat_id": 1, "message_id": 9,
+                                          "attachments": [{"type": "photo", "data": _jpeg_b64(),
+                                                           "filename": "p.jpg"}]}).json()
+    assert again["response"] == "skill reply" and spy.call_count == 1
+    assert len([e for f in (tmp_path / "events").glob("*.json") for e in json.loads(f.read_text())
+                if e["name"] == "Gym"]) == 1
+
+
+def test_a_location_whose_caption_the_fast_lane_handles_still_reaches_the_agent(monkeypatch, tmp_path,
+                                                                                 vault_service):
+    client, spy, _ = _real_stack(monkeypatch, tmp_path, vault_service, _gym)
+    body = client.post("/message", json={
+        "text": "Gym 08:00-09:00", "chat_id": 1, "message_id": 9,
+        "attachments": [{"type": "location", "latitude": 32.1, "longitude": 34.8, "title": "Gym"}]}).json()
+    assert body["route"] == "mixed"
+    spy.assert_called_once()
+    assert spy.call_args.kwargs["attachments"][0]["type"] == "location"
+
+
+def test_a_text_only_fast_message_still_never_reaches_the_agent(monkeypatch, tmp_path, vault_service):
+    client, spy, _ = _real_stack(monkeypatch, tmp_path, vault_service, _gym)
+    body = client.post("/message", json={"text": "Gym 08:00-09:00", "chat_id": 1, "message_id": 9}).json()
+    assert body["route"] == "fast"
+    spy.assert_not_called()
+
+
+def _mixed():
+    turn = {**a_turn(), "route": "mixed"}
+    from src.services.fast_lane.receipt import render_receipt
+    import datetime as dt
+    return FastTurn(route="mixed", fallthrough_skill="knowledge-management", turn=turn,
+                    receipt=render_receipt(turn, dt.datetime(2026, 1, 10, 20, 0)), ran=["✓ 18:00–19:00 Gym (block)"])
+
+
+def test_a_mixed_turn_whose_skill_raises_answers_200_with_the_receipt(monkeypatch, tmp_path):
+    """Final review I1 (the reviewer's repro), non-streaming: the bot's default."""
+    client, agent = make(monkeypatch, tmp_path, _mixed())
+    agent.handle_message.side_effect = RuntimeError("skill blew up")
+    client = TestClient(client.app, raise_server_exceptions=False)
+    r = post(client, text="Gym 18:00-19:00 and what is X")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["response"] == route.MIXED_FAILED and body["receipt"]["turn_id"] == "t0000beef"
+    assert act.load_turn(tmp_path / "actions", "t0000beef")["response"] == route.MIXED_FAILED
+
+
+def test_a_fallthrough_whose_agent_raises_answers_200(monkeypatch, tmp_path):
+    client, agent = make(monkeypatch, tmp_path, FastTurn(route="fallthrough", fallthrough_skill="mazkir"))
+    agent.handle_message.side_effect = RuntimeError("boom")
+    r = TestClient(client.app, raise_server_exceptions=False).post(
+        "/message", json={"text": "hi", "chat_id": 1, "message_id": 9})
+    assert r.status_code == 200 and r.json()["response"] == route.AGENT_FAILED
+
+
+def test_a_streamed_mixed_turn_whose_skill_raises_still_carries_the_receipt(monkeypatch, tmp_path):
+    client, agent = make(monkeypatch, tmp_path, _mixed())
+    agent.handle_message.side_effect = RuntimeError("boom")
+    raw = client.post("/message?stream=true", json={"text": "Gym and X", "chat_id": 1, "message_id": 9}).text
+    payloads = [json.loads(c[len("data: "):]) for c in raw.split("\n\n") if c.startswith("data: ")]
+    final = payloads[-1]["response"]
+    assert final["response"] == route.MIXED_FAILED and final["receipt"]["turn_id"] == "t0000beef"
+
+
+def test_a_resend_while_the_first_is_running_parses_and_writes_nothing(monkeypatch, tmp_path):
+    """Final review I3: the in-flight claim covers the seconds before a record exists."""
+    import threading
+    client, agent = make(monkeypatch, tmp_path, fast_turn(), saved=False)
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def gated_run(ctx, deps, s, **kw):
+        calls.append(kw["message_id"])
+        started.set()
+        release.wait(5)
+        act.save_turn(deps.actions_dir, a_turn())
+        return fast_turn()
+
+    monkeypatch.setattr(turn_module, "run_fast_turn", gated_run)
+    results = {}
+    with client:
+        first = threading.Thread(target=lambda: results.__setitem__("first", post(client).json()))
+        first.start()
+        assert started.wait(5)
+        results["second"] = post(client).json()
+        release.set()
+        first.join(5)
+    assert calls == [9]
+    assert results["second"]["response"] == route.STILL_WORKING and results["second"]["receipt"] is None
+    assert results["first"]["route"] == "fast"
+    agent.handle_message.assert_not_called()
+    assert not route._in_flight
+
+
+def test_the_claim_is_released_when_the_turn_raises(monkeypatch, tmp_path):
+    client, agent = make(monkeypatch, tmp_path, fast_turn())
+
+    def broken(*a, **k):
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(turn_module, "run_fast_turn", broken)
+    r = TestClient(client.app, raise_server_exceptions=False).post(
+        "/message", json={"text": "x", "chat_id": 1, "message_id": 9})
+    assert r.status_code == 500 and not route._in_flight
+
+
+def test_different_messages_are_not_held_by_each_others_claim(monkeypatch, tmp_path):
+    client, agent = make(monkeypatch, tmp_path, FastTurn(route="fallthrough", fallthrough_skill="mazkir"))
+    route._claim((1, 10))
+    try:
+        assert post(client).json()["response"] == "skill reply"
+    finally:
+        route._release((1, 10))
+
+
+def test_a_forwarded_message_skips_the_fast_lane(monkeypatch, tmp_path):
+    """Final review I4: someone else's words take the agent path exactly as with the mode off."""
+    client, agent = make(monkeypatch, tmp_path, fast_turn())
+    ran, shadowed = [], []
+    monkeypatch.setattr(turn_module, "run_fast_turn", lambda *a, **k: ran.append(1))
+    monkeypatch.setattr(route, "_start_fast_lane_shadow", lambda body: shadowed.append(1))
+    body = post(client, forwarded_from={"from_name": "A friend", "text": "Gym 18:00-19:00"}).json()
+    assert ran == [] and shadowed == []
+    assert body["response"] == "skill reply" and "route" not in body
+    kwargs = agent.handle_message.call_args.kwargs
+    assert "skill" not in kwargs and "prior_actions" not in kwargs
+    assert kwargs["forwarded_from"]["from_name"] == "A friend"
+
+
+def test_a_mixed_turn_waits_for_its_syncs_before_the_agent(monkeypatch, tmp_path):
+    """Final review I5: no sync and agent writing the same day file at once."""
+    client, agent = make(monkeypatch, tmp_path, _mixed())
+    synced = []
+
+    def slow_sync(*a):
+        time.sleep(0.2)
+        synced.append(1)
+        return {"ok": True, "attempted": True, "event_id": "g1"}
+
+    monkeypatch.setattr(calendar_push, "sync_block", slow_sync)
+    seen = {}
+
+    def handle(**kw):
+        seen["synced"] = list(synced)
+        return AgentResponse(response="skill reply", iterations=1)
+
+    agent.handle_message.side_effect = handle
+    raw = client.post("/message?stream=true", json={"text": "Gym and X", "chat_id": 1, "message_id": 9}).text
+    assert seen["synced"] == [1]
+    kinds = [next(iter(json.loads(c[len("data: "):]))) for c in raw.split("\n\n") if c.startswith("data: ")]
+    assert kinds.index("receipt") < kinds.index("receipt_update")
+
+
+def test_a_sync_past_the_cap_does_not_hold_the_agent_back(monkeypatch, tmp_path):
+    import threading
+    client, agent = make(monkeypatch, tmp_path, _mixed())
+    monkeypatch.setattr(route, "SYNC_CAP_S", 0.2)
+    release, finished = threading.Event(), threading.Event()
+
+    def stuck(*a):
+        release.wait(5)
+        finished.set()
+        return {"ok": True, "attempted": True, "event_id": "g1"}
+
+    monkeypatch.setattr(calendar_push, "sync_block", stuck)
+    seen = {}
+
+    def handle(**kw):
+        seen["finished"] = finished.is_set()
+        release.set()
+        return AgentResponse(response="skill reply", iterations=1)
+
+    agent.handle_message.side_effect = handle
+    with client:
+        started = time.monotonic()
+        assert post(client).json()["response"] == "skill reply"
+        assert time.monotonic() - started < 2
+        assert finished.wait(2)
+    assert seen["finished"] is False
