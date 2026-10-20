@@ -500,6 +500,10 @@ class EventsService:
         for event in events:
             if event["id"] == event_id:
                 event.setdefault("photos", [])
+                if any(p.get("path") == photo_path for p in event["photos"]):
+                    # Idempotent: a redelivered message or a repeat tool call
+                    # must not stack the same photo twice.
+                    return {"attached": True, "event_id": event_id, "date": target_date}
                 event["photos"].append(
                     PhotoRef(path=photo_path, caption=caption, wikilinks=wikilinks or []).to_dict()
                 )

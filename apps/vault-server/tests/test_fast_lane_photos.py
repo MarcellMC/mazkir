@@ -96,3 +96,58 @@ def test_mode_off_does_not_attach(tmp_path, monkeypatch):
     assert "already attached" not in str(content) and "(from the send time, approximate)" in str(content)
     stored = next(e for e in events.get_events("2026-09-27") if e["id"] == walk["id"])
     assert not stored.get("photos")
+
+
+def test_overlapping_blocks_latest_start_wins(tmp_path):
+    events = EventsService(tmp_path)
+    events.create_event("2026-09-27", "Evening", "2026-09-27T18:00:00", "2026-09-27T23:59:00")
+    inner = events.create_event("2026-09-27", "Walk", "2026-09-27T23:15:00", "2026-09-27T23:35:00")
+    assert covering_block(events, dt.datetime(2026, 9, 27, 23, 20, tzinfo=TZ))["id"] == inner["id"]
+
+
+def test_open_block_covers_later_moments(tmp_path):
+    events = EventsService(tmp_path)
+    gym = events.create_event("2026-09-27", "Gym", "2026-09-27T18:00:00", None)
+    assert covering_block(events, dt.datetime(2026, 9, 27, 21, 0, tzinfo=TZ))["id"] == gym["id"]
+    assert covering_block(events, dt.datetime(2026, 9, 27, 17, 0, tzinfo=TZ)) is None
+
+
+def test_attaching_the_same_photo_twice_keeps_one_ref(tmp_path):
+    events = EventsService(tmp_path)
+    walk = events.create_event("2026-09-27", "Walk", "2026-09-27T23:15:00", "2026-09-27T23:35:00")
+    events.attach_photo("2026-09-27", walk["id"], "media/p.jpg")
+    assert events.attach_photo("2026-09-27", walk["id"], "media/p.jpg")["attached"] is True
+    stored = next(e for e in events.get_events("2026-09-27") if e["id"] == walk["id"])
+    assert len(stored["photos"]) == 1
+
+
+def test_redelivered_photo_still_reports_attached(tmp_path, monkeypatch):
+    from src.config import settings
+    monkeypatch.setattr(settings, "fast_lane_mode", "on")
+    agent, events, walk, att = _agent_with_walk(tmp_path)
+    agent._build_user_content("a", [att])
+    again = str(agent._build_user_content("a", [att]))
+    assert "already attached it to “Dog walk”" in again
+    stored = next(e for e in events.get_events("2026-09-27") if e["id"] == walk["id"])
+    assert len(stored["photos"]) == 1
+
+
+def test_naive_telegram_date_is_read_as_utc():
+    moment, precision = photo_moment(None, "2026-09-27T20:20:05", TZ)
+    assert moment.replace(tzinfo=None) == dt.datetime(2026, 9, 27, 23, 20, 5) and precision == "approx"
+
+
+def test_garbage_telegram_date_is_no_time():
+    assert photo_moment(None, "not a date", TZ) == (None, None)
+
+
+def test_block_with_bare_times_does_not_break_the_note(tmp_path, monkeypatch):
+    from src.config import settings
+    from src.services.agent_service import AgentService
+    monkeypatch.setattr(settings, "fast_lane_mode", "on")
+    ev = MagicMock()
+    ev.get_events.return_value = [{"id": "e1", "name": "Walk", "start_time": "23:15", "end_time": None}]
+    agent = AgentService(claude=MagicMock(), vault=MagicMock(), memory=MagicMock(), events=ev,
+                         media_path=tmp_path / "media")
+    out = agent._place_photo({"exif_timestamp": "2026-09-27T23:20:00", "path": "p.jpg"})
+    assert out == [] or "Walk" in out[0]

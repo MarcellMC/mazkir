@@ -32,6 +32,11 @@ def covering_block(events, moment: dt.datetime) -> dict | None:
     """The live block whose interval holds `moment`; an open block holds everything after its start.
 
     The latest-starting one wins when two overlap: it is the more specific.
+
+    Reads the persisted store, not a reconciled day: reconciling costs network
+    per photo, so a calendar/timeline block never opened through /day or
+    GET /events is not seen. On the `on` route the fast lane persists its own
+    writes before the agent builds content, and a miss is reported honestly.
     """
     day = moment.date().isoformat()
     wall = moment.replace(tzinfo=None)

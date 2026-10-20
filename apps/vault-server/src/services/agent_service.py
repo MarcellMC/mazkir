@@ -1936,7 +1936,9 @@ class AgentService:
     def _save_photo(self, attachment: dict) -> dict | None:
         """Save photo to disk, extract EXIF, write sidecar metadata.json.
 
-        Returns dict with keys: path, exif_location, exif_timestamp, exif_camera.
+        Returns dict with keys: path, exif_location, exif_timestamp (local wall clock,
+        naive ISO; EXIF time or Telegram's send time converted from UTC),
+        exif_precision ("exact" | "approx" | None), exif_camera.
         Returns None on failure.
         """
         import datetime as dt
@@ -2002,7 +2004,12 @@ class AgentService:
         }
 
     def _place_photo(self, photo_info: dict) -> list[str]:
-        """Fast lane on: attach the photo to the block covering its moment, and say so (spec §5.6)."""
+        """Fast lane on: attach the photo to the block covering its moment, and say so (spec §5.6).
+
+        Looks in the persisted events store only (see `covering_block`); the
+        fast lane's writes for this message are already saved by the time the
+        agent builds its content, and "no block covers" is told to the agent.
+        """
         from src.config import settings as _settings
         if _settings.fast_lane_mode != "on" or not self.events or not photo_info.get("exif_timestamp"):
             return []
@@ -2016,8 +2023,11 @@ class AgentService:
             if block is None:
                 return ["no block covers that moment"]
             self.events.attach_photo(block["date"], block["id"], photo_info["path"])
-            span = f"{block['start_time'][11:16]}–{(block.get('end_time') or '')[11:16]}"
-            return [f"Mazkir already attached it to “{block['name']}” {span}; do not attach it again"]
+            def _hm(v):
+                v = v or ""
+                return v[11:16] if len(v) >= 16 else v
+            span = f" {_hm(block['start_time'])}–{_hm(block.get('end_time'))}".rstrip("–").rstrip()
+            return [f"Mazkir already attached it to “{block['name']}”{span}; do not attach it again"]
         except Exception:
             logger.warning("placing a photo failed", exc_info=True)
             return []
