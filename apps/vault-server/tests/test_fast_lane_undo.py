@@ -203,3 +203,116 @@ def test_a_hook_tick_is_not_retracted_twice_when_google_refuses(tmp_path, vault_
     turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=calendar, now=NOW)
     assert toast == "Undone 1" and events.get_events("2026-01-10") == []
     assert vault_service.read_file("20-habits/workout.md")["metadata"]["streak"] == 5
+
+
+# --- review round 1 -------------------------------------------------------------
+
+
+def _ticked_workout_with_google_entry(tmp_path, vault_service):
+    agent, events = make_agent(tmp_path, vault_service)
+    turn = run(agent, events, PlannedLine("block", "fact", "Workout",
+                                          steps=(create("Workout", "2026-01-10T08:00:00", "2026-01-10T09:00:00"),)))
+    event_id = turn["lines"][0]["event_id"]
+    events.update_event("2026-01-10", event_id, {"source_ids": {"calendar_id": "g1"}})
+    assert vault_service.read_file("20-habits/workout.md")["metadata"]["streak"] == 6
+    return turn, events
+
+
+def _nothing_changed(turn, events, vault_service, note):
+    assert turn["lines"][0]["status"] == "done" and turn["lines"][0]["undo_note"] == note
+    [stored] = events.get_events("2026-01-10")
+    assert stored["habit_completion"] and stored["source_ids"] == {"calendar_id": "g1"}
+    assert vault_service.read_file("20-habits/workout.md")["metadata"]["streak"] == 6
+
+
+def test_a_ticked_block_google_cant_reach_is_left_whole(tmp_path, vault_service):
+    turn, events = _ticked_workout_with_google_entry(tmp_path, vault_service)
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=None, now=NOW)
+    _nothing_changed(turn, events, vault_service, "can't undo: Google Calendar isn't reachable")
+    assert toast == "Nothing undone, 1 kept"
+
+
+def test_a_ticked_block_in_another_calendar_is_left_whole(tmp_path, vault_service):
+    turn, events = _ticked_workout_with_google_entry(tmp_path, vault_service)
+    events.update_event("2026-01-10", turn["lines"][0]["event_id"], {"calendar": "Work"})
+    calendar = MagicMock(is_initialized=True)
+    calendar.delete_event = AsyncMock(return_value=True)
+    turn, _ = undo_turn(turn, events=events, vault=vault_service, calendar=calendar, now=NOW)
+    _nothing_changed(turn, events, vault_service, "can't undo: it lives in another calendar")
+    calendar.delete_event.assert_not_awaited()
+
+
+def test_a_ticked_block_google_refuses_is_left_whole(tmp_path, vault_service):
+    turn, events = _ticked_workout_with_google_entry(tmp_path, vault_service)
+    calendar = MagicMock(is_initialized=True)
+    calendar.delete_event = AsyncMock(return_value=False)
+    turn, _ = undo_turn(turn, events=events, vault=vault_service, calendar=calendar, now=NOW)
+    _nothing_changed(turn, events, vault_service, "can't undo: Google refused to delete it")
+
+
+def test_a_ticked_block_google_raises_on_is_left_whole(tmp_path, vault_service):
+    turn, events = _ticked_workout_with_google_entry(tmp_path, vault_service)
+    calendar = MagicMock(is_initialized=True)
+    calendar.delete_event = AsyncMock(side_effect=ConnectionError("503"))
+    turn, _ = undo_turn(turn, events=events, vault=vault_service, calendar=calendar, now=NOW)
+    _nothing_changed(turn, events, vault_service, "can't undo: Google refused to delete it: 503")
+
+
+def test_a_ticked_block_with_a_google_entry_goes_whole(tmp_path, vault_service):
+    turn, events = _ticked_workout_with_google_entry(tmp_path, vault_service)
+    calendar = MagicMock(is_initialized=True)
+    calendar.delete_event = AsyncMock(return_value=True)
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=calendar, now=NOW)
+    assert toast == "Undone 1" and events.get_events("2026-01-10") == []
+    assert vault_service.read_file("20-habits/workout.md")["metadata"]["streak"] == 5
+    calendar.delete_event.assert_awaited_once_with("g1")
+
+
+def test_googles_offset_echo_of_an_untouched_block_is_not_a_change(tmp_path, vault_service, monkeypatch):
+    from src.config import settings
+    monkeypatch.setattr(settings, "vault_timezone", "Asia/Jerusalem")   # +02:00 in January
+    agent, events = make_agent(tmp_path, vault_service)
+    turn = run(agent, events, PlannedLine("block", "fact", "Gym", steps=(create("Gym", "2026-01-10T08:00:00", "2026-01-10T09:00:00"),)))
+    events.update_event("2026-01-10", turn["lines"][0]["event_id"],
+                        {"start_time": "2026-01-10T08:00:00+02:00", "end_time": "2026-01-10T07:00:00Z"})
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=None, now=NOW)
+    assert toast == "Undone 1" and events.get_events("2026-01-10") == []
+
+
+def test_an_offset_time_that_really_moved_is_still_a_change(tmp_path, vault_service, monkeypatch):
+    from src.config import settings
+    monkeypatch.setattr(settings, "vault_timezone", "Asia/Jerusalem")
+    agent, events = make_agent(tmp_path, vault_service)
+    turn = run(agent, events, PlannedLine("block", "fact", "Gym", steps=(create("Gym", "2026-01-10T08:00:00", "2026-01-10T09:00:00"),)))
+    events.update_event("2026-01-10", turn["lines"][0]["event_id"],
+                        {"start_time": "2026-01-10T08:00:00+03:00"})   # 07:00 here
+    turn, _ = undo_turn(turn, events=events, vault=vault_service, calendar=None, now=NOW)
+    assert turn["lines"][0]["undo_note"] == "can't undo: changed since"
+    assert len(events.get_events("2026-01-10")) == 1
+
+
+def test_an_added_todo_already_gone_is_not_called_undone(tmp_path, vault_service):
+    agent, events = make_agent(tmp_path, vault_service)
+    turn = run(agent, events, PlannedLine("todo", "fact", "Buy milk",
+                                          steps=(Step("daily_add_task", {"text": "Buy milk", "date": "2026-01-10"}),)))
+    vault_service.write_daily_note("2026-01-10", "## Tasks\n")   # you deleted it yourself
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=None, now=NOW)
+    assert turn["lines"][0]["status"] == "done"
+    assert turn["lines"][0]["undo_note"] == "can't undo: the todo isn't there any more"
+    assert toast == "Nothing undone, 1 kept"
+
+
+def test_an_undone_edit_reports_its_google_push_on_the_line(tmp_path, vault_service):
+    agent, events = make_agent(tmp_path, vault_service)
+    walk = events.create_event("2026-01-10", "Dog walk", "2026-01-10T07:00:00", "2026-01-10T07:30:00",
+                               source_ids={"calendar_id": "g7"})
+    step = Step("update_event", {"event_id": walk["id"], "date": "2026-01-10", "end_time": "2026-01-10T07:45:00",
+                                 "_fast": {"defer_calendar_sync": True, "fields": {}}})
+    turn = run(agent, events, PlannedLine("edit", "fact", "Dog walk", steps=(step,)))
+    calendar = MagicMock(is_initialized=True)
+    calendar.update_event = AsyncMock(return_value=False)
+    turn, toast = undo_turn(turn, events=events, vault=vault_service, calendar=calendar, now=NOW)
+    assert toast == "Undone 1"
+    assert turn["lines"][0]["calendar_sync"] == {"ok": False, "attempted": True, "event_id": "g7",
+                                                 "reason": "update_failed"}
+    assert calendar.update_event.await_args.kwargs["end_time"] == "2026-01-10T07:30:00"

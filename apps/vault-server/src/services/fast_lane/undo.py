@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from zoneinfo import ZoneInfo
+
+from src.config import settings
 
 from src.services.daily_tasks import remove_todo, set_todo_checked
 from src.services.fast_lane.act import _find as find_event
@@ -26,7 +29,8 @@ logger = logging.getLogger(__name__)
 # The fields you can change in /day or by talking; a difference in any means "changed since".
 # `date` is deliberately absent: `find_event` adds it to every snapshot and to
 # the current copy alike, and a move between days already shows in the times.
-_COMPARED = ("name", "start_time", "end_time", "state", "location", "activity", "proposed")
+_COMPARED = ("name", "state", "location", "activity", "proposed")
+_TIMES = ("start_time", "end_time")
 # Keys that exist only on `find_event`'s copies, or that must never be rewritten.
 _NOT_FIELDS = {"id", "date"}
 # What `update_event` rewrites when a restore moves a block back across days.
@@ -34,8 +38,36 @@ _PROVENANCE = ("source_ids", "moved_from_source_ids", "source")
 _UNDOABLE = ("done", "approved", "pending")
 
 
+def _local(value) -> dt.datetime | None:
+    """The vault-local wall time a stored timestamp names, or None if it doesn't parse.
+
+    A naive value is already local wall time. An aware one — Google's echo,
+    `…T08:00:00+02:00`, which reconcile persists over Mazkir's naive original —
+    is converted to the vault's zone first, so it compares as the same instant.
+    (`habit_completion._wall` only drops the offset, which is wrong for `Z`.)
+    """
+    try:
+        moment = dt.datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(ZoneInfo(settings.vault_timezone)).replace(tzinfo=None)
+    return moment
+
+
+def _same_time(a, b) -> bool:
+    if a == b:
+        return True
+    la, lb = _local(a), _local(b)
+    return la is not None and lb is not None and la == lb
+
+
 def _changed(current: dict, after: dict | None) -> bool:
-    return after is None or any(current.get(k) != after.get(k) for k in _COMPARED)
+    if after is None:
+        return True
+    if any(current.get(k) != after.get(k) for k in _COMPARED):
+        return True
+    return not all(_same_time(current.get(k), after.get(k)) for k in _TIMES)
 
 
 def _retract(completion: dict, vault) -> str | None:
@@ -43,15 +75,22 @@ def _retract(completion: dict, vault) -> str | None:
     return None if result["ok"] else f"habit: {result['reason']}"
 
 
-def _delete_google(event: dict, calendar) -> str | None:
-    """Remove the block's Google entry, or say why not. Mazkir's copy alone would merge back."""
-    google_id = (event.get("source_ids") or {}).get("calendar_id")
-    if not google_id:
+def _google_blocker(event: dict, calendar) -> str | None:
+    """Why the block's Google entry can't be removed, or None. Mazkir's copy alone would merge back."""
+    if not (event.get("source_ids") or {}).get("calendar_id"):
         return None
     if event.get("calendar") not in (None, "Mazkir"):
         return "it lives in another calendar"
     if calendar is None or not getattr(calendar, "is_initialized", False):
         return "Google Calendar isn't reachable"
+    return None
+
+
+def _delete_google(event: dict, calendar) -> str | None:
+    """Remove the block's Google entry (preconditions already checked), or say why not."""
+    google_id = (event.get("source_ids") or {}).get("calendar_id")
+    if not google_id:
+        return None
     from src.services.async_bridge import maybe_await
     try:
         if not maybe_await(calendar.delete_event(google_id)):
@@ -66,21 +105,29 @@ def _undo_created(rec: dict, *, events, vault, calendar) -> str | None:
     live = [e for e in (find_event(events, eid) for eid in rec["ids"]) if e is not None]
     if any(_changed(e, after.get(e["id"])) for e in live):
         return "changed since"
+    # Refuse before touching anything: a tick taken back from a block that
+    # then stays would be half an undo.
     for event in live:
-        completion = event.get("habit_completion")
-        if completion:
-            if why := _retract(completion, vault):
-                return why
-            # Taken back: clear it, so a retry after a Google refusal below
-            # does not try to take the same tick back a second time.
-            events.update_event(event["date"], event["id"], {"habit_completion": None})
+        if why := _google_blocker(event, calendar):
+            return why
+    for event in live:
         if why := _delete_google(event, calendar):
             return why
+        source_ids = event.get("source_ids") or {}
+        removed = "calendar_id" in source_ids
+        if removed:
+            # Gone from Google: forget the id, so a retry after a failed
+            # retract below does not ask Google to delete it a second time.
+            rest = {k: v for k, v in source_ids.items() if k != "calendar_id"}
+            events.update_event(event["date"], event["id"], {"source_ids": rest})
+        completion = event.get("habit_completion")
+        if completion and (why := _retract(completion, vault)):
+            return f"removed from Google; {why}" if removed else why
         events.delete_event(event["date"], event["id"])
     return None
 
 
-def _undo_edited(rec: dict, *, events, vault, calendar) -> str | None:
+def _undo_edited(rec: dict, line: dict, *, events, vault, calendar) -> str | None:
     current = find_event(events, rec["event_id"])
     if current is None:
         return "the block is gone"
@@ -89,9 +136,6 @@ def _undo_edited(rec: dict, *, events, vault, calendar) -> str | None:
         return "nothing was kept to restore"
     if _changed(current, after):
         return "changed since"
-    ticked = current.get("habit_completion")
-    if ticked and not before.get("habit_completion") and (why := _retract(ticked, vault)):
-        return why
     keys = (set(before) | set(after)) - _NOT_FIELDS
     updates = {k: before.get(k) for k in keys if before.get(k) != after.get(k)}
     if updates:
@@ -102,10 +146,15 @@ def _undo_edited(rec: dict, *, events, vault, calendar) -> str | None:
             # Moving back re-detaches the upstream ids exactly as the forward
             # move did; put the provenance the block had before the edit back.
             events.update_event(result["date"], rec["event_id"], {k: before.get(k) for k in _PROVENANCE})
+    # Only once the fields are back: a refused restore must leave the tick too.
+    ticked = current.get("habit_completion")
+    if ticked and not before.get("habit_completion") and (why := _retract(ticked, vault)):
+        return f"block restored; {why}"
     restored = find_event(events, rec["event_id"])
     if restored and (restored.get("source_ids") or {}).get("calendar_id") and calendar is not None:
         from src.services.calendar_push import sync_block
-        sync_block(calendar, events, restored["date"], rec["event_id"])   # best effort; logs its own failure
+        # Best effort: reported on the line, never a reason to refuse the undo.
+        line["calendar_sync"] = sync_block(calendar, events, restored["date"], rec["event_id"])
     return None
 
 
@@ -115,7 +164,7 @@ def _undo_todo(rec: dict, *, vault, remove: bool) -> str | None:
     if remove:
         body, reason = remove_todo(content, rec["text"])
         if reason == "not_found":
-            return None                     # already gone: nothing of ours is left to take back
+            return "the todo isn't there any more"
     else:
         body, reason = set_todo_checked(content, rec["text"], checked=False)
         if reason == "not_found":
@@ -126,12 +175,12 @@ def _undo_todo(rec: dict, *, vault, remove: bool) -> str | None:
     return None
 
 
-def _undo_one(rec: dict, *, events, vault, calendar) -> str | None:
+def _undo_one(rec: dict, line: dict, *, events, vault, calendar) -> str | None:
     kind = rec.get("kind")
     if kind == "created":
         return _undo_created(rec, events=events, vault=vault, calendar=calendar)
     if kind == "edited":
-        return _undo_edited(rec, events=events, vault=vault, calendar=calendar)
+        return _undo_edited(rec, line, events=events, vault=vault, calendar=calendar)
     if kind in ("todo_added", "todo_checked"):
         return _undo_todo(rec, vault=vault, remove=kind == "todo_added")
     if kind == "habit":
@@ -159,7 +208,7 @@ def undo_turn(turn: dict, *, events, vault, calendar, now: dt.datetime) -> tuple
         why = None
         for rec in reversed(line["undo"]):
             try:
-                why = _undo_one(rec, events=events, vault=vault, calendar=calendar)
+                why = _undo_one(rec, line, events=events, vault=vault, calendar=calendar)
             except Exception as e:   # one line's failure must not strand the rest
                 logger.warning("fast lane undo failed on a line", exc_info=True)
                 why = str(e) or type(e).__name__
