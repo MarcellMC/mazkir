@@ -210,3 +210,25 @@ def test_find_repeat_skips_a_file_that_vanishes_mid_scan(tmp_path, monkeypatch):
         return real_stat(self, *a, **kw)
     monkeypatch.setattr(type(tmp_path), "stat", flaky)
     assert find_repeat(tmp_path, 1, 7) is None
+
+
+def test_each_step_that_ran_is_recorded_and_a_raise_is_a_failed_step():
+    calls = []
+
+    def run_tool(tool, params):
+        calls.append(tool)
+        if tool == "daily_add_task":
+            raise RuntimeError("boom")
+        return _habit_ok()(tool, params)
+
+    line = PlannedLine("habit", "fact", "Meditate", steps=(
+        Step("complete_habit", {"habit_name": "Meditate"}), Step("daily_add_task", {"text": "x"}),
+        Step("daily_rollover", {})))
+    [rec] = run_lines([line], run_tool=run_tool, events=None)
+    assert calls == ["complete_habit", "daily_add_task"]
+    assert rec["steps"] == [
+        {"tool": "complete_habit", "ok": True, "reason": "", "code": None},
+        {"tool": "daily_add_task", "ok": False, "reason": "error: RuntimeError", "code": "EXCEPTION"},
+    ]
+    assert rec["status"] == "done" and rec["undo"][0]["kind"] == "habit"
+    assert "couldn't add the todo: error: RuntimeError" in rec["reason"]

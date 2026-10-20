@@ -15,6 +15,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import json
+import logging
 import re
 import time
 from dataclasses import asdict
@@ -33,6 +34,7 @@ _TURN_ID = re.compile(r"t[0-9a-f]{8}")
 _HABIT_KEYS = ("path", "completed_at", "prior", "completions_today", "daily_target",
                "tokens_earned", "new_streak", "longest_streak")
 _tracer = trace.get_tracer("mazkir.fast_lane")
+logger = logging.getLogger(__name__)
 
 RunTool = Callable[[str, dict], dict]
 
@@ -57,6 +59,12 @@ def _error(result: Any) -> str:
     return str(error or "failed")
 
 
+def _code(result: Any) -> str:
+    error = result.get("error") if isinstance(result, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return str(code or "FAILED")
+
+
 def run_step(step: Step, *, run_tool: RunTool, events) -> dict:
     """One tool call, and what the receipt and undo need to know about it."""
     before = None
@@ -65,7 +73,7 @@ def run_step(step: Step, *, run_tool: RunTool, events) -> dict:
     with _tracer.start_as_current_span(f"fast.act.{step.tool}"):
         result = run_tool(step.tool, step.params)
     if not isinstance(result, dict) or not result.get("ok"):
-        return {"ok": False, "reason": _error(result), "undo": []}
+        return {"ok": False, "reason": _error(result), "code": _code(result), "undo": []}
     data = result.get("data") or {}
     out: dict[str, Any] = {"ok": True, "reason": "", "undo": []}
     if step.tool == "create_event":
@@ -73,7 +81,8 @@ def run_step(step: Step, *, run_tool: RunTool, events) -> dict:
         # earlier writes with no undo; a malformed result fails this line instead.
         missing = [k for k in ("event_id", "path") if not data.get(k)]
         if missing:
-            return {"ok": False, "reason": f"create_event returned no {', '.join(missing)}", "undo": []}
+            return {"ok": False, "reason": f"create_event returned no {', '.join(missing)}", "code": "FAILED",
+                    "undo": []}
         ids = list(dict.fromkeys([data["event_id"], *(data.get("fragments") or [])]))
         file_date = Path(data["path"]).stem
         after = {eid: _find(events, eid, file_date) for eid in ids}
@@ -152,10 +161,24 @@ def apply_result(rec: dict, res: dict, *, done_status: str, partial_of: tuple[st
     rec["status"] = done_status
 
 
+def _guarded_step(step: Step, *, run_tool: RunTool, events) -> dict:
+    """`run_step`, with a raise turned into a failed step.
+
+    A raise escaping here would abort the turn before its record is saved,
+    leaving the steps that already wrote with no undo.
+    """
+    try:
+        return run_step(step, run_tool=run_tool, events=events)
+    except Exception as e:
+        logger.error("fast lane step %s raised; marking it failed", step.tool, exc_info=True)
+        return {"ok": False, "reason": f"error: {type(e).__name__}", "code": "EXCEPTION", "undo": []}
+
+
 def run_lines(lines: list[PlannedLine], *, run_tool: RunTool, events) -> list[dict]:
     records = []
     for k, line in enumerate(lines):
         rec = _record(k, line)
+        rec["steps"] = []   # what each call that actually ran came to; read by the agent-turns log
         if line.kind == "question":
             rec["status"] = "question"
         elif line.kind == "propose":
@@ -164,7 +187,9 @@ def run_lines(lines: list[PlannedLine], *, run_tool: RunTool, events) -> list[di
             done = "pending" if line.outcome == "proposal" else "done"
             succeeded: str | None = None
             for step in line.steps:
-                res = run_step(step, run_tool=run_tool, events=events)
+                res = _guarded_step(step, run_tool=run_tool, events=events)
+                rec["steps"].append({"tool": step.tool, "ok": res["ok"], "reason": res["reason"],
+                                     "code": None if res["ok"] else res.get("code", "FAILED")})
                 apply_result(rec, res, done_status=done,
                              partial_of=(succeeded, step.tool) if succeeded and not res["ok"] else None)
                 if not res["ok"]:

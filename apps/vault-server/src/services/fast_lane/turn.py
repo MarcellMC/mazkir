@@ -45,7 +45,7 @@ class FastDeps:
     actions_dir: Path
     places_path: Path
     suggestions_path: Path
-    skills_dir: Path | None = None   # the skill catalog the parse picks a fallthrough skill from
+    skills_dir: Path | None          # the skill catalog the parse picks a fallthrough skill from; None: no catalog
 
 
 @dataclass
@@ -120,22 +120,36 @@ def _suggestion_lines(records: list[dict], deps: FastDeps, habits: list[dict], n
     return out
 
 
+NO_RECEIPT = "(the receipt for this message could not be shown)"
+
+
+def _summary(step: dict) -> dict:
+    """The shape `turn_trace` reads: `ok`, else `error.code`."""
+    if step["ok"]:
+        return {"ok": True}
+    return {"ok": False, "error": {"code": step.get("code") or "FAILED", "message": step.get("reason") or ""}}
+
+
 def _log_turn(ctx: FastContext, deps: FastDeps, lines: list[PlannedLine], records: list[dict],
-              receipt: dict, *, save_memory: bool) -> None:
-    """Spec §7.6: the turn is part of the agent's memory, as skill `fast-lane`."""
+              assistant_text: str, *, save_memory: bool) -> None:
+    """Spec §7.6: the turn is part of the agent's memory, as skill `fast-lane`.
+
+    One entry per call that actually ran, with its own outcome; a step after
+    a failed one never ran and is not claimed. `records[k].steps[i]` is the
+    outcome of `lines[k].steps[i]` (act.run_lines).
+    """
     tools = [
-        {"name": s.tool, "params": {k: v for k, v in s.params.items() if not k.startswith("_")},
-         "confidence": 1.0, "reasoning": "fast lane", "confirmed": True,
-         "result_summary": {"status": rec["status"], "reason": rec["reason"]}}
-        for line, rec in zip(lines, records) for s in line.steps
+        {"name": step.tool, "params": {k: v for k, v in step.params.items() if not k.startswith("_")},
+         "confidence": 1.0, "reasoning": "fast lane", "confirmed": True, "result_summary": _summary(ran)}
+        for line, rec in zip(lines, records) for step, ran in zip(line.steps, rec.get("steps", []))
     ]
     emit_agent_turn({
         "chat_id": ctx.chat_id, "skill": "fast-lane", "user_text": ctx.text, "tools": tools,
-        "assistant_text": receipt["text"], "items_referenced": [], "awaiting_confirmation": False,
+        "assistant_text": assistant_text, "items_referenced": [], "awaiting_confirmation": False,
         "pending_action_id": None, "prior_action_id": None, "iters": 0, "stop_reason": "fast_lane",
     })
     if save_memory:
-        deps.memory.save_turn(ctx.chat_id, ctx.text, receipt["text"], [])
+        deps.memory.save_turn(ctx.chat_id, ctx.text, assistant_text, [])
 
 
 def run_fast_turn(ctx: FastContext, deps: FastDeps, settings: ShadowSettings, *, message_id: int | None = None,
@@ -144,17 +158,19 @@ def run_fast_turn(ctx: FastContext, deps: FastDeps, settings: ShadowSettings, *,
     repeat = _safe(lambda: act.find_repeat(deps.actions_dir, ctx.chat_id, message_id), None)
     if repeat is not None:
         return FastTurn(route=repeat.get("route") or "fast", fallthrough_skill=repeat.get("fallthrough_skill"),
-                        turn=repeat, receipt=render_receipt(repeat, ctx.now) if repeat.get("lines") else None,
+                        turn=repeat,
+                        receipt=_safe(lambda: render_receipt(repeat, ctx.now), None) if repeat.get("lines") else None,
                         repeat=True)
     with _tracer.start_as_current_span("fast.turn") as span:
         started = time.monotonic()
-        ctx = complete_fast_context(ctx, events=deps.events, vault=deps.vault, skills_dir=deps.skills_dir)
         on_stage("Reading…")
+        ctx = complete_fast_context(ctx, events=deps.events, vault=deps.vault, skills_dir=deps.skills_dir)
         try:
             with _tracer.start_as_current_span("fast.parse"):
                 result = parse(ctx, deps.claude, model=settings.model, timeout_s=settings.timeout_s)
-        except ParseFailure as e:
+        except Exception as e:   # ParseFailure, or a bug in the parse: either way nothing has been written
             logger.error("fast lane parse failed; the router takes the message",
+                         exc_info=not isinstance(e, ParseFailure),
                          extra={"event_type": "fast_turn", "route": "router_fallback", "error": str(e)})
             span.set_attribute("mazkir.fast.route", "router_fallback")
             return FastTurn(route="router_fallback")
@@ -189,10 +205,18 @@ def run_fast_turn(ctx: FastContext, deps: FastDeps, settings: ShadowSettings, *,
         turn = {"turn_id": turn_id, "chat_id": ctx.chat_id, "message_id": message_id,
                 "created_at": ctx.now.isoformat(), "text": ctx.text, "route": result.route,
                 "fallthrough_skill": result.fallthrough_skill, "response": "", "lines": records}
-        with _tracer.start_as_current_span("fast.receipt"):
-            receipt = render_receipt(turn, ctx.now)
+        # Saved before the receipt is rendered: the record is what undo needs, and
+        # a receipt bug must not cost the writes above their way back.
         _safe(lambda: (act.save_turn(deps.actions_dir, turn), act.prune(deps.actions_dir)), None)
-        _safe(lambda: _log_turn(ctx, deps, lines, records, receipt, save_memory=result.route == "fast"), None)
+        receipt = None
+        try:
+            with _tracer.start_as_current_span("fast.receipt"):
+                receipt = render_receipt(turn, ctx.now)
+        except Exception:
+            logger.error("fast lane receipt failed to render; the turn %s is saved", turn_id, exc_info=True,
+                         extra={"event_type": "fast_turn", "turn_id": turn_id})
+        assistant_text = receipt["text"] if receipt else NO_RECEIPT
+        _safe(lambda: _log_turn(ctx, deps, lines, records, assistant_text, save_memory=result.route == "fast"), None)
 
         outcomes = Counter(rec["outcome"] for rec in records)
         span.set_attribute("mazkir.fast.clauses", len(result.clauses))
@@ -202,4 +226,4 @@ def run_fast_turn(ctx: FastContext, deps: FastDeps, settings: ShadowSettings, *,
                                         "clauses": len(result.clauses), "outcomes": dict(outcomes),
                                         "parse_ms": parse_ms})
         return FastTurn(route=result.route, fallthrough_skill=result.fallthrough_skill, turn=turn,
-                        receipt=receipt, ran=ran_summary(turn, ctx.now))
+                        receipt=receipt, ran=_safe(lambda: ran_summary(turn, ctx.now), []))
