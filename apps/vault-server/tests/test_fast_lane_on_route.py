@@ -147,7 +147,7 @@ def test_a_repeat_while_the_first_is_still_running_says_so(monkeypatch, tmp_path
     client, agent = make(monkeypatch, tmp_path, FastTurn(route="fallthrough", turn=turn, repeat=True))
     body = post(client).json()
     agent.handle_message.assert_not_called()
-    assert body["response"] == "Still working on your previous message."
+    assert body["response"] == route.STILL_WORKING
 
 
 def test_a_fallthrough_with_a_message_id_leaves_a_turn_record_before_the_agent_runs(monkeypatch, tmp_path):

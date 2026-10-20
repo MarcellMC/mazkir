@@ -185,7 +185,7 @@ def _previous_skill(chat_id: int, date: str) -> str | None:
 
 
 SYNC_CAP_S = 15.0
-STILL_WORKING = "Still working on your previous message."
+STILL_WORKING = "Still working on that — anything it logs will show in /day."
 AGENT_FAILED = "That message failed; please send it again."
 # A mixed turn's fast lines already ran: a resend (a new message_id) would write them twice.
 MIXED_FAILED = "The rest of that message failed — what I logged above stands."
