@@ -69,6 +69,11 @@ def run_step(step: Step, *, run_tool: RunTool, events) -> dict:
     data = result.get("data") or {}
     out: dict[str, Any] = {"ok": True, "reason": "", "undo": []}
     if step.tool == "create_event":
+        # A raise here would abort the turn before its record is saved, leaving
+        # earlier writes with no undo; a malformed result fails this line instead.
+        missing = [k for k in ("event_id", "path") if not data.get(k)]
+        if missing:
+            return {"ok": False, "reason": f"create_event returned no {', '.join(missing)}", "undo": []}
         ids = list(dict.fromkeys([data["event_id"], *(data.get("fragments") or [])]))
         file_date = Path(data["path"]).stem
         after = {eid: _find(events, eid, file_date) for eid in ids}
@@ -109,10 +114,33 @@ def _record(k: int, line: PlannedLine) -> dict[str, Any]:
     }
 
 
-def apply_result(rec: dict, res: dict, *, done_status: str) -> None:
-    """Fold one call's outcome into its line. Shared with the receipt routes (Task 16)."""
+_DID = {"create_event": "block written", "update_event": "block updated", "complete_habit": "habit ticked",
+        "daily_add_task": "todo added", "daily_check_todo": "todo crossed out"}
+_COULDNT = {"daily_check_todo": "couldn't cross out the todo", "daily_add_task": "couldn't add the todo",
+            "complete_habit": "couldn't tick the habit", "update_event": "couldn't update the block",
+            "create_event": "couldn't write the block"}
+
+
+def _partial_reason(done_tool: str | None, failed_tool: str | None, why: str) -> str:
+    did = _DID.get(done_tool or "", "done")
+    couldnt = _COULDNT.get(failed_tool or "", f"couldn't {failed_tool or 'finish'}")
+    return f"{did}; {couldnt}: {why}"
+
+
+def apply_result(rec: dict, res: dict, *, done_status: str, partial_of: tuple[str, str] | None = None) -> None:
+    """Fold one call's outcome into its line. Shared with the receipt routes (Task 16).
+
+    `partial_of` is `(succeeded_tool, failed_tool)` when an earlier step of this
+    line already wrote something: the line keeps its status, ids and undo, and
+    the failure goes into `reason`. Marking it failed would hide ✎ and Undo for
+    a write that really happened.
+    """
     if not res["ok"]:
-        rec["status"], rec["reason"] = "failed", res["reason"]
+        if partial_of is not None:
+            rec["status"] = done_status
+            rec["reason"] = _partial_reason(partial_of[0], partial_of[1], res["reason"])
+        else:
+            rec["status"], rec["reason"] = "failed", res["reason"]
         return
     for key in ("event_id", "date", "calendar_sync", "habit", "day"):
         if res.get(key) is not None:
@@ -134,11 +162,14 @@ def run_lines(lines: list[PlannedLine], *, run_tool: RunTool, events) -> list[di
             rec["status"] = "pending"
         else:
             done = "pending" if line.outcome == "proposal" else "done"
+            succeeded: str | None = None
             for step in line.steps:
                 res = run_step(step, run_tool=run_tool, events=events)
-                apply_result(rec, res, done_status=done)
+                apply_result(rec, res, done_status=done,
+                             partial_of=(succeeded, step.tool) if succeeded and not res["ok"] else None)
                 if not res["ok"]:
                     break
+                succeeded = succeeded or step.tool
         records.append(rec)
     return records
 
@@ -176,7 +207,10 @@ def find_repeat(actions_dir: Path, chat_id: int, message_id: int | None) -> dict
         return None
     horizon = time.time() - REPEAT_WINDOW.total_seconds()
     for path in Path(actions_dir).glob("t*.json"):
-        if path.stat().st_mtime < horizon:
+        try:
+            if path.stat().st_mtime < horizon:
+                continue
+        except OSError:   # pruned or replaced since the glob
             continue
         turn = load_turn(actions_dir, path.stem)
         if turn and turn.get("chat_id") == chat_id and turn.get("message_id") == message_id:

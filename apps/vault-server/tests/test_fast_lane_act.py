@@ -160,3 +160,53 @@ def test_a_block_line_keeps_its_habit_candidate_until_a_habit_is_ticked():
     [rec] = run_lines([line], run_tool=lambda t, p: {"ok": True, "data": {}}, events=None)
     assert rec["status"] == "done" and rec["habit_candidate"]["name"] == "Running"
     assert rec["undo"] == [{"kind": "none", "why": "a rollover can't be undone from here"}]
+
+
+def test_a_later_step_failing_keeps_the_written_block_live_and_undoable(tmp_path, vault_service):
+    """Review fix: the block was written, so the line stays done; only the cross-out failed."""
+    agent, events = make_agent(tmp_path, vault_service)
+    line = PlannedLine("block", "fact", "Gym", steps=(
+        create("Gym", "2026-01-10T18:00:00", "2026-01-10T19:00:00"),
+        Step("daily_check_todo", {"text": "call the plumber", "date": "2026-01-10"})))
+    [rec] = run_lines([line], run_tool=agent.run_tool, events=events)
+    assert rec["status"] == "done"
+    assert rec["reason"].startswith("block written; couldn't cross out the todo: ")
+    assert "call the plumber" in rec["reason"]
+    assert rec["event_id"] == events.get_events("2026-01-10")[0]["id"] and rec["date"] == "2026-01-10"
+    assert [u["kind"] for u in rec["undo"]] == ["created"]
+    turn = {"turn_id": "t0123abcd", "created_at": "2026-01-10T19:05:00", "lines": [rec]}
+    receipt = render_receipt(turn, dt.datetime(2026, 1, 10, 19, 6))
+    assert any(b["data"].startswith("block:edit:2026-01-10:") for b in receipt["lines"][0]["buttons"])
+    assert receipt["undo"] == "rcpt:t0123abcd:u:un"
+
+
+def test_a_first_step_failing_still_fails_the_line():
+    line = PlannedLine("block", "fact", "Gym", steps=(Step("create_event", {}), Step("daily_rollover", {})))
+    calls = []
+
+    def run_tool(tool, params):
+        calls.append(tool)
+        return {"ok": False, "error": {"code": "SCHEMA_INVALID", "message": "no start"}}
+    [rec] = run_lines([line], run_tool=run_tool, events=None)
+    assert rec["status"] == "failed" and rec["reason"] == "no start" and calls == ["create_event"]
+
+
+def test_a_create_result_missing_its_ids_fails_the_line_instead_of_raising():
+    ok_but_empty = lambda tool, params: {"ok": True, "data": {"path": "x/2026-01-10.json"}}
+    res = run_step(Step("create_event", {}), run_tool=ok_but_empty, events=None)
+    assert res["ok"] is False and res["undo"] == [] and "event_id" in res["reason"]
+    res = run_step(Step("create_event", {}), run_tool=lambda t, p: {"ok": True, "data": {"event_id": "e1"}},
+                   events=None)
+    assert res["ok"] is False and "path" in res["reason"]
+
+
+def test_find_repeat_skips_a_file_that_vanishes_mid_scan(tmp_path, monkeypatch):
+    save_turn(tmp_path, {"turn_id": "t0123abcd", "chat_id": 1, "message_id": 7, "lines": []})
+    real_stat = type(tmp_path).stat
+
+    def flaky(self, *a, **kw):
+        if self.name == "t0123abcd.json":
+            raise FileNotFoundError(self)
+        return real_stat(self, *a, **kw)
+    monkeypatch.setattr(type(tmp_path), "stat", flaky)
+    assert find_repeat(tmp_path, 1, 7) is None
