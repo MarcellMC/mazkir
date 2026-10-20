@@ -27,6 +27,20 @@ def _isolate_audit_log(tmp_path, monkeypatch):
     monkeypatch.setenv("MAZKIR_AUDIT_LOG_PATH", str(tmp_path / "audit-test.jsonl"))
 
 
+@pytest.fixture
+def habit_hook_mode(monkeypatch):
+    """Set FAST_LANE_MODE on the settings object the habit hook actually reads.
+
+    test_config.py drops src.config from sys.modules, so a module first
+    imported after it binds a fresh `settings`; patching a test module's own
+    import would then miss the hook.
+    """
+    def set_mode(mode: str) -> None:
+        from src.services.hooks import habit_hook
+        monkeypatch.setattr(habit_hook.settings, "fast_lane_mode", mode)
+    return set_mode
+
+
 # --- Template contents (copied from memory/00-system/templates/) ---
 
 # NOTE: HABIT_TEMPLATE below temporarily differs from memory/00-system/templates/_habit_.md

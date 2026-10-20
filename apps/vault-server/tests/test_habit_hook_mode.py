@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.config import settings
 from src.services.events_service import EventsService
 from tests.test_fast_lane_habits import with_dog_walk
 
@@ -36,8 +35,8 @@ def _run(agent, name, params):
 
 
 @pytest.mark.parametrize("mode", ["off", "shadow"])
-def test_outside_on_a_habit_block_ticks_nothing(mode, vault_service, tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "fast_lane_mode", mode)
+def test_outside_on_a_habit_block_ticks_nothing(mode, vault_service, tmp_path, habit_hook_mode):
+    habit_hook_mode(mode)
     with_dog_walk(vault_service)
     agent, events = _agent(vault_service, tmp_path)
     before = vault_service.read_file("20-habits/dog-walk.md")["metadata"]
@@ -48,9 +47,9 @@ def test_outside_on_a_habit_block_ticks_nothing(mode, vault_service, tmp_path, m
 
 
 @pytest.mark.parametrize("mode", ["off", "shadow"])
-def test_outside_on_logging_a_walk_then_ticking_it_counts_once(mode, vault_service, tmp_path, monkeypatch):
+def test_outside_on_logging_a_walk_then_ticking_it_counts_once(mode, vault_service, tmp_path, habit_hook_mode):
     """The reviewer's double-tick repro: create_event, then complete_habit, in one turn."""
-    monkeypatch.setattr(settings, "fast_lane_mode", mode)
+    habit_hook_mode(mode)
     with_dog_walk(vault_service)        # daily_target 2, so a second tick would be accepted
     agent, _ = _agent(vault_service, tmp_path)
     _run(agent, "create_event", _today_block())
@@ -58,8 +57,8 @@ def test_outside_on_logging_a_walk_then_ticking_it_counts_once(mode, vault_servi
     assert ticked["ok"] and ticked["data"]["completions_today"] == 1
 
 
-def test_on_a_habit_block_ticks_once_and_the_result_says_so(vault_service, tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "fast_lane_mode", "on")
+def test_on_a_habit_block_ticks_once_and_the_result_says_so(vault_service, tmp_path, habit_hook_mode):
+    habit_hook_mode("on")
     with_dog_walk(vault_service)
     agent, events = _agent(vault_service, tmp_path)
     created = _run(agent, "create_event", _today_block())
@@ -69,8 +68,8 @@ def test_on_a_habit_block_ticks_once_and_the_result_says_so(vault_service, tmp_p
     assert len(ticks) == 1
 
 
-def test_on_an_edit_that_makes_a_block_a_habit_reports_the_tick(vault_service, tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "fast_lane_mode", "on")
+def test_on_an_edit_that_makes_a_block_a_habit_reports_the_tick(vault_service, tmp_path, habit_hook_mode):
+    habit_hook_mode("on")
     with_dog_walk(vault_service)
     agent, _ = _agent(vault_service, tmp_path)
     created = _run(agent, "create_event", _today_block("Errand"))
