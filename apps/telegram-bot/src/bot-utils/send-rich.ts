@@ -53,7 +53,7 @@ export async function sendRich(
  *  `description`; fall back to `message` for anything else that merely
  *  looks like one, since `Error`'s own message text embeds the same
  *  description grammY reports. */
-function isNotModifiedError(err: unknown): boolean {
+export function isNotModifiedError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const text = (err as { description?: unknown }).description;
   const haystack = typeof text === "string" ? text : err.message;

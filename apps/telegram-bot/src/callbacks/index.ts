@@ -16,6 +16,7 @@ import {
 import { setSelectedDate, noteDayView } from "../state/selected-date.js";
 import { stripSuppressedProposals } from "../state/dismissed-proposals.js";
 import { dayActionHandlers } from "./day-actions.js";
+import { receiptHandlers } from "./receipt.js";
 
 export const callbackHandlers = new Composer();
 
@@ -23,6 +24,8 @@ export const callbackHandlers = new Composer();
 // otherwise swallow `day:refresh:2026-09-10` and `day:approveall:2026-09-10`
 // and try to parse the whole tail as a date.
 callbackHandlers.use(dayActionHandlers);
+// Fast-lane receipt taps (`rcpt:…`); a receipt's ✎ is `block:edit:…`, above.
+callbackHandlers.use(receiptHandlers);
 
 // Confirmation choice buttons. The action id comes from the callback data
 // rather than module state, so a button on an older message cannot answer
