@@ -1961,10 +1961,14 @@ class AgentService:
         from src.services.exif_service import extract_exif_metadata
         exif = extract_exif_metadata(photo_bytes)
 
-        # Use Telegram message timestamp as fallback when EXIF is stripped
-        timestamp = exif.get("timestamp")
-        if not timestamp and attachment.get("telegram_date"):
-            timestamp = attachment["telegram_date"]
+        # EXIF when the photo was sent as a file; else Telegram's send time,
+        # which is UTC and used to be read as local (spec §5.6).
+        from zoneinfo import ZoneInfo
+        from src.config import settings as _settings
+        from src.services.fast_lane.photos import photo_moment
+        moment, precision = photo_moment(exif.get("timestamp"), attachment.get("telegram_date"),
+                                         ZoneInfo(_settings.vault_timezone))
+        timestamp = moment.replace(tzinfo=None).isoformat(timespec="seconds") if moment else None
 
         # Write/append to sidecar metadata.json
         meta_path = media_dir / "metadata.json"
@@ -1980,6 +1984,7 @@ class AgentService:
             "path": rel_path,
             "saved_at": dt.datetime.now().isoformat(),
             "exif_timestamp": timestamp,
+            "exif_precision": precision,
             "exif_location": exif.get("location"),
             "exif_camera": exif.get("camera"),
         })
@@ -1992,8 +1997,30 @@ class AgentService:
             "path": rel_path,
             "exif_location": exif.get("location"),
             "exif_timestamp": timestamp,
+            "exif_precision": precision,
             "exif_camera": exif.get("camera"),
         }
+
+    def _place_photo(self, photo_info: dict) -> list[str]:
+        """Fast lane on: attach the photo to the block covering its moment, and say so (spec §5.6)."""
+        from src.config import settings as _settings
+        if _settings.fast_lane_mode != "on" or not self.events or not photo_info.get("exif_timestamp"):
+            return []
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        from src.services.fast_lane.photos import covering_block
+        try:
+            moment = dt.datetime.fromisoformat(photo_info["exif_timestamp"]).replace(
+                tzinfo=ZoneInfo(_settings.vault_timezone))
+            block = covering_block(self.events, moment)
+            if block is None:
+                return ["no block covers that moment"]
+            self.events.attach_photo(block["date"], block["id"], photo_info["path"])
+            span = f"{block['start_time'][11:16]}–{(block.get('end_time') or '')[11:16]}"
+            return [f"Mazkir already attached it to “{block['name']}” {span}; do not attach it again"]
+        except Exception:
+            logger.warning("placing a photo failed", exc_info=True)
+            return []
 
     def _build_user_content(
         self,
@@ -2030,7 +2057,9 @@ class AgentService:
                         if loc:
                             parts.append(f"EXIF GPS: {loc['lat']}, {loc['lng']}")
                         if ts:
-                            parts.append(f"taken {ts}")
+                            parts.append(f"taken {ts}" + (" (from the send time, approximate)"
+                                                          if photo_info.get("exif_precision") == "approx" else ""))
+                            parts += self._place_photo(photo_info)
                         if cam:
                             parts.append(f"Camera: {cam}")
                         text_parts.append(f"[{' | '.join(parts)}]")
