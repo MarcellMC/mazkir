@@ -3,7 +3,7 @@
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-from src.services.fast_lane.actions import PlanInputs, plan_turn
+from src.services.fast_lane.actions import PlanInputs, Step, plan_turn
 from src.services.fast_lane.contract import Clause, ParseResult, TimeWords
 from src.services.fast_lane.places import Place
 from src.services.fast_lane.time_resolver import ClauseResolution, Placement, logical_date
@@ -122,11 +122,12 @@ def test_habits_and_todos():
          clause("check_todo", target="call the plumber"), clause("rollover_todos"),
          clause("other", evidence="and how are you")],
         [ClauseResolution("fact"), tomorrow, ClauseResolution("fact"), ClauseResolution("fact"), None],
+        habits=[{"path": "20-habits/stretching.md", "metadata": {"name": "Stretching"}}],
     )
     assert [(l.kind, l.steps[0].tool) for l in lines] == [
         ("habit", "complete_habit"), ("todo", "daily_add_task"), ("todo", "daily_check_todo"),
         ("rollover", "daily_rollover")]
-    assert lines[0].steps[0].params == {"habit_name": "stretching"}
+    assert lines[0].steps[0].params == {"habit_name": "Stretching"}
     assert lines[1].steps[0].params == {"text": "Buy milk #buy", "date": "2026-09-29"}
     assert lines[2].steps[0].params == {"text": "call the plumber", "date": "2026-09-28"}
 
@@ -219,3 +220,38 @@ def test_a_start_only_record_beside_an_open_block_of_its_activity_is_created():
     [step] = line.steps
     assert (line.kind, step.tool) == ("block", "create_event")
     assert step.params["start_time"] == "2026-09-28T00:30:00" and "end_time" not in step.params
+
+
+# --- Fix round 1 ---
+
+HABITS = [{"path": "20-habits/dog-walk.md", "metadata": {"name": "Dog Walk", "aliases": ["walked the dog"]}}]
+
+
+def test_an_exact_or_alias_habit_is_ticked_by_its_own_name():
+    lines = plan([clause("tick_habit", name="dog walk"), clause("tick_habit", name="walked the dog")],
+                 [ClauseResolution("fact"), ClauseResolution("fact")], habits=HABITS)
+    assert [(l.kind, l.steps) for l in lines] == [("habit", (Step("complete_habit", {"habit_name": "Dog Walk"}),))] * 2
+
+
+def test_a_fuzzy_habit_is_offered_for_a_tap_not_ticked():
+    [line] = plan([clause("tick_habit", name="walk")], [ClauseResolution("fact")], habits=HABITS)
+    assert (line.kind, line.steps) == ("propose", ())
+    assert line.pending == (Step("complete_habit", {"habit_name": "Dog Walk"}),)
+    assert line.habit_candidate == {"path": "20-habits/dog-walk.md", "name": "Dog Walk"}
+
+
+def test_a_habit_matching_none_is_a_question_that_writes_nothing():
+    [line] = plan([clause("tick_habit", name="juggling")], [ClauseResolution("fact")], habits=HABITS)
+    assert (line.kind, line.steps, line.pending) == ("question", (), ())
+
+
+def test_an_end_with_no_target_keeps_the_resolvers_reason():
+    [line] = plan([clause("end_block", target="Gym")], [ClauseResolution("question", reason="no time given")])
+    assert (line.kind, line.reason) == ("question", "no time given")
+
+
+def test_a_plan_edit_stays_a_plan():
+    gym = block("g", "Gym", "2026-09-28T18:00:00", "2026-09-28T19:00:00", intent="plan")
+    [line] = plan([clause("edit_block", target="the gym", intent="plan")],
+                  [placed("plan", at(19, 0), at(20, 0))], targets={0: gym})
+    assert (line.kind, line.outcome) == ("edit", "plan")

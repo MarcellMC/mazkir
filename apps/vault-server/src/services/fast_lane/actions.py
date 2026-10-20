@@ -217,7 +217,8 @@ def _edit(i: int, c: Clause, r: ClauseResolution, inputs: PlanInputs) -> list[Pl
         # Nothing open to end: the resolver placed it as a new block ending then (§6.2 rule 9).
         return _block(replace(c, op="log_block", name=c.name or c.target), r, inputs)
     if target is None:
-        return [PlannedLine("question", "question", label, reason="which block?")]
+        reason = r.reason if r.outcome == "question" and r.reason else "which block?"
+        return [PlannedLine("question", "question", label, reason=reason)]
     if r.outcome == "question":
         return [PlannedLine("question", "question", target.get("name") or label, reason=r.reason)]
     p = r.placement
@@ -230,17 +231,30 @@ def _edit(i: int, c: Clause, r: ClauseResolution, inputs: PlanInputs) -> list[Pl
     text = new_name or target.get("name") or label
     if r.outcome == "proposal":
         return [PlannedLine("propose", "proposal", text, pending=(step,), placement=p, reason=r.reason)]
-    return [PlannedLine("edit", "fact", text, steps=(step,), placement=p)]
+    outcome = "plan" if r.outcome == "plan" else "fact"
+    return [PlannedLine("edit", outcome, text, steps=(step,), placement=p)]
 
 
 def _habit(c: Clause, r: ClauseResolution, inputs: PlanInputs) -> list[PlannedLine]:
+    """A habit done with no clock time (spec §7.2).
+
+    Exact or alias: ticked. Fuzzy: one tap, never a tick (`match_habit`). No
+    match: a question, writing nothing; handing the raw words to
+    `complete_habit` would let its own looser lookup tick a habit the matcher
+    rejected.
+    """
     name = c.name or c.evidence
     match = match_habit(name, c.tags, inputs.habits)
-    shown = match.name if match else name
-    step = Step("complete_habit", {"habit_name": shown})
+    if match is None:
+        return [PlannedLine("question", "question", name, reason="no habit by that name")]
+    step = Step("complete_habit", {"habit_name": match.name})
+    if match.kind == "fuzzy":
+        return [PlannedLine("propose", "proposal", match.name, pending=(step,), reason=f"did you mean {match.name}?",
+                            habit_candidate={"path": match.path, "name": match.name})]
     if r.outcome == "proposal":
-        return [PlannedLine("propose", "proposal", shown, pending=(step,), reason=r.reason or "mentioned in passing")]
-    return [PlannedLine("habit", "fact", shown, steps=(step,))]
+        return [PlannedLine("propose", "proposal", match.name, pending=(step,),
+                            reason=r.reason or "mentioned in passing")]
+    return [PlannedLine("habit", "fact", match.name, steps=(step,))]
 
 
 def _todo_text(c: Clause, inputs: PlanInputs) -> str:
