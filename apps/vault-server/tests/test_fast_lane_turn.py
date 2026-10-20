@@ -246,3 +246,30 @@ def test_a_receipt_that_fails_to_render_still_leaves_the_turn_saved(tmp_path, va
     assert (tmp_path / "actions" / f"{fast.turn['turn_id']}.json").exists()
     assert any(r.levelname == "ERROR" for r in caplog.records)
     memory.save_turn.assert_called_once_with(1, "Gym 18:00-19:00", turn_module.NO_RECEIPT, [])
+
+
+def test_a_fast_route_saves_the_exchange_before_logging_the_record(tmp_path, vault_service, monkeypatch):
+    """The agent loop's order: a crash between the two leaves a pair with no
+    record, which the trace join absorbs. The reverse -- a record with no pair
+    -- could attach to an older message with the same words."""
+    deps, _, memory = setup(tmp_path, vault_service)
+    order = []
+    memory.save_turn.side_effect = lambda *a: order.append("save")
+    monkeypatch.setattr(turn_module, "emit_agent_turn", lambda rec: order.append("emit"))
+    run_fast_turn(ctx("Gym 18:00-19:00"), deps, SETTINGS, message_id=5, parse=parse_to(GYM))
+    assert order == ["save", "emit"]
+
+
+def test_a_failed_save_on_a_fast_route_logs_no_record(tmp_path, vault_service, monkeypatch, caplog):
+    deps, events, memory = setup(tmp_path, vault_service)
+    memory.save_turn.side_effect = OSError("disk full")
+    logged = []
+    monkeypatch.setattr(turn_module, "emit_agent_turn", logged.append)
+    with caplog.at_level("ERROR", logger="src.services.fast_lane.turn"):
+        fast = run_fast_turn(ctx("Gym 18:00-19:00"), deps, SETTINGS, message_id=5, parse=parse_to(GYM))
+    assert logged == []
+    assert any(r.levelname == "ERROR" for r in caplog.records)
+    # The write and its undo record survive: only the memory entry is missing.
+    assert [e["name"] for e in events.get_events("2026-01-10")] == ["Gym"]
+    saved = tmp_path / "actions" / f"{fast.turn['turn_id']}.json"
+    assert saved.exists() and "create_event" in saved.read_text()

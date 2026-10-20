@@ -150,13 +150,23 @@ def _log_turn(ctx: FastContext, deps: FastDeps, lines: list[PlannedLine], record
         for line, rec in zip(lines, records) for step, ran in zip(line.steps, rec.get("steps", []))
     ]
     user_text = ctx.log_text or ctx.text
+    if route == "fast":
+        # The agent loop's order: the exchange first, then the record. A crash
+        # between leaves a pair with no record, which turn_trace absorbs; a
+        # `fast` record with no pair is an ordinary record to the join and
+        # could attach to an older message with the same words. So a failed
+        # save logs no record at all.
+        try:
+            deps.memory.save_turn(ctx.chat_id, user_text, assistant_text, [])
+        except Exception:
+            logger.error("fast lane could not save the exchange; its agent-turns record is withheld",
+                         exc_info=True, extra={"event_type": "fast_turn", "chat_id": ctx.chat_id})
+            return
     emit_agent_turn({
         "chat_id": ctx.chat_id, "skill": "fast-lane", "route": route, "user_text": user_text, "tools": tools,
         "assistant_text": assistant_text, "items_referenced": [], "awaiting_confirmation": False,
         "pending_action_id": None, "prior_action_id": None, "iters": 0, "stop_reason": "fast_lane",
     })
-    if route == "fast":
-        deps.memory.save_turn(ctx.chat_id, user_text, assistant_text, [])
 
 
 def run_fast_turn(ctx: FastContext, deps: FastDeps, settings: ShadowSettings, *, message_id: int | None = None,

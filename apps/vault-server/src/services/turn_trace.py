@@ -215,6 +215,11 @@ def attach_traces(
     user_texts = [m.get("content") for m in out]
     trailing = ""
 
+    # Residual ambiguity, accepted: if the skill crashed after a mixed fast
+    # record on one message, and the next message has identical words and
+    # goes straight to a skill (no fast record of its own), the orphan folds
+    # into that skill record -- the fast call is attributed one message late.
+    # It did run, and on the same words.
     records = _fold_mixed_turns(records)
     i = len(pairs) - 1
     j = len(records) - 1
