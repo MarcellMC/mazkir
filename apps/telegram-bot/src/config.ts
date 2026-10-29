@@ -26,7 +26,10 @@ function loadConfig(): Config {
     vaultServerApiKey: process.env.VAULT_SERVER_API_KEY ?? "",
     webappUrl: process.env.WEBAPP_URL ?? "http://localhost:5173",
     logLevel: process.env.LOG_LEVEL ?? "INFO",
-    streamResponses: process.env.STREAM_RESPONSES === "true",
+    // On unless explicitly "false": a fast-lane receipt reaches the chat the
+    // moment it exists only when streaming; otherwise the reply waits for
+    // the Google syncs.
+    streamResponses: process.env.STREAM_RESPONSES !== "false",
     // The default here must match the server's VAULT_TIMEZONE default
     // (apps/vault-server/src/config.py) — see day-rich.ts for why the two
     // must agree.
