@@ -4,6 +4,7 @@ describe("config", () => {
   const originalToken = process.env.TELEGRAM_BOT_TOKEN;
   const originalUserId = process.env.AUTHORIZED_USER_ID;
   const originalTimezone = process.env.VAULT_TIMEZONE;
+  const originalStream = process.env.STREAM_RESPONSES;
 
   beforeEach(() => {
     vi.resetModules();
@@ -22,6 +23,7 @@ describe("config", () => {
     restore("TELEGRAM_BOT_TOKEN", originalToken);
     restore("AUTHORIZED_USER_ID", originalUserId);
     restore("VAULT_TIMEZONE", originalTimezone);
+    restore("STREAM_RESPONSES", originalStream);
   });
 
   it("falls back to Asia/Jerusalem when VAULT_TIMEZONE is unset", async () => {
@@ -37,5 +39,19 @@ describe("config", () => {
     process.env.VAULT_TIMEZONE = "America/New_York";
     const { config } = await import("../src/config.js");
     expect(config.vaultTimezone).toBe("America/New_York");
+  });
+
+  it("streams by default when STREAM_RESPONSES is unset", async () => {
+    // A fast-lane receipt is sent as soon as it exists only on the streaming
+    // path; a non-streaming reply waits for the Google syncs first.
+    delete process.env.STREAM_RESPONSES;
+    const { config } = await import("../src/config.js");
+    expect(config.streamResponses).toBe(true);
+  });
+
+  it("turns streaming off only for an explicit STREAM_RESPONSES=false", async () => {
+    process.env.STREAM_RESPONSES = "false";
+    const { config } = await import("../src/config.js");
+    expect(config.streamResponses).toBe(false);
   });
 });
