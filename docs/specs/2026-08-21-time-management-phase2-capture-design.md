@@ -38,7 +38,7 @@ Value-ordered rather than phase-ordered. Each ships independently.
 | 4 | NL logging + simple single edits | ~5 | The only capture path sleep and meals will ever have |
 | 5 | Inferred capture: suggested→approved, gaps | ~6 | Reduces typing once capture already works |
 | 6 | Classification | ~4 | Needs blocks to classify |
-| A | Fast lane (piece A of the message pipeline) | ~8 | Supersedes the router for time, habits and todos; A1 shadow shipped with plan 2026-09-27; see docs/specs/2026-09-27-fast-lane-design.md |
+| A | Fast lane (piece A of the message pipeline) | ~8 | Supersedes the router for time, habits and todos; A1 shadow shipped with plan 2026-09-27; A2 (writes, receipts, undo): plan 2026-09-28, implemented, pending rollout; see docs/specs/2026-09-27-fast-lane-design.md |
 | 7 | Batch edit → preview → accept all | ~5 | Needs blocks *and* addressing. Now before 4b, and grown by the batch-preview machinery both need — see §13. Now pieces C and D of the fast-lane spec. |
 | 4b | [Ambient capture: knowing what to log](#12-ambient-capture-ship-4b) | ~4 | Ship 4 gives Mazkir hands; this gives it judgment. Now after 7, and shrunk by it — see §13. Now pieces C and D of the fast-lane spec. |
 | 8 | Timers | ~2 | NL already covers this ground retrospectively |

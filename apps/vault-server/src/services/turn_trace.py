@@ -132,6 +132,7 @@ def render_trace(record: dict[str, Any]) -> str:
     lines = [
         f"   {c.get('name', 'unknown')}({_render_params(c.get('params'))})"
         f" → {_render_outcome(c)}"
+        + (f" (by the {c['lane']})" if isinstance(c.get("lane"), str) and c["lane"] else "")
         for c in calls
         if isinstance(c, dict)  # skip non-dict entries rather than raising
     ]
@@ -184,6 +185,11 @@ def attach_traces(
     attached, which absorbs the missing-record case while leaving surplus
     older records unconsumed.
 
+    A mixed fast-lane turn breaks the 1:1 pairing: two records (``fast-lane``
+    with ``route: mixed``, then the skill's) for one pair. Before the walk
+    they are folded into one record -- fast calls first -- and a mixed record
+    with no skill record to fold into is dropped. See ``_fold_mixed_turns``.
+
     The invariant: a mismatch yields a missing trace, never a wrong one.
     Attaching someone else's trace would be a worse version of the bug this
     ship exists to fix, because it would arrive dressed as evidence.
@@ -209,6 +215,12 @@ def attach_traces(
     user_texts = [m.get("content") for m in out]
     trailing = ""
 
+    # Residual ambiguity, accepted: if the skill crashed after a mixed fast
+    # record on one message, and the next message has identical words and
+    # goes straight to a skill (no fast record of its own), the orphan folds
+    # into that skill record -- the fast call is attributed one message late.
+    # It did run, and on the same words.
+    records = _fold_mixed_turns(records)
     i = len(pairs) - 1
     j = len(records) - 1
     while i >= 0 and j >= 0:
@@ -225,3 +237,69 @@ def attach_traces(
         else:
             i -= 1  # this pair has no record -- attach nothing, never guess
     return out, trailing
+
+
+_FAST_LANE_SKILL = "fast-lane"
+
+
+def _is_fast(record: Any) -> bool:
+    return isinstance(record, dict) and record.get("skill") == _FAST_LANE_SKILL
+
+
+def _is_mixed_fast(record: Any) -> bool:
+    """A fast-lane record with no conversation pair of its own.
+
+    ``fast_lane/turn.py`` stamps ``route``: ``fast`` saved its own pair and is
+    an ordinary record; ``mixed`` handed the rest to a skill, which saves the
+    one pair. A record without ``route`` predates the stamp and is treated as
+    mixed -- dropping a trace is the safe way to be wrong.
+    """
+    return _is_fast(record) and record.get("route") != "fast"
+
+
+def _fold_mixed_turns(records: list[Any]) -> list[Any]:
+    """Make records pair 1:1 with turns again before the join.
+
+    A mixed fast-lane record is consumed only by folding into the record
+    immediately after it, when that is a non-fast-lane record from the same
+    chat with the identical ``user_text`` -- the skill that finished the same
+    message. Otherwise (the skill raised, or a mismatch) it is dropped: it is
+    never joined to a pair on its own, because its pair is the skill's, and
+    an orphan left in the list would either strand the walk in front of every
+    older pair or, matching an older message with the same words, attach to
+    a turn it does not belong to.
+    """
+    out: list[Any] = []
+    k = 0
+    while k < len(records):
+        record = records[k]
+        if _is_mixed_fast(record):
+            nxt = records[k + 1] if k + 1 < len(records) else None
+            if (
+                isinstance(nxt, dict)
+                and not _is_fast(nxt)
+                and nxt.get("chat_id") == record.get("chat_id")
+                and nxt.get("user_text") == record.get("user_text")
+            ):
+                out.append(_coalesce(record, nxt))
+                k += 2
+            else:
+                k += 1  # orphan: never attached on its own
+            continue
+        out.append(record)
+        k += 1
+    return out
+
+
+def _coalesce(fast: dict[str, Any], skill: dict[str, Any]) -> dict[str, Any]:
+    """One record for a mixed turn: the skill's, with the fast lane's calls first.
+
+    The fast calls are tagged with their lane so the rendered trace says the
+    skill did not make them itself.
+    """
+    fast_tools = fast.get("tools") if isinstance(fast.get("tools"), list) else []
+    skill_tools = skill.get("tools") if isinstance(skill.get("tools"), list) else []
+    tagged = [
+        {**c, "lane": "fast lane"} if isinstance(c, dict) else c for c in fast_tools
+    ]
+    return {**skill, "tools": tagged + skill_tools}

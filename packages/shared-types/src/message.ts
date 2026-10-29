@@ -1,3 +1,5 @@
+import type { Receipt } from "./receipt.js";
+
 export type Intent =
   | "HABIT_COMPLETION"
   | "HABIT_CREATION"
@@ -46,6 +48,9 @@ export interface MessageRequest {
   attachments?: Attachment[];
   reply_to?: ReplyContext;
   forwarded_from?: ForwardContext;
+  selected_date?: string;
+  /** Telegram's message id: a repeat is answered from the first turn (fast-lane spec §10). */
+  message_id?: number;
 }
 
 export interface MessageResponse {
@@ -57,6 +62,11 @@ export interface MessageResponse {
   /** Options this confirmation offers. Absent/empty means a plain
    *  free-text yes/no gate. */
   confirmation_choices?: { value: string; label: string }[] | null;
+  /** Present when the fast lane acted (FAST_LANE_MODE=on). */
+  receipt?: Receipt | null;
+  /** Set when the fast lane is on. "in_flight": the same message_id is still
+   *  being handled, and nothing ran for this delivery. */
+  route?: "fast" | "mixed" | "fallthrough" | "router_fallback" | "error" | "in_flight";
 }
 
 export interface ConfirmationRequest {

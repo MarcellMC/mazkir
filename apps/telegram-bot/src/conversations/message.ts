@@ -1,6 +1,12 @@
-import { Composer } from "grammy";
+import { Composer, type Context } from "grammy";
 import type { Message } from "grammy/types";
-import type { Attachment, ReplyContext, ForwardContext } from "@mazkir/shared-types";
+import type {
+  Attachment,
+  ReplyContext,
+  ForwardContext,
+  MessageResponse,
+  Receipt,
+} from "@mazkir/shared-types";
 import { api, streamMessage } from "../api/client.js";
 import { config } from "../config.js";
 import {
@@ -9,7 +15,9 @@ import {
   setPayloadProvenance,
   type ReplyToSource,
 } from "../tracing-utils.js";
-import { sendRich } from "../bot-utils/send-rich.js";
+import { sendRich, isNotModifiedError } from "../bot-utils/send-rich.js";
+import { buildReceiptRich } from "../formatters/receipt-rich.js";
+import { logger } from "../logger.js";
 import { repliedToText } from "../bot-utils/rich-text.js";
 import { buildConfirmationKeyboard } from "../keyboards/confirmation.js";
 import {
@@ -18,7 +26,11 @@ import {
   clearPendingConfirmation,
 } from "../state/pending-confirmations.js";
 import { getSelectedDate } from "../state/selected-date.js";
-import { takeOpenQuestion, clearOpenQuestion } from "../state/open-question.js";
+import {
+  takeOpenQuestion,
+  clearOpenQuestion,
+  noteOpenQuestion,
+} from "../state/open-question.js";
 
 /** Inline keyboard for a confirmation that names its options, or undefined
  *  for a plain yes/no gate (which is still answered as free text). The bot
@@ -138,6 +150,9 @@ export function buildMessagePayload(msg: Message, chatId: number) {
   return {
     text,
     chat_id: chatId,
+    // The server keys a fast-lane turn on it, so a redelivered or resent
+    // message is answered from the first turn instead of writing again.
+    ...(msg.message_id ? { message_id: msg.message_id } : {}),
     ...(selected_date ? { selected_date } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(reply_to ? { reply_to } : {}),
@@ -177,6 +192,51 @@ async function downloadPhoto(
     return { data: base64, mime_type };
   } catch {
     return null;
+  }
+}
+
+/** Send what the server answered: the receipt (unless streaming already sent
+ *  it), then the reply, unless the fast lane's receipt already says it all.
+ *  A fast turn with no receipt is one whose writes ran but whose receipt
+ *  failed to render; its text says so and is sent, and the message is never
+ *  sent to the agent again (that would write twice).
+ *
+ *  A question the receipt asks is held for the next message, armed last,
+ *  because every send clears it (bot.ts, dropPerMessageHints). Exported for
+ *  testing. */
+export async function sendFinal(
+  ctx: Context,
+  chatId: number,
+  response: MessageResponse,
+  receiptSent: boolean,
+): Promise<void> {
+  if (response.receipt && !receiptSent) {
+    await sendRich(ctx, buildReceiptRich(response.receipt));
+  }
+  const receiptSaysItAll = response.route === "fast" && Boolean(response.receipt);
+  if (!receiptSaysItAll && response.response) {
+    await sendRich(ctx, { markdown: response.response }, confirmExtra(response));
+  }
+  if (response.receipt?.open_question) {
+    noteOpenQuestion(chatId, response.receipt.open_question);
+  }
+}
+
+/** Redraw a sent receipt in place. Best-effort: a refused edit is logged and
+ *  the turn goes on. "Not modified" (a duplicate update) is silent, and no
+ *  failure falls back to plain text, which would strip the receipt's
+ *  buttons. */
+async function redrawReceipt(
+  ctx: Context,
+  chatId: number,
+  messageId: number,
+  receipt: Receipt,
+): Promise<void> {
+  try {
+    await ctx.api.editMessageText(chatId, messageId, buildReceiptRich(receipt));
+  } catch (err) {
+    if (isNotModifiedError(err)) return;
+    logger.warn({ event_type: "receipt_redraw_failed", err: String(err) }, "receipt_redraw_failed");
   }
 }
 
@@ -286,11 +346,11 @@ messageHandler.on(
       }
 
       if (config.streamResponses) {
-        // Streaming: progressively push the accumulating buffer as a rich draft,
-        // then finalize. editMessageText is NOT used (it can't edit rich content).
-        // Drafts are ephemeral 30s previews keyed by a non-zero draft_id; reusing
-        // the same draft_id animates the update. Persist by sending the complete
-        // message via sendRich at the end.
+        // Streaming: progressively push the accumulating buffer (and the fast
+        // lane's stages) as a rich draft, then finalize. Drafts are ephemeral
+        // 30s previews keyed by a non-zero draft_id; reusing the same draft_id
+        // animates the update. Persist by sending the complete message via
+        // sendFinal at the end.
         let buffered = "";
         let lastEdit = Date.now();
         const EDIT_INTERVAL_MS = 500;
@@ -307,36 +367,70 @@ messageHandler.on(
           }
         };
 
+        // The receipt is a persistent message, edited in place by later
+        // updates. Frames are not ordered: an update can follow the reply's
+        // text, and one can arrive with no receipt message to edit (its send
+        // failed). That one is dropped: the final response carries the
+        // latest receipt, which is then sent or redrawn below.
+        let receiptMessage: Message | undefined;
+
+        let response: MessageResponse;
         try {
-          const response = await streamMessage(payload, async (chunk) => {
-            buffered += chunk;
-            if (Date.now() - lastEdit > EDIT_INTERVAL_MS) {
-              await pushDraft();
-              lastEdit = Date.now();
-            }
+          response = await streamMessage(payload, {
+            onChunk: async (chunk) => {
+              buffered += chunk;
+              if (Date.now() - lastEdit > EDIT_INTERVAL_MS) {
+                await pushDraft();
+                lastEdit = Date.now();
+              }
+            },
+            onStage: async (stage) => {
+              try {
+                await ctx.replyWithRichMessageDraft({ markdown: `_${stage}_` }, { draft_id: draftId });
+              } catch {
+                // a stage is a courtesy; losing one costs nothing
+              }
+            },
+            onReceipt: async (receipt) => {
+              if (receiptMessage) {
+                await redrawReceipt(ctx, chatId, receiptMessage.message_id, receipt);
+                return;
+              }
+              receiptMessage = await sendRich(ctx, buildReceiptRich(receipt));
+            },
+            onReceiptUpdate: async ({ receipt }) => {
+              if (!receiptMessage) return;
+              await redrawReceipt(ctx, chatId, receiptMessage.message_id, receipt);
+            },
           });
-
-          if (response.awaiting_confirmation && response.pending_action_id) {
-            setPendingConfirmation(chatId, response.pending_action_id);
-          }
-          setActiveSpanOutput(response.response);
-
-          // Finalize as a full rich message (catch-all → plain text on failure).
-          await sendRich(ctx, { markdown: response.response }, confirmExtra(response));
         } catch {
-          // Fall back to non-streaming on any stream error.
+          // Fall back to non-streaming on any stream error. The payload keeps
+          // its message_id, so a turn the stream already started is answered
+          // from that turn rather than run (and written) again.
           try {
-            const response = await api.sendMessage(payload);
-            if (response.awaiting_confirmation && response.pending_action_id) {
-              setPendingConfirmation(chatId, response.pending_action_id);
-            }
-            setActiveSpanOutput(response.response);
-            await sendRich(ctx, { markdown: response.response }, confirmExtra(response));
+            response = await api.sendMessage(payload);
           } catch (fallbackErr) {
             markActiveSpanError(fallbackErr);
             await ctx.reply("❌ Something went wrong. Is vault-server running?");
+            return;
           }
         }
+
+        if (response.awaiting_confirmation && response.pending_action_id) {
+          setPendingConfirmation(chatId, response.pending_action_id);
+        }
+        setActiveSpanOutput(response.response);
+
+        // Outside the fallback's try on purpose: a send that fails here must
+        // not resend the message to the server.
+        // Assigned inside the stream handlers, which control flow cannot see.
+        const sent = receiptMessage as Message | undefined;
+        if (sent && response.receipt) {
+          // The final receipt carries every line's sync, including any whose
+          // update the stream never delivered.
+          await redrawReceipt(ctx, chatId, sent.message_id, response.receipt);
+        }
+        await sendFinal(ctx, chatId, response, sent !== undefined);
       } else {
         // Non-streaming path (default)
         const response = await api.sendMessage(payload);
@@ -346,8 +440,7 @@ messageHandler.on(
         }
 
         setActiveSpanOutput(response.response);
-        // Agent already emits markdown — send it through as a rich message.
-        await sendRich(ctx, { markdown: response.response }, confirmExtra(response));
+        await sendFinal(ctx, chatId, response, false);
       }
     } catch (err) {
       markActiveSpanError(err);

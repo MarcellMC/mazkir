@@ -11,6 +11,9 @@ import type {
   Attachment,
   ReplyContext,
   ForwardContext,
+  Receipt,
+  ReceiptUpdate,
+  ReceiptActionResponse,
 } from "@mazkir/shared-types";
 
 import { logger } from "../logger.js";
@@ -22,6 +25,34 @@ export interface StreamMessagePayload {
   attachments?: Attachment[];
   reply_to?: ReplyContext;
   forwarded_from?: ForwardContext;
+  message_id?: number;
+}
+
+/** What a streamed reply can carry besides text (fast-lane spec §8.1). */
+export interface StreamHandlers {
+  onChunk: (text: string) => void | Promise<void>;
+  onStage?: (stage: string) => void | Promise<void>;
+  onReceipt?: (receipt: Receipt) => void | Promise<void>;
+  onReceiptUpdate?: (update: ReceiptUpdate) => void | Promise<void>;
+}
+
+/** A non-2xx answer from vault-server; the message text is unchanged. */
+export class ApiError extends Error {
+  constructor(readonly status: number, statusText: string) {
+    super(`API error: ${status} ${statusText}`);
+    this.name = "ApiError";
+  }
+}
+
+/** Run one stream handler; a handler that throws (a failed Telegram edit) must
+ *  not lose the rest of the stream or its final payload. */
+async function safely(name: string, fn: (() => void | Promise<void>) | undefined): Promise<void> {
+  if (!fn) return;
+  try {
+    await fn();
+  } catch (err) {
+    logger.warn({ event_type: "stream_handler_error", handler: name, err: String(err) }, "stream_handler_error");
+  }
 }
 
 export function createApiClient(baseUrl: string, apiKey: string) {
@@ -50,7 +81,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         "api_call",
       );
       if (!res.ok) {
-        throw new Error(`API error: ${res.status} ${res.statusText}`);
+        throw new ApiError(res.status, res.statusText);
       }
       return res.json() as Promise<T>;
     } catch (err) {
@@ -180,6 +211,9 @@ export function createApiClient(baseUrl: string, apiKey: string) {
           response,
         }),
       }),
+    // A tap on a fast-lane receipt (spec §8.2): the server acts and re-renders.
+    receiptAction: (turnId: string, line: string, action: string) =>
+      request<ReceiptActionResponse>(`/fast/receipts/${encodeURIComponent(turnId)}/${encodeURIComponent(line)}/${encodeURIComponent(action)}`, { method: "POST" }),
   };
 }
 
@@ -193,10 +227,11 @@ export const api = createApiClient(config.vaultServerUrl, config.vaultServerApiK
  */
 export async function streamMessage(
   payload: StreamMessagePayload,
-  onChunk: (text: string) => void,
+  handlers: StreamHandlers | ((text: string) => void),
   baseUrl: string = config.vaultServerUrl,
   apiKey: string = config.vaultServerApiKey,
 ): Promise<MessageResponse> {
+  const h: StreamHandlers = typeof handlers === "function" ? { onChunk: handlers } : handlers;
   const url = `${baseUrl}/message?stream=true`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -233,7 +268,17 @@ export async function streamMessage(
       if (data["done"] === true) {
         final = data["response"] as MessageResponse;
       } else if (typeof data["text"] === "string") {
-        onChunk(data["text"]);
+        const t = data["text"];
+        await safely("onChunk", () => h.onChunk(t));
+      } else if (typeof data["stage"] === "string") {
+        const s = data["stage"];
+        await safely("onStage", h.onStage && (() => h.onStage!(s)));
+      } else if (data["receipt"]) {
+        const r = data["receipt"] as Receipt;
+        await safely("onReceipt", h.onReceipt && (() => h.onReceipt!(r)));
+      } else if (data["receipt_update"]) {
+        const u = data["receipt_update"] as ReceiptUpdate;
+        await safely("onReceiptUpdate", h.onReceiptUpdate && (() => h.onReceiptUpdate!(u)));
       }
     }
   }

@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from src.services.conversation_text import conversation_log_text
 from src.services.daily_tasks import parse_all_todos
 from src.services.fast_lane.contract import extract_hashtags
 
@@ -80,10 +81,16 @@ class FastContext:
     hashtags: tuple[str, ...] = ()
     selected_date: str | None = None
     has_photo: bool = False
+    # Any attachment (photo or location): only the agent saves a photo or reads
+    # a location, so such a message is never a pure `fast` turn (final review C2).
+    has_attachment: bool = False
     typical_minutes: dict[str, int] = field(default_factory=dict)
     bedtime: dt.time | None = None  # your usual Sleep start, for "woke up at …" with no Sleep open
     photo_at: dt.datetime | None = None   # when the message's photo was sent, for a caption's block
     skills: tuple[str, ...] = ()    # the router's catalog, one line per skill, for fallthrough_skill
+    # The text the agent loop remembers this message by (reply/attachment
+    # notes included); empty means `text`. See conversation_log_text.
+    log_text: str = ""
 
 
 def _safe(fn, default):
@@ -260,7 +267,9 @@ def assemble_fast_context(
         hashtags=extract_hashtags(text),
         selected_date=selected_date,
         has_photo=any(a.get("type") == "photo" for a in attachments or ()),
+        has_attachment=bool(attachments),
         photo_at=_safe(lambda: photo_sent_at(attachments, now.tzinfo), None),
+        log_text=_safe(lambda: conversation_log_text(text, attachments, reply_to), text),
     )
 
 

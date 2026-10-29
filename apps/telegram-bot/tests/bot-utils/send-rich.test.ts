@@ -133,3 +133,19 @@ describe("editRich", () => {
     expect(editMessageText).toHaveBeenLastCalledWith("hi & bye", extra);
   });
 });
+
+describe("sendRich's return value", () => {
+  it("is the message it sent, so a caller can edit it later", async () => {
+    const ctx = { replyWithRichMessage: vi.fn().mockResolvedValue({ message_id: 77 }), reply: vi.fn() };
+    const sent = await sendRich(ctx as any, { html: "<b>hi</b>" });
+    expect(sent?.message_id).toBe(77);
+  });
+  it("is the plain-text message when the rich one was refused", async () => {
+    const ctx = {
+      replyWithRichMessage: vi.fn().mockRejectedValue(new Error("bad")),
+      reply: vi.fn().mockResolvedValue({ message_id: 78 }),
+    };
+    const sent = await sendRich(ctx as any, { html: "<b>hi</b>" });
+    expect(sent?.message_id).toBe(78);
+  });
+});

@@ -22,6 +22,7 @@ from src.services.hooks import register_hook, run_pre_hooks, run_post_hooks
 from src.services.hooks.validate_schema import validate_schema as _validate_schema_hook
 from src.services.hooks.audit_log import audit_log as _audit_log_hook
 from src.services.hooks.sync_to_calendar import sync_to_calendar as _sync_to_calendar_hook
+from src.services.hooks.habit_hook import habit_hook as _habit_hook
 from src.services.memory_service import MemoryService
 from src.services.preview import register_preview_fn, render_preview
 from src.services.skill_executor import LoopOutcome, SkillExecutor
@@ -30,12 +31,31 @@ from src.services.tool_handlers.coding_handoff import (
     preview_coding_session as _preview_coding_session,
     propose_coding_session as _propose_coding_session,
 )
+from src.services.conversation_text import conversation_log_text
 from src.services.tool_response import ErrorCode, err, ok
 from src.services.vault_service import VaultService
 
 logger = logging.getLogger(__name__)
 
 _tracer = _otel_trace.get_tracer("mazkir.agent")
+
+# create_event/update_event can tick a habit themselves (the habit hook, fast
+# lane `on` only); the agent must not tick it a second time (final review C1).
+_HABIT_TICK_NOTE = (
+    "If the result carries `habit`, writing this block already ticked that habit: "
+    "do not call complete_habit for it."
+)
+
+# What a tool call looks like from the user's side while a fallthrough turn
+# works (spec §8.1): plain words, replacing a silent "typing…".
+_TOOL_STAGES = {
+    "list_events": "Checking your day…", "get_daily": "Checking your day…",
+    "read_daily_section": "Reading your notes…", "search_knowledge": "Searching your notes…",
+    "read_knowledge": "Reading a note…", "get_related": "Following links…",
+    "list_tasks": "Checking your tasks…", "list_habits": "Checking your habits…",
+    "list_goals": "Checking your goals…", "get_tokens": "Counting tokens…",
+    "create_event": "Writing…", "update_event": "Writing…", "delete_event": "Writing…",
+}
 
 # Canonical task-priority scale (matches memory/AGENTS.md and the Telegram UI):
 # 5 = highest urgency, 1 = lowest. Keep tool schemas and reply text aligned.
@@ -259,11 +279,14 @@ class AgentService:
         self.pending_confirmations: dict[str, PendingAction] = {}
         # Transient: set during a streaming handle_message turn, cleared in finally.
         self._stream_callback: "Callable[[str], None] | None" = None
+        # Transient likewise: one plain-words stage per tool call (spec §8.1).
+        self._stage_callback: "Callable[[str], None] | None" = None
         self.tools = self._register_tools()
         # Register built-in hooks (idempotent — safe to call multiple times)
         register_hook("validate_schema", _validate_schema_hook)
         register_hook("audit_log", _audit_log_hook)
         register_hook("sync_to_calendar", _sync_to_calendar_hook)
+        register_hook("habit_hook", _habit_hook)
         # Register preview functions for destructive tools (idempotent)
         _register_destructive_previews()
         # Instantiate the skill loop orchestrator when skills are enabled.
@@ -410,6 +433,29 @@ class AgentService:
                 "handler": self._tool_daily_set_task_state,
                 "risk": "write",
             },
+            "daily_check_todo": {
+                "schema": {
+                    "name": "daily_check_todo",
+                    "description": (
+                        "Tick a checkbox anywhere in a daily note, matched by its text "
+                        "(any section, not only ## Tasks). checked=false unticks it."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string", "description": "Words from the todo"},
+                            "date": {"type": "string", "description": "YYYY-MM-DD; defaults to today"},
+                            "checked": {"type": "boolean", "description": "false to untick"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["text"],
+                    },
+                },
+                "handler": self._tool_daily_check_todo,
+                "risk": "write",
+                "pre_hooks": ["validate_schema"],
+            },
             "daily_rollover": {
                 "schema": {
                     "name": "daily_rollover",
@@ -425,6 +471,8 @@ class AgentService:
                         "properties": {
                             "from_date": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
                             "to_date":   {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+                            "text": {"type": ["string", "null"],
+                                     "description": "Move only the unfinished todo whose text contains this"},
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
                         },
@@ -961,7 +1009,8 @@ class AgentService:
                         "`calendar_sync` before telling the user it is on their calendar: "
                         "if `ok` is false, say what did happen (it is saved in Mazkir) and "
                         "why it did not reach Google. Claiming a sync the result does not "
-                        "confirm is how a reminder silently went missing for a month."
+                        "confirm is how a reminder silently went missing for a month. "
+                        + _HABIT_TICK_NOTE
                     ),
                     "input_schema": {
                         "type": "object",
@@ -1048,13 +1097,15 @@ class AgentService:
                 "handler": self._tool_create_event,
                 "risk": "write",
                 "pre_hooks": ["validate_schema"],
+                "post_hooks": ["habit_hook"],
             },
             "update_event": {
                 "schema": {
                     "name": "update_event",
                     "description": (
                         "Update an existing event's fields (name, start_time, end_time, location, activity). "
-                        "Use list_events first to find the event ID."
+                        "Use list_events first to find the event ID. "
+                        + _HABIT_TICK_NOTE
                     ),
                     "input_schema": {
                         "type": "object",
@@ -1132,6 +1183,7 @@ class AgentService:
                 "handler": self._tool_update_event,
                 "risk": "write",
                 "pre_hooks": ["validate_schema"],
+                "post_hooks": ["habit_hook"],
             },
             "delete_event": {
                 "schema": {
@@ -1233,6 +1285,10 @@ class AgentService:
         forwarded_from: dict | None = None,
         stream_callback: "Callable[[str], None] | None" = None,
         selected_date: str | None = None,
+        skill: str | None = None,
+        prior_actions: list[str] | None = None,
+        stage_callback: "Callable[[str], None] | None" = None,
+        text_handled: bool = False,
     ) -> AgentResponse:
         """Main entry point: process a user message through the agent loop.
 
@@ -1246,8 +1302,20 @@ class AgentService:
                 if any. A hint, not a target — it only steers which days
                 `_resolve_reference` searches for a `block_reference`, never
                 the day a write lands on by itself.
+            skill: The skill the fast lane's parse already chose (spec §5.5).
+                A registered name skips the router; an unknown one is logged
+                and the router decides as usual.
+            prior_actions: What the fast lane already did with this message,
+                one receipt line each. Prefixed to the model's input with an
+                instruction not to redo it, never to the logged text.
+            stage_callback: Called once per tool call with a plain-words stage
+                (spec §8.1). Its failures are logged and swallowed.
+            text_handled: The fast lane wrote everything the words asked for and
+                the message reaches the agent only for its attachment. The note
+                says so, so a skill the router picks does not act on the words.
         """
         self._stream_callback = stream_callback
+        self._stage_callback = stage_callback
         self._current_chat_id = chat_id
         self._selected_date = selected_date
         session_id = str(chat_id)
@@ -1271,7 +1339,8 @@ class AgentService:
                         if len(text or "") > 2000:
                             span.set_attribute("truncated", True)
                         result = self._handle_message_inner(
-                            text, chat_id, attachments, reply_to, forwarded_from
+                            text, chat_id, attachments, reply_to, forwarded_from,
+                            skill=skill, prior_actions=prior_actions, text_handled=text_handled,
                         )
                     _output_text = result.response[:2000]
                     span.set_attribute(SpanAttributes.OUTPUT_VALUE, _output_text)
@@ -1288,6 +1357,7 @@ class AgentService:
                 return result
         finally:
             self._stream_callback = None
+            self._stage_callback = None
             self._current_chat_id = None
 
     def _handle_message_inner(
@@ -1297,6 +1367,10 @@ class AgentService:
         attachments: list[dict] | None,
         reply_to: dict | None,
         forwarded_from: dict | None,
+        *,
+        skill: str | None = None,
+        prior_actions: list[str] | None = None,
+        text_handled: bool = False,
     ) -> AgentResponse:
         t0 = time.perf_counter()
         context = self.memory.assemble_context(chat_id)
@@ -1316,6 +1390,22 @@ class AgentService:
         user_content = self._build_user_content(
             text, attachments, reply_to, forwarded_from,
         )
+        if prior_actions:
+            # What the fast lane already did with this message (spec §5.5),
+            # directly before the words it is about. Delivered as input, like
+            # the turn trace, and never in log_text: turn_trace joins on the
+            # exact user_text.
+            done = "\n".join(f"- {a}" for a in prior_actions)
+            if text_handled:
+                note = ("[The words of this message are fully handled — Mazkir already did all of it:\n"
+                        + done + "\nDo not redo any of it. Deal only with the attachment: save or "
+                        "describe it, or answer about it.]")
+            else:
+                note = "[Already done by Mazkir for this message — do not redo it:\n" + done + "]"
+            if isinstance(user_content, list):
+                user_content = [{"type": "text", "text": note}, *user_content]
+            else:
+                user_content = f"{note}\n\n{user_content}"
         # What the previous reply actually did, delivered as input rather than
         # as part of that reply — see turn_trace.attach_traces for why.
         trace = context.trailing_trace
@@ -1327,25 +1417,15 @@ class AgentService:
         messages.append({"role": "user", "content": user_content})
 
         # For conversation log, build a text-only version (no base64)
-        log_text = text
-        if attachments:
-            att_notes = []
-            for att in attachments:
-                if att["type"] == "photo":
-                    att_notes.append(f"photo: {att.get('filename', 'photo')}")
-                elif att["type"] == "location":
-                    att_notes.append(f"location: {att.get('latitude')}, {att.get('longitude')}")
-            if att_notes:
-                log_text = f"({', '.join(att_notes)}) {text}".strip()
-        if reply_to:
-            log_text = f"(replying to {reply_to.get('from', 'user')}: \"{reply_to['text'][:50]}\") {log_text}".strip()
+        # The fast lane logs the same string (turn_trace joins on it exactly).
+        log_text = conversation_log_text(text, attachments, reply_to)
 
         static_prefix = self._build_static_prefix()
         system = self._build_system_prompt(context)
 
         if self._skill_executor is not None:
             return self._handle_via_skills(
-                chat_id, log_text, messages, system, context,
+                chat_id, log_text, messages, system, context, skill=skill,
             )
 
         return self._run_agent_turn(
@@ -1364,6 +1444,7 @@ class AgentService:
         messages: list[dict],
         system: str,
         context: Any,
+        skill: str | None = None,
     ) -> AgentResponse:
         """Delegate to SkillExecutor for router→skill→handoff loop."""
         assert self._skill_executor is not None
@@ -1373,6 +1454,7 @@ class AgentService:
             context_messages=context.messages,
             messages=messages,
             context=context,
+            skill=skill,
         )
         return AgentResponse(
             response=result.response_text,
@@ -1873,7 +1955,9 @@ class AgentService:
     def _save_photo(self, attachment: dict) -> dict | None:
         """Save photo to disk, extract EXIF, write sidecar metadata.json.
 
-        Returns dict with keys: path, exif_location, exif_timestamp, exif_camera.
+        Returns dict with keys: path, exif_location, exif_timestamp (local wall clock,
+        naive ISO; EXIF time or Telegram's send time converted from UTC),
+        exif_precision ("exact" | "approx" | None), exif_camera.
         Returns None on failure.
         """
         import datetime as dt
@@ -1898,10 +1982,14 @@ class AgentService:
         from src.services.exif_service import extract_exif_metadata
         exif = extract_exif_metadata(photo_bytes)
 
-        # Use Telegram message timestamp as fallback when EXIF is stripped
-        timestamp = exif.get("timestamp")
-        if not timestamp and attachment.get("telegram_date"):
-            timestamp = attachment["telegram_date"]
+        # EXIF when the photo was sent as a file; else Telegram's send time,
+        # which is UTC and used to be read as local (spec §5.6).
+        from zoneinfo import ZoneInfo
+        from src.config import settings as _settings
+        from src.services.fast_lane.photos import photo_moment
+        moment, precision = photo_moment(exif.get("timestamp"), attachment.get("telegram_date"),
+                                         ZoneInfo(_settings.vault_timezone))
+        timestamp = moment.replace(tzinfo=None).isoformat(timespec="seconds") if moment else None
 
         # Write/append to sidecar metadata.json
         meta_path = media_dir / "metadata.json"
@@ -1917,6 +2005,7 @@ class AgentService:
             "path": rel_path,
             "saved_at": dt.datetime.now().isoformat(),
             "exif_timestamp": timestamp,
+            "exif_precision": precision,
             "exif_location": exif.get("location"),
             "exif_camera": exif.get("camera"),
         })
@@ -1929,8 +2018,38 @@ class AgentService:
             "path": rel_path,
             "exif_location": exif.get("location"),
             "exif_timestamp": timestamp,
+            "exif_precision": precision,
             "exif_camera": exif.get("camera"),
         }
+
+    def _place_photo(self, photo_info: dict) -> list[str]:
+        """Fast lane on: attach the photo to the block covering its moment, and say so (spec §5.6).
+
+        Looks in the persisted events store only (see `covering_block`); the
+        fast lane's writes for this message are already saved by the time the
+        agent builds its content, and "no block covers" is told to the agent.
+        """
+        from src.config import settings as _settings
+        if _settings.fast_lane_mode != "on" or not self.events or not photo_info.get("exif_timestamp"):
+            return []
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        from src.services.fast_lane.photos import covering_block
+        try:
+            moment = dt.datetime.fromisoformat(photo_info["exif_timestamp"]).replace(
+                tzinfo=ZoneInfo(_settings.vault_timezone))
+            block = covering_block(self.events, moment)
+            if block is None:
+                return ["no block covers that moment"]
+            self.events.attach_photo(block["date"], block["id"], photo_info["path"])
+            def _hm(v):
+                v = v or ""
+                return v[11:16] if len(v) >= 16 else v
+            span = f" {_hm(block['start_time'])}–{_hm(block.get('end_time'))}".rstrip("–").rstrip()
+            return [f"Mazkir already attached it to “{block['name']}”{span}; do not attach it again"]
+        except Exception:
+            logger.warning("placing a photo failed", exc_info=True)
+            return []
 
     def _build_user_content(
         self,
@@ -1967,7 +2086,9 @@ class AgentService:
                         if loc:
                             parts.append(f"EXIF GPS: {loc['lat']}, {loc['lng']}")
                         if ts:
-                            parts.append(f"taken {ts}")
+                            parts.append(f"taken {ts}" + (" (from the send time, approximate)"
+                                                          if photo_info.get("exif_precision") == "approx" else ""))
+                            parts += self._place_photo(photo_info)
                         if cam:
                             parts.append(f"Camera: {cam}")
                         text_parts.append(f"[{' | '.join(parts)}]")
@@ -2175,7 +2296,25 @@ class AgentService:
         *,
         confidence: float | None = None,
         action: str | None = None,
+        _trusted_fast: bool = False,
     ) -> dict:
+        # The fast lane reports its own stages; `_stage_callback` belongs to
+        # whichever message is in `handle_message` on this shared instance,
+        # so a `run_tool` call must not speak through it.
+        if self._stage_callback is not None and not _trusted_fast:
+            try:
+                self._stage_callback(_TOOL_STAGES.get(name, "Working…"))
+            except Exception:
+                logger.warning("stage callback failed", exc_info=True)
+        # The model's own tool-call JSON reaches every other caller of this
+        # method unfiltered (spec §1.3: no tool argument comes from model
+        # output except the clause's own words). `_fast` is Mazkir's own
+        # argument, not a clause's words, so only `run_tool` — which never
+        # carries model output — may let it through. Every other path drops
+        # it here, on a copy, so the model's own dict (and the agent loop
+        # that still holds it) is untouched.
+        if not _trusted_fast and "_fast" in params:
+            params = {k: v for k, v in params.items() if k != "_fast"}
         entry = self.tools.get(name, {})
         risk = entry.get("risk", "unknown")
         schema = entry.get("schema", {}) or {}
@@ -2228,8 +2367,20 @@ class AgentService:
             params=params,
             risk=risk,
             tools=self.tools,
-            ctx={"vault": self.vault, "memory": self.memory, "calendar": self.calendar},
+            ctx={"vault": self.vault, "memory": self.memory, "calendar": self.calendar, "events": self.events},
         )
+
+    def run_tool(self, name: str, params: dict, *, source: str = "fast_lane") -> dict:
+        """Run one registered tool the way the agent loop does (fast-lane spec §7.5).
+
+        The same pre-hooks, handler, post-hooks, audit log and span as an agent
+        call, so a write the fast lane makes is indistinguishable in the audit
+        trail from one the agent makes. `source` names the caller on the span.
+
+        This is the only entry point that lets a hidden `_fast` argument
+        reach the handler — see `_execute_tool`'s `_trusted_fast` guard.
+        """
+        return self._execute_tool(name, params, confidence=1.0, action=source, _trusted_fast=True)
 
     def _execute_tool_batch(self, calls: list[dict], gate_info: dict) -> list[tuple[dict, float, str | None, dict]]:
         """Execute a batch of auto_execute tool calls, using parallel dispatch when safe.
@@ -2880,6 +3031,10 @@ class AgentService:
         from src.services.tool_handlers.daily import daily_set_task_state
         return daily_set_task_state(self.vault, params)
 
+    def _tool_daily_check_todo(self, params: dict) -> dict:
+        from src.services.tool_handlers.daily import daily_check_todo
+        return daily_check_todo(self.vault, params)
+
     def _tool_daily_rollover(self, params: dict) -> dict:
         from src.services.tool_handlers.daily import daily_rollover
         return daily_rollover(self.vault, params)
@@ -3088,6 +3243,10 @@ class AgentService:
         spans_midnight = complete and crosses_midnight(start_time, end_time)
         proposed = bool(params.get("proposed"))
 
+        # The fast lane's hidden argument (spec §9.1, §7.5): the block's own
+        # fields, and whether Google waits until the receipt has been shown.
+        fast = params.get("_fast") or {}
+
         # Extract HH:MM for GCal (strip date prefix if present)
         def _extract_hhmm(iso_time: str | None) -> str | None:
             if not iso_time:
@@ -3125,6 +3284,10 @@ class AgentService:
             # A suggestion the user has not accepted must not raise alerts on
             # their phone, and a dismissed one must not linger in Google.
             calendar_sync = {"ok": False, "attempted": False, "reason": "proposed"}
+        elif fast.get("defer_calendar_sync"):
+            # The fast lane syncs after its receipt is on screen
+            # (`calendar_push.sync_block`), so the user never waits on Google.
+            calendar_sync = {"ok": False, "attempted": False, "reason": "deferred"}
         elif spans_midnight:
             # Google stores this natively as one event, which would then hand
             # a single fresh event to two per-day fragments on the next
@@ -3210,6 +3373,7 @@ class AgentService:
                 source_ids=source_ids,
                 logical_id=logical_id,
                 proposed=proposed,
+                fields=fast.get("fields"),
             )
             created.append(frag)
             items.append(frag["path"])
@@ -3411,6 +3575,16 @@ class AgentService:
             updates["start_time"] = derived["start_time"]
             updates["end_time"] = derived["end_time"]
 
+        # The fast lane's hidden argument: its own fields and a decided state.
+        # Neither is a user override, so neither is pinned.
+        from src.services.events_service import FAST_FIELDS
+        fast = params.get("_fast") or {}
+        for key, value in (fast.get("fields") or {}).items():
+            if key in FAST_FIELDS:
+                updates[key] = value
+        if fast.get("state") in ("approved", "dismissed"):
+            updates["state"] = fast["state"]
+
         # Every field the user names in an edit is a field they have now
         # claimed: without pinning, the next merge puts the source's value
         # back and the edit silently disappears. A derived endpoint counts —
@@ -3434,12 +3608,7 @@ class AgentService:
         # Push the edit upstream. The ledger holding the change is only half
         # of it: an un-propagated source value gets merged back over the
         # edit on the very next read.
-        stored = result.get("event") or {}
-        calendar_id = (stored.get("source_ids") or {}).get("calendar_id")
-        owning = stored.get("calendar")
-        from src.services.events_service import is_complete
-        from src.services.interval import crosses_midnight
-
+        #
         # A cross-date move is out of scope for this ship: EventsService has
         # detached source_ids, so this block would read the event as "not in
         # the calendar yet" and create a duplicate at the new date — which
@@ -3447,92 +3616,11 @@ class AgentService:
         # happened. Leave the calendar alone and let that branch speak.
         if result.get("moved_from"):
             pass
-        elif not stored.get("start_time"):
-            # Same narrowing as _tool_create_event: only a missing *start*
-            # leaves Google nothing to be told. A start with no end is a
-            # reminder, and `_build_event` defaults its span — gating on
-            # completeness here is why setting the Milpro reminder's time to
-            # 10:00 still did not reach the calendar (2026-09-11 03:23).
-            result["calendar_sync"] = {
-                "ok": False, "attempted": False, "reason": "no_start_time",
-            }
-        elif is_complete(stored) and crosses_midnight(
-            stored.get("start_time"), stored.get("end_time")
-        ):
-            result["calendar_sync"] = {
-                "ok": False, "attempted": False, "reason": "crosses_midnight",
-            }
-        elif stored.get("source") == "photo":
-            result["calendar_sync"] = {"ok": False, "attempted": False, "reason": "not_applicable"}
-        elif not self.calendar or not getattr(self.calendar, "is_initialized", False):
-            result["calendar_sync"] = {
-                "ok": False, "attempted": False, "reason": "calendar_not_configured",
-            }
-        elif calendar_id and owning not in (None, "Mazkir"):
-            result["calendar_sync"] = {
-                "ok": False, "attempted": False, "reason": "not_in_mazkir_calendar",
-            }
-        elif not calendar_id and (stored.get("source_ids") or {}):
-            # The create branch below exists for blocks Mazkir owns. A block
-            # that carries source_ids but no calendar_id is *inferred* — a
-            # timed checkbox, a scheduled habit, a location visit — and is
-            # regenerated from that source on every merge. Creating a Google
-            # entry for it duplicates the thing in the calendar, and writing
-            # the new id back gives the persisted event a second source_ids
-            # key, after which two fresh events (the note one and the
-            # calendar one) both match the same persisted row and the block
-            # renders twice forever. An empty source_ids — a manual block, or
-            # one created while the calendar was unreachable — is the only
-            # case where the create is ours to make.
-            result["calendar_sync"] = {
-                "ok": False, "attempted": False, "reason": "derived_from_source",
-            }
+        elif fast.get("defer_calendar_sync"):
+            result["calendar_sync"] = {"ok": False, "attempted": False, "reason": "deferred"}
         else:
-            from src.services.async_bridge import maybe_await
-            try:
-                if calendar_id:
-                    pushed = maybe_await(self.calendar.update_event(
-                        event_id=calendar_id,
-                        name=stored.get("name"),
-                        start_time=stored.get("start_time"),
-                        end_time=stored.get("end_time"),
-                    ))
-                    result["calendar_sync"] = {
-                        "ok": bool(pushed), "attempted": True, "event_id": calendar_id,
-                    }
-                    if not pushed:
-                        result["calendar_sync"]["reason"] = "update_failed"
-                else:
-                    gcal_id = maybe_await(self.calendar.create_event(
-                        name=stored.get("name"),
-                        date=stored_date,
-                        start_time=(stored.get("start_time") or "")[11:16],
-                        end_time=(stored.get("end_time") or "")[11:16] or None,
-                    ))
-                    result["calendar_sync"] = {
-                        "ok": bool(gcal_id), "attempted": True, "event_id": gcal_id,
-                    }
-                    if gcal_id:
-                        # "Sync it once it's complete" relies on calendar_id
-                        # recording membership with no flag to remember — so
-                        # the id this create just returned has to land in
-                        # source_ids, or the next edit still reads calendar_id
-                        # as missing and creates a second Google entry.
-                        self.events.update_event(
-                            date=stored_date,
-                            event_id=event_id,
-                            updates={
-                                "source_ids": {
-                                    **(stored.get("source_ids") or {}),
-                                    "calendar_id": gcal_id,
-                                },
-                            },
-                        )
-                    else:
-                        result["calendar_sync"]["reason"] = "create_failed"
-            except Exception as e:
-                logger.warning(f"Failed to sync event edit to Google Calendar: {e}")
-                result["calendar_sync"] = {"ok": False, "attempted": True, "reason": str(e)}
+            from src.services.calendar_push import sync_block
+            result["calendar_sync"] = sync_block(self.calendar, self.events, stored_date, event_id)
 
         items = [str(self.events._file_path(stored_date))]
         moved_from = result.get("moved_from")
@@ -3691,6 +3779,9 @@ class AgentService:
                 "tokens_earned": outcome["tokens_earned"],
                 "completions_today": outcome["completions_today"],
                 "daily_target": outcome["daily_target"],
+                "path": path,
+                "completed_at": outcome["completed_at"],
+                "prior": outcome["prior"],
             },
             items=[path],
         )

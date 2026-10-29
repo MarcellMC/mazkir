@@ -168,6 +168,12 @@ describe("buildMessagePayload", () => {
     const payload = buildMessagePayload(msg, 123);
     expect(payload.text).toBe("Dog walk photo");
   });
+
+  it("carries Telegram's message id, so a repeat is answered once", () => {
+    const msg = { message_id: 42, text: "hi", caption: undefined, photo: undefined, location: undefined,
+                  venue: undefined, reply_to_message: undefined, forward_origin: undefined } as any;
+    expect(buildMessagePayload(msg, 123).message_id).toBe(42);
+  });
 });
 
 const { api } = await import("../../src/api/client.js");
@@ -475,5 +481,58 @@ describe("replying to a rich message", () => {
     // left to attach itself to a later message.
     expect(payload.reply_to?.text).toBe("🫧 Washing machine started at 23:55.");
     expect(takeOpenQuestion(123)).toBeUndefined();
+  });
+});
+
+describe("a receipt's question survives the turn's own sends", () => {
+  // Every send but a chat action clears the open question (bot.ts). The
+  // receipt is a send, so a question armed before it would be gone by the
+  // time the user answered — it has to be armed after every send.
+  const QUESTION = "A match · no time given. Reply with one.";
+
+  beforeEach(async () => {
+    const { resetOpenQuestions } = await import("../../src/state/open-question.js");
+    resetOpenQuestions();
+  });
+
+  it("arms the question after the receipt and the reply are sent", async () => {
+    const { takeOpenQuestion } = await import("../../src/state/open-question.js");
+    const { dropPerMessageHints } = await import("../../src/bot.js");
+
+    (api.sendMessage as any).mockResolvedValue({
+      response: "GQA shares keys", route: "mixed", awaiting_confirmation: false,
+      receipt: {
+        turn_id: "t0000beef", undo: null, open_question: QUESTION, text: "? A match",
+        lines: [{ id: 0, glyph: "?", when: "", text: "A match", detail: null, sync: null,
+                  reason: "no time given", status: "question", buttons: [] }],
+      },
+    });
+
+    const throughTransformer = (method: string) => async (..._args: unknown[]) => {
+      await dropPerMessageHints(
+        async () => ({ ok: true, result: { message_id: 9 } }) as any,
+        method as never,
+        { chat_id: 123 } as never,
+        undefined,
+      );
+      return { message_id: 9 };
+    };
+    const msg = { message_id: 7, date: 1749500000, chat: { id: 123, type: "private" }, text: "watched a match" };
+    const ctx: any = {
+      update: { update_id: 1, message: msg },
+      message: msg,
+      chat: msg.chat,
+      me: { id: 42, is_bot: true, username: "test_bot" },
+      replyWithChatAction: throughTransformer("sendChatAction"),
+      replyWithRichMessage: vi.fn(throughTransformer("sendRichMessage")),
+      reply: vi.fn(throughTransformer("sendMessage")),
+      api: { editMessageText: vi.fn() },
+    };
+
+    await messageHandler.middleware()(ctx, async () => {});
+
+    expect(ctx.replyWithRichMessage).toHaveBeenCalledTimes(2);   // receipt, then reply
+    expect((api.sendMessage as any).mock.calls.at(-1)?.[0].message_id).toBe(7);
+    expect(takeOpenQuestion(123)).toBe(QUESTION);
   });
 });

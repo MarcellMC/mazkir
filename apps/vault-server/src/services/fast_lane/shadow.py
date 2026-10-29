@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from opentelemetry import trace
@@ -20,6 +20,7 @@ from src.logging_setup import emit_fast_lane
 from src.services.block_resolver import resolve_block
 from src.services.fast_lane.context import FastContext
 from src.services.fast_lane.contract import FAST_OPS, Clause, ParseResult
+from src.services.fast_lane.matching import instant
 from src.services.fast_lane.parse import ParseFailure, parse_message
 from src.services.fast_lane.time_resolver import (
     ClauseResolution, ClauseTime, Placement, ResolverContext, resolve,
@@ -68,11 +69,24 @@ def _clause_time(c: Clause, candidates: list[dict], by_id: dict) -> ClauseTime:
     )
 
 
-def resolve_clauses(result: ParseResult, ctx: FastContext, settings: ShadowSettings) -> list[ClauseResolution | None]:
-    """The resolver's answer for each fast clause; None for clauses that fall through."""
+def resolve_clauses(result: ParseResult, ctx: FastContext, settings: ShadowSettings,
+                    targets: dict[int, dict] | None = None) -> list[ClauseResolution | None]:
+    """The resolver's answer for each fast clause; None for clauses that fall through.
+
+    `targets` (A2) maps an edit clause's index to the ledger block it is
+    about: the replied-to message, the /day day or today (`matching.find_target`).
+    Without it, A1's lookup among the snapshot's blocks is used.
+    """
     candidates = [b.as_candidate() for b in ctx.blocks]
     by_id = {b.id: b for b in ctx.blocks}
-    times = [_clause_time(c, candidates, by_id) for c in result.clauses]
+    times = []
+    for i, c in enumerate(result.clauses):
+        time_ = _clause_time(c, candidates, by_id)
+        target = (targets or {}).get(i)
+        if target is not None:
+            time_ = replace(time_, target_start=instant(target.get("start_time"), ctx.now.tzinfo),
+                            target_end=instant(target.get("end_time"), ctx.now.tzinfo))
+        times.append(time_)
     rctx = ResolverContext(now=ctx.now, day_boundary_hour=settings.day_boundary_hour,
                            typical_minutes=dict(ctx.typical_minutes), default_minutes=settings.default_minutes,
                            bedtime=ctx.bedtime, photo_at=ctx.photo_at)

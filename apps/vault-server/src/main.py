@@ -263,6 +263,7 @@ from src.api.routes.daily import router as daily_router
 from src.api.routes.tokens import router as tokens_router
 from src.api.routes.calendar import router as calendar_router
 from src.api.routes.message import router as message_router
+from src.api.routes.fast_lane import router as fast_lane_router
 from src.api.routes.timeline import router as timeline_router
 from src.api.routes.generate import router as generate_router
 from src.api.routes.imagery import router as imagery_router
@@ -277,6 +278,7 @@ app.include_router(daily_router)
 app.include_router(tokens_router)
 app.include_router(calendar_router)
 app.include_router(message_router)
+app.include_router(fast_lane_router)
 app.include_router(timeline_router)
 app.include_router(generate_router)
 app.include_router(imagery_router)

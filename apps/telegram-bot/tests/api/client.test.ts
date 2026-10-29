@@ -123,4 +123,20 @@ describe("ApiClient", () => {
 
     await expect(api.getDaily()).rejects.toThrow("404");
   });
+
+  it("receiptAction posts the tap and returns the new receipt", async () => {
+    const body = { receipt: { turn_id: "t0000beef", lines: [], undo: null, open_question: null, text: "" }, toast: "Done" };
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }));
+    const result = await api.receiptAction("t0000beef", "0", "ok");
+    expect(result.toast).toBe("Done");
+    expect(spy.mock.calls[0][0]).toBe("http://localhost:8000/fast/receipts/t0000beef/0/ok");
+    expect(spy.mock.calls[0][1]?.method).toBe("POST");
+  });
+
+  it("receiptAction rejects with an ApiError carrying the status", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 404, statusText: "Not Found" }));
+    const err = await api.receiptAction("t1", "0", "ok").catch((e) => e);
+    expect(err.status).toBe(404);
+    expect(err.message).toBe("API error: 404 Not Found");
+  });
 });

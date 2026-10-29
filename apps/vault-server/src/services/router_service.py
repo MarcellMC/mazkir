@@ -11,9 +11,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from opentelemetry import trace
+
 from src.services.skill_registry import Skill
 
 logger = logging.getLogger(__name__)
+_tracer = trace.get_tracer("mazkir.router")
 
 
 @dataclass
@@ -27,7 +30,15 @@ class RouterService:
         self.claude = claude
         self.fallback_skill = fallback_skill
 
-    def pick(
+    def pick(self, user_msg: str, recent_messages: list[dict], skills: list[Skill]) -> RouterDecision:
+        """The skill for this message, as its own `router.pick` span (fast-lane spec §11.1)."""
+        with _tracer.start_as_current_span("router.pick") as span:
+            decision = self._pick(user_msg, recent_messages, skills)
+            span.set_attribute("router.skill", decision.skill)
+            span.set_attribute("router.reason", decision.reason[:200])
+            return decision
+
+    def _pick(
         self,
         user_msg: str,
         recent_messages: list[dict],
