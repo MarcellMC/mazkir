@@ -270,6 +270,7 @@ from src.api.routes.imagery import router as imagery_router
 from src.api.routes.events import router as events_router
 from src.api.routes.media import router as media_router
 from src.api.routes.notes import router as notes_router
+from src.api.routes.locations import router as locations_router
 
 app.include_router(tasks_router)
 app.include_router(habits_router)
@@ -285,6 +286,7 @@ app.include_router(imagery_router)
 app.include_router(events_router)
 app.include_router(media_router)
 app.include_router(notes_router)
+app.include_router(locations_router)
 
 
 @app.get("/health")
