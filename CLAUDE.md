@@ -155,7 +155,7 @@ Mazkir is a very capable personal assistant. Its main purpose is to organize tim
 - `/sync_calendar` - Sync habits/tasks to Google Calendar
 - NL messages routed through agent loop with conversational context, multi-step actions, and knowledge recall
 - Photo messages — downloaded, EXIF extracted (GPS/timestamp/camera), saved to `memory/00-system/media/{YYYY-MM-DD}/` (vault, gitignored) with sidecar `metadata.json`, embedded in daily note as Obsidian wikilinks (`![[photo.jpg]]`), sent to Claude vision with EXIF context
-- Location/venue messages — coordinates passed through agent loop
+- Location/venue messages — coordinates passed through agent loop. With `LOCATION_INGEST=log` (location spike L0), `conversations/location.ts` runs first: each live-location update and the message starting a live share go only to `POST /locations/points` and never to the agent; a one-off location or venue is posted as a `check_in` and then still reaches the agent as before
 - Reply-to context and forwarded messages — included as context for the agent
 
 - **GCal sync as post-hook (P5):** Every task/habit write fires the `sync_to_calendar` post-hook (`services/hooks/sync_to_calendar.py`), which reads the affected vault path from `output._items`, loads the metadata, and dispatches to `CalendarService.sync_task` / `sync_habit` / `mark_event_complete` (all async; bridged via `_maybe_await`). Failures log at WARNING and never block the tool result. Wired into `create_task`, `update_task`, `complete_task`, `archive_task`, `delete_task`, `create_habit`, `update_habit`, `complete_habit`, `delete_habit`.

@@ -9,6 +9,7 @@ interface Config {
   logLevel: string;
   streamResponses: boolean;
   vaultTimezone: string;
+  locationIngest: boolean;
 }
 
 function loadConfig(): Config {
@@ -31,6 +32,9 @@ function loadConfig(): Config {
     // (apps/vault-server/src/config.py) — see day-rich.ts for why the two
     // must agree.
     vaultTimezone: process.env.VAULT_TIMEZONE ?? "Asia/Jerusalem",
+    // Same switch, same name, as the server's (location spec §4.1): off
+    // leaves every location message on its old path to the agent.
+    locationIngest: process.env.LOCATION_INGEST === "log",
   };
 }
 

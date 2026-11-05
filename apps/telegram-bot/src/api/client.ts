@@ -28,6 +28,20 @@ export interface StreamMessagePayload {
   message_id?: number;
 }
 
+/** One raw location point, as POST /locations/points takes it (location spec §4.2). */
+export interface LocationPoint {
+  source: "telegram";
+  kind: "live" | "live_start" | "check_in";
+  message_id: number;
+  ts: string;
+  lat: number;
+  lng: number;
+  accuracy_m?: number;
+  heading?: number;
+  live_period?: number;
+  venue_title?: string;
+}
+
 /** What a streamed reply can carry besides text (fast-lane spec §8.1). */
 export interface StreamHandlers {
   onChunk: (text: string) => void | Promise<void>;
@@ -214,6 +228,9 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     // A tap on a fast-lane receipt (spec §8.2): the server acts and re-renders.
     receiptAction: (turnId: string, line: string, action: string) =>
       request<ReceiptActionResponse>(`/fast/receipts/${encodeURIComponent(turnId)}/${encodeURIComponent(line)}/${encodeURIComponent(action)}`, { method: "POST" }),
+    // One raw location point (location spike L0, spec §4.2).
+    postLocationPoint: (point: LocationPoint) =>
+      request<{ ok: boolean }>("/locations/points", { method: "POST", body: JSON.stringify(point) }),
   };
 }
 

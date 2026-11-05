@@ -15,6 +15,8 @@ import {
 } from "./commands/index.js";
 import { callbackHandlers } from "./callbacks/index.js";
 import { messageHandler } from "./conversations/message.js";
+import { locationHandler } from "./conversations/location.js";
+import { updateKind } from "./bot-utils/update-kind.js";
 import { logger } from "./logger.js";
 import { noteOtherSend } from "./state/selected-date.js";
 import { clearOpenQuestion } from "./state/open-question.js";
@@ -74,15 +76,7 @@ bot.use(async (ctx, next) => {
     return;
   }
   const message = ctx.message;
-  const kind = message?.text
-    ? "text"
-    : message?.photo
-      ? "photo"
-      : message?.location
-        ? "location"
-        : ctx.callbackQuery
-          ? "callback"
-          : "other";
+  const kind = updateKind(ctx);
 
   const inputText =
     message?.text ??
@@ -151,6 +145,10 @@ bot.use(helpCommand);
 
 // Callbacks (inline keyboard buttons)
 bot.use(callbackHandlers);
+
+// Location points (location spec §4.2). Before messageHandler, which also
+// takes message:location: a live share must stop here, a check-in passes on.
+bot.use(locationHandler);
 
 // NL message handler (catch-all, must be last)
 bot.use(messageHandler);
