@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     fast_parse_model: str = "claude-haiku-4-5-20251001"
     fast_parse_timeout_s: float = 5.0
 
+    # Location check-in (docs/specs/2026-11-05-location-check-in-design.md).
+    # off: POST /locations/points answers 404. log: every point is appended
+    # to {location_data_path}/raw/{date}.jsonl and nothing else happens (L0).
+    location_ingest: str = "off"
+    location_data_path: Path = Path(os.getenv(
+        "LOCATION_DATA_PATH", str(Path.home() / "dev" / "mazkir" / "data" / "locations")))
+
     # Replicate API (for image generation)
     replicate_api_token: str | None = os.getenv("REPLICATE_API_TOKEN")
 
