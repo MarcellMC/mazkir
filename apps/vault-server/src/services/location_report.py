@@ -47,6 +47,10 @@ class Session:
     last_point: dt.datetime
     n_points: int
     last_fields: list[str]
+    # The day's first point of this share is an edit, not the share starting:
+    # it began on an earlier day, so `started` is only where this day's file
+    # picks it up, and no expiry can be computed from it.
+    continued: bool = False
 
 
 def _parse(ts: str | None) -> dt.datetime | None:
@@ -96,9 +100,13 @@ def share_sessions(points: list[Point]) -> list[Session]:
     for group in _by_session(points).values():
         first, last = group[0], group[-1]
         period = next((p.live_period for p in group if p.live_period is not None), None)
+        # live_period counts from the message's own send time, which only the
+        # live_start point carries.
+        began_here = first.kind == "live_start"
         sessions.append(Session(
             message_id=first.message_id, started=first.ts, live_period=period,
-            expires_at=first.ts + dt.timedelta(seconds=period) if period is not None else None,
+            expires_at=first.ts + dt.timedelta(seconds=period) if period is not None and began_here else None,
+            continued=not began_here,
             last_point=last.ts, n_points=len(group),
             last_fields=sorted(k for k, v in last.raw.items() if v is not None),
         ))
@@ -186,6 +194,15 @@ def coverage(sessions: list[Session], day: dt.date, tz: str, waking: tuple[int, 
     return covered / (hi - lo)
 
 
+def points_per_hour(points: list[Point], tz: str) -> list[int]:
+    """How many points arrived in each local hour, 00–23: whether updates keep coming overnight or locked."""
+    zone = ZoneInfo(tz)
+    counts = [0] * 24
+    for p in points:
+        counts[p.ts.astimezone(zone).hour] += 1
+    return counts
+
+
 def ingest_health(points: list[Point], bot_log: list[dict], day: dt.date, tz: str) -> dict:
     zone = ZoneInfo(tz)
     failures = 0
@@ -263,12 +280,19 @@ def _day_block(day: dt.date, points: list[Point], skipped: int, bot_log: list[di
     if not points:
         out.append("  no points")
     for s in sessions:
-        period = (f"live_period {s.live_period}s (until {_hm(s.expires_at, zone, day)})"
-                  if s.live_period is not None else "no live_period seen")
-        out.append(f"  #{s.message_id}  started {_hm(s.started, zone, day)}  {period}  "
+        period = f"live_period {s.live_period}s" if s.live_period is not None else "no live_period seen"
+        if s.expires_at is not None:
+            period += f" (until {_hm(s.expires_at, zone, day)})"
+        began = (f"continued from an earlier day, first point {_hm(s.started, zone, day)}" if s.continued
+                 else f"started {_hm(s.started, zone, day)}")
+        out.append(f"  #{s.message_id}  {began}  {period}  "
                    f"last point {_hm(s.last_point, zone, day)}  {s.n_points} points")
         out.append(f"      last update's fields: {', '.join(s.last_fields)}")
     out.append(f"  check-ins: {check_ins}")
+
+    out.append("Points per hour (local hour:count)")
+    counts = points_per_hour(points, tz)
+    out.append("  " + "  ".join(f"{h:02d}:{n}" for h, n in enumerate(counts) if n) if points else "  no points")
 
     out.append(f"Silences (> {SILENCE_S // 60} min inside a share)")
     gaps = silences(points)
@@ -305,6 +329,12 @@ def render_report(days: dict[dt.date, list[Point]], skipped: dict[dt.date, int],
     out.append("Sampling (seconds between points of one share)")
     out.append(f"  moving: {_fmt(summary([s for s, moving in pairs if moving]), 's')}")
     out.append(f"  still:  {_fmt(summary([s for s, moving in pairs if not moving]), 's')}")
+    out.append(f"Silences across all days (> {SILENCE_S // 60} min inside a share, overnight included)")
+    stamp = "%Y-%m-%d %H:%M"
+    zone = ZoneInfo(tz)
+    out.extend([f"  {a.astimezone(zone).strftime(stamp)}–{b.astimezone(zone).strftime(stamp)}  "
+                f"{(b - a).total_seconds() / 60:.0f} min, {d:.0f} m apart" for a, b, d in silences(every)]
+               or ["  no points" if not every else "  none"])
     out.append("Accuracy")
     out.append(f"  horizontal_accuracy: {_fmt(summary([p.accuracy_m for p in every if p.accuracy_m is not None]), ' m')}")
     out.append(f"  still scatter (p90 from centroid, per still run): {_fmt(summary(still_scatter_m(every)), ' m')}")

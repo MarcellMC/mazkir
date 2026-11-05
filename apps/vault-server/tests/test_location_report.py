@@ -11,6 +11,7 @@ from src.services.location_report import (
     ingest_health,
     intervals,
     normalise,
+    points_per_hour,
     render_report,
     share_sessions,
     silences,
@@ -192,3 +193,43 @@ def test_the_report_lists_naive_visits():
 def test_last_fields_ignore_null_values():
     [s] = share_sessions(normalise([line(0, live_period=3600), line(5, live_period=None, heading=None)]))
     assert "live_period" not in s.last_fields and "heading" not in s.last_fields
+
+
+DAY2 = date(2026, 11, 7)
+
+
+def overnight():
+    """A share running through the night: 20:00 and 23:30 on one day, 07:00 the next."""
+    return (normalise([line(12 * 60, kind="live_start", live_period=86400), line(15 * 60 + 30)]),
+            normalise([line(23 * 60, north_m=10)]))
+
+
+def test_a_silence_across_midnight_is_listed_under_all_days():
+    day1, day2 = overnight()
+    text = render_report({DAY: day1, DAY2: day2}, {}, [], TZ)
+    across = text.split("== All days ==")[1]
+    assert "2026-11-06 23:30–2026-11-07 07:00" in across and "450 min" in across
+
+
+def test_a_share_already_running_at_the_start_of_a_day_is_marked_continued():
+    _, day2 = overnight()
+    [s] = share_sessions(day2)
+    assert s.continued and s.expires_at is None
+    assert "continued from an earlier day" in render_report({DAY2: day2}, {}, [], TZ)
+
+
+def test_a_share_that_starts_that_day_is_not_continued():
+    day1, _ = overnight()
+    [s] = share_sessions(day1)
+    assert not s.continued and s.expires_at == BASE + timedelta(hours=12) + timedelta(days=1)
+
+
+def test_points_per_hour_buckets_by_local_hour():
+    counts = points_per_hour(normalise([line(0), line(5), line(65), line(23 * 60 + 59)]), TZ)
+    assert len(counts) == 24
+    assert counts[8] == 2 and counts[9] == 1 and counts[7] == 1 and sum(counts) == 4
+
+
+def test_the_report_shows_points_per_hour():
+    text = render_report({DAY: normalise([line(0), line(5)])}, {}, [], TZ)
+    assert "Points per hour" in text and "08:2" in text

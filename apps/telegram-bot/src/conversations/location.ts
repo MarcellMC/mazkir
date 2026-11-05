@@ -9,6 +9,7 @@
  *    to start an agent turn about a bare location, which helped nobody;
  *  - a one-off location or venue is a check-in: posted, then passed on to
  *    the agent exactly as before.
+ *  - a forwarded location is never a check-in: it passes straight on.
  * With LOCATION_INGEST off, every update passes straight through.
  *
  * A failed post is logged and dropped; it never stops a check-in reaching
@@ -65,6 +66,9 @@ locationHandler.on("edited_message:location", async (ctx, next) => {
 locationHandler.on("message:location", async (ctx, next) => {
   if (!config.locationIngest) return next();
   const msg = ctx.message;
+  // A forwarded location or venue is somebody else's place, not where you
+  // are: it goes to the agent as forwarded context, as every forward does.
+  if (msg.forward_origin) return next();
   if (msg.location.live_period !== undefined) {
     await ingest(toLocationPoint(msg, "live_start"));
     return;

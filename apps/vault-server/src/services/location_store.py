@@ -61,7 +61,9 @@ def load_points(root: Path, day: date) -> tuple[list[dict], int]:
         return [], 0
     points: list[dict] = []
     skipped = 0
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    # errors="replace": a crash mid-append can cut a multibyte character, and
+    # that one line must be skipped, not abort every report covering the day.
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not raw.strip():
             continue
         try:

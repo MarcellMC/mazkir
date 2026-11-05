@@ -122,6 +122,17 @@ describe("location ingest", () => {
     expect(api.postLocationPoint).not.toHaveBeenCalled();
   });
 
+  it("a forwarded location is not a check-in: nothing is posted and it reaches the agent", async () => {
+    const venueLoc = { latitude: 41.9, longitude: 12.5 };
+    const next = await fire(msg({
+      location: venueLoc,
+      venue: { location: venueLoc, title: "Trattoria", address: "Rome" },
+      forward_origin: { type: "user", date: 1762400000, sender_user: { id: 5, is_bot: false, first_name: "Dana" } },
+    }));
+    expect(api.postLocationPoint).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledOnce();
+  });
+
   it("text messages pass straight through", async () => {
     const next = await fire(msg({ text: "hello" }));
     expect(next).toHaveBeenCalledOnce();

@@ -89,3 +89,13 @@ def test_a_point_appended_after_a_torn_line_is_not_lost(tmp_path):
     points, skipped = load_points(tmp_path, date(2026, 11, 6))
     assert [p["ts"] for p in points] == ["2026-11-06T08:00:00+02:00", "2026-11-06T08:05:00+02:00"]
     assert skipped == 1
+
+
+def test_a_torn_line_cut_inside_a_hebrew_venue_title_is_skipped_not_fatal(tmp_path):
+    append_point(tmp_path, point(ts="2026-11-06T08:00:00+02:00"), TZ)
+    torn = '{"venue_title": "סופר-פארם"}'.encode("utf-8")[:18]     # ends mid-character
+    with raw_path(tmp_path, date(2026, 11, 6)).open("ab") as f:
+        f.write(torn)
+    append_point(tmp_path, point(ts="2026-11-06T08:05:00+02:00"), TZ)
+    points, skipped = load_points(tmp_path, date(2026, 11, 6))
+    assert len(points) == 2 and skipped == 1
