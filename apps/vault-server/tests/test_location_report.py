@@ -14,6 +14,9 @@ from src.services.location_report import (
     render_report,
     share_sessions,
     silences,
+    Visit,
+    labels_template,
+    stay_points,
     still_scatter_m,
     summary,
 )
@@ -132,3 +135,60 @@ def test_the_report_names_every_section_and_its_skipped_lines():
 def test_the_report_of_an_empty_day_says_no_points():
     text = render_report({DAY: []}, {DAY: 0}, [], TZ)
     assert "no points" in text
+
+
+def _hm(v):
+    return (v.start.astimezone(BASE.tzinfo).strftime("%H:%M"), v.end.astimezone(BASE.tzinfo).strftime("%H:%M"))
+
+
+def twenty_minutes_here():
+    jitter = [0, 40, -30, 20, -40, 10, 35, -15, 25, -20, 0]   # metres, every 2 min 08:00–08:20
+    return [line(2 * i, north_m=j) for i, j in enumerate(jitter)] + [line(25, north_m=1000)]
+
+
+def test_twenty_minutes_within_150_m_is_one_visit():
+    [v] = stay_points(normalise(twenty_minutes_here()))
+    assert _hm(v) == ("08:00", "08:20")
+    assert v.n_points == 11
+
+
+def test_five_minutes_still_is_not_a_visit():
+    assert stay_points(normalise([line(0), line(2), line(5), line(7, north_m=1000)])) == []
+
+
+def test_a_low_accuracy_point_is_ignored_for_segmentation():
+    raw = twenty_minutes_here() + [line(10, north_m=1000, accuracy_m=800.0, message_id=7, lng=LNG + 0.0001)]
+    [v] = stay_points(normalise(raw))
+    assert _hm(v) == ("08:00", "08:20")
+
+
+def test_a_silence_with_no_movement_stays_inside_one_visit():
+    [v] = stay_points(normalise([line(0), line(5), line(90, north_m=10)]))
+    assert _hm(v) == ("08:00", "09:30")
+
+
+def test_check_ins_take_part_like_any_point():
+    raw = [line(0, kind="check_in", msg=None)] + [line(m) for m in (3, 6, 9)]
+    [v] = stay_points(normalise(raw))
+    assert _hm(v) == ("08:00", "08:09")
+
+
+def test_the_label_template_lists_detected_visits_with_empty_names():
+    v = Visit(start=BASE, end=BASE + timedelta(minutes=20), lat=LAT, lng=LNG, n_points=11)
+    assert labels_template(DAY, [v], TZ) == {
+        "date": "2026-11-06",
+        "visits": [{"start": "08:00", "end": "08:20", "name": "", "detected": True}],
+        "missed": [],
+        "notes": "",
+    }
+
+
+def test_the_report_lists_naive_visits():
+    text = render_report({DAY: normalise(twenty_minutes_here())}, {DAY: 0}, [], TZ)
+    assert "Naïve visits" in text
+    assert "08:00–08:20" in text
+
+
+def test_last_fields_ignore_null_values():
+    [s] = share_sessions(normalise([line(0, live_period=3600), line(5, live_period=None, heading=None)]))
+    assert "live_period" not in s.last_fields and "heading" not in s.last_fields

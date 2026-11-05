@@ -76,3 +76,12 @@ def test_a_check_in_keeps_its_venue_title(client, tmp_path):
     assert client.post("/locations/points", json=body).status_code == 200
     [line], _ = load_points(tmp_path, date(2026, 11, 6))
     assert line["kind"] == "check_in" and line["venue_title"] == "Superpharm"
+
+
+def test_a_field_telegram_did_not_send_is_not_stored(client, tmp_path):
+    # The report reads which fields the last update of a share carried
+    # (spec §2.2 item 3); a stored null would look like a field that was sent.
+    body = {k: v for k, v in BODY.items() if k not in ("live_period", "heading")}
+    assert client.post("/locations/points", json=body).status_code == 200
+    [line], _ = load_points(tmp_path, date(2026, 11, 6))
+    assert "live_period" not in line and "heading" not in line and "venue_title" not in line

@@ -392,6 +392,10 @@ FAST_LANE_MODE=shadow python -m uvicorn src.main:app --reload --port 8000
 python scripts/fast_lane_shadow_report.py            # today's disagreements with the old path
 python scripts/fast_lane_bootstrap_places.py         # place candidates from the ledger (--write to save)
 python scripts/fast_lane_latency.py                  # parse p50/p95 and whether prompt caching would help
+
+# Location spike (L0): LOCATION_INGEST=log on both the server and the bot
+python scripts/location_spike_report.py --from 2026-11-06 --to 2026-11-10
+python scripts/location_spike_report.py 2026-11-07 --write-labels   # then fill in names, fix times, add "missed"
 ```
 
 ## Ending a Coding Session

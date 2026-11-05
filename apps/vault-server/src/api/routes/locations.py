@@ -48,7 +48,10 @@ def ingest_point(point: LocationPoint) -> dict:
     if settings.location_ingest != "log":
         raise HTTPException(404, "Location ingest is off")
     tz = settings.vault_timezone
-    record = {**point.model_dump(), "received_at": dt.datetime.now(ZoneInfo(tz)).isoformat()}
+    # exclude_none: the raw file records what Telegram sent, and an absent
+    # field must stay absent — the report reads which fields a share's last
+    # update carried to learn how a share ends (spec §2.2 item 3).
+    record = {**point.model_dump(exclude_none=True), "received_at": dt.datetime.now(ZoneInfo(tz)).isoformat()}
     with get_tracer().start_as_current_span("location.ingest") as span:
         with with_span_status(span):
             gap = append_point(settings.location_data_path, record, tz)

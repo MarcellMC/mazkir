@@ -99,7 +99,8 @@ def share_sessions(points: list[Point]) -> list[Session]:
         sessions.append(Session(
             message_id=first.message_id, started=first.ts, live_period=period,
             expires_at=first.ts + dt.timedelta(seconds=period) if period is not None else None,
-            last_point=last.ts, n_points=len(group), last_fields=sorted(last.raw),
+            last_point=last.ts, n_points=len(group),
+            last_fields=sorted(k for k, v in last.raw.items() if v is not None),
         ))
     sessions.sort(key=lambda s: s.started)
     return sessions
@@ -196,6 +197,53 @@ def ingest_health(points: list[Point], bot_log: list[dict], day: dt.date, tz: st
     return {"points": len(points), "failures": failures, "lag": summary(lags)}
 
 
+@dataclass
+class Visit:
+    start: dt.datetime
+    end: dt.datetime
+    lat: float
+    lng: float
+    n_points: int
+
+
+def stay_points(points: list[Point], radius_m: float = 150, min_minutes: float = 8,
+                max_accuracy_m: float = 200) -> list[Visit]:
+    """The classic anchor-based stay-point pass (Li et al., 2008), for labelling only.
+
+    Deterministic and easy to read; L1's online detector replaces it. Every
+    point takes part (check-ins included) except those less accurate than
+    `max_accuracy_m`, which would otherwise end a visit by jumping away.
+    """
+    usable = [p for p in points if p.accuracy_m is None or p.accuracy_m <= max_accuracy_m]
+    visits: list[Visit] = []
+    i = 0
+    while i < len(usable):
+        anchor = usable[i]
+        j = i + 1
+        while j < len(usable) and haversine_m(anchor.lat, anchor.lng, usable[j].lat, usable[j].lng) <= radius_m:
+            j += 1
+        run = usable[i:j]
+        if run[-1].ts - anchor.ts >= dt.timedelta(minutes=min_minutes):
+            visits.append(Visit(start=anchor.ts, end=run[-1].ts, lat=sum(p.lat for p in run) / len(run),
+                                lng=sum(p.lng for p in run) / len(run), n_points=len(run)))
+            i = j
+        else:
+            i += 1
+    return visits
+
+
+def labels_template(day: dt.date, visits: list[Visit], tz: str) -> dict:
+    """A file for the owner to correct from memory (spec §4.6): names, times, and what the pass missed."""
+    zone = ZoneInfo(tz)
+    return {
+        "date": day.isoformat(),
+        "visits": [{"start": v.start.astimezone(zone).strftime("%H:%M"), "end": v.end.astimezone(zone).strftime("%H:%M"),
+                    "name": "", "detected": True} for v in visits],
+        "missed": [],
+        "notes": "",
+    }
+
+
 def _hm(ts: dt.datetime, zone: ZoneInfo, day: dt.date | None = None) -> str:
     local = ts.astimezone(zone)
     return local.strftime("%H:%M") if day is None or local.date() == day else local.strftime("%Y-%m-%d %H:%M")
@@ -237,6 +285,11 @@ def _day_block(day: dt.date, points: list[Point], skipped: int, bot_log: list[di
                f"lag {_fmt(health['lag'], 's')}")
     if skipped:
         out.append(f"  {skipped} unreadable line{'s' if skipped != 1 else ''} skipped")
+
+    out.append("Naïve visits (150 m, 8 min)")
+    found = stay_points(points)
+    out.extend([f"  {_hm(v.start, zone, day)}–{_hm(v.end, zone, day)}  ({v.n_points} points)" for v in found]
+               or ["  no points" if not points else "  none"])
     return out
 
 

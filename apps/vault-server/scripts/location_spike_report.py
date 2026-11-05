@@ -3,6 +3,9 @@
     python scripts/location_spike_report.py                          # today
     python scripts/location_spike_report.py 2026-11-07
     python scripts/location_spike_report.py --from 2026-11-06 --to 2026-11-10
+    python scripts/location_spike_report.py 2026-11-07 --write-labels   # data/eval/location/2026-11-07.json
+
+--write-labels never overwrites: that file holds your labels.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # apps/vault-server
 
 from src.config import settings  # noqa: E402
-from src.services.location_report import normalise, render_report  # noqa: E402
+from src.services.location_report import labels_template, normalise, render_report, stay_points  # noqa: E402
 from src.services.location_store import load_points  # noqa: E402
 
 
@@ -51,7 +54,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("date", nargs="?")
     parser.add_argument("--from", dest="start")
     parser.add_argument("--to", dest="end")
+    parser.add_argument("--write-labels", action="store_true", help="write a label template for DATE")
     args = parser.parse_args(argv)
+    if args.write_labels and (args.start or args.end or not args.date):
+        raise SystemExit("--write-labels takes a single DATE")
 
     days, skipped = {}, {}
     for day in _days(args):
@@ -59,6 +65,22 @@ def main(argv: list[str]) -> int:
         days[day], skipped[day] = normalise(lines), bad
     bot_log = _bot_log(settings.logs_dir / "telegram-bot.jsonl")
     print(render_report(days, skipped, bot_log, settings.vault_timezone))
+    if args.write_labels:
+        [(day, points)] = days.items()
+        return _write_labels(day, points)
+    return 0
+
+
+def _write_labels(day: dt.date, points) -> int:
+    # data/eval/location/, beside data/logs/ — gitignored with the rest of data/.
+    path = settings.logs_dir.parent / "eval" / "location" / f"{day.isoformat()}.json"
+    if path.exists():
+        print(f"\nNot overwriting {path}: it holds your labels.", file=sys.stderr)
+        return 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    template = labels_template(day, stay_points(points), settings.vault_timezone)
+    path.write_text(json.dumps(template, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"\nWrote {path}: fill in names, fix times, add what was missed.")
     return 0
 
 
