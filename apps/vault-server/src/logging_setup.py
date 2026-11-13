@@ -181,3 +181,42 @@ def emit_fast_lane(record: dict[str, Any]) -> None:
     except Exception:  # pragma: no cover — last-resort fallback
         line = json.dumps({"ts": payload["ts"], "error": "fast_lane_serialize_failed"})
     _fast_lane().info(line)
+
+
+_location_trips_logger: logging.Logger | None = None
+
+
+def _location_trips() -> logging.Logger:
+    global _location_trips_logger
+    if _location_trips_logger is not None:
+        return _location_trips_logger
+    logger = logging.getLogger("mazkir.location_trips")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False  # decision lines stay out of the main log
+    _location_trips_logger = logger
+    return logger
+
+
+def configure_location_trips_log(logs_dir: Path) -> None:
+    """Attach the trips decision log: one JSON object per decision (trips spec §8).
+
+    Names, distances and ids only — the pipeline never puts a coordinate in a record.
+    """
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    logger = _location_trips()
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+    handler = logging.handlers.RotatingFileHandler(
+        logs_dir / "location-trips.jsonl", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+
+def emit_location_trips(record: dict[str, Any]) -> None:
+    payload = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **record}
+    try:
+        line = json.dumps(payload, default=str, ensure_ascii=False)
+    except Exception:  # pragma: no cover — last-resort fallback
+        line = json.dumps({"ts": payload["ts"], "error": "location_trips_serialize_failed"})
+    _location_trips().info(line)

@@ -243,6 +243,8 @@ def _trip_field(rec: dict, part: str) -> dict:
 
 
 def _merge(rec: dict, spec: BlockSpec, day: str, e: dict, previous: dict | None, run_tool, zone) -> dict:
+    if previous and previous.get("rejected"):
+        return previous                        # you said ✕: location fills nothing here again
     filled = dict((previous or {}).get("filled") or {})
     pinned = e.get("user_set") or {}
     updates: dict[str, Any] = {}

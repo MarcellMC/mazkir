@@ -51,3 +51,12 @@ def test_trip_questions_count_too(tmp_path):
     rec["trip_question"] = {"options": [], "asked_at": t(12, 23, 0).isoformat()}
     recs.save(rec)
     assert recs.questions_on(dt.date(2026, 11, 12), TZ, 5) == 1
+
+
+def test_safe_error_never_carries_the_message():
+    from src.services.location.model import safe_error
+    try:
+        raise ValueError("bad point 32.0853, 34.7818")
+    except ValueError as exc:
+        text = safe_error(exc)
+    assert text.startswith("ValueError at ") and "32.08" not in text

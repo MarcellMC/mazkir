@@ -85,3 +85,89 @@ def test_a_field_telegram_did_not_send_is_not_stored(client, tmp_path):
     assert client.post("/locations/points", json=body).status_code == 200
     [line], _ = load_points(tmp_path, date(2026, 11, 6))
     assert "live_period" not in line and "heading" not in line and "venue_title" not in line
+
+
+# --- location awareness (trips), plan Task 12 --------------------------------
+
+from unittest.mock import MagicMock
+
+from src.services.location import runtime as runtime_mod
+
+
+@pytest.fixture
+def aware(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path, "log")
+    monkeypatch.setattr(locations_route.settings, "location_awareness", "on")
+    rt = MagicMock()
+    rt.feed.return_value = [{"id": "n1", "kind": "notice", "receipt": {"text": "hi"}}]
+    monkeypatch.setattr(runtime_mod, "_runtime", rt)
+    return client, rt
+
+
+def test_awareness_off_keeps_the_l0_response(client, monkeypatch):
+    monkeypatch.setattr(locations_route.settings, "location_awareness", "off")
+    rt = MagicMock()
+    monkeypatch.setattr(runtime_mod, "_runtime", rt)
+    assert client.post("/locations/points", json=BODY).json() == {"ok": True}
+    rt.feed.assert_not_called()
+
+
+def test_ingest_returns_notify_when_on(aware):
+    client, rt = aware
+    r = client.post("/locations/points", json={**BODY, "chat_id": 156175834})
+    assert r.json() == {"ok": True, "notify": [{"id": "n1", "kind": "notice", "receipt": {"text": "hi"}}]}
+    assert rt.feed.call_args.args[0]["chat_id"] == 156175834
+
+
+def test_tracker_crash_still_returns_200(aware, tmp_path):
+    client, rt = aware
+    rt.feed.side_effect = RuntimeError("boom")
+    r = client.post("/locations/points", json=BODY)
+    assert r.status_code == 200 and r.json() == {"ok": True, "notify": []}
+    assert load_points(tmp_path, date(2026, 11, 6))[0]          # the raw point is stored regardless
+
+
+def test_ack(aware):
+    client, rt = aware
+    rt.ack.return_value = True
+    assert client.post("/locations/outbox/0a1b2c3d/ack").json() == {"ok": True}
+    assert client.post("/locations/outbox/../x/ack").status_code in (404, 422)
+
+
+def test_trip_routes_404_when_off(client, monkeypatch):
+    monkeypatch.setattr(locations_route.settings, "location_awareness", "off")
+    assert client.post("/locations/outbox/0a1b2c3d/ack").status_code == 404
+    assert client.post("/locations/trips/1a2b3c4d/tap", json={"line": "s1", "action": "p"}).status_code == 404
+
+
+def test_tap_rejects_bad_input(aware):
+    client, _ = aware
+    assert client.post("/locations/trips/1A2B/tap", json={"line": "s1", "action": "p"}).status_code == 422
+    assert client.post("/locations/trips/1a2b3c4d/tap", json={"line": "s1", "action": "zz"}).status_code == 422
+    assert client.post("/locations/trips/1a2b3c4d/tap", json={"line": "s1", "action": "p", "x": 1}).status_code == 422
+
+
+def test_tap_on_an_unknown_trip_is_404(aware):
+    client, rt = aware
+    rt.tap.side_effect = KeyError("1a2b3c4d")
+    assert client.post("/locations/trips/1a2b3c4d/tap", json={"line": "s1", "action": "p"}).status_code == 404
+
+
+def test_ok_tap_approves_through_set_event_state(aware, monkeypatch):
+    client, rt = aware
+    rt.tap.return_value = {"receipt": None, "toast": "✓ Confirmed", "open_question": None,
+                           "approvals": [("2026-11-13", "evt_1", "approved")], "rerender": True}
+    rt.render_arrival.return_value = {"turn_id": "1a2b3c4d", "lines": [], "text": "", "undo": None,
+                                      "open_question": None}
+    calls = []
+
+    async def fake_state(day, event_id, body):
+        calls.append((day.isoformat(), event_id, body.state))
+        return {"ok": True, "habit": {"name": "Dog Walk", "tokens_earned": 5, "new_streak": 3}}
+
+    import src.api.routes.events as events_route
+    monkeypatch.setattr(events_route, "set_event_state", fake_state)
+    r = client.post("/locations/trips/1a2b3c4d/tap", json={"line": "1", "action": "ok"})
+    assert r.status_code == 200 and calls == [("2026-11-13", "evt_1", "approved")]
+    assert r.json()["toast"] == "✓ Dog Walk · +5 tokens · streak 3"
+    assert r.json()["receipt"]["turn_id"] == "1a2b3c4d"

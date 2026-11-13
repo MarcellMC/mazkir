@@ -128,3 +128,15 @@ class TrackerEvent:
     def from_dict(cls, d: dict[str, Any]) -> "TrackerEvent":
         return cls(d["kind"], _parse(d["ts"]), Trip.from_dict(d["trip"]) if d.get("trip") else None,
                    d.get("stop_id"))
+
+
+def safe_error(exc: BaseException) -> str:
+    """An exception for a log line: its type and where it was raised, never its message.
+
+    A message can quote the values involved, and here those can be coordinates.
+    """
+    import traceback
+
+    frames = traceback.extract_tb(exc.__traceback__)[-3:]
+    where = " < ".join(f"{f.name}:{f.lineno}" for f in reversed(frames))
+    return f"{type(exc).__name__} at {where}" if where else type(exc).__name__

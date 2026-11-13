@@ -219,3 +219,14 @@ def test_cross_midnight_block_is_split(store):
     second = [e for e in events.get_events("2026-11-07") if e["name"] == "Alex's birthday"]
     assert len(first) == 1 and len(second) == 1
     assert first[0]["logical_id"] and first[0]["logical_id"] == second[0]["logical_id"]
+
+
+def test_a_rejected_merge_is_not_filled_again(store):
+    events, _ = store
+    events.create_event(date="2026-11-06", name="Dog walk", start_time="2026-11-06T10:24:00")
+    rec = apply(record(t(6, 10, 24), t(6, 10, 38), purpose=WALK), store)
+    eid = rec["merged"]["trip"]["event_id"]
+    events.update_event(date="2026-11-06", event_id=eid, updates={"end_time": None})
+    rec["merged"]["trip"]["rejected"] = True
+    apply(rec, store)
+    assert events.get_events("2026-11-06")[0]["end_time"] is None

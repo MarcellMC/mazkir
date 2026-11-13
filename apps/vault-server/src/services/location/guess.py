@@ -82,6 +82,10 @@ Return at most 3 guesses, most likely first. For each:
   a friend's home, a shop). null when the moving itself was the activity (a walk, a
   ride around the city, a run).
 
+For a "stop", name what the user is doing at this place (a café, a shop, a friend's home).
+If it looks like a pause within the trip itself (a bench, waiting at a crossing, the dog
+sniffing around), return no guesses: the user will be asked.
+
 Return no guesses at all rather than a weak one you cannot support."""
 
 
