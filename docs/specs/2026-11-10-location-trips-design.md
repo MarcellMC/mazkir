@@ -25,6 +25,7 @@ Your words, from the conversation:
 - On correcting: "There should always be options to quickly approve suggested block or edit it: nudge timestamps with buttons and/or correct Mazkir with NL prompt." And: "When I both nudge times and reply with text, it means I want to edit both timestamps and the activity itself."
 - On merging: "If that could be inferred from location data, why would I bother typing the time in by hand? … never create duplicates — always merge existing data from different sources, where my direct instructions always take precedence over inferred values."
 - A dog walk inferred without asking still gets a message when you're back.
+- On stops: "Dog walk is just a type of walk. It's not much different from a bicycle ride around the city, or a walk with a friend. Ask about stops, and if I don't specify, leave unnamed and don't create a separate block for it." No activity gets rules of its own.
 - Short trips count: Mazkir should "spot a short visit to a convenience store right next to my house… probably around 50 m away", without being triggered by GPS lag.
 - Plans you mentioned are looked for in the last 24 hours of conversation.
 - No shadow phase: "I want to start testing it live right away."
@@ -32,10 +33,10 @@ Your words, from the conversation:
 
 ### 1.1 Goals
 
-1. **Notice every trip, short ones included.** That means a 50 m trip to the shop, while GPS drift at home is never taken for a trip.
+1. **Notice every trip, short ones included.** That means a 48 m trip to the shop, while GPS drift at home is never taken for a trip.
 2. **Work out each trip's purpose** from your confirmed history, and from today's schedule, open todos and the last 24 hours of conversation. It should learn any recurring outing without new code.
 3. **Ask well.** Ask once, after you've stopped somewhere it can't name, with its good guesses as buttons and room to type anything else.
-4. **Log commutes and loops differently.** A trip from A to B becomes travel and stop blocks. A loop from home that is one activity, such as a dog walk, is one block with its stops inside it.
+4. **One rule for every trip, whatever the activity.** Each stop Mazkir can't name gets one question. A stop you name becomes its own block; a stop you don't name stays unnamed inside the trip's block and never gets one of its own. A dog walk follows the same rule as a bike ride or a walk with a friend.
 5. **Fill the day without duplicates.** A trip completes a block you started yourself. What you said is never overwritten, and location fills what you left out.
 6. **Make correcting cheap.**
    - ✓ approves.
@@ -55,6 +56,7 @@ Your words, from the conversation:
 These would make it a failure even if it technically works:
 - **A question about a trip Mazkir could have worked out,** above all a routine dog walk.
 - **More than one question about the same stop, or a re-ask after no answer.**
+- **Rules for one activity.** A dog walk is a walk; nothing in the tracker or the asking knows about dogs.
 - **A false trip from GPS drift** while you sit at home.
 - **A duplicate block, or an inferred value overwriting something you said.**
 - **Anything in Google Calendar before you approve it.** Proposals stay local until ✓, as in Ship 5.
@@ -86,7 +88,7 @@ Run with `python scripts/location_spike_report.py --from 2026-11-05 --to 2026-11
   - `horizontal_accuracy` is 15 m at p50, 33 m at p90 and 496 m at most;
   - points taken while still sit within 5 m of their centre at p50 and 9 m at p90;
   - bad points come in bursts of 250–400 m accuracy, and single points can be a few hundred metres off.
-- **A 50 m departure rule is safe at home.** At home, the departure rule from §4.1 was tested at 40, 50, 60 and 75 m: at least 3 points with accuracy ≤ 30 m, outside the radius for at least 1 minute. Over six days GPS drift produced **no** false departures at any of these radii; every departure found was a real trip. At 40 m, one more departure appeared: 9 Nov 20:29–20:32, about 48 m from home for 3 minutes, just after the evening walk. It is possibly the convenience store.
+- **A 40 m departure rule is safe at home.** At home, the departure rule from §4.1 was tested at 40, 50, 60 and 75 m: at least 3 points with accuracy ≤ 30 m, outside the radius for at least 1 minute. Over six days GPS drift produced **no** false departures at any of these radii; every departure found was a real trip. Only 40 m found one more: 9 Nov 20:29–20:32, about 48 m from home for 3 minutes, just after the evening walk. You don't remember it; we assume it was the convenience store, so it is the test case for short trips, and home's radius is 40 m.
 - **Short walks stay close to home:** the 7 Nov evening walk went no further than 144–163 m.
 - **The naïve stay-point pass:**
   - turned slow dog-walk loops into visits;
@@ -116,6 +118,7 @@ From your description, Mazkir writes the labels itself into `data/eval/location/
 | 8 Nov | ~18:35–20:41, silent 112 min, 655 m at the end | Dog walk (long) | you confirmed it |
 | 9 Nov | 08:29–08:49, up to 201 m | Dog walk | logged 08:37 |
 | 9 Nov | 20:00–20:13, up to 272 m | Dog walk | pattern |
+| 9 Nov | 20:29–20:32, ~48 m | Convenience store | assumed; you don't remember it |
 | 9 Nov | 23:08 → bar at up to 920 m → home 04:31 | Walk to the bar · Bar · Walk home | you said so |
 | 10 Nov | 09:17–09:41, up to 245 m | Dog walk | pattern |
 | 10 Nov | from 10:16, to ~700 m | Walk to café · Coffee, then sauna | you said so |
@@ -201,30 +204,37 @@ New server code lives in `src/services/location/` (`tracker`, `candidates`, `gue
 - **Points used:**
   - a point with `accuracy_m` over 30 m never moves the state on its own; it is kept but does not count;
   - a point whose implied speed is above 150 km/h both into it and out of it is an outlier and is dropped (the single 385 m point on 9 Nov).
-- **Staying:** points within the stay radius of their running centre for at least **3 minutes**. The radius is **50 m at home** (§2) and 75 m elsewhere until a place has its own measured spread. The stay's spread is the p90 distance of its points from the centre.
-- **Leaving:** at least **3 points in a row**, each with accuracy ≤ 30 m, farther from the stay's centre than `max(radius, 3 × spread + accuracy)`, for at least 1 minute. On your data this finds every real trip and no drift.
+- **Staying:** points within the stay radius of their running centre for at least **3 minutes**. The radius is **40 m at home** (§2) and 75 m elsewhere until a place has its own measured spread. The stay's spread is the p90 distance of its points from the centre.
+- **Leaving:** at least **3 points in a row**, each with accuracy ≤ 30 m, farther from the stay's centre than the threshold, for at least 1 minute. At home the threshold is the 40 m radius itself, because home's spread is measured over weeks and the spike tested exactly that rule. Elsewhere it is `max(radius, 3 × spread + accuracy)`, since a new stay's spread is still a guess. On your data this finds every real trip, the 48 m shop trip included, and no drift.
+- **Home wins.** 3 good points back inside home's radius end whatever stop you were at, and the trip with it. Without this, a stop 48 m from home, with its 75 m radius, would swallow the walk back.
 - **Departure time** is the last point inside the stay, so blocks start when you actually left.
-- **Merging:** two stays less than 50 m apart with under 10 minutes between them are one stay. This fixes the band-practice split.
+- **Only leaving ends a stay.** A gap in points (up to §4.4's limits) or a point the rules above don't count never ends one. This fixes the band-practice split at a 1-minute gap. Two stays close together are not merged when a real departure separated them, since the shop is 48 m from home.
 - **Midnight splits nothing.** Stays and trips span days. Blocks are split at 00:00 only when written, as `create_event` already does.
 
 ### 4.2 Trips, stops and home
 
 Under the hood a day is a chain: stay, moving, stay, moving, and so on. A **trip** runs from leaving a stay at home, or at a place where you have arrived, to the next such arrival. The stays in between are **stops**.
 
-The tracker cannot tell whether a stop is a place you went to (the café) or a pause inside an activity (the dog sniffing around a park, a bench). Meaning decides, so the purpose (§5) decides:
+The tracker cannot tell whether a stop is a place you went to (the café) or a pause (a bench, the dog sniffing around a park), so it doesn't try. **Every stop of at least 3 minutes is treated the same way, on any trip:**
 
-- **A loop activity** is one that leaves home and comes back, like a dog walk or a run. Once its purpose is settled, its stops are pauses. They don't trigger questions and stay inside the one block. 8 Nov morning becomes one "Dog walk 07:20–10:10" block, with the three stops as detail in it.
-- **Any other trip:** each stop of at least 3 minutes is named, if it is a known place or there is a good guess, or asked about (§5.4). An answer of "just a break" folds it back into the trip.
+- **It is named** if it is a known place or there is one good guess (§5.4), and **asked about** otherwise, once.
+- **A named stop becomes its own block.**
+- **An unnamed stop** (no answer, or "nothing, just a pause") **gets no block.** Its time stays inside the trip's block, and the stop is kept only as detail on it ("3 stops"). 8 Nov morning, with no answers, is one "Dog walk 07:20–10:10" block.
+- **A spot you called a pause** is remembered as a pause spot (§7), so the same bench isn't asked about again. *My call: without it, a stop on your daily route would be asked about every day.*
+
+What the trip's own block looks like depends on what the moving was for (§4.3).
 - **The mode of a leg** comes from its median speed: up to 7 km/h is walking; up to 25 km/h is "ride", which could be a bike or a bus in traffic; above that is a vehicle. An answer or a guess names it more precisely.
 - **Home** is the place where most nights between 01:00 and 05:00 were spent over the last 14 days (§7). Arriving home always ends a trip.
 
 ### 4.3 What a trip becomes
 
-| Purpose | Blocks |
+| What the moving was for | Blocks |
 |---|---|
-| Loop activity | One block, from leaving home to getting back, stops included |
-| Going somewhere | A travel block per leg ("Walk to Gan Meir", "Bus to Alex's"), a block per named stop ("Café at Gan Meir"), and an open block at the destination ("Alex's birthday"), closed when you leave |
-| Unknown, never answered | "Trip" (a loop) or "Trip to ‹place or distance›", with the same structure |
+| **The moving is the activity:** a dog walk, a bike ride around the city, a walk with a friend, a run | One block for the whole trip, from leaving to getting back. Each named stop is its own block inside it, overlapping it ("Coffee at Gan Meir 08:10–08:25" within "Walk with Dana 07:50–09:00"); coverage counts the overlap once. |
+| **The moving gets you somewhere:** the café, the bar, Alex's, the shop | A travel block per leg ("Walk to Gan Meir", "Bus to Alex's"), a block per named stop, and an open block at the destination ("Alex's birthday"), closed when you leave. Unnamed stops stay inside the leg around them, so a leg is not split by a pause. A leg under 2 minutes (the 48 m to the shop) folds into the block it leads to. *My call.* |
+| Unknown, never answered | "Trip ‹distance›", one block like the first row |
+
+The guess (§5.3) says which row applies: a purpose with a destination place is the second row, one without is the first. Code reads that field; there is no list of activities.
 
 ### 4.4 Silence
 
@@ -246,7 +256,7 @@ The worker makes a decision on these tracker events:
 - **BACK_HOME:** what was the whole trip?
 - **LEFT_STOP** after a stop that was not named: the guess is refreshed with the stop's length.
 
-A trip already settled as a loop activity skips STOPPED. It is decided once, at the first STOPPED or at BACK_HOME, and that decision is revisited only if the trip stops looking like it: a vehicle leg, a distance well beyond that activity's history, or a stop beyond its usual length.
+Every stop gets its STOPPED decision, whatever the trip's purpose. The trip's purpose, once guessed, is part of the context for its stops ("on a walk, stopped 4 min, 400 m from home"), and is revisited if the trip stops looking like it: a vehicle leg, a distance well beyond that purpose's history, or a stop beyond its usual length.
 
 ### 5.2 Context (code: `candidates.py`)
 
@@ -290,7 +300,8 @@ A failed or timed-out call means no good guess, and Mazkir asks. Asking is the s
 | Two or three `strong` / `plausible` ones | Ask, with them as buttons |
 | None | Ask, with your usual destinations from here as buttons, if there are any |
 
-- **Where Mazkir asks:** at STOPPED, for a stop it can't name, or at BACK_HOME, for a loop it can't name. The question goes in the arrival message.
+- **Where Mazkir asks:** at STOPPED, for a stop it can't name, or at BACK_HOME, for a trip it can't name. The trip question goes in the arrival message.
+- **A stop already behind you** (you left before 3 minutes of messages could go out, or the question was never delivered) is not asked about later; it stays unnamed.
 - **At most once per stop, and never re-sent.**
 - **A cap of 6 questions a day** is only a safety net, for a bug or a strange day.
 - **Questions are allowed at any hour:** if you're out moving, you're awake.
@@ -308,9 +319,10 @@ The ingest response gains `notify: [...]`, and the bot sends what it lists.
 ### 6.2 The question at a stop
 
 > 📍 You've been here since 10:24 — 700 m from home, a new place. What's this?
-> [Café] [Sauna] [✎ Something else]
+> [Café] [Sauna] [Just a pause] [✎ Something else]
 
 - **A button** names the stop. A place-like answer also names the place (§7).
+- **Just a pause,** or no answer at all, leaves the stop unnamed and without a block (§4.2). Only the button makes it a pause spot; silence teaches nothing.
 - **✎, or just typing,** is read as the answer. The bot holds it as an open question (`open-question.ts`), and the text goes through the agent with the trip and stop ids in the reply context. The agent records it with a new tool, `set_trip_purpose(trip_id, stop_id?, purpose, place?)`, so the answer reaches the trip, not only a block name: §7 learns the place from it, and §5.2's history counts it.
 - **A late answer** still applies. It renames the blocks and re-sends nothing.
 
@@ -318,7 +330,7 @@ The ingest response gains `notify: [...]`, and the bot sends what it lists.
 
 There is one message per trip, shaped like a fast-lane receipt, with one line per block:
 
-> 🐕 Dog walk 07:20–10:10 · 2 h 50 min, 3.4 km  [✓] [✎]
+> 🐕 Dog walk 07:20–10:10 · 2 h 50 min, 3.4 km, 3 stops  [✓] [✎]
 
 or
 
@@ -330,7 +342,7 @@ or
 - **✓** approves the block through the existing path: the Google entry, the `## Schedule` line, and a habit tick when the block matches a habit.
 - **✎** opens the block-edit view with the nudge pad.
 - **✕** dismisses the trip's blocks.
-- **A loop nobody could name** asks here: "🚶 Trip 18:02–18:40, 1.1 km — what was it?", with buttons.
+- **A trip nobody could name** asks here: "🚶 Trip 18:02–18:40, 1.1 km — what was it?", with buttons.
 - **Blocks are in `/day` from the moment you leave** (an ongoing trip renders as ongoing), so the message is a shortcut, not the only way in.
 
 ### 6.4 Corrections in words, and words with nudges
@@ -369,6 +381,7 @@ The location-filled fields of your block are still a proposal until ✓, shown a
 - **`places.py`** keeps resolving by name, for the fast lane, and gains `nearest(lat, lng)`.
 - **What usually happens at a place** (gym → Workout) is never stored. §5.2 works it out from history each time, so it keeps up when habits change.
 - **Home** is found as in §4.2 and written as id `home`. The bot says once that it found home.
+- **Pause spots:** "Just a pause" stores the stop as a place with `kind: "pause"` and no name the vault ever sees. A stop inside one is unnamed with no question.
 - **Learning:** an answer naming a place ("Alex's", "the café on Dizengoff") gives the stop's centre to that place, creating the place if it is new.
   - If a place by that name already has coordinates farther away than its radius, Mazkir asks "Is this a different Alex's?"
   - A place's radius grows to cover the spread actually seen there, capped at 150 m.
@@ -397,7 +410,7 @@ It is how bad guesses get debugged. `scripts/location_trips_report.py [date]` pr
 
 | Measure | Target, first pass |
 |---|---|
-| Trips found / missed / invented | None missed, including the 163 m walk on 7 Nov; none invented from drift or jitter bursts |
+| Trips found / missed / invented | None missed, including the 163 m walk on 7 Nov and the 48 m shop trip on 9 Nov; none invented from drift or jitter bursts |
 | Leaving detected (true departure → event) | p50 ≤ 2 min |
 | Start / end error of blocks | p50 ≤ 3 min, p90 ≤ 10 min |
 | Dog walks named without a question | All, on the labelled days, from history plus labels |
