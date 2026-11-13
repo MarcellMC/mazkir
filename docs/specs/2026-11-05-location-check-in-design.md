@@ -159,6 +159,8 @@ The spike's answers are written back into §2.2 and §5 before L1 is planned.
 
 ## 5. L1 — points become visits
 
+> **Replaced by `docs/specs/2026-11-10-location-trips-design.md`** (location awareness: trips, stops, asking, merging with your blocks), together with the part of §6 it needs: places gain coordinates. What follows is kept as the spike-era design.
+
 Designed now so the spike measures the right things. Thresholds are placeholders until §4.6.
 
 ### 5.1 Shape
