@@ -139,4 +139,19 @@ describe("ApiClient", () => {
     expect(err.status).toBe(404);
     expect(err.message).toBe("API error: 404 Not Found");
   });
+
+  it("tripTap posts the line and action", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ receipt: null, toast: "ok", open_question: null }), { status: 200 }));
+    await api.tripTap("1a2b3c4d", "s1", "a0");
+    const [url, init] = (fetch as any).mock.calls[0];
+    expect(url).toBe("http://localhost:8000/locations/trips/1a2b3c4d/tap");
+    expect(JSON.parse(init.body)).toEqual({ line: "s1", action: "a0" });
+  });
+
+  it("ackLocationOutbox posts to the item", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await api.ackLocationOutbox("n1");
+    expect((fetch as any).mock.calls[0][0]).toBe("http://localhost:8000/locations/outbox/n1/ack");
+  });
 });

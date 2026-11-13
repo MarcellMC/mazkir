@@ -8,3 +8,4 @@ export * from "./generation.js";
 export * from "./message.js";
 export * from "./calendar.js";
 export * from "./receipt.js";
+export * from "./location.js";

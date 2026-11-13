@@ -17,6 +17,7 @@ import { setSelectedDate, noteDayView } from "../state/selected-date.js";
 import { stripSuppressedProposals } from "../state/dismissed-proposals.js";
 import { dayActionHandlers } from "./day-actions.js";
 import { receiptHandlers } from "./receipt.js";
+import { tripHandlers } from "./trip.js";
 
 export const callbackHandlers = new Composer();
 
@@ -26,6 +27,8 @@ export const callbackHandlers = new Composer();
 callbackHandlers.use(dayActionHandlers);
 // Fast-lane receipt taps (`rcpt:…`); a receipt's ✎ is `block:edit:…`, above.
 callbackHandlers.use(receiptHandlers);
+// Location trip taps (`trip:…`); a trip line's ✎ is `block:edit:…`, above.
+callbackHandlers.use(tripHandlers);
 
 // Confirmation choice buttons. The action id comes from the callback data
 // rather than module state, so a button on an older message cannot answer
