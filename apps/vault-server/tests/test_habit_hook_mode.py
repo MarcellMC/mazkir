@@ -84,3 +84,14 @@ def test_the_event_tools_tell_the_agent_not_to_tick_again(vault_service, tmp_pat
     for name in ("create_event", "update_event"):
         description = agent.tools[name]["schema"]["description"]
         assert "complete_habit" in description and "`habit`" in description
+
+
+def test_a_location_inferred_edit_never_ticks(monkeypatch):
+    """Location trips (final review I-1): filling your block's end is not you confirming it."""
+    from unittest.mock import MagicMock
+    from src.services.hooks import habit_hook as hook_mod
+    monkeypatch.setattr(hook_mod.settings, "fast_lane_mode", "on")
+    events = MagicMock()
+    hook_mod.habit_hook({"event_id": "e1", "_fast": {"inferred": True}},
+                        {"ok": True, "data": {"event_id": "e1"}}, {"events": events, "vault": MagicMock()})
+    events.resolve_event_date.assert_not_called()

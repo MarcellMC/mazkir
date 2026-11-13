@@ -182,8 +182,14 @@ def _days(specs: list[BlockSpec], rec: dict, zone: ZoneInfo) -> list[str]:
         if s.end is not None:
             days.add(s.end.astimezone(zone).date().isoformat())
     for ref in [*(rec.get("blocks") or {}).values(), *(rec.get("merged") or {}).values()]:
-        days.add(ref["date"])
+        for frag in fragments(ref):
+            days.add(frag["date"])
     return sorted(days)
+
+
+def fragments(ref: dict) -> list[dict]:
+    """A block's pieces as {date, event_id}: one, or one per day for a block split at midnight."""
+    return ref.get("fragments") or [{"date": ref["date"], "event_id": ref["event_id"]}]
 
 
 def _user_blocks(events, days: list[str], trip_id: str, owned: set[str], zone: ZoneInfo) -> list[tuple[str, dict]]:
@@ -198,8 +204,30 @@ def _user_blocks(events, days: list[str], trip_id: str, owned: set[str], zone: Z
     return out
 
 
+def _owned_in_store(events, days: list[str], trip_id: str) -> dict[str, dict]:
+    """This trip's own blocks as the store has them, by part — so a write the record missed is adopted."""
+    found: dict[str, list[tuple[str, dict]]] = {}
+    for day in days:
+        for e in events.get_events(day):
+            trip = e.get("trip") or {}
+            if trip.get("id") == trip_id and e.get("proposed"):
+                found.setdefault(trip.get("part"), []).append((day, e))
+    out = {}
+    for part, items in found.items():
+        items.sort(key=lambda item: item[1].get("start_time") or "")
+        refs = [{"date": day, "event_id": e["id"]} for day, e in items]
+        out[part] = {**refs[0], **({"fragments": refs} if len(refs) > 1 else {})}
+    return out
+
+
 def _match(specs: list[BlockSpec], users: list[tuple[str, dict]], zone: ZoneInfo) -> dict[str, tuple[str, dict]]:
-    """Each user block to the one spec it most plausibly is; each spec gets at most one."""
+    """Each user block to the one spec it most plausibly is; each spec gets at most one.
+
+    A block of yours with no end ("Dog walk", said as you leave) is the trip
+    when it starts within 15 minutes of it. A block with both times is the
+    same activity only when the two overlap by half or more: a "Phone call
+    10:00–10:10" must not swallow a 40-minute walk that began then.
+    """
     pairs = []
     for s in specs:
         si = _interval(s.start, s.end)
@@ -208,7 +236,8 @@ def _match(specs: list[BlockSpec], users: list[tuple[str, dict]], zone: ZoneInfo
             if ui is None:
                 continue
             ratio = _overlap_ratio(si, ui)
-            near = abs(ui[0] - si[0]) <= MERGE_WINDOW
+            open_ = not e.get("end_time")
+            near = open_ and abs(ui[0] - si[0]) <= MERGE_WINDOW
             if ratio >= MERGE_OVERLAP or near:
                 pairs.append((ratio + (1.0 if near else 0.0), s.part, day, e))
     pairs.sort(key=lambda p: -p[0])
@@ -226,15 +255,24 @@ def _find(events, day: str, event_id: str) -> dict | None:
     return next((e for e in events.get_events(day) if e.get("id") == event_id), None)
 
 
+def _load(events, ref: dict) -> list[tuple[dict, dict | None]]:
+    return [(frag, _find(events, frag["date"], frag["event_id"])) for frag in fragments(ref)]
+
+
+def _pinned(loaded) -> set[str]:
+    return {k for _, e in loaded if e for k in (e.get("user_set") or {})}
+
+
 def _delete_if_pending(events, ref: dict) -> bool:
-    """Delete a trip-owned block that is still only a proposal; return whether it is gone."""
-    ids = ref.get("fragments") or [ref["event_id"]]
-    found = [(d, e) for d in {ref["date"], *(ref.get("fragment_dates") or [])}
-             for e in events.get_events(d) if e.get("id") in ids]
-    if any(resolve_state(e) != "pending" for _, e in found):
+    """Delete a trip-owned block that is still only Mazkir's guess; return whether it is gone.
+
+    Never one you approved or corrected: a pinned field is your word.
+    """
+    loaded = [(f, e) for f, e in _load(events, ref) if e is not None]
+    if any(resolve_state(e) != "pending" for _, e in loaded) or _pinned(loaded):
         return False
-    for day, e in found:
-        events.delete_event(day, e["id"])
+    for frag, e in loaded:
+        events.delete_event(frag["date"], e["id"])
     return True
 
 
@@ -246,6 +284,7 @@ def _merge(rec: dict, spec: BlockSpec, day: str, e: dict, previous: dict | None,
     if previous and previous.get("rejected"):
         return previous                        # you said ✕: location fills nothing here again
     filled = dict((previous or {}).get("filled") or {})
+    filled_precision = dict((previous or {}).get("filled_precision") or {})
     pinned = e.get("user_set") or {}
     updates: dict[str, Any] = {}
     fields: dict[str, Any] = {"trip": _trip_field(rec, spec.part)}
@@ -262,17 +301,22 @@ def _merge(rec: dict, spec: BlockSpec, day: str, e: dict, previous: dict | None,
             continue
         if current is None or current != value:
             filled.setdefault(field, e.get(field))
+            filled_precision.setdefault(key, e.get(key))
             updates[field] = _local(value, zone)
             fields[key] = precision or "location"
     if updates or e.get("trip") != fields["trip"]:
+        # Deferred: what location filled is a proposal until ✓, so it must not
+        # reach your Google entry yet (spec §1.3, §6.5); ✓ pushes it.
         result = run_tool("update_event", {"event_id": e["id"], "date": day, **updates,
-                                           "_fast": {"inferred": True, "fields": fields}})
+                                           "_fast": {"inferred": True, "defer_calendar_sync": True,
+                                                     "fields": fields}})
         if not result.get("ok"):
             logger.warning("location writer: completing a block failed: %s", (result.get("error") or {}).get("code"))
-    return {"date": day, "event_id": e["id"], "filled": filled, "disagree": disagree}
+    return {"date": day, "event_id": e["id"], "filled": filled, "filled_precision": filled_precision,
+            "disagree": disagree}
 
 
-def _create(rec: dict, spec: BlockSpec, run_tool, zone) -> dict | None:
+def _create(rec: dict, spec: BlockSpec, run_tool, events, zone) -> dict | None:
     fields: dict[str, Any] = {"trip": _trip_field(rec, spec.part), "start_precision": spec.start_precision}
     if spec.end is not None:
         fields["end_precision"] = spec.end_precision or "location"
@@ -285,9 +329,8 @@ def _create(rec: dict, spec: BlockSpec, run_tool, zone) -> dict | None:
                               "_fast": {"fields": fields}}
     if spec.end is not None:
         params["end_time"] = _local(spec.end, zone)
-    place_name = spec.place_text
-    if place_name:
-        params["location"] = {"name": place_name}
+    if spec.place_text:
+        params["location"] = {"name": spec.place_text}
     result = run_tool("create_event", params)
     if not result.get("ok"):
         logger.warning("location writer: creating a block failed: %s", (result.get("error") or {}).get("code"))
@@ -295,46 +338,58 @@ def _create(rec: dict, spec: BlockSpec, run_tool, zone) -> dict | None:
     data = result.get("data") or {}
     ref = {"date": params["date"], "event_id": data.get("event_id")}
     if data.get("fragments"):
-        ref["fragments"] = data["fragments"]
-        ref["fragment_dates"] = sorted({params["date"], _local(spec.end, zone)[:10]})
+        ref["fragments"] = [{"date": events.resolve_event_date(i, params["date"]) or params["date"], "event_id": i}
+                            for i in data["fragments"]]
     return ref
 
 
 def _update_owned(rec: dict, spec: BlockSpec, ref: dict, events, run_tool, zone) -> dict | None:
-    """Bring a trip-owned block up to date. Returns the ref to keep, or None to recreate it."""
+    """Bring a trip-owned block up to date. Returns the ref to keep, or None to recreate it.
+
+    A block still wholly Mazkir's guess is recreated when its shape changes
+    (it now crosses midnight, or its split pieces move or are renamed), so
+    `create_event` splits it as it should. One you approved or corrected is
+    edited in place, piece by piece, and your pinned fields are never written.
+    """
     if ref.get("gone"):
         return ref
-    e = _find(events, ref["date"], ref["event_id"])
-    if e is None:
+    loaded = _load(events, ref)
+    if any(e is None for _, e in loaded):
         return {**ref, "gone": True}           # you deleted it: it stays deleted
-    if e.get("state") == "dismissed":
+    if any(e.get("state") == "dismissed" for _, e in loaded):
         return ref
+    pinned = _pinned(loaded)
+    guessed = all(resolve_state(e) == "pending" for _, e in loaded) and not pinned
+    split = len(loaded) > 1
     crosses = spec.end is not None and spec.start.astimezone(zone).date() != spec.end.astimezone(zone).date()
-    if ref.get("fragments") or crosses:
-        stored = (_parse(e.get("start_time"), zone), None if ref.get("fragments") else _parse(e.get("end_time"), zone))
-        unchanged = ref.get("fragments") and stored[0] == spec.start and ref.get("end") == _local(spec.end, zone)
-        if unchanged:
-            return ref
-        if resolve_state(e) == "pending" and _delete_if_pending(events, ref):
-            return None
-        return ref
-    pinned = e.get("user_set") or {}
-    updates: dict[str, Any] = {}
-    fields: dict[str, Any] = {}
-    if e.get("name") != spec.name and "name" not in pinned:
-        updates["name"] = spec.name
-    for field, value, key, precision in (("start_time", spec.start, "start_precision", spec.start_precision),
-                                         ("end_time", spec.end, "end_precision", spec.end_precision)):
-        if field in pinned or value is None:
-            continue
-        if _parse(e.get(field), zone) != value:
-            updates[field] = _local(value, zone)
-            fields[key] = precision or "location"
-    if updates:
-        params = {"event_id": e["id"], "date": ref["date"], **updates, "_fast": {"inferred": True, "fields": fields}}
-        result = run_tool("update_event", params)
-        if not result.get("ok"):
-            logger.warning("location writer: updating a block failed: %s", (result.get("error") or {}).get("code"))
+    first, last = loaded[0][1], loaded[-1][1]
+    differs = (any(e.get("name") != spec.name for _, e in loaded)
+               or _parse(first.get("start_time"), zone) != spec.start
+               or (spec.end is not None and _parse(last.get("end_time"), zone) != spec.end))
+    if guessed and (crosses != split or (split and differs)):
+        return None if _delete_if_pending(events, ref) else ref
+
+    for i, (frag, e) in enumerate(loaded):
+        own_pins = e.get("user_set") or {}
+        updates: dict[str, Any] = {}
+        fields: dict[str, Any] = {}
+        if e.get("name") != spec.name and "name" not in own_pins:
+            updates["name"] = spec.name
+        if i == 0 and "start_time" not in own_pins and _parse(e.get("start_time"), zone) != spec.start:
+            updates["start_time"] = _local(spec.start, zone)
+            fields["start_precision"] = spec.start_precision
+        if (i == len(loaded) - 1 and spec.end is not None and "end_time" not in own_pins
+                and _parse(e.get("end_time"), zone) != spec.end
+                and (not split or spec.end.astimezone(zone).date().isoformat() == frag["date"])):
+            updates["end_time"] = _local(spec.end, zone)
+            fields["end_precision"] = spec.end_precision or "location"
+        if updates:
+            params = {"event_id": e["id"], "date": frag["date"], **updates,
+                      "_fast": {"inferred": True, "fields": fields}}
+            result = run_tool("update_event", params)
+            if not result.get("ok"):
+                logger.warning("location writer: updating a block failed: %s",
+                               (result.get("error") or {}).get("code"))
     return ref
 
 
@@ -343,8 +398,13 @@ def apply_blocks(rec: dict[str, Any], specs: list[BlockSpec], *, run_tool: Calla
     zone = ZoneInfo(tz)
     blocks: dict[str, dict] = dict(rec.get("blocks") or {})
     previous_merged: dict[str, dict] = dict(rec.get("merged") or {})
-    owned = {i for ref in blocks.values() for i in (ref.get("fragments") or [ref["event_id"]])}
     days = _days(specs, rec, zone)
+    # Blocks this trip wrote that its record does not know (a crash between
+    # the write and the save) are adopted rather than written twice.
+    for part, ref in _owned_in_store(events, days, rec["id"]).items():
+        if part not in blocks:
+            blocks[part] = ref
+    owned = {f["event_id"] for ref in blocks.values() for f in fragments(ref)}
     matches = _match(specs, _user_blocks(events, days, rec["id"], owned, zone), zone)
     by_event = {m["event_id"]: m for m in previous_merged.values()}
 
@@ -364,10 +424,8 @@ def apply_blocks(rec: dict[str, Any], specs: list[BlockSpec], *, run_tool: Calla
                 blocks[spec.part] = kept
                 continue
             blocks.pop(spec.part)
-        created = _create(rec, spec, run_tool, zone)
+        created = _create(rec, spec, run_tool, events, zone)
         if created is not None:
-            if created.get("fragments") and spec.end is not None:
-                created["end"] = _local(spec.end, zone)
             blocks[spec.part] = created
 
     planned = {s.part for s in specs}

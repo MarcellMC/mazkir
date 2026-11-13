@@ -256,8 +256,17 @@ class Tracker:
             events.append(self._event("LEFT_STOP", fix.ts, stop.id))
         if trip.legs and trip.legs[-1].end is None:
             trip.legs[-1].end = arrived
+        if self._home_run_gap > self.params.share_ended_s:
+            # The share stopped while you were out and came back at home: when
+            # you got in is unknown, only that it was after the last point
+            # away. End there, rather than propose a trip as long as the night.
+            arrived = self._home_run_before
+            trip.end_precision = "after"
+            if trip.legs and trip.legs[-1].end is not None and trip.legs[-1].end > arrived:
+                trip.legs[-1].end = arrived
+        else:
+            trip.end_precision = "before" if self._home_run_gap > self.params.silence_s else "location"
         trip.back_at = arrived
-        trip.end_precision = "before" if self._home_run_gap > self.params.silence_s else "location"
         events.append(self._event("BACK_HOME", fix.ts))
         home_stay = _Stay(self._home_run[0], True, self.home)
         for f in self._home_run[1:]:

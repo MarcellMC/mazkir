@@ -140,7 +140,8 @@ def describe_trip(trip: Trip, stop: Stop | None, places: list[Place], now: dt.da
                      f"{where(stop.place_id, stop.from_home_m)}.")
     if trip.back_at is not None:
         back = trip.back_at.astimezone(zone)
-        parts.append(f"Back home {'before ' if trip.end_precision == 'before' else ''}{back:%H:%M}, after "
+        word = {"before": "before ", "after": "some time after "}.get(trip.end_precision or "", "")
+        parts.append(f"Back home {word}{back:%H:%M}, after "
                      f"{_duration((trip.back_at - trip.left_at).total_seconds())}.")
     return " ".join(parts)
 

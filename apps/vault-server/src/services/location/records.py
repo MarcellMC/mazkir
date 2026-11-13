@@ -34,6 +34,17 @@ class TripRecords:
     def __init__(self, root: Path):
         self.dir = Path(root) / "trips"
         self._lock = threading.RLock()
+        self._trip_locks: dict[str, threading.RLock] = {}
+
+    def lock_for(self, trip_id: str) -> threading.RLock:
+        """One lock per trip, held across read → decide → write → save.
+
+        The worker (seconds, through a model call), a button tap and the
+        agent's `set_trip_purpose` all rewrite the same record; without it
+        the slower one saves a stale copy over the other's answer.
+        """
+        with self._lock:
+            return self._trip_locks.setdefault(trip_id, threading.RLock())
 
     def _path(self, trip_id: str) -> Path | None:
         # The id builds a file path, and taps carry it from the bot.

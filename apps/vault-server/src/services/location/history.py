@@ -85,15 +85,26 @@ def _from_labels(labels_dir: Path, since: dt.datetime) -> list[ConfirmedTrip]:
 
 
 def _is_confirmed(rec: dict, events, cache: dict[str, list[dict]]) -> bool:
+    """Whether you confirmed this trip's purpose (spec §5.2).
+
+    Your trip-level answer, your own block it merged with, ✓ All, or ✓ on the
+    block that carries the purpose: the trip's own block, or the stop named
+    as it. Approving a leg, or answering about a stop, says nothing about why
+    the whole trip happened, so a silent guess cannot confirm itself that way.
+    """
     if rec.get("confirmed"):
         return True
-    refs = [*(rec.get("blocks") or {}).values(), *(rec.get("merged") or {}).values()]
-    for ref in refs:
-        day = ref.get("date")
-        if day not in cache:
-            cache[day] = events.get_events(day) if events is not None else []
-        if any(e.get("id") == ref.get("event_id") and e.get("state") == "approved" for e in cache[day]):
-            return True
+    purpose = ((rec.get("purpose") or {}).get("name") or "").strip().casefold()
+    for part, ref in (rec.get("blocks") or {}).items():
+        for frag in ref.get("fragments") or [ref]:
+            day = frag.get("date")
+            if day not in cache:
+                cache[day] = events.get_events(day) if events is not None else []
+            e = next((x for x in cache[day] if x.get("id") == frag.get("event_id")), None)
+            if e is None or e.get("state") != "approved":
+                continue
+            if part == "trip" or (e.get("name") or "").strip().casefold() == purpose:
+                return True
     return False
 
 

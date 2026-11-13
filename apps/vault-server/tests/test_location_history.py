@@ -91,3 +91,20 @@ def test_labels_and_approved_records_are_confirmed(tmp_path):
     records.save(unconfirmed)
     got = load_confirmed(labels, records, events, TZ, t(13, 9, 0))
     assert sorted(c.purpose for c in got) == ["Dog walk", "Run"]
+
+
+def test_approving_a_leg_does_not_confirm_the_trip(tmp_path):           # I-10
+    events = EventsService(events_path=tmp_path / "events")
+    records = TripRecords(tmp_path / "loc")
+    rec = new_record(trip_at(t(12, 7, 0)))
+    rec["purpose"] = {"name": "Coffee at Gan Meir", "destination": "Gan Meir", "source": "guess"}
+    leg = events.create_event(date="2026-11-12", name="Walk to Gan Meir", start_time="2026-11-12T07:00:00", proposed=True)
+    events.update_event(date="2026-11-12", event_id=leg["id"], updates={"state": "approved"})
+    rec["blocks"] = {"leg:1": {"date": "2026-11-12", "event_id": leg["id"]}}
+    records.save(rec)
+    assert load_confirmed(tmp_path / "none", records, events, TZ, t(13, 9, 0)) == []
+    stop = events.create_event(date="2026-11-12", name="Coffee at Gan Meir", start_time="2026-11-12T07:10:00", proposed=True)
+    events.update_event(date="2026-11-12", event_id=stop["id"], updates={"state": "approved"})
+    rec["blocks"]["stop:s1"] = {"date": "2026-11-12", "event_id": stop["id"]}
+    records.save(rec)
+    assert [c.purpose for c in load_confirmed(tmp_path / "none", records, events, TZ, t(13, 9, 0))] == ["Coffee at Gan Meir"]

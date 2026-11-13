@@ -126,9 +126,17 @@ def arrival_receipt(rec: dict, events, tz: str) -> dict[str, Any]:
         rows.append((part, "merged", m, m))
     found = []
     for part, kind, ref, m in rows:
-        e = _find(events, ref["date"], ref["event_id"])
-        if e is not None:
-            found.append((e.get("start_time") or "", part, kind, ref, m, e))
+        pieces = [_find(events, f["date"], f["event_id"]) for f in (ref.get("fragments") or [ref])]
+        pieces = [p for p in pieces if p is not None]
+        if not pieces:
+            continue
+        # A block split at midnight is one line: its first start, its last end,
+        # and still open while any piece is.
+        e = dict(pieces[0])
+        e["end_time"] = pieces[-1].get("end_time")
+        states = [resolve_state(p) for p in pieces]
+        e["_state"] = "pending" if "pending" in states else states[0]
+        found.append((e.get("start_time") or "", part, kind, ref, m, e))
     found.sort(key=lambda r: r[0])
 
     lines: list[dict] = []
@@ -146,7 +154,7 @@ def arrival_receipt(rec: dict, events, tz: str) -> dict[str, Any]:
     for _, part, kind, ref, m, e in found:
         order.append(part)
         n = len(order)
-        state = resolve_state(e)
+        state = e["_state"]
         confirmed = bool(m and m.get("confirmed"))
         open_ = state == "pending" or (kind == "merged" and not confirmed and bool(m.get("filled") or m.get("disagree")))
         any_open = any_open or open_

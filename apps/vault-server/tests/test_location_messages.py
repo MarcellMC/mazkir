@@ -116,3 +116,15 @@ def test_receipt_text_has_no_coordinates(events):
 def test_notice():
     assert notice_receipt("Location sharing stopped")["text"] == "Location sharing stopped"
     assert notice_receipt("x")["lines"] == []
+
+
+def test_a_split_block_shows_its_whole_span(events):                    # I-6d
+    rec = rec_with_stop()
+    a = events.create_event(date="2026-11-09", name="Bar", start_time="2026-11-09T23:10:00",
+                            end_time="2026-11-09T23:59:59", proposed=True)
+    b = events.create_event(date="2026-11-10", name="Bar", start_time="2026-11-10T00:00:00",
+                            end_time="2026-11-10T04:10:00", proposed=True)
+    rec["blocks"] = {"stop:s1": {"date": "2026-11-09", "event_id": a["id"],
+                                 "fragments": [{"date": "2026-11-09", "event_id": a["id"]},
+                                               {"date": "2026-11-10", "event_id": b["id"]}]}}
+    assert arrival_receipt(rec, events, TZ)["lines"][0]["when"] == "23:10–04:10"

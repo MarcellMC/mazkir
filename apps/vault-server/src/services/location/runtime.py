@@ -32,6 +32,7 @@ from src.services.location.messages import arrival_receipt, notice_receipt, ques
 from src.services.location.model import TrackerEvent, Trip, safe_error
 from src.services.location.pipeline import TripDeps, apply_answer, handle_event, options_for
 from src.services.location.raw import load_fixes, point_to_fix
+from src.services.location.writer import fragments
 from src.services.location.tracker import Params, Tracker
 
 logger = logging.getLogger(__name__)
@@ -170,6 +171,9 @@ class LocationRuntime:
         with self._lock:
             events = self.tracker.tick(now)
             self._maybe_find_home(now)
+            # Places learned from answers, and pause spots, reach the tracker
+            # within a minute rather than at the next restart.
+            self.tracker.places = self._places()[1]
             self._persist()
             queued = [(self._inbox_add(ev), ev) for ev in events]
         for seq, ev in queued:
@@ -202,14 +206,15 @@ class LocationRuntime:
                 "blocks": {part: ref.get("event_id") for part, ref in rec["blocks"].items()}}
 
     def render_arrival(self, trip_id: str) -> dict[str, Any] | None:
-        rec = self.deps.records.get(trip_id)
-        if rec is None:
-            return None
-        receipt = arrival_receipt(rec, self.deps.events, self.deps.tz)
-        if rec.get("arrival_item"):
-            self.deps.outbox.update(rec["arrival_item"], receipt)
-        self.deps.records.save(rec)
-        return receipt
+        with self.deps.records.lock_for(trip_id):
+            rec = self.deps.records.get(trip_id)
+            if rec is None:
+                return None
+            receipt = arrival_receipt(rec, self.deps.events, self.deps.tz)
+            if rec.get("arrival_item"):
+                self.deps.outbox.update(rec["arrival_item"], receipt)
+            self.deps.records.save(rec)
+            return receipt
 
     def tap(self, trip_id: str, line: str, action: str) -> dict[str, Any]:
         """A button on a trip message. Raises KeyError when the trip is gone.
@@ -218,11 +223,15 @@ class LocationRuntime:
         `approvals` — (date, event_id, state) — for the route to run through
         `set_event_state`, which is async and owns Google and habit ticks.
         """
+        with self.deps.records.lock_for(trip_id):
+            return self._tap(trip_id, line, action)
+
+    def _tap(self, trip_id: str, line: str, action: str) -> dict[str, Any]:
         rec = self.deps.records.get(trip_id)
         if rec is None:
             raise KeyError(trip_id)
         out: dict[str, Any] = {"receipt": None, "toast": None, "open_question": None, "approvals": [],
-                               "rerender": False}
+                               "syncs": [], "rerender": False}
         if action in ("ok", "no"):
             return self._approve(rec, line, action, out)
 
@@ -267,33 +276,43 @@ class LocationRuntime:
         for part in parts:
             ref = (rec.get("blocks") or {}).get(part)
             if ref and not ref.get("gone"):
-                out["approvals"].append((ref["date"], ref["event_id"], state))
+                # Every piece of a block split at midnight, not only the first.
+                for frag in fragments(ref):
+                    out["approvals"].append((frag["date"], frag["event_id"], state))
                 continue
             merged = (rec.get("merged") or {}).get(part)
-            if merged:
-                self._settle_merged(merged, action)
-        if action == "ok":
+            if merged and not merged.get("confirmed"):
+                if self._settle_merged(merged, action):
+                    out["syncs"].append((merged["date"], merged["event_id"]))
+        # ✓ confirms the trip's purpose only when it covers the block that
+        # carries it (spec §5.2): ✓ All, or ✓ on the trip's own block.
+        if action == "ok" and (line == "all" or "trip" in parts):
             rec["confirmed"] = True
         self.deps.records.save(rec)
         out["rerender"] = True
         out["toast"] = "✓ Confirmed" if action == "ok" else "Dismissed"
         return out
 
-    def _settle_merged(self, merged: dict, action: str) -> None:
-        """✓ keeps what location filled into your block; ✕ puts your block back as you left it."""
+    def _settle_merged(self, merged: dict, action: str) -> bool:
+        """✓ keeps what location filled into your block; ✕ puts your block back as you left it.
+
+        Returns whether the block now needs pushing to Google: the fill was
+        held back until this ✓ (writer `_merge`, deferred sync).
+        """
+        merged["confirmed"] = True
         if action == "ok":
-            merged["confirmed"] = True
             fields = {f.replace("_time", "_precision"): "exact" for f in merged.get("filled") or {}}
             if fields:
                 self.deps.events.update_event(date=merged["date"], event_id=merged["event_id"], updates=fields)
-            return
-        restore = dict(merged.get("filled") or {})
+            return bool(fields)
+        # Straight to the store, not through update_event's schema: the value
+        # to put back is often "no end yet" (None), which the tool refuses.
+        # The fill never reached Google, so there is nothing to undo there.
+        restore = {**(merged.get("filled") or {}), **(merged.get("filled_precision") or {})}
         if restore:
-            params = {"event_id": merged["event_id"], "date": merged["date"], **restore,
-                      "_fast": {"inferred": True}}
-            self.deps.run_tool("update_event", params)
+            self.deps.events.update_event(date=merged["date"], event_id=merged["event_id"], updates=restore)
         merged["rejected"] = True
-        merged["confirmed"] = True
+        return False
 
 
 def _answered(rec: dict, name: str) -> dict[str, Any]:

@@ -138,6 +138,11 @@ async def tap_trip(body: TapBody, trip_id: str = Path(pattern=_ID)) -> dict:
         habit = (outcome or {}).get("habit")
         if habit:
             toast = f"✓ {habit['name']} · +{habit['tokens_earned']} tokens · streak {habit['new_streak']}"
+    if result.get("syncs"):
+        from src.main import get_calendar, get_events
+        from src.services.calendar_push import sync_block
+        for day, event_id in result["syncs"]:
+            await asyncio.to_thread(sync_block, get_calendar(), get_events(), day, event_id)
     receipt = result.get("receipt")
     if result.get("rerender"):
         receipt = await asyncio.to_thread(runtime.render_arrival, trip_id)

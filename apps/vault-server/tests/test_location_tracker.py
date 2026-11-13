@@ -172,3 +172,16 @@ def test_params_are_the_spec_values():
     p = Params()
     assert (p.accuracy_max_m, p.outlier_kmh, p.stay_min_s, p.home_radius_m, p.stay_radius_m) == (30, 150, 180, 40, 75)
     assert (p.leave_points, p.leave_min_s, p.silence_s, p.share_ended_s, p.walk_kmh, p.ride_kmh) == (3, 60, 600, 1800, 7, 25)
+
+
+def test_a_share_resuming_at_home_ends_the_trip_when_it_went_quiet():   # I-9
+    tr = tracker()
+    track = Track(t(9, 21, 0)).stay(10).walk_to(600)
+    last_away = track.fixes[-1]
+    track.silent(11 * 60)
+    track.pos = (0, 0)
+    track.stay(5)
+    events = feed_all(tr, track.fixes)
+    back = events[-1]
+    assert back.kind == "BACK_HOME"
+    assert back.trip.back_at == last_away.ts and back.trip.end_precision == "after"

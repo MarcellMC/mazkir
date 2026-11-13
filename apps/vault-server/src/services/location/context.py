@@ -23,6 +23,9 @@ WINDOW = dt.timedelta(hours=24)
 MAX_CONVERSATION = 60
 MAX_CHARS = 300
 _HEADER = re.compile(r"^### (\d{2}):(\d{2}) \[(\w+)\]\s*$")
+# A check-in is logged in the conversation as "(location: <lat>, <lng>)", and
+# a pasted pair looks the same: neither may reach the model (spec §1.3).
+_COORDS = re.compile(r"\(location:[^)]*\)|-?\d{1,3}\.\d{3,}\s*,\s*-?\d{1,3}\.\d{3,}")
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,7 @@ class ContextLine:
 
 
 def _cut(text: str) -> str:
+    text = _COORDS.sub("(a location)", text)
     text = " ".join(text.split())
     return text if len(text) <= MAX_CHARS else text[: MAX_CHARS - 1] + "…"
 

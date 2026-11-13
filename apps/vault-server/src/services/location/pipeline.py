@@ -24,19 +24,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from src.services.fast_lane.places import PAUSE_KIND, add_pause_spot, learn_place, load_places
+from opentelemetry.trace import Status, StatusCode
+
+from src.services.fast_lane.places import PAUSE_KIND, add_pause_spot, learn_place, load_places, nearest
 from src.services.location.context import gather_context
 from src.services.location.decide import Decision, Option, decide
 from src.services.location.guess import Guess, describe_trip, guess
 from src.services.location.history import load_confirmed, score_history
 from src.services.location.messages import arrival_receipt, question_receipt
-from src.services.location.model import TrackerEvent, Trip
+from src.services.location.model import TrackerEvent, Trip, safe_error
 from src.services.location.records import new_record
 from src.services.location.writer import apply_blocks, plan_blocks
-from src.services.tracing_helpers import with_span_status
 from src.tracing_setup import get_tracer
 
 logger = logging.getLogger(__name__)
+
+STALE_QUESTION = dt.timedelta(minutes=10)
 
 
 @dataclass
@@ -119,24 +122,41 @@ def _on_stopped(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     trip = Trip.from_dict(rec["trip"])
     stop = trip.stop(sid)
     info = _stop_info(rec, sid)
-    known = next((p for p in places if stop is not None and p.id == stop.place_id), None)
+    # From places.json as it is now, not the tracker's start-up copy: a pause
+    # spot or a place learned an hour ago counts at once.
+    known = nearest(stop.lat, stop.lng, [p for p in places if p.id != "home"]) if stop is not None else None
+    if known is not None and stop.place_id != known.id:
+        stop.place_id = known.id
+        rec["trip"] = trip.to_dict()
     if known is not None and known.kind == PAUSE_KIND:
         _log(deps, ev.kind, rec, sid, decision=Decision("quiet", reason="pause spot"))
         return
     guesses, dropped, history = _guess("stop", trip, stop, deps, places)
-    d = decide(guesses, history, known_place=known, may_ask=True, questions_today=_questions_today(deps))
+    # A STOPPED handled long after it happened (the server was down, or the
+    # inbox is replaying) is about a stop you have likely left: never ask then.
+    fresh = (deps.now() - ev.ts) <= STALE_QUESTION
+    d = decide(guesses, history, known_place=known, may_ask=fresh, questions_today=_questions_today(deps))
     if d.action == "name":
         info.update(status="named", name=d.name, place=d.destination or (known.name if known else None))
     elif d.action == "ask":
         info.update(status="asked", options=[o.to_dict() for o in d.options], asked_at=deps.now().isoformat())
         receipt = question_receipt(rec, sid, list(d.options), deps.now(), deps.tz,
                                    place_name=known.name if known else None)
-        deps.outbox.add("question", receipt, rec["id"])
+        # Saved before queueing, and queued by key: a crash in between can
+        # replay this event, but never send the question twice.
+        deps.records.save(rec)
+        deps.outbox.add("question", receipt, rec["id"], key=question_key(rec["id"], sid))
     _log(deps, ev.kind, rec, sid, history, guesses, dropped, d)
+
+
+def question_key(trip_id: str, stop_id: str) -> str:
+    return f"q:{trip_id}:{stop_id}"
 
 
 def _on_left_stop(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     sid = ev.stop_id
+    # A question no point carried to you before you left is not asked any more.
+    deps.outbox.withdraw(question_key(rec["id"], sid))
     info = _stop_info(rec, sid)
     if info["status"] in ("named", "pause") or info.get("answered") or info.get("reguessed"):
         return
@@ -162,6 +182,8 @@ def _name_from_your_block(rec: dict, deps: TripDeps) -> None:
 
 def _on_back_home(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     rec["closed"] = True
+    for sid in rec.get("stops") or {}:
+        deps.outbox.withdraw(question_key(rec["id"], sid))
     _apply(rec, deps, places)
     _name_from_your_block(rec, deps)
     if (rec.get("purpose") or {}).get("name") or rec.get("trip_question"):
@@ -197,30 +219,55 @@ def _refresh_arrival(rec: dict, deps: TripDeps) -> None:
 def handle_event(ev: TrackerEvent, deps: TripDeps) -> None:
     if ev.trip is None:
         return
-    with get_tracer().start_as_current_span("location.trip.decide") as span:
-        with with_span_status(span):
-            span.set_attribute("location.event", ev.kind)
-            places = _places(deps)
-            rec = deps.records.get(ev.trip.id) or new_record(ev.trip)
-            rec["trip"] = ev.trip.to_dict()
-            if ev.kind == "STOPPED":
-                _on_stopped(rec, ev, deps, places)
-            elif ev.kind == "LEFT_STOP":
-                _on_left_stop(rec, ev, deps, places)
-            elif ev.kind == "BACK_HOME":
-                _on_back_home(rec, ev, deps, places)
-            elif ev.kind == "LEFT":
-                _log(deps, ev.kind, rec)
-            _apply(rec, deps, places)
-            if ev.kind != "BACK_HOME":
-                _name_from_your_block(rec, deps)
-            _refresh_arrival(rec, deps)
-            deps.records.save(rec)
+    # Not recorded by OTel itself: its exception event carries the message,
+    # and a message could quote a coordinate.
+    with get_tracer().start_as_current_span("location.trip.decide", record_exception=False,
+                                            set_status_on_exception=False) as span:
+        span.set_attribute("location.event", ev.kind)
+        try:
+            with deps.records.lock_for(ev.trip.id):
+                _handle(ev, deps)
+        except Exception as exc:
+            # The type and where, never the message: it could quote a coordinate.
+            span.set_status(Status(StatusCode.ERROR, safe_error(exc)))
+            raise
+
+
+def _handle(ev: TrackerEvent, deps: TripDeps) -> None:
+    places = _places(deps)
+    rec = deps.records.get(ev.trip.id)
+    if rec is not None and rec.get("last_event_ts") and ev.ts < dt.datetime.fromisoformat(rec["last_event_ts"]):
+        # An older event replayed after newer ones (a failed one, from the
+        # inbox) would rewind the trip: reopen stops, drop later parts.
+        _log(deps, ev.kind, rec, ev.stop_id, extra={"skipped": "older than the record"})
+        return
+    rec = rec or new_record(ev.trip)
+    rec["trip"] = ev.trip.to_dict()
+    rec["last_event_ts"] = ev.ts.isoformat()
+    if ev.kind == "STOPPED":
+        _on_stopped(rec, ev, deps, places)
+    elif ev.kind == "LEFT_STOP":
+        _on_left_stop(rec, ev, deps, places)
+    elif ev.kind == "BACK_HOME":
+        _on_back_home(rec, ev, deps, places)
+    elif ev.kind == "LEFT":
+        _log(deps, ev.kind, rec)
+    _apply(rec, deps, places)
+    if ev.kind != "BACK_HOME":
+        _name_from_your_block(rec, deps)
+    _refresh_arrival(rec, deps)
+    deps.records.save(rec)
 
 
 def apply_answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str | None, deps: TripDeps,
                  *, pause: bool = False) -> dict[str, Any]:
     """Your answer to a question about a stop or the whole trip. Raises KeyError for an unknown trip or stop."""
+    with deps.records.lock_for(trip_id):
+        return _answer(trip_id, stop_id, purpose, place, deps, pause)
+
+
+def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str | None, deps: TripDeps,
+            pause: bool) -> dict[str, Any]:
     rec = deps.records.get(trip_id)
     if rec is None:
         raise KeyError(trip_id)
@@ -242,7 +289,9 @@ def apply_answer(trip_id: str, stop_id: str | None, purpose: str | None, place: 
                 conflict = place if clash else None
     else:
         rec["purpose"] = {"name": purpose, "destination": place, "source": "answer"}
-    rec["confirmed"] = True
+        # Only a trip-level answer confirms why the trip happened (spec §5.2);
+        # naming a stop, or calling it a pause, does not.
+        rec["confirmed"] = True
     places = _places(deps)
     _apply(rec, deps, places)
     _refresh_arrival(rec, deps)

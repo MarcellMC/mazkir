@@ -114,3 +114,43 @@ def test_tap_ok_on_a_line_returns_its_approval(tmp_path):
     ref = deps.records.get(rec["id"])["blocks"]["trip"]
     assert out["approvals"] == [(ref["date"], ref["event_id"], "approved")]
     assert rt.tap(rec["id"], "all", "no")["approvals"] == [(ref["date"], ref["event_id"], "dismissed")]
+
+
+def test_not_right_on_your_block_restores_it(tmp_path):                   # I-2
+    deps, _ = make_deps(tmp_path)
+    deps.events.create_event(date="2026-11-13", name="Dog walk", start_time="2026-11-13T07:50:00")
+    rt = LocationRuntime(tmp_path / "loc", deps, synchronous=True)
+    for p in points(Track(t(13, 7, 40)).stay(10).walk_to(250).walk_to(0).stay(5)):
+        rt.feed(p)
+    [rec] = deps.records.all()
+    assert deps.events.get_events("2026-11-13")[0]["end_time"]          # location filled the end
+    rt.render_arrival(rec["id"])
+    rt.tap(rec["id"], "all", "no")
+    [e] = deps.events.get_events("2026-11-13")
+    assert e["end_time"] is None and e.get("end_precision") is None
+    assert deps.records.get(rec["id"])["merged"]["trip"]["rejected"] is True
+
+
+def test_ok_on_your_block_asks_the_route_to_sync_it(tmp_path):            # I-1
+    deps, _ = make_deps(tmp_path)
+    e = deps.events.create_event(date="2026-11-13", name="Dog walk", start_time="2026-11-13T07:50:00")
+    rt = LocationRuntime(tmp_path / "loc", deps, synchronous=True)
+    for p in points(Track(t(13, 7, 40)).stay(10).walk_to(250).walk_to(0).stay(5)):
+        rt.feed(p)
+    [rec] = deps.records.all()
+    rt.render_arrival(rec["id"])
+    out = rt.tap(rec["id"], "1", "ok")
+    assert out["syncs"] == [("2026-11-13", e["id"])]
+    assert deps.events.get_events("2026-11-13")[0]["end_precision"] == "exact"
+
+
+def test_ok_on_a_split_block_approves_every_fragment(tmp_path):          # I-6c
+    deps, _ = make_deps(tmp_path)
+    rt = LocationRuntime(tmp_path / "loc", deps, synchronous=True)
+    for p in points(Track(t(9, 23, 45)).stay(10).walk_to(500).stay(1).walk_to(0).stay(5)):
+        rt.feed(p)
+    [rec] = deps.records.all()
+    assert len(rec["blocks"]["trip"]["fragments"]) == 2
+    rt.render_arrival(rec["id"])
+    out = rt.tap(rec["id"], "1", "ok")
+    assert sorted(a[0] for a in out["approvals"]) == ["2026-11-09", "2026-11-10"]

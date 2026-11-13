@@ -79,3 +79,11 @@ def test_no_chat_means_no_conversation(tmp_path):
 def test_long_lines_are_cut(tmp_path):
     conversation(tmp_path / "conv", "2026-11-13", "### 08:00 [user]\n" + "x" * 1000 + "\n")
     assert all(len(l.text) <= 300 for l in gather(tmp_path))
+
+
+def test_coordinates_never_reach_the_context(tmp_path):                  # I-7
+    conversation(tmp_path / "conv", "2026-11-13",
+                 "### 08:00 [user]\nhere (location: 32.085312, 34.781807) now\n\n"
+                 "### 08:01 [user]\nat 32.0853,34.7818 again\n")
+    text = " ".join(l.text for l in gather(tmp_path))
+    assert "32.08" not in text and "34.78" not in text and "here" in text

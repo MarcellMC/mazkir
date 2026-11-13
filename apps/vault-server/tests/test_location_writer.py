@@ -152,12 +152,20 @@ def test_message_time_inferred_start_is_replaced(store):
 
 def test_big_disagreement_is_reported_not_written(store):
     events, _ = store
-    events.create_event(date="2026-11-06", name="Dog walk", start_time="2026-11-06T09:40:00",
-                        end_time="2026-11-06T10:00:00")
+    events.create_event(date="2026-11-06", name="Dog walk", start_time="2026-11-06T09:45:00",
+                        end_time="2026-11-06T10:20:00")
     rec = apply(record(t(6, 9, 45), t(6, 10, 38), purpose=WALK), store)
     [e] = events.get_events("2026-11-06")
     assert rec["merged"]["trip"]["disagree"] == {"field": "end_time", "location_value": "10:38"}
-    assert e["end_time"] == "2026-11-06T10:00:00"
+    assert e["end_time"] == "2026-11-06T10:20:00"
+
+
+def test_a_short_stated_block_does_not_swallow_a_trip(store):             # I-11
+    events, _ = store
+    events.create_event(date="2026-11-06", name="Phone call", start_time="2026-11-06T10:00:00",
+                        end_time="2026-11-06T10:10:00")
+    rec = apply(record(t(6, 10, 0), t(6, 10, 40), purpose=WALK), store)
+    assert rec["merged"] == {} and sorted(e["name"] for e in events.get_events("2026-11-06")) == ["Dog walk", "Phone call"]
 
 
 def test_your_later_block_absorbs_the_trip_block(store):     # the reverse direction
@@ -230,3 +238,86 @@ def test_a_rejected_merge_is_not_filled_again(store):
     rec["merged"]["trip"]["rejected"] = True
     apply(rec, store)
     assert events.get_events("2026-11-06")[0]["end_time"] is None
+
+
+# --- final review fixes --------------------------------------------------------
+
+def test_filling_your_block_waits_for_approval_before_google(store):      # I-1
+    events, run_tool = store
+    seen = []
+
+    def spy(name, params):
+        seen.append((name, params))
+        return run_tool(name, params)
+
+    events.create_event(date="2026-11-06", name="Dog walk", start_time="2026-11-06T10:24:00")
+    rec = record(t(6, 10, 24), t(6, 10, 38), purpose=WALK)
+    apply_blocks(rec, plan_blocks(rec, []), run_tool=spy, events=events, tz=TZ)
+    [(name, params)] = [s for s in seen if s[0] == "update_event"]
+    assert params["_fast"]["defer_calendar_sync"] is True and params["_fast"]["inferred"] is True
+
+
+def test_the_previous_precision_is_kept_for_undo(store):                 # I-2
+    events, _ = store
+    events.create_event(date="2026-11-06", name="Dog walk", start_time="2026-11-06T10:35:00",
+                        fields={"start_precision": "inferred"})
+    rec = apply(record(t(6, 10, 24), t(6, 10, 38), purpose=WALK), store)
+    m = rec["merged"]["trip"]
+    assert m["filled"] == {"start_time": "2026-11-06T10:35:00", "end_time": None}
+    assert m["filled_precision"] == {"start_precision": "inferred", "end_precision": None}
+
+
+def _bar_trip(purpose=None):
+    rec = record(t(9, 23, 40), t(10, 0, 25), purpose=purpose, distance=900)
+    return rec
+
+
+def test_a_split_trip_block_is_renamed(store):                          # I-6a
+    events, _ = store
+    rec = apply(_bar_trip(), store)
+    assert len(rec["blocks"]["trip"]["fragments"]) == 2
+    rec["purpose"] = WALK
+    apply(rec, store)
+    names = [e["name"] for d in ("2026-11-09", "2026-11-10") for e in events.get_events(d)]
+    assert names == ["Dog walk", "Dog walk"]
+
+
+def test_an_approved_open_block_still_gets_its_end(store):               # I-6b
+    events, _ = store
+    s1 = stop("s1", t(6, 20, 10), None, 2400)
+    rec = record(t(6, 19, 36), None, [s1], [Leg(t(6, 19, 36), t(6, 20, 10), 2400, "vehicle")],
+                 {"name": "Alex's birthday", "destination": "Alex's"}, named={"s1": ("Alex's birthday", "Alex's")})
+    rec = apply(rec, store)
+    eid = rec["blocks"]["stop:s1"]["event_id"]
+    events.update_event(date="2026-11-06", event_id=eid, updates={"state": "approved"})
+    rec["trip"]["stops"][0]["end"] = t(7, 7, 54).isoformat()
+    apply(rec, store)
+    e = next(e for e in events.get_events("2026-11-06") if e["id"] == eid)
+    assert e["end_time"] == "2026-11-07T07:54:00"
+
+
+def test_a_pinned_pending_block_is_never_recreated(store):               # I-6e
+    events, _ = store
+    rec = apply(_bar_trip(WALK), store)
+    first = rec["blocks"]["trip"]["fragments"][0]
+    events.update_event(date=first["date"], event_id=first["event_id"], updates={"name": "Night walk"},
+                        user_set_fields=["name"])
+    rec["trip"]["back_at"] = t(10, 0, 40).isoformat()
+    apply(rec, store)
+    e = next(e for e in events.get_events(first["date"]) if e["id"] == first["event_id"])
+    assert e["name"] == "Night walk"
+    last = [e for e in events.get_events("2026-11-10")]
+    assert last and last[0]["end_time"] == "2026-11-10T00:40:00"
+
+
+def test_a_pinned_part_dropped_from_the_plan_is_kept(store):             # I-6e
+    events, _ = store
+    s1 = stop("s1", t(9, 8, 0), t(9, 8, 20))
+    rec = apply(record(t(9, 7, 50), t(9, 9, 0), [s1], purpose={"name": "Walk", "destination": None},
+                       named={"s1": ("Coffee", None)}), store)
+    ref = rec["blocks"]["stop:s1"]
+    events.update_event(date=ref["date"], event_id=ref["event_id"], updates={"name": "Espresso"},
+                        user_set_fields=["name"])
+    rec["stops"]["s1"]["status"] = "unnamed"
+    apply(rec, store)
+    assert "Espresso" in [e["name"] for e in events.get_events("2026-11-09")]
