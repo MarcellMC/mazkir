@@ -12,6 +12,7 @@ import {
   stripSuppressedProposals,
 } from "../state/dismissed-proposals.js";
 import { noteOpenQuestion } from "../state/open-question.js";
+import { clearNudgeDraft, noteNudgeDraft } from "../state/nudge-draft.js";
 
 export const dayActionHandlers = new Composer();
 
@@ -103,6 +104,7 @@ dayActionHandlers.callbackQuery(/^block:(approve|dismiss):([^:]+):(.+)$/, async 
   const date = ctx.match[2]!;
   const eventId = ctx.match[3]!;
   const state = action === "approve" ? "approved" : "dismissed";
+  clearNudgeDraft(ctx.chat!.id, eventId);
   try {
     const result = await api.setBlockState(date, eventId, state);
     // Say what it paid. A silent token award is one the user never connects
@@ -227,6 +229,7 @@ dayActionHandlers.callbackQuery(/^block:edit:([^:]+):(.+)$/, async (ctx) => {
       return;
     }
     await ctx.answerCallbackQuery();
+    clearNudgeDraft(ctx.chat!.id);
     await editRich(ctx, buildBlockEditRich(block, date, 0, 0),
       { reply_markup: buildNavKeyboard("day") });
   } catch (err) {
@@ -254,6 +257,15 @@ dayActionHandlers.callbackQuery(/^adj:([^:]+):([^:]+):(-?\d+):(-?\d+)$/, async (
     await ctx.answerCallbackQuery();
     await editRich(ctx, buildBlockEditRich(block, date, startDelta, endDelta),
       { reply_markup: buildNavKeyboard("day") });
+    // After the edit, so text typed next carries the drafted times (trips spec §6.4).
+    if (startDelta !== 0 || endDelta !== 0) {
+      noteNudgeDraft(ctx.chat!.id, {
+        date, eventId, name: block.title,
+        start: shiftClock(block.start, startDelta), end: shiftClock(block.end, endDelta),
+      });
+    } else {
+      clearNudgeDraft(ctx.chat!.id, eventId);
+    }
   } catch (err) {
     await toastFailure(ctx, err, "Adjust");
   }
@@ -263,6 +275,7 @@ dayActionHandlers.callbackQuery(/^adjsave:([^:]+):([^:]+):(-?\d+):(-?\d+)$/, asy
   const date = ctx.match[1]!;
   const eventId = ctx.match[2]!;
   const [startDelta, endDelta] = [Number(ctx.match[3]), Number(ctx.match[4])];
+  clearNudgeDraft(ctx.chat!.id, eventId);
   try {
     const data = await api.getDaily(date);
     const block = data.blocks.find((b) => b.id === eventId);

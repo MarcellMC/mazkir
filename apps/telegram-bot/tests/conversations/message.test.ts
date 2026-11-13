@@ -536,3 +536,67 @@ describe("a receipt's question survives the turn's own sends", () => {
     expect(takeOpenQuestion(123)).toBe(QUESTION);
   });
 });
+
+
+describe("an unsaved nudge travels with the next message", () => {
+  const DRAFT = { date: "2026-11-13", eventId: "evt_1", name: "Dog walk", start: "07:25", end: "08:10" };
+
+  beforeEach(async () => {
+    // The provenance block above spies on getActiveSpan with a span that has
+    // no recordException; a handler-level test here must see the real one.
+    vi.restoreAllMocks();
+    const { resetOpenQuestions } = await import("../../src/state/open-question.js");
+    const { resetNudgeDrafts } = await import("../../src/state/nudge-draft.js");
+    resetOpenQuestions();
+    resetNudgeDrafts();
+  });
+
+  it("text after a nudge carries the draft as reply context", async () => {
+    const { noteNudgeDraft } = await import("../../src/state/nudge-draft.js");
+    noteNudgeDraft(123, DRAFT);
+    const payload = buildMessagePayload({ text: "that was a run" } as never, 123);
+    expect(payload.reply_to?.from).toBe("assistant");
+    expect(payload.reply_to?.text).toContain('Unsaved time edit on block "Dog walk"');
+  });
+
+  it("an explicit reply keeps its text and gains the draft", async () => {
+    const { noteNudgeDraft } = await import("../../src/state/nudge-draft.js");
+    noteNudgeDraft(123, DRAFT);
+    const payload = buildMessagePayload({
+      text: "run", reply_to_message: { text: "Dog walk 07:20–08:00", from: { is_bot: true } },
+    } as never, 123);
+    expect(payload.reply_to?.text.startsWith("Dog walk 07:20–08:00\n\nUnsaved time edit")).toBe(true);
+  });
+
+  it("an open question and a draft travel together", async () => {
+    const { noteNudgeDraft } = await import("../../src/state/nudge-draft.js");
+    const { noteOpenQuestion } = await import("../../src/state/open-question.js");
+    noteNudgeDraft(123, DRAFT);
+    noteOpenQuestion(123, "What's this? [trip 1a2b3c4d · stop s1]");
+    const payload = buildMessagePayload({ text: "sauna" } as never, 123);
+    expect(payload.reply_to?.text).toContain("[trip 1a2b3c4d · stop s1]");
+    expect(payload.reply_to?.text).toContain("Unsaved time edit");
+  });
+
+  it("the typing indicator does not drop the draft", async () => {
+    const { noteNudgeDraft } = await import("../../src/state/nudge-draft.js");
+    const { dropPerMessageHints } = await import("../../src/bot.js");
+    (api.sendMessage as any).mockResolvedValue({ intent: "log", response: "ok", awaiting_confirmation: false });
+    noteNudgeDraft(123, DRAFT);
+    // A fresh message id: the handler answers a repeated one from the first turn.
+    const msg = { message_id: 4242, date: 1749500000, chat: { id: 123, type: "private" }, text: "that was a run" };
+    const ctx: any = {
+      update: { update_id: 1, message: msg }, message: msg, chat: msg.chat,
+      me: { id: 42, is_bot: true, username: "test_bot" },
+      replyWithChatAction: async () => {
+        await dropPerMessageHints(async () => ({ ok: true, result: {} }) as any, "sendChatAction",
+          { chat_id: 123, action: "typing" } as never, undefined);
+      },
+      reply: vi.fn().mockResolvedValue({ message_id: 2 }),
+      api: { editMessageText: vi.fn() },
+    };
+    await messageHandler.middleware()(ctx, async () => {});
+    const payload = (api.sendMessage as any).mock.calls.at(-1)?.[0];
+    expect(payload?.reply_to?.text).toContain("Unsaved time edit");
+  });
+});
