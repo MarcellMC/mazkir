@@ -216,9 +216,12 @@ async def patch_event(date: date_type, event_id: str, body: PatchEventBody):
     if not events_svc:
         raise HTTPException(503, "Events service not initialized")
 
-    events = events_svc.get_events(date_str)
-    for event in events:
-        if event["id"] == event_id:
+    # The lock spans read to save (no await inside), so a concurrent writer —
+    # the trip worker, the fast lane — cannot have its write saved over.
+    with events_svc.lock:
+        events = events_svc.get_events(date_str)
+        event = next((e for e in events if e["id"] == event_id), None)
+        if event is not None:
             updates = body.model_dump(exclude_none=True)
             event.update(updates)
             # Pin whatever the user just set, or the next reconcile overwrites
@@ -236,12 +239,12 @@ async def patch_event(date: date_type, event_id: str, body: PatchEventBody):
                     pinned[field] = value
             apply_user_set(event)
             events_svc.save_events(date_str, events)
-            response = {"updated": event_id, "event": event}
-            if updates.keys() & {"name", "start_time", "end_time"}:
-                response["calendar_sync"] = await _push_edit_to_google(event)
-            return response
-
-    raise HTTPException(404, f"Event {event_id} not found")
+    if event is None:
+        raise HTTPException(404, f"Event {event_id} not found")
+    response = {"updated": event_id, "event": event}
+    if updates.keys() & {"name", "start_time", "end_time"}:
+        response["calendar_sync"] = await _push_edit_to_google(event)
+    return response
 
 
 # `source_ids` keys whose source rebuilds the block on every merge, so removing
@@ -294,10 +297,14 @@ async def cancel_event(date: date_type, event_id: str):
     if not cancelled:
         raise HTTPException(502, "Google Calendar refused the cancellation, so nothing changed.")
 
-    for candidate in merged:
-        if candidate.get("id") == event_id:
-            candidate["state"] = "dismissed"
-    events_svc.save_events(date_str, merged)
+    # Re-reconcile under the lock: the Google call above took seconds, and
+    # another writer may have saved this day meanwhile.
+    with events_svc.lock:
+        merged = events_svc.reconcile(date_str, fresh, available)
+        for candidate in merged:
+            if candidate.get("id") == event_id:
+                candidate["state"] = "dismissed"
+        events_svc.save_events(date_str, merged)
 
     return {
         "ok": True, "cancelled": event_id,
@@ -359,7 +366,9 @@ async def delete_event(date: date_type, event_id: str):
             raise HTTPException(502, "Google Calendar refused the delete, so nothing was deleted.")
         calendar_sync = {"ok": True, "attempted": True, "event_id": calendar_id}
 
-    events_svc.save_events(date_str, [e for e in merged if e.get("id") != event_id])
+    with events_svc.lock:
+        merged = events_svc.reconcile(date_str, fresh, available)
+        events_svc.save_events(date_str, [e for e in merged if e.get("id") != event_id])
     return {"ok": True, "deleted": event_id, "calendar_sync": calendar_sync}
 
 
@@ -480,10 +489,17 @@ async def set_event_state(date: date_type, event_id: str, body: SetStateBody):
     # Persist the reconciled day so the row exists to carry the state. This
     # is the deliberate exception to "reads never persist": an explicit user
     # action may write, and Ship 4 drew the same line for _resolve_reference.
-    for candidate in merged:
-        if candidate.get("id") == event_id:
-            candidate["state"] = body.state
-    events_svc.save_events(date_str, merged)
+    # Re-reconcile under the lock (see cancel_event), then re-apply this
+    # route's change: the state, and the Google id `_settle_proposal` gave it.
+    settled_ids = event.get("source_ids") or {}
+    with events_svc.lock:
+        merged = events_svc.reconcile(date_str, fresh, available)
+        for candidate in merged:
+            if candidate.get("id") == event_id:
+                candidate["state"] = body.state
+                if settled_ids:
+                    candidate["source_ids"] = {**(candidate.get("source_ids") or {}), **settled_ids}
+        events_svc.save_events(date_str, merged)
 
     response = {"ok": True, "state": body.state, "event_id": event_id,
                 "habit": None, "checkbox": None}

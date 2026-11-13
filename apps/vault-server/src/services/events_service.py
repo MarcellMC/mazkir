@@ -1,7 +1,9 @@
 """Merged event persistence — read/write/refresh data/events/{date}.json."""
 
+import functools
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -66,6 +68,8 @@ USER_SETTABLE_FIELDS = frozenset({
 FAST_FIELDS = (
     "intent", "start_precision", "end_precision", "logical_date",
     "place_id", "place_text", "project", "habit_completion", "evidence", "tags",
+    # A location trip's block: {"id": trip id, "part": "trip" | "leg:N" | "stop:sN"}.
+    "trip",
 )
 
 
@@ -153,12 +157,29 @@ class PhotoRef:
         return {"path": self.path, "caption": self.caption, "wikilinks": self.wikilinks}
 
 
+def _locked(method):
+    """Run a read-modify-write method under the service's one lock.
+
+    The fast lane, the agent, the `/day` routes and the location trip worker
+    all write the same date files; without this, two of them reading the
+    same file and saving in turn lose the first one's write.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class EventsService:
     """Manages persisted merged events in JSON files."""
 
     def __init__(self, events_path: Path):
         self.events_path = Path(events_path)
         self.events_path.mkdir(parents=True, exist_ok=True)
+        # Re-entrant: locked methods call each other (update → save), and a
+        # route holding it around reconcile + save calls into them too.
+        self.lock = threading.RLock()
 
     def _file_path(self, date: str) -> Path:
         return self.events_path / f"{date}.json"
@@ -212,6 +233,7 @@ class EventsService:
             span.set_attribute("fs.bytes", len(payload.encode("utf-8")))
             path.write_text(payload)
 
+    @_locked
     def create_event(
         self,
         date: str,
@@ -306,6 +328,7 @@ class EventsService:
         self.save_events(date, events)
         return {"id": event["id"], "path": str(self._file_path(date))}
 
+    @_locked
     def update_event(
         self,
         date: str | None,
@@ -432,6 +455,7 @@ class EventsService:
 
         return {"error": f"Event {event_id} not found"}
 
+    @_locked
     def delete_event(self, date: str | None, event_id: str) -> dict:
         """Delete an event from the store. `date` is a hint, as in `update_event`.
 
@@ -478,6 +502,7 @@ class EventsService:
                 return path.stem
         return None
 
+    @_locked
     def attach_photo(
         self,
         date: str | None,
@@ -524,6 +549,7 @@ class EventsService:
         """
         return self.refresh_events(date, fresh_events, available_sources)
 
+    @_locked
     def refresh_events(
         self,
         date: str,

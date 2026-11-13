@@ -20,3 +20,12 @@ def test_media_path_default_constant(monkeypatch):
     ))
     assert "memory/00-system/media" in str(default)
     assert "data/media" not in str(default)
+
+
+def test_location_awareness_defaults_off(monkeypatch):
+    monkeypatch.delenv("LOCATION_AWARENESS", raising=False)
+    from src.config import Settings
+    s = Settings(_env_file=None)
+    assert s.location_awareness == "off"
+    assert s.location_guess_model == s.fast_parse_model
+    assert s.location_guess_timeout_s == 8.0

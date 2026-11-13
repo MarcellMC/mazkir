@@ -878,6 +878,9 @@ class TestGapFill:
         import src.main as main
 
         class FakeEvents:
+            # The real service's lock (routes take it around reconcile + save).
+            lock = __import__('threading').RLock()
+
             def __init__(self):
                 self.created = []
 

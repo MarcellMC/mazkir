@@ -3541,3 +3541,34 @@ class TestReminderReachesTheCalendar:
         kwargs = agent.calendar.create_event.await_args.kwargs
         assert kwargs["duration_minutes"] == 45
         assert kwargs["remind_minutes_before"] == [1440, 60]
+
+
+# --- location trips, Task 1: an inferred edit pins nothing -----------------
+
+def _agent_with_real_events(tmp_path):
+    from unittest.mock import MagicMock
+    from src.services.events_service import EventsService
+    events = EventsService(events_path=tmp_path / "events")
+    agent = AgentService(claude=MagicMock(), vault=MagicMock(), memory=MagicMock(),
+                         calendar=None, events=events, media_path=tmp_path / "media")
+    return agent, events
+
+
+def test_update_event_inferred_pins_nothing(tmp_path):
+    agent, events = _agent_with_real_events(tmp_path)
+    e = events.create_event(date="2026-11-13", name="Trip", start_time="2026-11-13T10:00:00", proposed=True)
+    r = agent.run_tool("update_event", {"event_id": e["id"], "date": "2026-11-13",
+                       "end_time": "2026-11-13T10:40:00", "_fast": {"inferred": True}})
+    assert r["ok"], r
+    stored = events.get_events("2026-11-13")[0]
+    assert stored["end_time"].startswith("2026-11-13T10:40")
+    assert stored["user_set"] == {}
+
+
+def test_update_event_without_inferred_still_pins(tmp_path):
+    agent, events = _agent_with_real_events(tmp_path)
+    e = events.create_event(date="2026-11-13", name="Trip", start_time="2026-11-13T10:00:00", proposed=True)
+    r = agent.run_tool("update_event", {"event_id": e["id"], "date": "2026-11-13",
+                       "end_time": "2026-11-13T10:40:00"})
+    assert r["ok"], r
+    assert "end_time" in events.get_events("2026-11-13")[0]["user_set"]

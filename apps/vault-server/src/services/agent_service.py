@@ -3591,6 +3591,10 @@ class AgentService:
         # the user supplied the duration that produced it, and an unpinned
         # endpoint is undone by the next merge.
         user_set_fields = [f for f in updates if f in USER_SETTABLE_FIELDS]
+        # A location trip filling in what it measured is not the user speaking:
+        # pinning it would make a later, better measurement unable to replace it.
+        if fast.get("inferred"):
+            user_set_fields = []
 
         result = self.events.update_event(
             date=current_date,

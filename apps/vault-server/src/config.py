@@ -90,6 +90,14 @@ class Settings(BaseSettings):
     location_ingest: str = "off"
     location_data_path: Path = Path(os.getenv(
         "LOCATION_DATA_PATH", str(Path.home() / "dev" / "mazkir" / "data" / "locations")))
+    # Location awareness (docs/specs/2026-11-10-location-trips-design.md).
+    # off: nothing beyond L0's raw log. on: points become trips, trips become
+    # proposed blocks, and Mazkir asks about stops it cannot name.
+    location_awareness: str = "off"
+    # The one model call per trip decision (spec §5.3). Same model as the
+    # fast lane's parse unless set; a longer timeout, since nobody waits on it.
+    location_guess_model: str = "claude-haiku-4-5-20251001"
+    location_guess_timeout_s: float = 8.0
 
     # Replicate API (for image generation)
     replicate_api_token: str | None = os.getenv("REPLICATE_API_TOKEN")
