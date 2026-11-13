@@ -391,7 +391,7 @@ The location-filled fields of your block are still a proposal until ✓, shown a
 
 ## 8. Rollout
 
-`LOCATION_TRIPS=off|on`, read by the server, alongside `LOCATION_INGEST=log`. Default `off`; you will switch it on straight away, with no shadow phase.
+`LOCATION_AWARENESS=off|on`, read by the server, alongside `LOCATION_INGEST=log`. Default `off`; you will switch it on straight away, with no shadow phase.
 
 `data/logs/location-trips.jsonl` always records one line per decision:
 - the event;
@@ -445,7 +445,7 @@ The labels grow by themselves: an approved or corrected trip block is a label. `
 ## 12. Docs updated in the PR
 
 - `CLAUDE.md`:
-  - `LOCATION_TRIPS`;
+  - `LOCATION_AWARENESS`;
   - `data/locations/derived/`, `state.json` and `outbox.json`;
   - `notify` on the ingest response;
   - the new agent tool and the tool count;

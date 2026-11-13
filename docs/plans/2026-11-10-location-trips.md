@@ -20,7 +20,7 @@
   - The model sees place names, distances in metres, durations, speeds and times.
   - Coordinates live only in `data/locations/` (raw, state, trips, derived) and in `data/places.json`.
   - Every task that writes a log, a span or a prompt gets a test asserting no coordinate appears.
-- **`LOCATION_TRIPS=off` (the default) changes nothing.** The ingest route behaves exactly as L0. No tracker or worker is created, and no clock runs.
+- **`LOCATION_AWARENESS=off` (the default) changes nothing.** The ingest route behaves exactly as L0. No tracker or worker is created, and no clock runs.
 - **Thresholds are copied from spec §4.1, verbatim:**
   - accuracy cutoff 30 m;
   - outlier above 150 km/h both into and out of a point;
@@ -118,7 +118,7 @@
 - Test: `tests/test_events_service.py`, `tests/test_agent_service.py`, `tests/test_config.py`
 
 **Interfaces:**
-- Produces: `settings.location_trips: str = "off"`, `settings.location_guess_model: str` (default the same string as `fast_parse_model`), `settings.location_guess_timeout_s: float = 8.0`.
+- Produces: `settings.location_awareness: str = "off"`, `settings.location_guess_model: str` (default the same string as `fast_parse_model`), `settings.location_guess_timeout_s: float = 8.0`.
 - Produces: `EventsService.lock: threading.RLock` (one per instance; the app has one instance).
 - Produces: `"trip"` in `FAST_FIELDS`. A block's `trip` field is `{"id": str, "part": str}`.
 - Produces: `_fast.inferred: true` on `update_event`, meaning pin nothing.
@@ -170,15 +170,15 @@ Use the fixture style already in `test_agent_service.py`. If no fixture wires a 
 
 ```python
 # tests/test_config.py
-def test_location_trips_defaults_off():
-    assert Settings().location_trips == "off"
+def test_location_awareness_defaults_off():
+    assert Settings().location_awareness == "off"
 ```
 
 - [ ] **Step 2: Run them, expect failure**
 
 Run: `python -m pytest tests/test_events_service.py tests/test_agent_service.py tests/test_config.py -q -k "lock or trip_field or concurrent or inferred or pins or location_trips"`
 
-Expected: FAIL. You should see `AttributeError: 'EventsService' object has no attribute 'lock'`, the `trip` key missing, the 20-thread test short of 20, and `location_trips` missing.
+Expected: FAIL. You should see `AttributeError: 'EventsService' object has no attribute 'lock'`, the `trip` key missing, the 20-thread test short of 20, and `location_awareness` missing.
 
 - [ ] **Step 3: Implement**
 - **`config.py`:** add the three settings with a comment pointing to the spec.
@@ -1043,7 +1043,7 @@ Run: `python -m pytest tests/test_location_messages.py -q`
 - Create: `src/services/location/pipeline.py`, `runtime.py`
 - Modify:
   - `src/api/routes/locations.py`;
-  - `src/main.py` (lifespan: construct the runtime when `location_trips == "on"`, start a `_location_clock_loop` next to `_coding_tasks_poll_loop`, and cancel it on shutdown);
+  - `src/main.py` (lifespan: construct the runtime when `location_awareness == "on"`, start a `_location_clock_loop` next to `_coding_tasks_poll_loop`, and cancel it on shutdown);
   - `src/logging_setup.py` (`configure_location_trips_log` / `emit_location_trips`, mirroring `configure_fast_lane_log`, file `location-trips.jsonl`).
 - Test: `tests/test_location_pipeline.py`, `tests/test_location_runtime.py`, `tests/test_locations_route.py` (extend)
 
@@ -1107,7 +1107,7 @@ Run: `python -m pytest tests/test_location_messages.py -q`
   - **Share ended.** On `SHARE_ENDED`, the notice reads "Location sharing stopped — share again to keep your day filling in", and the runtime returns it for the clock to push.
 - **`routes/locations.py`:**
   - `LocationPoint` gains `chat_id: int | None = None`.
-  - `ingest_point`: after `append_point`, if `settings.location_trips == "on"` and the runtime exists, call `notify = runtime.feed(record)`. Any exception is logged at ERROR, without coordinates, and leaves `notify = []`. Return `{"ok": True, "notify": notify}`.
+  - `ingest_point`: after `append_point`, if `settings.location_awareness == "on"` and the runtime exists, call `notify = runtime.feed(record)`. Any exception is logged at ERROR, without coordinates, and leaves `notify = []`. Return `{"ok": True, "notify": notify}`.
   - `POST /locations/outbox/{item_id}/ack` → `{"ok": bool}`.
   - `POST /locations/trips/{trip_id}/tap` with body `{line: str, action: str}` (extra forbid):
     - an async route; it runs `runtime.tap` in `asyncio.to_thread`;
@@ -1445,7 +1445,7 @@ Paste the output into the ledger. A target missed is reported to the user with t
 **`CLAUDE.md`:**
 - An architecture bullet "Location trips (2026-11-13)", summarising tracker → worker → one Haiku call → writer → outbox/notify, the stop rule, the merge rule, and the lock.
 - The endpoint list: `POST /locations/points` now returns `notify` when on; `POST /locations/outbox/{id}/ack`; `POST /locations/trips/{id}/tap`.
-- `LOCATION_TRIPS`.
+- `LOCATION_AWARENESS`.
 - `data/locations/state.json`, `outbox.json`, `trips/`, `derived/`, and `data/logs/location-trips.jsonl`.
 - `set_trip_purpose` in the tool lists, with the tool count bumped.
 - The Quick Commands for the four scripts.
@@ -1469,7 +1469,7 @@ https://claude.ai/code/session_01XBHMJx179hGQ9cBNK8KByd"
 - [ ] **Step 7: Switching on.** This happens after merge, and is the user's call (spec §8).
 
 The user said they want to test live straight away, so the final message tells them the exact steps:
-- set `LOCATION_TRIPS=on` in `apps/vault-server/.env`;
+- set `LOCATION_AWARENESS=on` in `apps/vault-server/.env`;
 - run `python scripts/location_seed_labels.py` (the labels are local);
 - restart the server and the bot.
 
