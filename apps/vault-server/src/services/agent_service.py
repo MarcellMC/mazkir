@@ -456,6 +456,37 @@ class AgentService:
                 "risk": "write",
                 "pre_hooks": ["validate_schema"],
             },
+            "set_trip_purpose": {
+                "schema": {
+                    "name": "set_trip_purpose",
+                    "description": (
+                        "Record what a location trip, or one stop on it, was. Use it when the "
+                        "user answers Mazkir's question about a trip — the question ends with "
+                        "[trip <id> · stop <id>] or [trip <id>] — or replies to a trip message "
+                        "showing 'trip <id>' to correct what it was (\"that was a run\", \"no, I "
+                        "took the bus\"). It renames that trip's blocks; never create_event for "
+                        "an answer. Times are corrected with update_event on the blocks "
+                        "list_events shows for that trip. Give `place` only when the answer names "
+                        "a place (\"the café on Dizengoff\"): Mazkir learns where it is. If the "
+                        "result has `conflict`, ask whether this is a different place of that name."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "trip_id": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
+                            "stop_id": {"type": "string", "description": "s1, s2… — omit for the whole trip"},
+                            "purpose": {"type": "string", "description": "What it was, as the user would log it"},
+                            "place": {"type": "string", "description": "The place's name, when the answer names one"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["trip_id", "purpose"],
+                    },
+                },
+                "handler": self._tool_set_trip_purpose,
+                "risk": "write",
+                "pre_hooks": ["validate_schema"],
+            },
             "daily_rollover": {
                 "schema": {
                     "name": "daily_rollover",
@@ -3207,6 +3238,20 @@ class AgentService:
                     break
 
         return ok({"event_id": event_id, "date": target_date})
+
+    def _tool_set_trip_purpose(self, params: dict) -> dict:
+        """The user's answer about a location trip (trips spec §6.2, §6.4)."""
+        from src.services.location import runtime as location_runtime
+
+        rt = location_runtime.get_runtime()
+        if rt is None:
+            return err(ErrorCode.STATE_CONFLICT, "Location trips are off (LOCATION_AWARENESS is not on)")
+        try:
+            result = rt.answer(params["trip_id"], params.get("stop_id"), params["purpose"], params.get("place"))
+        except KeyError:
+            return err(ErrorCode.PATH_NOT_FOUND, "No such trip or stop",
+                       details={"trip_id": params.get("trip_id"), "stop_id": params.get("stop_id")})
+        return ok(result)
 
     def _tool_create_event(self, params: dict) -> dict:
         import datetime as dt
