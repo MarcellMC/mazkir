@@ -42,3 +42,22 @@ def test_one_trip_can_cover_two_labels():
     mod = _script()
     m = mod.measures(mod.match_trips([trip(0, 50)], [label(0, 20, "Alex's"), label(20, 50, "Gan Meir")]))
     assert (m["found"], m["missed"], m["invented"]) == (2, 0, 0)
+
+
+def test_map_flag_prints_labels_not_coordinates(tmp_path):
+    from src.services.location.map_index import build_index
+    from src.services.location.model import Trip
+
+    mod = _script()
+    index = tmp_path / "index.sqlite"
+    build_index(Path(__file__).parent / "fixtures" / "map_small.osm", index)
+    start = t(14, 16, 23)
+    trip = Trip.from_dict({
+        "id": "be630ac6", "origin": "home", "left_at": t(14, 15, 56).isoformat(), "start_precision": "location",
+        "stops": [{"id": "s1", "start": start.isoformat(), "end": (start + dt.timedelta(minutes=9)).isoformat(),
+                   "lat": 32.02, "lng": 34.80, "spread_m": 20.0, "from_home_m": 690.0, "place_id": None}],
+        "legs": [], "back_at": t(14, 16, 46).isoformat(), "end_precision": "location",
+        "distance_m": 1460.0, "max_from_home_m": 714.0})
+    lines = mod.map_lines([trip], index, "Asia/Jerusalem")
+    assert lines == ["    11-14 16:23  stop s1  map: קפה ברזילי  area: -"]
+    assert "32.02" not in "\n".join(lines) and "34.8" not in "\n".join(lines)

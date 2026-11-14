@@ -1,7 +1,7 @@
 ---
 title: Mazkir - Personal AI Assistant Roadmap
 created: 2026-01-06
-updated: 2026-03-03
+updated: 2026-11-14
 version: 2.4
 status: active
 tags: [project, roadmap, mazkir]
@@ -104,6 +104,13 @@ User (Telegram)
 - [ ] Weekly review generation
 - [ ] Streak visualizations
 - [ ] Progress charts in Mini App
+
+### Backlog: location awareness
+- [ ] Local map copy: map places as stop-question buttons (`docs/specs/2026-11-14-location-map-design.md`)
+- [ ] Transit rides: waiting at a stop, ride legs, line candidates from OSM route relations (GTFS as fallback); needs real bus rides in the data first
+- [ ] Location reminders: "you're passing a pharmacy" against open todos
+- [ ] Addresses for people's homes, so a stop at a friend's is named silently
+- [ ] The agent reads Google's recurring "✅ 🎯 Dog Walk" entry as today's tick (seen 2026-11-14)
 
 ### Future: Phase 3 - Advanced Features
 - [ ] Carry forward incomplete tasks to next day

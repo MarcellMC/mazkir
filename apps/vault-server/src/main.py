@@ -64,11 +64,14 @@ async def _coding_tasks_poll_loop(coding_tasks: "CodingTasksService", interval_s
         await asyncio.sleep(interval_seconds)
 
 
-async def _location_clock_loop(runtime, notifier: "TelegramNotifier", interval_seconds: float = 60.0) -> None:
+async def _location_clock_loop(runtime, notifier: "TelegramNotifier", interval_seconds: float = 60.0,
+                               map_updater=None) -> None:
     """The trip clock (trips spec §3): once a minute, notice what no point will carry.
 
     A share that stopped sends no more points, so its "sharing stopped"
     message cannot ride back on one: it is pushed here, to the share's chat.
+    It also starts the monthly map update (map spec §4.3), which checks once a
+    day and runs in its own thread.
     """
     import datetime as _dt
     from zoneinfo import ZoneInfo
@@ -76,6 +79,8 @@ async def _location_clock_loop(runtime, notifier: "TelegramNotifier", interval_s
     while True:
         try:
             now = _dt.datetime.now(ZoneInfo(settings.vault_timezone))
+            if map_updater is not None:
+                map_updater.maybe_start(now)
             notices = await asyncio.to_thread(runtime.tick, now)
             chat_id = runtime.chat_id
             for notice in notices:
@@ -232,7 +237,13 @@ async def lifespan(app: FastAPI):
             location_runtime = build_runtime(settings, agent=agent, events=events, vault=vault,
                                              claude=claude, log=emit_location_trips)
             set_runtime(location_runtime)
-            _location_clock_task = asyncio.create_task(_location_clock_loop(location_runtime, notifier))
+            map_updater = None
+            if settings.location_map == "on":
+                from src.services.location.map_update import MapUpdater
+                map_updater = MapUpdater(settings.location_map_path, settings.location_map_url,
+                                         settings.location_map_max_age_days)
+            _location_clock_task = asyncio.create_task(
+                _location_clock_loop(location_runtime, notifier, map_updater=map_updater))
             logger.info("Location awareness on: trip tracker and clock started")
 
     yield

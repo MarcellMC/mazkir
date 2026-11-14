@@ -98,6 +98,15 @@ class Settings(BaseSettings):
     # fast lane's parse unless set; a longer timeout, since nobody waits on it.
     location_guess_model: str = "claude-haiku-4-5-20251001"
     location_guess_timeout_s: float = 8.0
+    # A local copy of OpenStreetMap (docs/specs/2026-11-14-location-map-design.md).
+    # on (the user's choice): the location clock keeps a monthly copy of
+    # location_map_url in location_map_path and stops offer the places there.
+    # Nothing is downloaded unless location awareness is on too.
+    location_map: str = "on"
+    location_map_url: str = "https://download.geofabrik.de/asia/israel-and-palestine-latest.osm.pbf"
+    location_map_max_age_days: int = 30
+    location_map_path: Path = Path(os.getenv(
+        "LOCATION_MAP_PATH", str(Path.home() / "dev" / "mazkir" / "data" / "map")))
 
     # Replicate API (for image generation)
     replicate_api_token: str | None = os.getenv("REPLICATE_API_TOKEN")

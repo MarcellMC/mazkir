@@ -33,6 +33,7 @@ from src.services.location.context import gather_context
 from src.services.location.decide import Decision, Option, decide
 from src.services.location.guess import Guess, describe_trip, guess
 from src.services.location.history import load_confirmed, score_history
+from src.services.location.map_lookup import map_area, map_near
 from src.services.location.messages import arrival_receipt, question_receipt
 from src.services.location.model import TrackerEvent, Trip, safe_error
 from src.services.location.names import canonical, known_names, name_key
@@ -44,6 +45,7 @@ from src.tracing_setup import get_tracer
 logger = logging.getLogger(__name__)
 
 STALE_QUESTION = dt.timedelta(minutes=10)
+MAP_CLOSE_M = 15.0                     # a map place this close is "what is here" (map spec §5.2, §5.4)
 
 
 @dataclass
@@ -65,6 +67,7 @@ class TripDeps:
     now: Callable[[], dt.datetime]
     log: Callable[[dict], None]
     derived_dir: Path | None = None
+    map_index: Path | None = None      # the local map copy (map spec); None: no map, stops asked as before
 
 
 def _places(deps: TripDeps):
@@ -82,7 +85,7 @@ def _known(deps: TripDeps, confirmed) -> dict:
 
 
 def _guess(subject: str, trip: Trip, stop, deps: TripDeps, places, *, trip_purpose: str | None = None,
-           visits: int = 0) -> tuple[list[Guess], list[dict], list]:
+           visits: int = 0, map_places=None) -> tuple[list[Guess], list[dict], list]:
     now = deps.now()
     confirmed = load_confirmed(deps.labels_dir, deps.records, deps.events, deps.tz, now)
     history = score_history(trip, confirmed, now, deps.tz, stop=stop)
@@ -95,7 +98,7 @@ def _guess(subject: str, trip: Trip, stop, deps: TripDeps, places, *, trip_purpo
     lines = gather_context(now, vault=deps.vault, events=deps.events, conversations_dir=deps.conversations_dir,
                            chat_id=deps.chat_id(), tz=deps.tz)
     kept, dropped = guess(subject, describe_trip(trip, stop, places, now, deps.tz, visits=visits), history, lines,
-                          deps.claude, model=deps.model, timeout_s=deps.timeout_s)
+                          deps.claude, model=deps.model, timeout_s=deps.timeout_s, map_places=map_places)
     known = _known(deps, confirmed)
     kept = [replace(g, purpose=canonical(g.purpose, known)) for g in kept]
     if subject == "stop":
@@ -164,24 +167,53 @@ def _on_stopped(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
         return
     visits = earlier_visits(stop, rec["id"], trip.left_at, deps.records, deps.derived_dir, deps.now())
     info["visits"] = visits
-    guesses, dropped, history = _guess("stop", trip, stop, deps, places,
-                                       trip_purpose=(rec.get("purpose") or {}).get("name"), visits=visits)
+    mapped, area = [], None
+    if known is not None:
+        # Your place names it (decide below): nothing to look up or guess.
+        guesses, dropped, history = [], [], []
+    else:
+        mapped, area = _map(stop, deps)
+        info["map"] = [m.to_dict() for m in mapped]
+        info["area"] = area
+        guesses, dropped, history = _guess("stop", trip, stop, deps, places,
+                                           trip_purpose=(rec.get("purpose") or {}).get("name"), visits=visits,
+                                           map_places=mapped if deps.map_index is not None else None)
+    # A street is context for the model, never a button: "what's this?" [Yesod HaMa'ala] answers nothing.
+    places_only = [m for m in mapped if m.group == "place"]
+    close = [m for m in places_only if m.distance_m <= MAP_CLOSE_M][:3] or places_only[:1]
+    map_options = [Option(m.label, m.label, m.osm) for m in close]
     # A STOPPED handled long after it happened (the server was down, or the
     # inbox is replaying) is about a stop you have likely left: never ask then.
     fresh = (deps.now() - ev.ts) <= STALE_QUESTION
     d = decide(guesses, history, known_place=known, may_ask=fresh, questions_today=_questions_today(deps),
-               at_stop=True)
+               at_stop=True, map_options=map_options)
     if d.action == "name":
         info.update(status="named", name=d.name, place=d.destination or (known.name if known else None))
     elif d.action == "ask":
         info.update(status="asked", options=[o.to_dict() for o in d.options], asked_at=deps.now().isoformat())
         receipt = question_receipt(rec, sid, list(d.options), deps.now(), deps.tz,
-                                   place_name=known.name if known else None, visits=visits)
+                                   place_name=known.name if known else None, visits=visits,
+                                   map_label=mapped[0].label if mapped and mapped[0].distance_m <= MAP_CLOSE_M
+                                   else None, area=area)
         # Saved before queueing, and queued by key: a crash in between can
         # replay this event, but never send the question twice.
         deps.records.save(rec)
         deps.outbox.add("question", receipt, rec["id"], key=question_key(rec["id"], sid))
-    _log(deps, ev.kind, rec, sid, history, guesses, dropped, d)
+    _log(deps, ev.kind, rec, sid, history, guesses, dropped, d, extra={"map": info.get("map") or []})
+
+
+def _map(stop, deps: TripDeps):
+    """The map places at this stop and its area name: a local file read, never a network call."""
+    if deps.map_index is None or stop is None:
+        return [], None
+    with get_tracer().start_as_current_span("location.map.lookup", record_exception=False,
+                                            set_status_on_exception=False) as span:
+        mapped = map_near(deps.map_index, stop.lat, stop.lng, stop.spread_m)
+        area = map_area(deps.map_index, stop.lat, stop.lng)
+        span.set_attribute("count", len(mapped))
+        if mapped:
+            span.set_attribute("top_distance_m", mapped[0].distance_m)
+    return mapped, area
 
 
 def question_key(trip_id: str, stop_id: str) -> str:
@@ -303,14 +335,20 @@ def defer_stop(trip_id: str, stop_id: str, deps: TripDeps) -> dict[str, Any]:
 
 
 def apply_answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str | None, deps: TripDeps,
-                 *, pause: bool = False) -> dict[str, Any]:
+                 *, pause: bool = False, osm: str | None = None) -> dict[str, Any]:
     """Your answer to a question about a stop or the whole trip. Raises KeyError for an unknown trip or stop."""
     with deps.records.lock_for(trip_id):
-        return _answer(trip_id, stop_id, purpose, place, deps, pause)
+        return _answer(trip_id, stop_id, purpose, place, deps, pause, osm)
+
+
+def _map_osm(info: dict, *names: str | None) -> str | None:
+    """The map place an answer names, by the same words, among those seen at the stop."""
+    keys = {name_key(n) for n in names if n}
+    return next((m.get("osm") for m in info.get("map") or [] if name_key(m.get("label") or "") in keys), None)
 
 
 def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str | None, deps: TripDeps,
-            pause: bool) -> dict[str, Any]:
+            pause: bool, osm: str | None = None) -> dict[str, Any]:
     rec = deps.records.get(trip_id)
     if rec is None:
         raise KeyError(trip_id)
@@ -332,7 +370,8 @@ def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str |
         else:
             info.update(status="named", name=purpose, place=place)
             if place:
-                _, clash = learn_place(deps.places_path, place, stop.lat, stop.lng, stop.spread_m)
+                _, clash = learn_place(deps.places_path, place, stop.lat, stop.lng, stop.spread_m,
+                                       osm=osm or _map_osm(info, place, purpose))
                 conflict = place if clash else None
     else:
         rec["purpose"] = {"name": purpose, "destination": place, "source": "answer"}

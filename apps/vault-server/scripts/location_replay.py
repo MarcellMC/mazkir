@@ -14,6 +14,9 @@ data/eval/location/, and prints the §9 measures:
 
 --with-model also makes the real guess for each trip (about $0.007 a call), and
 refuses to run without --confirm-cost.
+
+--map prints, for every stop, the top 3 places the local map copy shows there
+and the area name (map spec §8.3). Offline; labels only, never coordinates.
 """
 
 from __future__ import annotations
@@ -131,6 +134,21 @@ def _run_tracker(first: dt.date, last: dt.date, tz: str):
     return closed, detected
 
 
+def map_lines(trips, index: Path | None, tz: str) -> list[str]:
+    """One line per stop: when, which stop, the top 3 map labels, the area. No coordinates."""
+    from src.services.location.map_lookup import map_area, map_near
+
+    zone = ZoneInfo(tz)
+    out = []
+    for trip in trips:
+        for stop in trip.stops:
+            labels = [m.label for m in map_near(index, stop.lat, stop.lng, stop.spread_m)[:3]]
+            area = map_area(index, stop.lat, stop.lng)
+            out.append(f"    {stop.start.astimezone(zone):%m-%d %H:%M}  stop {stop.id}  "
+                       f"map: {' · '.join(labels) or '-'}  area: {area or '-'}")
+    return out
+
+
 def _labels(eval_dir: Path, first: dt.date, last: dt.date) -> list[dict]:
     rows = []
     for path in sorted(eval_dir.glob("*.json")):
@@ -147,6 +165,7 @@ def main() -> None:
     ap.add_argument("--to", dest="end", required=True)
     ap.add_argument("--with-model", action="store_true")
     ap.add_argument("--confirm-cost", action="store_true")
+    ap.add_argument("--map", action="store_true", help="print the map places at every stop")
     args = ap.parse_args()
 
     from src.config import settings
@@ -211,6 +230,12 @@ def main() -> None:
     print(f"dog walks named from history  {named} / {walks}")
     print("questions a day (stops + unnamed trips, before the cap of 6):  "
           + ", ".join(f"{d[5:]} {n}" for d, n in sorted(questions.items())))
+
+    if args.map:
+        from src.services.location.map_update import index_path
+
+        print("map places at each stop:")
+        print("\n".join(map_lines(trips, index_path(settings.location_map_path), tz)) or "    (no stops)")
 
     if args.with_model:
         calls = sum(len(by_id[t["id"]].stops) + 1 for t, _ in pairs if t is not None)
