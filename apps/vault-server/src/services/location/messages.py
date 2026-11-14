@@ -59,17 +59,21 @@ USUAL_VISITS = 2
 
 
 def _question_text(trip: Trip, stop_id: str | None, place_name: str | None, now: dt.datetime, zone: ZoneInfo,
-                   visits: int = 0) -> str:
+                   visits: int = 0, map_label: str | None = None, area: str | None = None) -> str:
     if stop_id is None:
         return f"🚶 Trip {_hm(trip.left_at, zone)}–{_hm(trip.back_at, zone)}, {_metres(trip.distance_m)} — what was it?"
     stop = trip.stop(stop_id)
     far = f"{_metres(stop.from_home_m)} from home" if stop.from_home_m is not None else ""
+    if area:
+        far = f"{far}, in {area}" if far else f"in {area}"
     if stop.end is not None:
         # Asked at home, about a stop you have left.
         when = f"{_hm(stop.start, zone)}–{_hm(stop.end, zone)}"
         return f"📍 Stop {when}" + (f", {far}" if far else "") + " — what was this?"
     if visits >= USUAL_VISITS:
         where = f"your usual stop ({visits} earlier trips)"
+    elif map_label:
+        where = f"by {map_label}"
     else:
         where = place_name or "a new place"
     return f"📍 You've been here since {_hm(stop.start, zone)} — " + (f"{far}, " if far else "") + f"{where}. What's this?"
@@ -90,10 +94,11 @@ def _tag(trip_id: str, stop_id: str | None) -> str:
 
 
 def question_receipt(rec: dict, stop_id: str | None, options: list[Option], now: dt.datetime, tz: str,
-                     place_name: str | None = None, visits: int = 0) -> dict[str, Any]:
+                     place_name: str | None = None, visits: int = 0, map_label: str | None = None,
+                     area: str | None = None) -> dict[str, Any]:
     zone = ZoneInfo(tz)
     trip = Trip.from_dict(rec["trip"])
-    text = _question_text(trip, stop_id, place_name, now, zone, visits)
+    text = _question_text(trip, stop_id, place_name, now, zone, visits, map_label, area)
     # "Later" puts the question into the arrival message, so it is offered only while you are out.
     later = stop_id is not None and not rec.get("closed")
     line = _line(0, "?", "", text, _option_buttons(rec["id"], stop_id or "trip", options, pause=stop_id is not None,

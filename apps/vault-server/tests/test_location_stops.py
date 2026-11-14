@@ -65,7 +65,7 @@ def test_a_strong_guess_about_the_place_is_offered_not_named(tmp_path):
     deps.claude.by_subject = {"stop": [guess("Coffee with Dana", cites=["c1"], destination="Café")]}
     rec = run(deps, clock, events_for(walk_with_a_stop())[:2])
     assert rec["stops"]["s1"]["status"] == "asked"
-    assert rec["stops"]["s1"]["options"][0] == {"name": "Coffee with Dana", "destination": "Café"}
+    assert rec["stops"]["s1"]["options"][0] == {"name": "Coffee with Dana", "destination": "Café", "osm": None}
 
 
 def test_a_stop_left_unanswered_stays_unnamed_with_no_block(tmp_path):

@@ -22,13 +22,14 @@ MAX_OPTIONS = 3
 class Option:
     name: str
     destination: str | None = None
+    osm: str | None = None           # set when the option is a map place (map spec §5.4)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "destination": self.destination}
+        return {"name": self.name, "destination": self.destination, "osm": self.osm}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Option":
-        return cls(d["name"], d.get("destination"))
+        return cls(d["name"], d.get("destination"), d.get("osm"))
 
 
 @dataclass(frozen=True)
@@ -41,9 +42,15 @@ class Decision:
 
 
 def decide(guesses: list[Guess], history: list[HistoryCandidate], *, known_place: Place | None,
-           may_ask: bool, questions_today: int, at_stop: bool = False) -> Decision:
+           may_ask: bool, questions_today: int, at_stop: bool = False,
+           map_options: tuple[Option, ...] | list[Option] = ()) -> Decision:
     """At a stop, a guess is only ever offered: a stop is named silently from a
-    place you have named, never from the model (2026-11-14)."""
+    place you have named, never from the model (2026-11-14).
+
+    The options are 1 to 3 good ones, never filler (map spec §5.4): the
+    model's live guesses; without any, the map places the caller found close;
+    without those, history.
+    """
     if known_place is not None and known_place.kind == PAUSE_KIND:
         return Decision("quiet", reason="pause spot")
 
@@ -62,7 +69,22 @@ def decide(guesses: list[Guess], history: list[HistoryCandidate], *, known_place
         return Decision("quiet", reason="daily cap")
 
     if live:
-        options = tuple(Option(g.purpose, g.destination) for g in live[:MAX_OPTIONS])
+        options = _unique([Option(g.purpose, g.destination, g.osm) for g in live])
         return Decision("ask", options=options, reason=f"{len(live)} good guesses")
-    options = tuple(Option(c.purpose, c.destination) for c in history[:MAX_OPTIONS])
+    if map_options:
+        return Decision("ask", options=_unique(list(map_options)), reason="map places")
+    options = _unique([Option(c.purpose, c.destination) for c in history])
     return Decision("ask", options=options, reason="no good guess")
+
+
+def _unique(options: list[Option]) -> tuple[Option, ...]:
+    from src.services.location.names import name_key
+
+    seen: set = set()
+    out: list[Option] = []
+    for o in options:
+        key = name_key(o.name)
+        if key not in seen:
+            seen.add(key)
+            out.append(o)
+    return tuple(out[:MAX_OPTIONS])

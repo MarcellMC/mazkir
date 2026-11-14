@@ -266,7 +266,7 @@ class LocationRuntime:
             out["toast"] = "That choice is gone."
             return out
         chosen = options[index]
-        result = apply_answer(trip_id, stop_id, chosen.name, chosen.destination, self.deps)
+        result = apply_answer(trip_id, stop_id, chosen.name, chosen.destination, self.deps, osm=chosen.osm)
         out["toast"] = f"✓ {chosen.name}"
         if result["conflict"]:
             out["toast"] += f" — is this a different {result['conflict']}?"
@@ -346,6 +346,9 @@ def build_runtime(settings, *, agent, events, vault, claude, log) -> LocationRun
         now=lambda: dt.datetime.now(ZoneInfo(settings.vault_timezone)), log=log,
         derived_dir=Path(settings.location_data_path) / "derived",
     )
+    if settings.location_map == "on":
+        from src.services.location.map_update import index_path
+        deps.map_index = index_path(settings.location_map_path)
     from src.services.location.outbox import Outbox
     from src.services.location.records import TripRecords
     root = Path(settings.location_data_path)

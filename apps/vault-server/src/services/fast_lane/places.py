@@ -43,6 +43,7 @@ class Place:
     lat: float | None = None
     lng: float | None = None
     radius_m: float | None = None
+    osm: str | None = None           # the OpenStreetMap entry this place was picked from (map spec §5.5)
 
 
 def _norm(text: str) -> str:
@@ -61,7 +62,7 @@ def load_places(path: Path) -> list[Place]:
         return []
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     return [Place(str(p["id"]), str(p["name"]), tuple(str(a) for a in p.get("aliases") or ()), p.get("kind"),
-                  _float(p.get("lat")), _float(p.get("lng")), _float(p.get("radius_m")))
+                  _float(p.get("lat")), _float(p.get("lng")), _float(p.get("radius_m")), p.get("osm"))
             for p in raw.get("places", [])]
 
 
@@ -72,7 +73,7 @@ def _float(value) -> float | None:
 def _entry(p: Place) -> dict:
     out = {"id": p.id, "name": p.name, "aliases": list(p.aliases), "kind": p.kind}
     # Only when known: an entry the fast lane wrote stays exactly as it was.
-    for key in ("lat", "lng", "radius_m"):
+    for key in ("lat", "lng", "radius_m", "osm"):
         if getattr(p, key) is not None:
             out[key] = getattr(p, key)
     return out
@@ -131,7 +132,8 @@ def nearest(lat: float, lng: float, places: list[Place]) -> Place | None:
     return best[1] if best else None
 
 
-def learn_place(path: Path, name: str, lat: float, lng: float, spread_m: float) -> tuple[Place, bool]:
+def learn_place(path: Path, name: str, lat: float, lng: float, spread_m: float,
+                osm: str | None = None) -> tuple[Place, bool]:
     """Give `name` this stop's centre (spec §7). Returns the place and whether it conflicts.
 
     A new name becomes a place; a named place without coordinates gains them.
@@ -145,18 +147,19 @@ def learn_place(path: Path, name: str, lat: float, lng: float, spread_m: float) 
     existing = match_place(name, places)
     if existing is None:
         radius = min(max(NEW_PLACE_RADIUS_M, spread_m), PLACE_RADIUS_CAP_M)
-        place = Place(_unique_id(name, {p.id for p in places}), name.strip(), (), None, lat, lng, radius)
+        place = Place(_unique_id(name, {p.id for p in places}), name.strip(), (), None, lat, lng, radius, osm)
         save_places(path, [*places, place])
         return place, False
     if existing.lat is None or existing.lng is None:
         radius = min(max(NEW_PLACE_RADIUS_M, spread_m), PLACE_RADIUS_CAP_M)
-        updated = replace(existing, lat=lat, lng=lng, radius_m=radius)
+        updated = replace(existing, lat=lat, lng=lng, radius_m=radius, osm=existing.osm or osm)
     else:
         distance = haversine_m(lat, lng, existing.lat, existing.lng)
         radius = existing.radius_m or NEW_PLACE_RADIUS_M
         if distance > radius:
             return existing, True
-        updated = replace(existing, radius_m=min(max(radius, distance + spread_m), PLACE_RADIUS_CAP_M))
+        updated = replace(existing, radius_m=min(max(radius, distance + spread_m), PLACE_RADIUS_CAP_M),
+                          osm=existing.osm or osm)
     save_places(path, [updated if p.id == existing.id else p for p in places])
     return updated, False
 

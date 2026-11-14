@@ -43,11 +43,12 @@ GUESS_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["purpose", "likelihood", "history_id", "cites", "destination"],
+                "required": ["purpose", "likelihood", "history_id", "map_id", "cites", "destination"],
                 "properties": {
                     "purpose": {"type": "string"},
                     "likelihood": {"type": "string", "enum": list(LIKELIHOODS)},
                     "history_id": _nullable({"type": "string"}),
+                    "map_id": _nullable({"type": "string"}),
                     "cites": {"type": "array", "items": {"type": "string"}},
                     "destination": _nullable({"type": "string"}),
                 },
@@ -69,6 +70,8 @@ You get:
   code thinks this trip matches it, and the evidence.
 - CONTEXT: lines quoted from the user's last 24 hours of messages, open todos, tasks,
   today's schedule and habits due, each with an id (c1, c2…).
+- MAP (stops only): what the map shows within a few metres of the stop, nearest first,
+  each with an id (m1, m2…), its kind and how far it is.
 
 Return at most 3 guesses, most likely first. For each:
 - purpose: a short name for what the user was doing, as they would log it
@@ -76,8 +79,10 @@ Return at most 3 guesses, most likely first. For each:
 - likelihood: "strong" only when the evidence leaves little doubt; "plausible" when it
   is a real possibility; "unlikely" otherwise.
 - history_id: the id of the HISTORY purpose this is, or null for a new purpose.
+- map_id: the id of the MAP place this stop is at, or null. A stop guess should usually be
+  one of the MAP places, or an activity at one ("Coffee at <café>"), citing its map_id.
 - cites: for a new purpose, the ids of the CONTEXT lines it comes from. A new purpose
-  must cite at least one line; never invent a reason that is not in the lines.
+  must cite at least one line or a map_id; never invent a reason that is not there.
 - destination: the place the trip went to, when getting somewhere was the point (a café,
   a friend's home, a shop). null when the moving itself was the activity (a walk, a
   ride around the city, a run).
@@ -99,6 +104,8 @@ class Guess:
     history_id: str | None
     cites: tuple[str, ...]
     destination: str | None
+    map_id: str | None = None
+    osm: str | None = None           # the cited map place's OpenStreetMap id, never shown to the model
 
 
 def _metres(m: float) -> str:
@@ -153,11 +160,22 @@ def describe_trip(trip: Trip, stop: Stop | None, places: list[Place], now: dt.da
     return " ".join(parts)
 
 
-def build_content(subject: str, trip_text: str, history: list[HistoryCandidate], lines: list[ContextLine]) -> str:
+def _map_line(i: int, place) -> str:
+    from src.services.location.map_lookup import kind_words
+
+    kind = "address" if place.group == "address" else kind_words(place.kind)
+    return f"m{i} {place.label} ({kind}, {round(place.distance_m)} m)"
+
+
+def build_content(subject: str, trip_text: str, history: list[HistoryCandidate], lines: list[ContextLine],
+                  map_places=()) -> str:
     out = [f"SUBJECT: {subject}", "", f"TRIP: {trip_text}", "", "HISTORY:"]
     out += [f"{h.id} (match {h.score:.2f}): {h.evidence}" for h in history] or ["(none yet)"]
     out += ["", "CONTEXT:"]
     out += [f"{line.id} [{line.kind}] {line.text}" for line in lines] or ["(nothing)"]
+    if subject == "stop":
+        out += ["", "MAP:"]
+        out += [_map_line(i, m) for i, m in enumerate(map_places, 1)] or ["(none)"]
     return "\n".join(out)
 
 
@@ -174,10 +192,11 @@ def _decode(response: Any) -> dict:
 
 
 def guess(subject: str, trip_text: str, history: list[HistoryCandidate], lines: list[ContextLine], claude, *,
-          model: str, timeout_s: float) -> tuple[list[Guess], list[dict]]:
+          model: str, timeout_s: float, map_places=()) -> tuple[list[Guess], list[dict]]:
     """(kept, dropped). Never raises: a failure is ([], [{purpose: None, reason}])."""
     try:
-        response = claude.create_fast_parse(system=SYSTEM_PROMPT, content=build_content(subject, trip_text, history, lines),
+        content = build_content(subject, trip_text, history, lines, map_places)
+        response = claude.create_fast_parse(system=SYSTEM_PROMPT, content=content,
                                             schema=GUESS_SCHEMA, model=model, timeout_s=timeout_s)
         raw = _decode(response)
     except Exception as exc:
@@ -185,6 +204,7 @@ def guess(subject: str, trip_text: str, history: list[HistoryCandidate], lines: 
         return [], [{"purpose": None, "reason": f"{type(exc).__name__}: {exc}"[:200]}]
 
     by_id = {h.id: h for h in history}
+    by_map = {f"m{i}": m for i, m in enumerate(map_places, 1)}
     line_ids = {line.id for line in lines}
     kept: list[Guess] = []
     dropped: list[dict] = []
@@ -202,6 +222,15 @@ def guess(subject: str, trip_text: str, history: list[HistoryCandidate], lines: 
                 dropped.append({"purpose": purpose, "reason": "unknown history id"})
                 continue
             kept.append(Guess(candidate.purpose, likelihood, hid, cites, destination or candidate.destination))
+            continue
+        mid = item.get("map_id")
+        if mid:
+            place = by_map.get(mid)
+            if place is None:
+                dropped.append({"purpose": purpose, "reason": "unknown map id"})
+                continue
+            kept.append(Guess(purpose or place.label, likelihood, None, cites, destination or place.label,
+                              mid, place.osm))
             continue
         if not purpose:
             continue
