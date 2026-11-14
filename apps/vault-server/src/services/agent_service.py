@@ -468,7 +468,10 @@ class AgentService:
                         "an answer. Times are corrected with update_event on the blocks "
                         "list_events shows for that trip. Give `place` only when the answer names "
                         "a place (\"the café on Dizengoff\"): Mazkir learns where it is. If the "
-                        "result has `conflict`, ask whether this is a different place of that name."
+                        "result has `conflict`, ask whether this is a different place of that name. "
+                        "Also use it, without asking anything, when the user says what they are doing "
+                        "while a trip is in progress (\"dog walking\", \"off to the pharmacy\"): "
+                        "list_events shows that trip's block with `trip: {id, part}` and no end."
                     ),
                     "input_schema": {
                         "type": "object",
@@ -3139,6 +3142,9 @@ class AgentService:
                 "photo_count": len(e.get("photos", [])),
                 "source": e.get("source"),
             })
+            if e.get("trip"):
+                # A trip block: set_trip_purpose names it, by this id.
+                summary[-1]["trip"] = e["trip"]
         result = {"events": summary, "date": date}
         if degraded:
             result["degraded"] = True

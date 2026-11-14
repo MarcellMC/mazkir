@@ -109,7 +109,7 @@ class TapBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     line: str = Field(pattern=r"^[a-z0-9]{1,6}$")
-    action: str = Field(pattern=r"^(ok|no|p|t|a[0-2])$")
+    action: str = Field(pattern=r"^(ok|no|p|t|l|a[0-2])$")
 
 
 @router.post("/trips/{trip_id}/tap")

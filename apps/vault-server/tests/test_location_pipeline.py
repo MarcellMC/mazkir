@@ -63,15 +63,6 @@ def test_a_stop_gets_no_history_purpose_without_a_destination(tmp_path):
     assert rec["stops"]["s1"]["status"] == "asked"
 
 
-def test_a_strong_stop_guess_names_the_stop(tmp_path):
-    deps, clock = make_deps(tmp_path)
-    deps.vault.read_daily_note.return_value = {"content": "- [ ] coffee with Dana\n"}
-    deps.claude.by_subject = {"stop": [guess("Coffee with Dana", cites=["c1"], destination="Café")]}
-    rec = run(deps, clock, events_for(loop_with_a_stop())[:2])
-    assert rec["stops"]["s1"] == {**rec["stops"]["s1"], "status": "named", "name": "Coffee with Dana", "place": "Café"}
-    assert deps.outbox.serve() == []
-
-
 def test_stop_already_left_is_not_asked(tmp_path):
     deps, clock = make_deps(tmp_path)
     for i in range(6):                            # the daily cap is reached

@@ -23,8 +23,8 @@ def test_media_path_default_constant(monkeypatch):
 
 
 def test_location_awareness_defaults_off(monkeypatch):
+    from src.config import Settings      # its import loads .env into os.environ; clear it after
     monkeypatch.delenv("LOCATION_AWARENESS", raising=False)
-    from src.config import Settings
     s = Settings(_env_file=None)
     assert s.location_awareness == "off"
     assert s.location_guess_model == s.fast_parse_model

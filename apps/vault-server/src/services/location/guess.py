@@ -82,9 +82,12 @@ Return at most 3 guesses, most likely first. For each:
   a friend's home, a shop). null when the moving itself was the activity (a walk, a
   ride around the city, a run).
 
-For a "stop", name what the user is doing at this place (a café, a shop, a friend's home).
-If it looks like a pause within the trip itself (a bench, waiting at a crossing, the dog
-sniffing around), return no guesses: the user will be asked.
+For a "stop", name what the user is doing at this place, and set destination to the place
+("Coffee" at "Café", "Dog park", "Pharmacy"). Never name a stop after the trip's own activity:
+a stop on a dog walk is not "Dog walk". The user is asked either way, so your guesses become
+buttons; when the trip says the user stops here often, guess what such a regular stop on this
+kind of trip usually is. If it looks like a pause within the trip itself (a bench, waiting at
+a crossing), return no guesses.
 
 Return no guesses at all rather than a weak one you cannot support."""
 
@@ -110,7 +113,8 @@ def _duration(seconds: float) -> str:
 _MODES = {"walk": "on foot", "ride": "by bike or bus", "vehicle": "by car or bus"}
 
 
-def describe_trip(trip: Trip, stop: Stop | None, places: list[Place], now: dt.datetime, tz: str) -> str:
+def describe_trip(trip: Trip, stop: Stop | None, places: list[Place], now: dt.datetime, tz: str,
+                  visits: int = 0) -> str:
     """The trip as the model sees it: times, durations, distances, mode and place names only."""
     zone = ZoneInfo(tz)
     names = {p.id: p.name for p in places}
@@ -138,6 +142,9 @@ def describe_trip(trip: Trip, stop: Stop | None, places: list[Place], now: dt.da
         since = stop.start.astimezone(zone)
         parts.append(f"Stopped since {since:%H:%M} ({_duration((now - stop.start).total_seconds())}) at "
                      f"{where(stop.place_id, stop.from_home_m)}.")
+        if visits:
+            parts.append(f"The user has stopped here on {visits} earlier trip{'s' if visits != 1 else ''} "
+                         "in the last 30 days.")
     if trip.back_at is not None:
         back = trip.back_at.astimezone(zone)
         word = {"before": "before ", "after": "some time after "}.get(trip.end_precision or "", "")
