@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="mazkir-test">
+  <node id="101" version="1" lat="32.0000000" lon="34.8000000"/>
+  <node id="102" version="1" lat="32.0010792" lon="34.8000000"/>
+  <node id="103" version="1" lat="32.0010792" lon="34.8012725"/>
+  <node id="104" version="1" lat="32.0000000" lon="34.8012725"/>
+  <node id="105" version="1" lat="32.0004047" lon="34.8004772"/>
+  <node id="106" version="1" lat="32.0006745" lon="34.8004772"/>
+  <node id="107" version="1" lat="32.0006745" lon="34.8007953"/>
+  <node id="108" version="1" lat="32.0004047" lon="34.8007953"/>
+  <node id="109" version="1" lat="32.0100000" lon="34.8000000"/>
+  <node id="110" version="1" lat="32.0120145" lon="34.8000000"/>
+  <node id="111" version="1" lat="32.0120145" lon="34.8023754"/>
+  <node id="112" version="1" lat="32.0100000" lon="34.8023754"/>
+  <node id="113" version="1" lat="32.0110000" lon="34.8011000">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="Park Café"/>
+  </node>
+  <node id="114" version="1" lat="32.0200000" lon="34.8000000">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="קפה ברזילי"/>
+    <tag k="addr:street" v="ברזילי"/>
+  </node>
+  <node id="115" version="1" lat="32.0201000" lon="34.8003000">
+    <tag k="highway" v="bus_stop"/>
+    <tag k="name" v="Barzilay stop"/>
+  </node>
+  <node id="116" version="1" lat="32.0300000" lon="34.8000000">
+    <tag k="addr:housenumber" v="5"/>
+    <tag k="addr:street" v="Ha'Yarkon"/>
+    <tag k="addr:city" v="Tel Aviv"/>
+  </node>
+  <node id="117" version="1" lat="32.0005000" lon="34.8020000">
+    <tag k="place" v="neighbourhood"/>
+    <tag k="name" v="נווה שאנן"/>
+    <tag k="name:en" v="Neve Sha'anan"/>
+  </node>
+  <node id="118" version="1" lat="32.0400000" lon="34.8000000">
+    <tag k="building" v="yes"/>
+  </node>
+  <node id="119" version="1" lat="32.0500000" lon="34.8000000">
+    <tag k="amenity" v="pharmacy"/>
+    <tag k="name" v="Super-Pharm"/>
+  </node>
+  <node id="120" version="1" lat="32.0310000" lon="34.8100000"/>
+  <node id="121" version="1" lat="32.0320000" lon="34.8100000"/>
+  <way id="1" version="1">
+    <nd ref="101"/>
+    <nd ref="102"/>
+    <nd ref="103"/>
+    <nd ref="104"/>
+    <nd ref="101"/>
+    <tag k="leisure" v="park"/>
+  </way>
+  <way id="2" version="1">
+    <nd ref="105"/>
+    <nd ref="106"/>
+    <nd ref="107"/>
+    <nd ref="108"/>
+    <nd ref="105"/>
+    <tag k="leisure" v="dog_park"/>
+  </way>
+  <way id="3" version="1">
+    <nd ref="109"/>
+    <nd ref="110"/>
+    <nd ref="111"/>
+    <nd ref="112"/>
+    <nd ref="109"/>
+    <tag k="leisure" v="park"/>
+    <tag k="name" v="Big Park"/>
+  </way>
+  <way id="4" version="1">
+    <nd ref="120"/>
+    <nd ref="121"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Some Street"/>
+  </way>
+</osm>
