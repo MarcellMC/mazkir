@@ -54,7 +54,7 @@ def test_areas_have_outlines_and_size(tmp_path):
 def test_names_are_kept_as_written(tmp_path):
     db = tmp_path / "index.sqlite"
     build_index(FIXTURE, db)
-    [cafe] = [r for r in _rows(db) if r["name"] == "קפה ברזילי"]
+    [cafe] = [r for r in _rows(db) if r["name"] == "קפה ברזילי" and r["street"]]   # the index keeps duplicates
     assert cafe["name_en"] is None and cafe["street"] == "ברזילי" and cafe["osm"].startswith("n")
     [hood] = [r for r in _rows(db) if r["grp"] == "area"]
     assert hood["name_en"] == "Neve Sha'anan"

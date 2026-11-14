@@ -5,6 +5,10 @@ call opens the file read-only, so an update swapping in a new index
 (`os.replace`) is seen whole or not at all. A missing or broken index is
 no map: `[]`, and the stop is asked about as it would be without one.
 
+Street furniture (a bench, a parking spot, a recycling bin) is indexed but
+never offered: nobody goes out to a bench, and "never filler" is the rule for
+buttons (user, 2026-11-14). The same label is offered once.
+
 Ranking:
 1. containing areas of up to 1 ha, smallest first (the dog park before the
    park around it), at distance 0;
@@ -34,6 +38,14 @@ AREA_NAME_RADIUS_M = 1500.0
 
 _LAT_M = 111_195.0
 _warned = False
+
+# Values under a place key that are not somewhere you go (seen as filler in the 2026-11-14 replay).
+NOT_A_DESTINATION = frozenset({
+    "bench", "waste_basket", "waste_disposal", "recycling", "drinking_water", "bicycle_parking",
+    "motorcycle_parking", "parking", "parking_entrance", "parking_space", "vending_machine", "post_box",
+    "telephone", "charging_station", "fountain", "clock", "grit_bin", "shelter", "bicycle_repair_station",
+    "compressed_air", "water_point", "letter_box", "picnic_table", "loading_dock",
+})
 
 KIND_WORDS = {
     "cafe": "Café", "dog_park": "Dog park", "pharmacy": "Pharmacy", "convenience": "Convenience store",
@@ -139,6 +151,8 @@ def _query(con: sqlite3.Connection, lat: float, lng: float, radius_m: float, gro
 def _ranked(rows, lat: float, lng: float, radius_m: float) -> list[tuple[tuple, MapPlace]]:
     out = []
     for row in rows:
+        if row["grp"] == "place" and row["kind"] in NOT_A_DESTINATION:
+            continue
         if row["rings"]:
             contains, edge = _area_distance(lat, lng, row["rings"])
             if contains and (row["area_m2"] or 0) <= SMALL_AREA_M2:
@@ -157,7 +171,13 @@ def _ranked(rows, lat: float, lng: float, radius_m: float) -> list[tuple[tuple, 
         out.append((key, MapPlace(row["osm"], row["grp"], row["kind"], _label(row), row["name_en"] or row["name"],
                                   row["street"], round(dist, 1))))
     out.sort(key=lambda kv: kv[0])
-    return out
+    seen: set[str] = set()
+    unique = []
+    for key, place in out:
+        if place.label.casefold() not in seen:
+            seen.add(place.label.casefold())
+            unique.append((key, place))
+    return unique
 
 
 def map_near(index: Path | None, lat: float, lng: float, spread_m: float) -> list[MapPlace]:

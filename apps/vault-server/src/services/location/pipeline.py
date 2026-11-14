@@ -178,7 +178,9 @@ def _on_stopped(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
         guesses, dropped, history = _guess("stop", trip, stop, deps, places,
                                            trip_purpose=(rec.get("purpose") or {}).get("name"), visits=visits,
                                            map_places=mapped)
-    close = [m for m in mapped if m.distance_m <= MAP_CLOSE_M][:3] or mapped[:1]
+    # A street is context for the model, never a button: "what's this?" [Yesod HaMa'ala] answers nothing.
+    places_only = [m for m in mapped if m.group == "place"]
+    close = [m for m in places_only if m.distance_m <= MAP_CLOSE_M][:3] or places_only[:1]
     map_options = [Option(m.label, m.label, m.osm) for m in close]
     # A STOPPED handled long after it happened (the server was down, or the
     # inbox is replaying) is about a stop you have likely left: never ask then.

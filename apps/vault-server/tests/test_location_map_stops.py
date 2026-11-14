@@ -210,3 +210,10 @@ def test_model_and_log_never_see_coordinates_or_osm_ids(tmp_path):
     assert osm_ids and not any(o in content for o in osm_ids)
     stopped = [line for line in logs if line["event"] == "STOPPED"][0]
     assert stopped["map"][0]["label"] == "Dog park"
+
+
+def test_an_address_is_never_a_button(tmp_path):
+    deps, clock = _deps(tmp_path, nodes=[(STOP_N + 5, 0, {"addr:housenumber": "5", "addr:street": "Yesod HaMa'ala"})])
+    _, info = _asked(deps, clock)
+    assert info["status"] == "asked" and info["options"] == []
+    assert info["map"][0]["group"] == "address"            # the model still hears which street it is

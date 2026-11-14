@@ -1,6 +1,6 @@
 # Location awareness: a local map copy
 
-**Status:** design, for approval · **Date:** 2026-11-14 · **Builds on:**
+**Status:** built (plan `docs/plans/2026-11-14-location-map.md`) · **Date:** 2026-11-14 · **Builds on:**
 `docs/specs/2026-11-10-location-trips-design.md` (and its 2026-11-14 addendum)
 
 ## 1. Why

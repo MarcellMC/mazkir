@@ -75,4 +75,14 @@
     <tag k="highway" v="residential"/>
     <tag k="name" v="Some Street"/>
   </way>
+  <node id="901" version="1" lat="32.0200270" lon="34.8000000">
+    <tag k="amenity" v="bench"/>
+  </node>
+  <node id="902" version="1" lat="32.0199730" lon="34.8000000">
+    <tag k="amenity" v="bicycle_parking"/>
+  </node>
+  <node id="903" version="1" lat="32.0200000" lon="34.8000850">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="קפה ברזילי"/>
+  </node>
 </osm>
