@@ -197,13 +197,15 @@ trip's purpose.
 
 ### 5.4 Buttons
 
-There are at most 3 option buttons, chosen in this order:
-1. the model's kept guesses;
-2. if fewer than 3, the top map places by rank (code, not the model);
-3. the history purposes that have a destination.
+Mazkir offers **1 to 3 good options, never filler** (user, 2026-11-14):
+1. **The model's strong and plausible guesses**, up to 3. The model sees the map places and
+   picks among them, so the buttons hold no extra map places beside its guesses.
+2. **If the model offers none, or the call fails:** the map places that contain the stop or
+   lie within 15 m, up to 3. If none is that close, only the nearest one is offered.
+3. **No map places:** history purposes with a destination, as now.
 
-Duplicates by name are removed. If the model call fails, the buttons are the map places
-alone.
+Duplicates by name are removed. A single good option is shown alone, never padded to three.
+`Just a pause`, `✎ Something else` and `Later` are always there.
 
 ### 5.5 Answers
 

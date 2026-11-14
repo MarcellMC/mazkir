@@ -326,8 +326,14 @@ and prints the action and counts.
   - store `info["map"] = [m.to_dict() for m in mapped]` and `info["area"]`;
   - pass `mapped` to `_guess`, then into `guess`.
 - **`decide`** takes `map_options = [Option(m.label, m.label, m.osm) for m in mapped]`.
-  Options are composed in order — live guesses, then map options, then history — deduped by
-  `names.name_key` and capped at 3.
+  Mazkir offers 1 to 3 good options, never filler (spec §5.4):
+  - the model's live guesses (strong or plausible), up to 3, are the options when there are
+    any;
+  - otherwise the map options for places at distance ≤ 15 m (containing counts as 0), up to
+    3, or only the nearest map option when none is that close;
+  - otherwise history, as now.
+
+  Options are deduped by `names.name_key` and never padded.
 - **`question_receipt`** gets `map_label` when `mapped[0].distance_m <= 15`, and `area`.
   - With `map_label`, "a new place" becomes `by <label>`. A usual stop keeps its wording.
   - `area` appends `, in <area>` after the distance.
@@ -342,7 +348,12 @@ and prints the action and counts.
   fixtures plus an index built from the fixture, with the stop placed at the fixture's café
   or dog park):
   - `test_map_places_become_buttons`: a model returning no guesses gives an asked stop whose
-    options start with the map labels.
+    options are the map places within 15 m (the dog park and the park around it), and
+    nothing else.
+  - `test_one_good_guess_is_offered_alone`: the model returns one plausible guess; the
+    options are exactly that guess. No map place or history is padded in.
+  - `test_only_the_nearest_map_place_when_none_is_close`: the nearest place is 40 m away,
+    giving exactly one option.
   - `test_a_guess_citing_the_map_keeps_the_place`: the model returns `map_id: "m1"` with no
     cites, giving the option "Coffee at קפה ברזילי" with destination "קפה ברזילי".
   - `test_unknown_map_id_is_dropped`.
