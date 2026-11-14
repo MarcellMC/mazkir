@@ -1387,3 +1387,42 @@ class TestManualOriginSurvivesCalendarEcho:
 
         assert result[0]["name"] == "Standup (moved)"
         assert result[0]["source"] == "calendar"
+
+
+# --- location trips, Task 1: one lock, the trip field ----------------------
+
+def test_events_service_has_one_reentrant_lock(tmp_path):
+    svc = EventsService(events_path=tmp_path)
+    with svc.lock:
+        with svc.lock:  # re-entrant: service methods call each other
+            svc.create_event(date="2026-11-13", name="X", start_time="2026-11-13T10:00:00")
+    assert svc.get_events("2026-11-13")[0]["name"] == "X"
+
+
+def test_create_event_keeps_trip_field(tmp_path):
+    svc = EventsService(events_path=tmp_path)
+    svc.create_event(date="2026-11-13", name="Trip", start_time="2026-11-13T10:00:00",
+                     proposed=True, fields={"trip": {"id": "1a2b3c4d", "part": "trip"}})
+    assert svc.get_events("2026-11-13")[0]["trip"] == {"id": "1a2b3c4d", "part": "trip"}
+
+
+def test_concurrent_creates_lose_nothing(tmp_path):
+    import threading
+    import time as _time
+
+    svc = EventsService(events_path=tmp_path)
+    # Widen the read-modify-write window so a missing lock shows every time.
+    real_get = svc.get_events
+
+    def slow_get(date):
+        out = real_get(date)
+        _time.sleep(0.005)
+        return out
+
+    svc.get_events = slow_get
+    threads = [threading.Thread(target=svc.create_event,
+               kwargs=dict(date="2026-11-13", name=f"E{i}", start_time="2026-11-13T10:00:00"))
+               for i in range(20)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(real_get("2026-11-13")) == 20

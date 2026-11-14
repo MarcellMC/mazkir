@@ -5,7 +5,9 @@ import type { Update, UserFromGetMe } from "grammy/types";
 const cfg = vi.hoisted(() => ({ locationIngest: true, authorizedUserId: 123 }));
 vi.mock("../../src/config.js", () => ({ config: cfg }));
 
-const api = vi.hoisted(() => ({ postLocationPoint: vi.fn() }));
+const api = vi.hoisted(() => ({ postLocationPoint: vi.fn(), ackLocationOutbox: vi.fn() }));
+const richMocks = vi.hoisted(() => ({ sendRich: vi.fn(), editRich: vi.fn() }));
+vi.mock("../../src/bot-utils/send-rich.js", () => richMocks);
 vi.mock("../../src/api/client.js", () => {
   class ApiError extends Error {
     constructor(readonly status: number, statusText: string) {
@@ -20,6 +22,7 @@ vi.mock("../../src/logger.js", () => ({ logger: log }));
 
 import { locationHandler, toLocationPoint } from "../../src/conversations/location.js";
 import { ApiError } from "../../src/api/client.js";
+import { resetOpenQuestions, takeOpenQuestion } from "../../src/state/open-question.js";
 
 const me = { id: 1, is_bot: true, first_name: "Mazkir", username: "mazkir_bot" } as UserFromGetMe;
 const chat = { id: 123, type: "private", first_name: "M" } as const;
@@ -58,6 +61,7 @@ describe("location ingest", () => {
       accuracy_m: 12,
       heading: 270,
       live_period: 28800,
+      chat_id: 123,
     });
     expect(next).not.toHaveBeenCalled();
   });
@@ -80,6 +84,7 @@ describe("location ingest", () => {
       ts: new Date(1762409000 * 1000).toISOString(),
       lat: 32.0853,
       lng: 34.7818,
+      chat_id: 123,
     });
     expect(next).toHaveBeenCalledOnce();
   });
@@ -137,6 +142,48 @@ describe("location ingest", () => {
     const next = await fire(msg({ text: "hello" }));
     expect(next).toHaveBeenCalledOnce();
     expect(api.postLocationPoint).not.toHaveBeenCalled();
+  });
+});
+
+describe("trip messages riding back on the response", () => {
+  const RECEIPT = { turn_id: "1a2b3c4d", lines: [], undo: null, open_question: null, text: "back home" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetOpenQuestions();
+    cfg.locationIngest = true;
+    api.ackLocationOutbox.mockResolvedValue({ ok: true });
+    richMocks.sendRich.mockResolvedValue({ message_id: 50 });
+  });
+
+  it("sends each notify item as a rich message, then acks it", async () => {
+    api.postLocationPoint.mockResolvedValue({ ok: true, notify: [{ id: "n1", kind: "arrival", receipt: RECEIPT }] });
+    await fire(edit(LOC));
+    expect(richMocks.sendRich).toHaveBeenCalledOnce();
+    expect(api.ackLocationOutbox).toHaveBeenCalledWith("n1");
+  });
+
+  it("does not ack an item whose send failed, and logs no coordinates", async () => {
+    api.postLocationPoint.mockResolvedValue({ ok: true, notify: [{ id: "n1", kind: "question", receipt: RECEIPT }] });
+    richMocks.sendRich.mockRejectedValue(new Error("Bad Request"));
+    await fire(edit(LOC));
+    expect(api.ackLocationOutbox).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event_type: "location_notify_failed", kind: "question" }), "location_notify_failed");
+    expect(JSON.stringify(log.warn.mock.calls)).not.toContain("32.08");
+  });
+
+  it("arms the open question after sending a question", async () => {
+    const q = { ...RECEIPT, open_question: "📍 What's this? [trip 1a2b3c4d · stop s1]" };
+    api.postLocationPoint.mockResolvedValue({ ok: true, notify: [{ id: "n2", kind: "question", receipt: q }] });
+    await fire(edit(LOC));
+    expect(takeOpenQuestion(123)).toBe(q.open_question);
+  });
+
+  it("an L0 response with no notify sends nothing", async () => {
+    api.postLocationPoint.mockResolvedValue({ ok: true });
+    await fire(edit(LOC));
+    expect(richMocks.sendRich).not.toHaveBeenCalled();
   });
 });
 

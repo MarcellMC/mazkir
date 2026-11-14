@@ -14,10 +14,20 @@
  *
  * A failed post is logged and dropped; it never stops a check-in reaching
  * the agent. The log line carries no coordinates.
+ *
+ * Location trips (docs/specs/2026-11-10-location-trips-design.md §6.1): with
+ * LOCATION_AWARENESS on at the server, the response carries `notify[]` —
+ * questions about a stop, the message when you are back, notices. Each is
+ * sent here as a rich message and then acknowledged; one that fails to send
+ * is not acknowledged, so the next point's response carries it again.
  */
 import { Composer, type Context } from "grammy";
 import type { Message } from "grammy/types";
 import { api, ApiError, type LocationPoint } from "../api/client.js";
+import type { LocationNotify } from "@mazkir/shared-types";
+import { sendRich } from "../bot-utils/send-rich.js";
+import { buildReceiptRich } from "../formatters/receipt-rich.js";
+import { noteOpenQuestion } from "../state/open-question.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 
@@ -40,9 +50,12 @@ export function toLocationPoint(msg: Message, kind: LocationPoint["kind"]): Loca
   return point;
 }
 
-async function ingest(point: LocationPoint): Promise<void> {
+async function ingest(ctx: Context, point: LocationPoint): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (chatId !== undefined) point.chat_id = chatId;
+  let notify: LocationNotify[] = [];
   try {
-    await api.postLocationPoint(point);
+    notify = (await api.postLocationPoint(point))?.notify ?? [];
   } catch (err) {
     logger.warn(
       {
@@ -53,6 +66,26 @@ async function ingest(point: LocationPoint): Promise<void> {
       },
       "location_ingest_failed",
     );
+    return;
+  }
+  for (const item of notify) await deliver(ctx, item);
+}
+
+/** Send one trip message, then acknowledge it. The open question is armed
+ *  after the send: every send clears it (bot.ts, dropPerMessageHints). */
+async function deliver(ctx: Context, item: LocationNotify): Promise<void> {
+  try {
+    await sendRich(ctx, buildReceiptRich(item.receipt));
+  } catch (err) {
+    logger.warn({ event_type: "location_notify_failed", kind: item.kind, err: String(err) }, "location_notify_failed");
+    return;
+  }
+  const chatId = ctx.chat?.id;
+  if (item.receipt.open_question && chatId !== undefined) noteOpenQuestion(chatId, item.receipt.open_question);
+  try {
+    await api.ackLocationOutbox(item.id);
+  } catch (err) {
+    logger.warn({ event_type: "location_notify_ack_failed", kind: item.kind, err: String(err) }, "location_notify_ack_failed");
   }
 }
 
@@ -60,7 +93,7 @@ export const locationHandler = new Composer<Context>();
 
 locationHandler.on("edited_message:location", async (ctx, next) => {
   if (!config.locationIngest) return next();
-  await ingest(toLocationPoint(ctx.editedMessage, "live"));
+  await ingest(ctx, toLocationPoint(ctx.editedMessage, "live"));
 });
 
 locationHandler.on("message:location", async (ctx, next) => {
@@ -70,9 +103,9 @@ locationHandler.on("message:location", async (ctx, next) => {
   // are: it goes to the agent as forwarded context, as every forward does.
   if (msg.forward_origin) return next();
   if (msg.location.live_period !== undefined) {
-    await ingest(toLocationPoint(msg, "live_start"));
+    await ingest(ctx, toLocationPoint(msg, "live_start"));
     return;
   }
-  await ingest(toLocationPoint(msg, "check_in"));
+  await ingest(ctx, toLocationPoint(msg, "check_in"));
   await next();
 });

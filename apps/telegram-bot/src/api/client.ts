@@ -14,6 +14,8 @@ import type {
   Receipt,
   ReceiptUpdate,
   ReceiptActionResponse,
+  LocationIngestResponse,
+  TripTapResult,
 } from "@mazkir/shared-types";
 
 import { logger } from "../logger.js";
@@ -40,6 +42,8 @@ export interface LocationPoint {
   heading?: number;
   live_period?: number;
   venue_title?: string;
+  /** The chat sharing its location: where "sharing stopped" goes (trips spec §4.4). */
+  chat_id?: number;
 }
 
 /** What a streamed reply can carry besides text (fast-lane spec §8.1). */
@@ -230,7 +234,14 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<ReceiptActionResponse>(`/fast/receipts/${encodeURIComponent(turnId)}/${encodeURIComponent(line)}/${encodeURIComponent(action)}`, { method: "POST" }),
     // One raw location point (location spike L0, spec §4.2).
     postLocationPoint: (point: LocationPoint) =>
-      request<{ ok: boolean }>("/locations/points", { method: "POST", body: JSON.stringify(point) }),
+      request<LocationIngestResponse>("/locations/points", { method: "POST", body: JSON.stringify(point) }),
+    // Location trips (spec 2026-11-10 §6.1): a notify item was sent.
+    ackLocationOutbox: (id: string) =>
+      request<{ ok: boolean }>(`/locations/outbox/${encodeURIComponent(id)}/ack`, { method: "POST" }),
+    // A button on a trip message (spec §6.2, §6.3).
+    tripTap: (tripId: string, line: string, action: string) =>
+      request<TripTapResult>(`/locations/trips/${encodeURIComponent(tripId)}/tap`,
+        { method: "POST", body: JSON.stringify({ line, action }) }),
   };
 }
 

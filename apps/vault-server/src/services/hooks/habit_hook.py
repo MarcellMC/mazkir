@@ -28,6 +28,10 @@ def habit_hook(params: dict, output: dict, ctx) -> None:
     """
     if settings.fast_lane_mode != "on":
         return
+    if (params.get("_fast") or {}).get("inferred"):
+        # Location filling in a block's times is not the user confirming it
+        # (location trips, final review I-1): the tick waits for their ✓.
+        return
     try:
         if not isinstance(output, dict) or not output.get("ok"):
             return

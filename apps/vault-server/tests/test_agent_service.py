@@ -3541,3 +3541,69 @@ class TestReminderReachesTheCalendar:
         kwargs = agent.calendar.create_event.await_args.kwargs
         assert kwargs["duration_minutes"] == 45
         assert kwargs["remind_minutes_before"] == [1440, 60]
+
+
+# --- location trips, Task 1: an inferred edit pins nothing -----------------
+
+def _agent_with_real_events(tmp_path):
+    from unittest.mock import MagicMock
+    from src.services.events_service import EventsService
+    events = EventsService(events_path=tmp_path / "events")
+    agent = AgentService(claude=MagicMock(), vault=MagicMock(), memory=MagicMock(),
+                         calendar=None, events=events, media_path=tmp_path / "media")
+    return agent, events
+
+
+def test_update_event_inferred_pins_nothing(tmp_path):
+    agent, events = _agent_with_real_events(tmp_path)
+    e = events.create_event(date="2026-11-13", name="Trip", start_time="2026-11-13T10:00:00", proposed=True)
+    r = agent.run_tool("update_event", {"event_id": e["id"], "date": "2026-11-13",
+                       "end_time": "2026-11-13T10:40:00", "_fast": {"inferred": True}})
+    assert r["ok"], r
+    stored = events.get_events("2026-11-13")[0]
+    assert stored["end_time"].startswith("2026-11-13T10:40")
+    assert stored["user_set"] == {}
+
+
+def test_update_event_without_inferred_still_pins(tmp_path):
+    agent, events = _agent_with_real_events(tmp_path)
+    e = events.create_event(date="2026-11-13", name="Trip", start_time="2026-11-13T10:00:00", proposed=True)
+    r = agent.run_tool("update_event", {"event_id": e["id"], "date": "2026-11-13",
+                       "end_time": "2026-11-13T10:40:00"})
+    assert r["ok"], r
+    assert "end_time" in events.get_events("2026-11-13")[0]["user_set"]
+
+
+# --- location trips, Task 13: set_trip_purpose -------------------------------
+
+def test_set_trip_purpose_is_registered_as_write(agent):
+    tool = agent.tools["set_trip_purpose"]
+    assert tool["risk"] == "write" and not tool.get("safe_for_parallel")
+    assert "[trip" in tool["schema"]["description"]
+
+
+def test_set_trip_purpose_answers_the_runtime(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    rt = MagicMock()
+    rt.answer.return_value = {"trip_id": "1a2b3c4d", "stop_id": "s1", "purpose": "Sauna", "conflict": None,
+                              "blocks": {}}
+    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    r = agent.run_tool("set_trip_purpose", {"trip_id": "1a2b3c4d", "stop_id": "s1", "purpose": "Sauna",
+                                            "_confidence": 0.9})
+    assert r["ok"], r
+    assert rt.answer.call_args.args[:3] == ("1a2b3c4d", "s1", "Sauna")
+
+
+def test_set_trip_purpose_when_off(agent, monkeypatch):
+    monkeypatch.setattr("src.services.location.runtime._runtime", None)
+    r = agent.run_tool("set_trip_purpose", {"trip_id": "1a2b3c4d", "purpose": "Run", "_confidence": 0.9})
+    assert r["ok"] is False and r["error"]["code"] == "STATE_CONFLICT"
+
+
+def test_set_trip_purpose_unknown_trip(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    rt = MagicMock()
+    rt.answer.side_effect = KeyError("1a2b3c4d")
+    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    r = agent.run_tool("set_trip_purpose", {"trip_id": "1a2b3c4d", "purpose": "Run", "_confidence": 0.9})
+    assert r["error"]["code"] == "PATH_NOT_FOUND"

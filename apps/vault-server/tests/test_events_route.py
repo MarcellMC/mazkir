@@ -175,6 +175,9 @@ class TestCancelEvent:
         import src.api.routes.events as events_route
 
         class FakeEvents:
+            # The real service's lock (routes take it around reconcile + save).
+            lock = __import__('threading').RLock()
+
             def __init__(self):
                 self.saved = {}
 
@@ -293,6 +296,9 @@ class TestDeleteEvent:
         import src.api.routes.events as events_route
 
         class FakeEvents:
+            # The real service's lock (routes take it around reconcile + save).
+            lock = __import__('threading').RLock()
+
             def __init__(self):
                 self.saved = {}
 
@@ -433,6 +439,9 @@ class TestSetState:
         import src.api.routes.events as events_route
 
         class FakeEvents:
+            # The real service's lock (routes take it around reconcile + save).
+            lock = __import__('threading').RLock()
+
             def __init__(self):
                 self.saved = {}
 

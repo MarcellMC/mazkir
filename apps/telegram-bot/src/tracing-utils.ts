@@ -35,7 +35,7 @@ export function setActiveSpanOutput(value: string): void {
  *  when a question was pending means the hint was lost, which is what
  *  happened twice on 2026-09-12.
  */
-export type ReplyToSource = "telegram" | "open_question" | "none";
+export type ReplyToSource = "telegram" | "open_question" | "nudge_draft" | "none";
 
 /**
  * Record what context this turn is being sent with, on the active

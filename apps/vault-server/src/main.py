@@ -5,7 +5,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
-from src.logging_setup import configure_audit_log, configure_fast_lane_log, configure_logging
+from src.logging_setup import (
+    configure_audit_log, configure_fast_lane_log, configure_location_trips_log, configure_logging,
+)
 from src.tracing_setup import configure_tracing, instrument_fastapi
 from src.services.vault_service import VaultService
 from src.services.claude_service import ClaudeService
@@ -20,6 +22,7 @@ from src.services.coding_tasks_service import CodingTasksService
 configure_logging(settings.log_level, settings.logs_dir)
 configure_audit_log(settings.logs_dir)
 configure_fast_lane_log(settings.logs_dir)
+configure_location_trips_log(settings.logs_dir)
 configure_tracing(
     endpoint=settings.otel_exporter_otlp_endpoint,
     service_name=settings.otel_service_name,
@@ -39,6 +42,7 @@ events: "EventsService | None" = None
 notes: "NotesService | None" = None
 coding_tasks: "CodingTasksService | None" = None
 _coding_tasks_poller_task: "asyncio.Task | None" = None
+_location_clock_task: "asyncio.Task | None" = None
 
 
 async def _coding_tasks_poll_loop(coding_tasks: "CodingTasksService", interval_seconds: float = 30.0) -> None:
@@ -60,10 +64,35 @@ async def _coding_tasks_poll_loop(coding_tasks: "CodingTasksService", interval_s
         await asyncio.sleep(interval_seconds)
 
 
+async def _location_clock_loop(runtime, notifier: "TelegramNotifier", interval_seconds: float = 60.0) -> None:
+    """The trip clock (trips spec §3): once a minute, notice what no point will carry.
+
+    A share that stopped sends no more points, so its "sharing stopped"
+    message cannot ride back on one: it is pushed here, to the share's chat.
+    """
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    while True:
+        try:
+            now = _dt.datetime.now(ZoneInfo(settings.vault_timezone))
+            notices = await asyncio.to_thread(runtime.tick, now)
+            chat_id = runtime.chat_id
+            for notice in notices:
+                if chat_id:
+                    await asyncio.to_thread(notifier.send_message, chat_id, notice["text"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            from src.services.location.model import safe_error
+            logger.error("location clock iteration failed: %s", safe_error(exc))
+        await asyncio.sleep(interval_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global vault, claude, calendar, memory, agent, timeline, generation, imagery, events, notes
-    global coding_tasks, _coding_tasks_poller_task
+    global coding_tasks, _coding_tasks_poller_task, _location_clock_task
 
     vault = VaultService(settings.vault_path, settings.vault_timezone)
     logger.info(f"Vault service initialized: {settings.vault_path}")
@@ -192,7 +221,32 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Coding tasks poller started")
 
+    # Location awareness (docs/specs/2026-11-10-location-trips-design.md).
+    location_runtime = None
+    if settings.location_awareness == "on":
+        if agent is None:
+            logger.warning("LOCATION_AWARENESS=on but the agent is not configured: trips are off")
+        else:
+            from src.logging_setup import emit_location_trips
+            from src.services.location.runtime import build_runtime, set_runtime
+            location_runtime = build_runtime(settings, agent=agent, events=events, vault=vault,
+                                             claude=claude, log=emit_location_trips)
+            set_runtime(location_runtime)
+            _location_clock_task = asyncio.create_task(_location_clock_loop(location_runtime, notifier))
+            logger.info("Location awareness on: trip tracker and clock started")
+
     yield
+
+    if _location_clock_task is not None:
+        _location_clock_task.cancel()
+        try:
+            await _location_clock_task
+        except asyncio.CancelledError:
+            pass
+    if location_runtime is not None:
+        from src.services.location.runtime import set_runtime
+        set_runtime(None)
+        location_runtime.stop()
 
     if _coding_tasks_poller_task is not None:
         _coding_tasks_poller_task.cancel()

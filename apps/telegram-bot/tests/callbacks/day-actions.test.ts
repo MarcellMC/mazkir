@@ -10,6 +10,7 @@ const richMocks = vi.hoisted(() => ({ editRich: vi.fn(), sendRich: vi.fn() }));
 vi.mock("../../src/bot-utils/send-rich.js", () => richMocks);
 
 import { dayActionHandlers } from "../../src/callbacks/day-actions.js";
+import { noteNudgeDraft, resetNudgeDrafts, takeNudgeDraft } from "../../src/state/nudge-draft.js";
 
 /** Drive one callback through the Composer's middleware. */
 async function fire(data: string) {
@@ -463,5 +464,50 @@ describe("the gap prompt leaves the question findable", () => {
     await fire("gap:fill:2026-09-10:900:1050");
 
     expect(takeOpenQuestion(1)).toBeDefined();
+  });
+});
+
+
+describe("the nudge draft", () => {
+  const day = {
+    ...emptyDay,
+    blocks: [{
+      id: "e1", start: "07:20", end: "08:00", title: "Dog walk",
+      source: "manual", type: "event", completed: false,
+      activity: null, category: null, state: "pending", habit_progress: null,
+    }],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetNudgeDrafts();
+    api.getDaily.mockResolvedValue(day);
+  });
+
+  it("adj: with non-zero deltas notes a draft after the edit", async () => {
+    await fire("adj:2026-09-10:e1:5:10");
+    expect(richMocks.editRich).toHaveBeenCalled();
+    expect(takeNudgeDraft(1)).toEqual({ date: "2026-09-10", eventId: "e1", name: "Dog walk", start: "07:25", end: "08:10" });
+  });
+
+  it("adj: back to 0/0 clears the draft", async () => {
+    noteNudgeDraft(1, { date: "2026-09-10", eventId: "e1", name: "Dog walk", start: "07:25", end: "08:10" });
+    await fire("adj:2026-09-10:e1:0:0");
+    expect(takeNudgeDraft(1)).toBeUndefined();
+  });
+
+  it("adjsave: clears the draft", async () => {
+    noteNudgeDraft(1, { date: "2026-09-10", eventId: "e1", name: "Dog walk", start: "07:25", end: "08:10" });
+    api.patchEvent.mockResolvedValue({});
+    api.setBlockState.mockResolvedValue({ ok: true, state: "approved", habit: null });
+    await fire("adjsave:2026-09-10:e1:5:10");
+    expect(takeNudgeDraft(1)).toBeUndefined();
+  });
+
+  it("approving the block clears its draft", async () => {
+    noteNudgeDraft(1, { date: "2026-09-10", eventId: "e1", name: "Dog walk", start: "07:25", end: "08:10" });
+    api.setBlockState.mockResolvedValue({ ok: true, state: "approved", habit: null });
+    await fire("block:approve:2026-09-10:e1");
+    expect(takeNudgeDraft(1)).toBeUndefined();
   });
 });

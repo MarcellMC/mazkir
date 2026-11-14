@@ -31,6 +31,7 @@ import {
   clearOpenQuestion,
   noteOpenQuestion,
 } from "../state/open-question.js";
+import { takeNudgeDraft, draftContext } from "../state/nudge-draft.js";
 
 /** Inline keyboard for a confirmation that names its options, or undefined
  *  for a plain yes/no gate (which is still answered as free text). The bot
@@ -113,6 +114,19 @@ export function buildMessagePayload(msg: Message, chatId: number) {
     if (asked) {
       reply_to = { text: asked, from: "assistant" };
       replyToSource = "open_question";
+    }
+  }
+
+  // An unsaved nudge on the block-edit pad rides along, so "nudge, then type"
+  // is one edit of both the times and the activity (trips spec §6.4).
+  const draft = takeNudgeDraft(chatId);
+  if (draft) {
+    const draftText = draftContext(draft);
+    if (reply_to) {
+      reply_to = { ...reply_to, text: `${reply_to.text}\n\n${draftText}` };
+    } else {
+      reply_to = { text: draftText, from: "assistant" };
+      replyToSource = "nudge_draft";
     }
   }
 
