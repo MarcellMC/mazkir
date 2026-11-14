@@ -13,6 +13,7 @@ everyone: no position is ever sent.
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import logging
@@ -95,9 +96,25 @@ def _md5(path: Path) -> str:
 
 def update_map(map_dir: Path, url: str, *, now: dt.datetime, force: bool = False, fetch: Fetch | None = None,
                max_age_days: int = 30) -> dict:
-    """Bring the copy up to date. Returns {"action": "download"|"rebuild"|None, "counts": {...}}; raises on failure."""
+    """Bring the copy up to date. Returns {"action": "download"|"rebuild"|"busy"|None, "counts": {...}}.
+
+    Raises on failure. One update at a time across processes (the server's
+    monthly one and the script): a second one finds the lock held and does
+    nothing, since both would write the same partial files.
+    """
     map_dir = Path(map_dir)
     map_dir.mkdir(parents=True, exist_ok=True)
+    with open(map_dir / ".update.lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logger.info("map update already running")
+            return {"action": "busy", "counts": {}}
+        return _update(map_dir, url, now=now, force=force, fetch=fetch, max_age_days=max_age_days)
+
+
+def _update(map_dir: Path, url: str, *, now: dt.datetime, force: bool, fetch: Fetch | None,
+            max_age_days: int) -> dict:
     fetch = fetch or _http_fetch
     meta = read_meta(map_dir)
     if meta is not None and meta.get("url") != url:

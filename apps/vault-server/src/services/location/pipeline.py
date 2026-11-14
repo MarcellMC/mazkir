@@ -85,7 +85,7 @@ def _known(deps: TripDeps, confirmed) -> dict:
 
 
 def _guess(subject: str, trip: Trip, stop, deps: TripDeps, places, *, trip_purpose: str | None = None,
-           visits: int = 0, map_places=()) -> tuple[list[Guess], list[dict], list]:
+           visits: int = 0, map_places=None) -> tuple[list[Guess], list[dict], list]:
     now = deps.now()
     confirmed = load_confirmed(deps.labels_dir, deps.records, deps.events, deps.tz, now)
     history = score_history(trip, confirmed, now, deps.tz, stop=stop)
@@ -177,7 +177,7 @@ def _on_stopped(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
         info["area"] = area
         guesses, dropped, history = _guess("stop", trip, stop, deps, places,
                                            trip_purpose=(rec.get("purpose") or {}).get("name"), visits=visits,
-                                           map_places=mapped)
+                                           map_places=mapped if deps.map_index is not None else None)
     # A street is context for the model, never a button: "what's this?" [Yesod HaMa'ala] answers nothing.
     places_only = [m for m in mapped if m.group == "place"]
     close = [m for m in places_only if m.distance_m <= MAP_CLOSE_M][:3] or places_only[:1]

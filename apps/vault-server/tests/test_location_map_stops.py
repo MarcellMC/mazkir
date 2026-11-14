@@ -217,3 +217,19 @@ def test_an_address_is_never_a_button(tmp_path):
     _, info = _asked(deps, clock)
     assert info["status"] == "asked" and info["options"] == []
     assert info["map"][0]["group"] == "address"            # the model still hears which street it is
+
+
+def test_the_model_cannot_make_an_address_a_button(tmp_path):     # final review I-1
+    model = FakeModel({"stop": [{"purpose": "Yesod HaMa'ala", "likelihood": "strong", "history_id": None,
+                                 "map_id": "m1", "cites": [], "destination": None}]})
+    deps, clock = _deps(tmp_path, model, nodes=[(STOP_N + 5, 0, {"addr:housenumber": "5",
+                                                                  "addr:street": "Yesod HaMa'ala"})])
+    _, info = _asked(deps, clock)
+    assert info["options"] == []
+
+
+def test_no_map_means_no_map_section_for_the_model(tmp_path):     # final review minor 4, promoted
+    model = FakeModel()
+    deps, clock = _deps(tmp_path, model)
+    run(deps, clock, events()[:2])
+    assert model.calls and all("MAP:" not in c["content"] for c in model.calls)

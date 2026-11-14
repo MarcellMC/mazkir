@@ -141,3 +141,16 @@ async def test_clock_loop_starts_the_map_update():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert updater.maybe_start.called
+
+
+def test_a_second_update_while_one_runs_does_nothing(tmp_path):    # final review I-2
+    import fcntl
+
+    update_map(tmp_path, URL, now=NOW, fetch=fake_fetch())
+    before = read_meta(tmp_path)
+    with open(tmp_path / ".update.lock", "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        calls: list = []
+        out = update_map(tmp_path, URL, now=NOW, force=True, fetch=fake_fetch(calls=calls))
+    assert out["action"] == "busy" and calls == []
+    assert read_meta(tmp_path) == before

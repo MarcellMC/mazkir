@@ -70,7 +70,7 @@ You get:
   code thinks this trip matches it, and the evidence.
 - CONTEXT: lines quoted from the user's last 24 hours of messages, open todos, tasks,
   today's schedule and habits due, each with an id (c1, c2…).
-- MAP (stops only): what the map shows within a few metres of the stop, nearest first,
+- MAP (stops only, when there is a map): what the map shows within a few metres of the stop, nearest first,
   each with an id (m1, m2…), its kind and how far it is.
 
 Return at most 3 guesses, most likely first. For each:
@@ -168,12 +168,13 @@ def _map_line(i: int, place) -> str:
 
 
 def build_content(subject: str, trip_text: str, history: list[HistoryCandidate], lines: list[ContextLine],
-                  map_places=()) -> str:
+                  map_places=None) -> str:
+    """`map_places` None means no map is configured: no MAP section at all, as before the map existed."""
     out = [f"SUBJECT: {subject}", "", f"TRIP: {trip_text}", "", "HISTORY:"]
     out += [f"{h.id} (match {h.score:.2f}): {h.evidence}" for h in history] or ["(none yet)"]
     out += ["", "CONTEXT:"]
     out += [f"{line.id} [{line.kind}] {line.text}" for line in lines] or ["(nothing)"]
-    if subject == "stop":
+    if subject == "stop" and map_places is not None:
         out += ["", "MAP:"]
         out += [_map_line(i, m) for i, m in enumerate(map_places, 1)] or ["(none)"]
     return "\n".join(out)
@@ -192,7 +193,7 @@ def _decode(response: Any) -> dict:
 
 
 def guess(subject: str, trip_text: str, history: list[HistoryCandidate], lines: list[ContextLine], claude, *,
-          model: str, timeout_s: float, map_places=()) -> tuple[list[Guess], list[dict]]:
+          model: str, timeout_s: float, map_places=None) -> tuple[list[Guess], list[dict]]:
     """(kept, dropped). Never raises: a failure is ([], [{purpose: None, reason}])."""
     try:
         content = build_content(subject, trip_text, history, lines, map_places)
@@ -204,7 +205,7 @@ def guess(subject: str, trip_text: str, history: list[HistoryCandidate], lines: 
         return [], [{"purpose": None, "reason": f"{type(exc).__name__}: {exc}"[:200]}]
 
     by_id = {h.id: h for h in history}
-    by_map = {f"m{i}": m for i, m in enumerate(map_places, 1)}
+    by_map = {f"m{i}": m for i, m in enumerate(map_places or (), 1)}
     line_ids = {line.id for line in lines}
     kept: list[Guess] = []
     dropped: list[dict] = []
@@ -228,6 +229,10 @@ def guess(subject: str, trip_text: str, history: list[HistoryCandidate], lines: 
             place = by_map.get(mid)
             if place is None:
                 dropped.append({"purpose": purpose, "reason": "unknown map id"})
+                continue
+            if place.group != "place":
+                # A street is context, never an answer: one tap would make it a place of yours.
+                dropped.append({"purpose": purpose, "reason": "cites an address"})
                 continue
             kept.append(Guess(purpose or place.label, likelihood, None, cites, destination or place.label,
                               mid, place.osm))
