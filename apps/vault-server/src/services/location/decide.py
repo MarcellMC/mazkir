@@ -41,13 +41,15 @@ class Decision:
 
 
 def decide(guesses: list[Guess], history: list[HistoryCandidate], *, known_place: Place | None,
-           may_ask: bool, questions_today: int) -> Decision:
+           may_ask: bool, questions_today: int, at_stop: bool = False) -> Decision:
+    """At a stop, a guess is only ever offered: a stop is named silently from a
+    place you have named, never from the model (2026-11-14)."""
     if known_place is not None and known_place.kind == PAUSE_KIND:
         return Decision("quiet", reason="pause spot")
 
     strong = [g for g in guesses if g.likelihood == "strong"]
     live = [g for g in guesses if g.likelihood in ("strong", "plausible")]
-    if len(strong) == 1 and len(live) == 1:
+    if not at_stop and len(strong) == 1 and len(live) == 1:
         only = strong[0]
         return Decision("name", only.purpose, only.destination, reason="one strong guess")
 

@@ -2,10 +2,12 @@
 
 The worker thread calls `handle_event` for each event, in order:
 - **LEFT**: an ongoing "Trip" block appears in /day.
-- **STOPPED**: name the stop silently, or ask once. A pause spot is skipped
-  with no model call.
-- **LEFT_STOP**: a stop never named gets one more guess, now that its length
-  is known. It is never asked about: you have already left.
+- **STOPPED**: a place you named names the stop silently; any other stop is
+  asked about once, with the model's guesses about the place as buttons and
+  "Later" to answer at home. A pause spot is skipped with no model call. The
+  trip's own activity never names a stop (2026-11-14).
+- **LEFT_STOP**: an unsent question is withdrawn. A stop you left unanswered
+  stays unnamed, with no block of its own.
 - **BACK_HOME**: the trip gets a purpose (or one question), its blocks are
   finalised, and the arrival message is queued.
 
@@ -20,7 +22,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -33,7 +35,9 @@ from src.services.location.guess import Guess, describe_trip, guess
 from src.services.location.history import load_confirmed, score_history
 from src.services.location.messages import arrival_receipt, question_receipt
 from src.services.location.model import TrackerEvent, Trip, safe_error
+from src.services.location.names import canonical, known_names, name_key
 from src.services.location.records import new_record
+from src.services.location.visits import earlier_visits
 from src.services.location.writer import apply_blocks, plan_blocks
 from src.tracing_setup import get_tracer
 
@@ -60,13 +64,25 @@ class TripDeps:
     chat_id: Callable[[], int | None]
     now: Callable[[], dt.datetime]
     log: Callable[[dict], None]
+    derived_dir: Path | None = None
 
 
 def _places(deps: TripDeps):
     return load_places(deps.places_path)
 
 
-def _guess(subject: str, trip: Trip, stop, deps: TripDeps, places) -> tuple[list[Guess], list[dict], list]:
+def _known(deps: TripDeps, confirmed) -> dict:
+    """The names you already use: your confirmed purposes, then your habits and their aliases."""
+    try:
+        habits = deps.vault.list_active_habits() if deps.vault is not None else []
+    except Exception:
+        logger.warning("location names: habits unavailable")
+        habits = []
+    return known_names([c.purpose for c in sorted(confirmed, key=lambda c: c.start, reverse=True)], habits)
+
+
+def _guess(subject: str, trip: Trip, stop, deps: TripDeps, places, *, trip_purpose: str | None = None,
+           visits: int = 0) -> tuple[list[Guess], list[dict], list]:
     now = deps.now()
     confirmed = load_confirmed(deps.labels_dir, deps.records, deps.events, deps.tz, now)
     history = score_history(trip, confirmed, now, deps.tz, stop=stop)
@@ -78,8 +94,23 @@ def _guess(subject: str, trip: Trip, stop, deps: TripDeps, places) -> tuple[list
         return [], [{"purpose": None, "reason": "no model configured"}], history
     lines = gather_context(now, vault=deps.vault, events=deps.events, conversations_dir=deps.conversations_dir,
                            chat_id=deps.chat_id(), tz=deps.tz)
-    kept, dropped = guess(subject, describe_trip(trip, stop, places, now, deps.tz), history, lines, deps.claude,
-                          model=deps.model, timeout_s=deps.timeout_s)
+    kept, dropped = guess(subject, describe_trip(trip, stop, places, now, deps.tz, visits=visits), history, lines,
+                          deps.claude, model=deps.model, timeout_s=deps.timeout_s)
+    known = _known(deps, confirmed)
+    kept = [replace(g, purpose=canonical(g.purpose, known)) for g in kept]
+    if subject == "stop":
+        # In code, not only in the prompt: on 14 Nov the model named both stops
+        # of a dog walk "Dog walking", from the message saying so.
+        trip_key = name_key(trip_purpose) if trip_purpose else None
+        about_place = []
+        for g in kept:
+            if not g.destination:
+                dropped.append({"purpose": g.purpose, "reason": "about the trip, not the place"})
+            elif trip_key is not None and name_key(g.purpose) == trip_key:
+                dropped.append({"purpose": g.purpose, "reason": "the trip's own purpose"})
+            else:
+                about_place.append(g)
+        kept = about_place
     return kept, dropped, history
 
 
@@ -131,17 +162,21 @@ def _on_stopped(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     if known is not None and known.kind == PAUSE_KIND:
         _log(deps, ev.kind, rec, sid, decision=Decision("quiet", reason="pause spot"))
         return
-    guesses, dropped, history = _guess("stop", trip, stop, deps, places)
+    visits = earlier_visits(stop, rec["id"], trip.left_at, deps.records, deps.derived_dir, deps.now())
+    info["visits"] = visits
+    guesses, dropped, history = _guess("stop", trip, stop, deps, places,
+                                       trip_purpose=(rec.get("purpose") or {}).get("name"), visits=visits)
     # A STOPPED handled long after it happened (the server was down, or the
     # inbox is replaying) is about a stop you have likely left: never ask then.
     fresh = (deps.now() - ev.ts) <= STALE_QUESTION
-    d = decide(guesses, history, known_place=known, may_ask=fresh, questions_today=_questions_today(deps))
+    d = decide(guesses, history, known_place=known, may_ask=fresh, questions_today=_questions_today(deps),
+               at_stop=True)
     if d.action == "name":
         info.update(status="named", name=d.name, place=d.destination or (known.name if known else None))
     elif d.action == "ask":
         info.update(status="asked", options=[o.to_dict() for o in d.options], asked_at=deps.now().isoformat())
         receipt = question_receipt(rec, sid, list(d.options), deps.now(), deps.tz,
-                                   place_name=known.name if known else None)
+                                   place_name=known.name if known else None, visits=visits)
         # Saved before queueing, and queued by key: a crash in between can
         # replay this event, but never send the question twice.
         deps.records.save(rec)
@@ -156,17 +191,10 @@ def question_key(trip_id: str, stop_id: str) -> str:
 def _on_left_stop(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     sid = ev.stop_id
     # A question no point carried to you before you left is not asked any more.
+    # Unanswered, it stays unnamed and gets no block (the user's rule): no
+    # second guess once you have left.
     deps.outbox.withdraw(question_key(rec["id"], sid))
-    info = _stop_info(rec, sid)
-    if info["status"] in ("named", "pause") or info.get("answered") or info.get("reguessed"):
-        return
-    info["reguessed"] = True
-    trip = Trip.from_dict(rec["trip"])
-    guesses, dropped, history = _guess("stop", trip, trip.stop(sid), deps, places)
-    d = decide(guesses, history, known_place=None, may_ask=False, questions_today=0)
-    if d.action == "name":
-        info.update(status="named", name=d.name, place=d.destination)
-    _log(deps, ev.kind, rec, sid, history, guesses, dropped, d)
+    _log(deps, ev.kind, rec, sid)
 
 
 def _name_from_your_block(rec: dict, deps: TripDeps) -> None:
@@ -259,6 +287,21 @@ def _handle(ev: TrackerEvent, deps: TripDeps) -> None:
     deps.records.save(rec)
 
 
+def defer_stop(trip_id: str, stop_id: str, deps: TripDeps) -> dict[str, Any]:
+    """"Later": the stop's question waits for the arrival message. Raises KeyError for an unknown trip or stop."""
+    with deps.records.lock_for(trip_id):
+        rec = deps.records.get(trip_id)
+        if rec is None or Trip.from_dict(rec["trip"]).stop(stop_id) is None:
+            raise KeyError(stop_id if rec else trip_id)
+        info = _stop_info(rec, stop_id)
+        if info["status"] in ("asked", "unnamed") and not info.get("answered"):
+            info["status"] = "later"
+        _refresh_arrival(rec, deps)
+        deps.records.save(rec)
+        _log(deps, "LATER", rec, stop_id)
+        return rec
+
+
 def apply_answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str | None, deps: TripDeps,
                  *, pause: bool = False) -> dict[str, Any]:
     """Your answer to a question about a stop or the whole trip. Raises KeyError for an unknown trip or stop."""
@@ -273,6 +316,10 @@ def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str |
         raise KeyError(trip_id)
     trip = Trip.from_dict(rec["trip"])
     conflict = None
+    if purpose:
+        # Your words, unless they are a name you already use spelled another way.
+        confirmed = load_confirmed(deps.labels_dir, deps.records, deps.events, deps.tz, deps.now())
+        purpose = canonical(purpose.strip(), _known(deps, confirmed))
     if stop_id is not None:
         stop = trip.stop(stop_id)
         if stop is None:

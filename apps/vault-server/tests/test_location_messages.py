@@ -32,9 +32,9 @@ def test_every_callback_fits_64_bytes():
 
 def test_stop_question_offers_pause_and_type():
     r = question_receipt(rec_with_stop(), "s1", [Option("Coffee"), Option("Sauna")], t(10, 10, 28), TZ)
-    assert [b["label"] for b in buttons(r)] == ["Coffee", "Sauna", "Just a pause", "✎ Something else"]
+    assert [b["label"] for b in buttons(r)] == ["Coffee", "Sauna", "Just a pause", "✎ Something else", "Later"]
     assert [b["data"] for b in buttons(r)] == ["trip:1a2b3c4d:s1:a0", "trip:1a2b3c4d:s1:a1",
-                                                "trip:1a2b3c4d:s1:p", "trip:1a2b3c4d:s1:t"]
+                                                "trip:1a2b3c4d:s1:p", "trip:1a2b3c4d:s1:t", "trip:1a2b3c4d:s1:l"]
     assert "since 10:24" in r["lines"][0]["text"] and "700 m from home" in r["lines"][0]["text"]
     assert r["open_question"].endswith("[trip 1a2b3c4d · stop s1]")
     assert r["undo"] is None and r["turn_id"] == "1a2b3c4d"

@@ -451,3 +451,27 @@ The labels grow by themselves: an approved or corrected trip block is a label. `
   - the new agent tool and the tool count;
   - an architecture note.
 - `docs/specs/2026-11-05-location-check-in-design.md`: a line under §5 pointing here.
+
+
+## Addendum 2026-11-14: stops after the first live walk
+
+The first live dog walk (15:56–16:46) named its stops at the local dog park and at Café Barzilay
+"Dog walking" and "Dog walk", gave each its own block and asked nothing. The guess came from the
+user's own "Dog walking" message and the habit being due, which bypassed the history-only
+destination filter, and the prompt's "a pause gets no guess" was not followed. Agreed fixes:
+
+1. **A stop is named after the place, never after the trip.** Code drops a stop guess with no
+   destination or equal to the trip's purpose. Only a place the user named names a stop silently;
+   every other stop is asked about once, with the remaining guesses as buttons. A stop left
+   unanswered stays unnamed and gets no block (no re-guess on LEFT_STOP).
+2. **A usual stop is recognised:** stopped within 50 m on 2 or more earlier trips in 30 days. The
+   question says "your usual stop (N earlier trips)" and the model is told, so it can offer a
+   guess such as "Dog park". Without map data that is still a guess, which is why it is asked.
+3. **`Later`** on a stop question moves it into the arrival message (`trip:<id>:<stop>:l`).
+4. **One name per activity:** a guess or an answer that means the same words as a confirmed
+   purpose (first) or a habit name or alias takes that name ("Dog walking" → "Dog walk").
+5. **Saying what you are doing mid-trip names the trip:** `list_events` carries a trip block's
+   `trip`, and the time-management skill calls `set_trip_purpose` for it without asking.
+
+Next: map data (OpenStreetMap places stored locally) to name places such as the dog park and
+Barzilay on their first visit.

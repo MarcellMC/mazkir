@@ -55,20 +55,33 @@ def _hm(ts: dt.datetime | None, zone: ZoneInfo) -> str:
     return ts.astimezone(zone).strftime("%H:%M") if ts else "…"
 
 
-def _question_text(trip: Trip, stop_id: str | None, place_name: str | None, now: dt.datetime, zone: ZoneInfo) -> str:
+USUAL_VISITS = 2
+
+
+def _question_text(trip: Trip, stop_id: str | None, place_name: str | None, now: dt.datetime, zone: ZoneInfo,
+                   visits: int = 0) -> str:
     if stop_id is None:
         return f"🚶 Trip {_hm(trip.left_at, zone)}–{_hm(trip.back_at, zone)}, {_metres(trip.distance_m)} — what was it?"
     stop = trip.stop(stop_id)
-    where = place_name or "a new place"
-    far = f"{_metres(stop.from_home_m)} from home, " if stop.from_home_m is not None else ""
-    return f"📍 You've been here since {_hm(stop.start, zone)} — {far}{where}. What's this?"
+    far = f"{_metres(stop.from_home_m)} from home" if stop.from_home_m is not None else ""
+    if stop.end is not None:
+        # Asked at home, about a stop you have left.
+        when = f"{_hm(stop.start, zone)}–{_hm(stop.end, zone)}"
+        return f"📍 Stop {when}" + (f", {far}" if far else "") + " — what was this?"
+    if visits >= USUAL_VISITS:
+        where = f"your usual stop ({visits} earlier trips)"
+    else:
+        where = place_name or "a new place"
+    return f"📍 You've been here since {_hm(stop.start, zone)} — " + (f"{far}, " if far else "") + f"{where}. What's this?"
 
 
-def _option_buttons(trip_id: str, line: str, options: list[Option], pause: bool) -> list[dict]:
+def _option_buttons(trip_id: str, line: str, options: list[Option], pause: bool, later: bool = False) -> list[dict]:
     buttons = [_button(o.name, f"trip:{trip_id}:{line}:a{i}") for i, o in enumerate(options[:3])]
     if pause:
         buttons.append(_button("Just a pause", f"trip:{trip_id}:{line}:p"))
     buttons.append(_button("✎ Something else", f"trip:{trip_id}:{line}:t"))
+    if later:
+        buttons.append(_button("Later", f"trip:{trip_id}:{line}:l"))
     return buttons
 
 
@@ -77,11 +90,14 @@ def _tag(trip_id: str, stop_id: str | None) -> str:
 
 
 def question_receipt(rec: dict, stop_id: str | None, options: list[Option], now: dt.datetime, tz: str,
-                     place_name: str | None = None) -> dict[str, Any]:
+                     place_name: str | None = None, visits: int = 0) -> dict[str, Any]:
     zone = ZoneInfo(tz)
     trip = Trip.from_dict(rec["trip"])
-    text = _question_text(trip, stop_id, place_name, now, zone)
-    line = _line(0, "?", "", text, _option_buttons(rec["id"], stop_id or "trip", options, pause=stop_id is not None),
+    text = _question_text(trip, stop_id, place_name, now, zone, visits)
+    # "Later" puts the question into the arrival message, so it is offered only while you are out.
+    later = stop_id is not None and not rec.get("closed")
+    line = _line(0, "?", "", text, _option_buttons(rec["id"], stop_id or "trip", options, pause=stop_id is not None,
+                                                   later=later),
                  status="question")
     return _receipt(rec["id"], [line], text + _tag(rec["id"], stop_id))
 
@@ -141,6 +157,12 @@ def arrival_receipt(rec: dict, events, tz: str) -> dict[str, Any]:
 
     lines: list[dict] = []
     open_question = None
+    for stop in trip.stops:
+        info = (rec.get("stops") or {}).get(stop.id) or {}
+        if info.get("status") == "later" and not info.get("answered"):
+            options = [Option.from_dict(o) for o in info.get("options") or []]
+            lines.append(_line(0, "?", "", _question_text(trip, stop.id, None, trip.back_at, zone),
+                               _option_buttons(rec["id"], stop.id, options, pause=True), status="question"))
     question = rec.get("trip_question")
     if question and not (rec.get("purpose") or {}).get("name"):
         options = [Option.from_dict(o) for o in question.get("options") or []]

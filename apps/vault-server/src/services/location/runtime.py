@@ -30,7 +30,7 @@ from src.services.fast_lane import places as places_mod
 from src.services.location.home import find_home
 from src.services.location.messages import arrival_receipt, notice_receipt, question_receipt
 from src.services.location.model import TrackerEvent, Trip, safe_error
-from src.services.location.pipeline import TripDeps, apply_answer, handle_event, options_for
+from src.services.location.pipeline import TripDeps, apply_answer, defer_stop, handle_event, options_for
 from src.services.location.raw import load_fixes, point_to_fix
 from src.services.location.writer import fragments
 from src.services.location.tracker import Params, Tracker
@@ -243,9 +243,22 @@ class LocationRuntime:
             q = question_receipt(rec, stop_id, options, self.deps.now(), self.deps.tz)
             out.update(toast="Type what it was — your next message is the answer.", open_question=q["open_question"])
             return out
+        if action == "l" and stop_id is not None:
+            if rec.get("closed"):
+                out["toast"] = "It's in the message from when you got home."
+                return out
+            defer_stop(trip_id, stop_id, self.deps)
+            out.update(toast="OK — I'll ask when you're home", receipt=_answered(rec, "Later", glyph="…"))
+            return out
+        # An answer given in the arrival message redraws that message, not a question.
+        at_home = bool(rec.get("closed"))
         if action == "p" and stop_id is not None:
             apply_answer(trip_id, stop_id, None, None, self.deps, pause=True)
-            out.update(toast="Just a pause — noted", receipt=_answered(rec, "Just a pause"))
+            out["toast"] = "Just a pause — noted"
+            if at_home:
+                out["rerender"] = True
+            else:
+                out["receipt"] = _answered(rec, "Just a pause")
             return out
         options = options_for(rec, line)
         index = int(action[1:]) if action.startswith("a") and action[1:].isdigit() else -1
@@ -257,7 +270,7 @@ class LocationRuntime:
         out["toast"] = f"✓ {chosen.name}"
         if result["conflict"]:
             out["toast"] += f" — is this a different {result['conflict']}?"
-        if stop_id is None:
+        if stop_id is None or at_home:
             out["rerender"] = True
         else:
             out["receipt"] = _answered(rec, chosen.name)
@@ -315,11 +328,11 @@ class LocationRuntime:
         return False
 
 
-def _answered(rec: dict, name: str) -> dict[str, Any]:
+def _answered(rec: dict, name: str, glyph: str = "✓") -> dict[str, Any]:
     """The question message once answered: what you said, no buttons."""
-    line = {"id": 0, "glyph": "✓", "when": "", "text": name, "detail": None, "sync": None, "reason": "",
+    line = {"id": 0, "glyph": glyph, "when": "", "text": name, "detail": None, "sync": None, "reason": "",
             "status": "answered", "buttons": []}
-    return {"turn_id": rec["id"], "lines": [line], "undo": None, "open_question": None, "text": f"✓ {name}"}
+    return {"turn_id": rec["id"], "lines": [line], "undo": None, "open_question": None, "text": f"{glyph} {name}"}
 
 
 def build_runtime(settings, *, agent, events, vault, claude, log) -> LocationRuntime:
@@ -331,6 +344,7 @@ def build_runtime(settings, *, agent, events, vault, claude, log) -> LocationRun
         model=settings.location_guess_model, timeout_s=settings.location_guess_timeout_s,
         boundary_hour=settings.fast_lane_day_boundary_hour, chat_id=lambda: None,
         now=lambda: dt.datetime.now(ZoneInfo(settings.vault_timezone)), log=log,
+        derived_dir=Path(settings.location_data_path) / "derived",
     )
     from src.services.location.outbox import Outbox
     from src.services.location.records import TripRecords

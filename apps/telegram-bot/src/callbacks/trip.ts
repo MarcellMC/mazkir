@@ -10,10 +10,10 @@ import { takeOpenQuestion, noteOpenQuestion } from "../state/open-question.js";
  *
  *  `trip:<trip>:<line>:<action>`: the line is a stop (`s1`), `trip` for a
  *  question about the whole trip, an arrival line number, or `all`; the
- *  action is an option (`a0`–`a2`), `p` just a pause, `t` type it, `ok`, `no`.
+ *  action is an option (`a0`–`a2`), `p` just a pause, `t` type it, `l` later (ask at home), `ok`, `no`.
  *  The server does the work and returns the redrawn message; ✎ is the day
  *  view's own `block:edit:…`. */
-export const TRIP_TAP = /^trip:([0-9a-f]{8}):([a-z0-9]{1,6}):(ok|no|p|t|a[0-2])$/;
+export const TRIP_TAP = /^trip:([0-9a-f]{8}):([a-z0-9]{1,6}):(ok|no|p|t|l|a[0-2])$/;
 
 const GONE = "That trip is gone.";
 const FAILED = "❌ That didn't work.";

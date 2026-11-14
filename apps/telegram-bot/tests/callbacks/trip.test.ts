@@ -39,6 +39,7 @@ describe("trip taps", () => {
     expect(TRIP_TAP.test("trip:1a2b3c4d:s1:a0")).toBe(true);
     expect(TRIP_TAP.test("trip:1a2b3c4d:all:ok")).toBe(true);
     expect(TRIP_TAP.test("trip:1a2b3c4d:trip:t")).toBe(true);
+    expect(TRIP_TAP.test("trip:1a2b3c4d:s1:l")).toBe(true);
     expect(TRIP_TAP.test("trip:../x:s1:ok")).toBe(false);
     expect(TRIP_TAP.test("trip:1a2b3c4d:s1:a9")).toBe(false);
   });
