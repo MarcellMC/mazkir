@@ -143,9 +143,11 @@ areas from ways and multipolygons). This is a new dependency in `pyproject.toml`
 
 `map_near(lat, lng, radius_m) -> list[MapPlace]`. It is pure, reads `index.sqlite`, and
 returns at most 8 results, ranked in this order:
-1. areas that **contain** the point, smallest first (the dog park before the park around
-   it);
-2. everything else, by distance from the point to the outline or point.
+1. areas of up to 1 ha that **contain** the point, smallest first (the dog park before the
+   park around it);
+2. everything else, by distance from the point to the outline or point. A larger area that
+   contains the point counts as 20 m away, so a café 10 m from the stop ranks ahead of the
+   campus or big park around it.
 
 The radius is the stop's spread plus 30 m, with a cap of 80 m. Addresses are returned only
 when no place is within the radius. Transit stops are indexed but **not returned** in this part: a stop at a
@@ -217,12 +219,12 @@ alone.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `LOCATION_MAP` | `off` | `on`: download, update and use the map. `off`: nothing in this design runs, and stops behave as now |
+| `LOCATION_MAP` | `on` (user, 2026-11-14: on from the start) | `on`: download, update and use the map. `off`: nothing in this design runs, and stops behave as now |
 | `LOCATION_MAP_URL` | the Geofabrik URL above | another region |
 | `LOCATION_MAP_MAX_AGE_DAYS` | `30` | how old the index may get before an update |
 
-`LOCATION_MAP=on` without `LOCATION_AWARENESS=on` downloads and builds the copy, but
-nothing reads it. The user can then run the script ahead of switching awareness on.
+The automatic update runs in the location clock, so with `LOCATION_AWARENESS=off` nothing is
+downloaded, whatever `LOCATION_MAP` says. The script works either way.
 
 ## 7. Privacy and logging
 
@@ -287,7 +289,9 @@ nothing reads it. The user can then run the script ahead of switching awareness 
 
 - **Update cadence:** monthly, automatic, checked daily. The user asked "when, how and how
   often" and did not object to monthly.
-- **The `LOCATION_MAP` switch,** default off, separate from awareness.
+- **The `LOCATION_MAP` switch,** separate from awareness; default on per the user.
+- **Containment ranking** limited to areas up to 1 ha; a larger containing area counts as 20 m
+  (a café beside the stop should not lose to the campus around it).
 - **Map places are buttons only**, never silent names (consistent with the 2026-11-14 rule).
 - **Lookup radius** of spread + 30 m, capped at 80 m; addresses only when no place is near.
 - **Hebrew names are shown as they are** when there is no English name.
