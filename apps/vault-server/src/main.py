@@ -68,9 +68,9 @@ async def _location_clock_loop(runtime, notifier: "TelegramNotifier", interval_s
                                map_updater=None) -> None:
     """The trip clock (trips spec §3): once a minute, notice what no point will carry.
 
-    A share that stopped sends no more points, so its "sharing stopped"
-    message cannot ride back on one: it is pushed here, to the share's chat.
-    It also starts the monthly map update (map spec §4.3), which checks once a
+    A share that stopped sends no more points, so the clock is what closes
+    its open stay; any notice it returns is pushed here, to the share's chat
+    (none today: "Location sharing stopped" was dropped on 2026-11-15). It also starts the monthly map update (map spec §4.3), which checks once a
     day and runs in its own thread.
     """
     import datetime as _dt

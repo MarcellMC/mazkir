@@ -61,16 +61,17 @@ def test_tracker_state_survives_a_restart(tmp_path):
     assert rt2.tracker.trip is not None and rt2.tracker.trip.id == rt.tracker.trip.id
 
 
-def test_share_stopped_notice_once(tmp_path):
+def test_a_stopped_share_sends_no_message(tmp_path):
+    """The owner asked not to be told sharing stopped (2026-11-15); the share still ends."""
     deps, _ = make_deps(tmp_path)
     rt = LocationRuntime(tmp_path / "loc", deps, synchronous=True)
     track = walk_out()
     for p in points(track):
         rt.feed(p)
     later = track.fixes[-1].ts + dt.timedelta(minutes=31)
-    notices = rt.tick(later)
-    assert [n["text"] for n in notices] == ["Location sharing stopped — share again to keep your day filling in"]
-    assert rt.tick(later + dt.timedelta(minutes=5)) == []
+    assert rt.tick(later) == []
+    assert [i["receipt"]["text"] for i in deps.outbox.serve()
+            if "sharing stopped" in i["receipt"]["text"].lower()] == []
 
 
 def test_home_is_found_and_announced(tmp_path):
