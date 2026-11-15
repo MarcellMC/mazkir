@@ -36,6 +36,9 @@ class DailyBlock(BaseModel):
     # vocabulary no longer contains (services/approval.py).
     state: str = "pending"
     habit_progress: str | None = None  # "1/2" when a daily_target is set
+    # Started and not yet ended (a trip's stop, an open block): drawn up to
+    # now, or to 24:00 on an earlier day, and carried from yesterday's file.
+    ongoing: bool = False
 
 
 class GapProposal(BaseModel):
@@ -265,6 +268,39 @@ def _build_incomplete(events: list[dict], date: str) -> list[DailyIncomplete]:
     return out
 
 
+ONGOING_MAX_HOURS = 12
+
+
+def _with_ongoing(events: list[dict], previous_day: list[dict], target: str, now: datetime) -> list[dict]:
+    """Open blocks still going on, drawn as ending now (2026-11-15).
+
+    A block with a start and no end that began at most `ONGOING_MAX_HOURS`
+    ago is still happening — a stop on a trip, a block opened by talking — so
+    it gets `now` as an end for drawing. One that began on the previous day
+    is carried into `target` from 00:00, since its row lives in the earlier
+    file. Anything older is more likely an end you forgot to give, and stays
+    under "Needs a time". The stored events are never changed: these are copies.
+    """
+    def started(e: dict) -> datetime | None:
+        if e.get("end_time") or not e.get("start_time") or resolve_state(e) == "dismissed":
+            return None
+        try:
+            start = datetime.fromisoformat(e["start_time"])
+        except (TypeError, ValueError):
+            return None
+        start = tz.localize(start) if start.tzinfo is None else start
+        age = now - start
+        return start if timedelta(0) <= age <= timedelta(hours=ONGOING_MAX_HOURS) else None
+
+    end = now.astimezone(tz).strftime("%Y-%m-%dT%H:%M:%S")
+    out = [({**e, "end_time": end, "_ongoing": True} if started(e) else e) for e in events]
+    for e in previous_day:
+        start = started(e)
+        if start is not None and start.astimezone(tz).date().isoformat() < target <= end[:10]:
+            out.append({**e, "start_time": f"{target}T00:00:00", "end_time": end, "_ongoing": True})
+    return out
+
+
 def _build_blocks_and_coverage(
     events: list[dict], date: str, elapsed_minutes: int
 ) -> tuple[list[DailyBlock], list[DailyGap], DayCoverage]:
@@ -314,6 +350,7 @@ def _build_blocks_and_coverage(
             habit_progress=(
                 f"{habit.get('completions_today', 0)}/{target}" if target else None
             ),
+            ongoing=bool(e.get("_ongoing")),
         ))
         all_intervals.append((start, end))
         if state == "approved":
@@ -438,14 +475,22 @@ async def get_daily(date: dt_date | None = None):
     else:
         elapsed = now.hour * 60 + now.minute
 
-    blocks, gaps, coverage = _build_blocks_and_coverage(events, target, elapsed)
-    incomplete = _build_incomplete(events, target)
-
     # Gap proposals read the persisted store for previous dates. Local file
     # reads, no network — and a failure here must cost the proposals only,
     # never the day: an unreadable history is not a reason to show no blocks.
     from src.main import get_events as get_events_svc
     events_svc = get_events_svc()
+
+    previous_day: list[dict] = []
+    if events_svc is not None:
+        try:
+            previous_day = events_svc.get_events((target_date - timedelta(days=1)).isoformat())
+        except Exception:
+            logger.warning("GET /daily?date=%s: reading the day before failed", target, exc_info=True)
+    events = _with_ongoing(events, previous_day, target, now)
+
+    blocks, gaps, coverage = _build_blocks_and_coverage(events, target, elapsed)
+    incomplete = _build_incomplete(events, target)
     if events_svc is not None:
         try:
             gaps = _decorate_gaps(gaps, _load_history(events_svc, target_date))
@@ -578,8 +623,9 @@ async def approve_all(date: dt_date):
     failed: list[dict] = []
 
     for block in day.blocks:
-        if block.state != "pending":
+        if block.state != "pending" or block.ongoing:
             continue
+        # Still going on: there is no end to confirm yet.
         # A block that has not happened cannot be confirmed. The /day view
         # gives it no buttons for the same reason (spec §5.1's `◌`), so
         # sweeping it here would confirm something the surface says you can't.

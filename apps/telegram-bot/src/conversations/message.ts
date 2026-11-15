@@ -18,7 +18,7 @@ import {
 import { sendRich, isNotModifiedError } from "../bot-utils/send-rich.js";
 import { buildReceiptRich } from "../formatters/receipt-rich.js";
 import { logger } from "../logger.js";
-import { repliedToText } from "../bot-utils/rich-text.js";
+import { repliedToBlock, repliedToText } from "../bot-utils/rich-text.js";
 import { buildConfirmationKeyboard } from "../keyboards/confirmation.js";
 import {
   getPendingConfirmation,
@@ -149,7 +149,17 @@ export function buildMessagePayload(msg: Message, chatId: number) {
     };
   }
 
-  const selected_date = getSelectedDate(chatId);
+  // A reply to a block's edit view names that block and its day, so an edit
+  // lands on it rather than on whatever block today has a similar name.
+  const block = msg.reply_to_message ? repliedToBlock(msg) : undefined;
+  if (block && reply_to) {
+    reply_to = {
+      ...reply_to,
+      text: `${reply_to.text}\n\n[That message is the edit view of block event_id ${block.eventId} `
+        + `on ${block.date}. Edit that block by event_id, not by name.]`,
+    };
+  }
+  const selected_date = block?.date ?? getSelectedDate(chatId);
 
   // Stamped here rather than at the call site: this function is the only
   // place that knows whether the reply context was the user's own or the

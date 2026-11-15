@@ -28,6 +28,9 @@ export interface DailyBlock {
    *  inventing a narrower one that would drift from it. */
   state: "approved" | "pending" | "dismissed";
   habit_progress: string | null;  // "1/2" when a daily_target is set
+  /** Started and not yet ended (a trip's stop, an open block): `end` is now,
+   *  or 24:00 on the day it began. Nothing to confirm until it ends. */
+  ongoing?: boolean;
 }
 
 /** What probably filled a gap. A question, not an assertion: the row renders

@@ -848,3 +848,29 @@ describe("editing an approved block", () => {
     expect(html_str).not.toContain("approve all");
   });
 });
+
+describe("a block still going on (2026-11-15)", () => {
+  it("runs to now on today, with no buttons, and is not counted by approve-all", () => {
+    const out = html(s5day({
+      date: "2026-11-15",
+      coverage: { covered_minutes: 146, unaccounted_minutes: 0, elapsed_minutes: 146,
+                  confirmed_minutes: 0, pending_minutes: 146 },
+      blocks: [s5block({ id: "evt_bar", start: "00:00", end: "02:26", title: "Chaser bar",
+                         source: "manual", ongoing: true })],
+    }));
+    expect(out).toContain("● 00:00–now");
+    expect(out).toContain("ongoing");
+    expect(out).not.toMatch(/data="block:(approve|dismiss|edit):2026-11-15:evt_bar"/);
+    expect(out).not.toContain("approve all");
+  });
+
+  it("runs on past midnight on its first day", () => {
+    const out = html(s5day({
+      date: "2026-11-14",
+      coverage: { covered_minutes: 3, unaccounted_minutes: 0, elapsed_minutes: 1440,
+                  confirmed_minutes: 0, pending_minutes: 3 },
+      blocks: [s5block({ start: "23:57", end: "24:00", title: "Chaser bar", source: "manual", ongoing: true })],
+    }));
+    expect(out).toContain("● 23:57–…");
+  });
+});

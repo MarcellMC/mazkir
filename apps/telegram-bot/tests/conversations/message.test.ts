@@ -600,3 +600,45 @@ describe("an unsaved nudge travels with the next message", () => {
     expect(payload?.reply_to?.text).toContain("Unsaved time edit");
   });
 });
+
+describe("replying to a block's edit view", () => {
+  // 2026-11-15 03:03: "Set block name to 'Chaser bar'", replying to the edit
+  // view of the 14th's half of the stay, renamed a block on the 15th instead —
+  // the server only had the name to go on and searched today.
+  const editView = {
+    message_id: 77,
+    date: 1763168000,
+    chat: { id: 123, type: "private" },
+    from: { id: 42, is_bot: true, first_name: "Mazkir" },
+    rich_message: { blocks: [
+      { type: "heading", size: 2, text: "Went to Chaser bar" },
+      { type: "paragraph", text: "23:57 – 23:59 · 2m · manual" },
+      { type: "buttons", align: "center", buttons: [
+        { type: "callback", text: "✓ save", callback_data: "adjsave:2026-11-14:evt_fbc9e6e1:0:0" },
+        { type: "callback", text: "← back", callback_data: "day:2026-11-14" },
+      ] },
+    ] },
+  };
+
+  it("names the block and its day, so the agent edits that one", () => {
+    const payload = buildMessagePayload(
+      { text: "Rename to Chaser bar", reply_to_message: editView } as never, 123,
+    );
+    expect(payload.reply_to?.text).toContain("Went to Chaser bar");
+    expect(payload.reply_to?.text).toContain("event_id evt_fbc9e6e1");
+    expect(payload.reply_to?.text).toContain("2026-11-14");
+    expect(payload.selected_date).toBe("2026-11-14");
+  });
+
+  it("adds nothing to a reply to any other rich message", () => {
+    const payload = buildMessagePayload({
+      text: "ok",
+      reply_to_message: { ...editView, rich_message: { blocks: [
+        { type: "paragraph", text: "Hello" },
+        { type: "buttons", buttons: [{ type: "callback", text: "x", callback_data: "day:2026-11-14" }] },
+      ] } },
+    } as never, 123);
+    expect(payload.reply_to?.text).toBe("Hello");
+    expect(payload.selected_date).toBeUndefined();
+  });
+});

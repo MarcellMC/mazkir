@@ -111,3 +111,28 @@ export function repliedToText(msg: Message): string {
   if (rich?.blocks) return blocksToPlain(rich.blocks).replace(/\n{3,}/g, "\n\n").trim();
   return "";
 }
+
+/** The block a reply is about, when it answers that block's edit view.
+ *
+ *  The edit view's Save button carries `adjsave:<date>:<event id>:…`, and
+ *  Telegram sends the replied-to message's buttons back with it — so the
+ *  block is known exactly, with no state kept and nothing lost on a restart.
+ *  Without it the server had only the name to go on: on 2026-11-15 a rename
+ *  aimed at the 14th's half of a night out landed on a similarly named block
+ *  on the 15th, twice. */
+export function repliedToBlock(msg: Message): { date: string; eventId: string } | undefined {
+  const rich = (msg.reply_to_message as { rich_message?: unknown } | undefined)?.rich_message;
+  let found: { date: string; eventId: string } | undefined;
+  const walk = (node: unknown): void => {
+    if (found || node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    const data = (node as { callback_data?: unknown }).callback_data;
+    if (typeof data === "string") {
+      const m = /^adjsave:(\d{4}-\d{2}-\d{2}):([^:]+):/.exec(data);
+      if (m) { found = { date: m[1]!, eventId: m[2]! }; return; }
+    }
+    Object.values(node).forEach(walk);
+  };
+  walk(rich);
+  return found;
+}
