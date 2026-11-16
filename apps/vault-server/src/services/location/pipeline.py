@@ -36,7 +36,7 @@ from src.services.location.history import load_confirmed, score_history
 from src.services.location.map_lookup import map_area, map_near
 from src.services.location.messages import arrival_receipt, question_receipt
 from src.services.location.model import TrackerEvent, Trip, safe_error
-from src.services.location.names import canonical, known_names, name_key
+from src.services.location.names import canonical, known_names, name_key, title_for
 from src.services.location.records import new_record
 from src.services.location.visits import earlier_visits
 from src.services.location.writer import apply_blocks, plan_blocks
@@ -357,7 +357,7 @@ def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str |
     if purpose:
         # Your words, unless they are a name you already use spelled another way.
         confirmed = load_confirmed(deps.labels_dir, deps.records, deps.events, deps.tz, deps.now())
-        purpose = canonical(purpose.strip(), _known(deps, confirmed))
+        purpose = canonical(title_for(purpose.strip(), place), _known(deps, confirmed))
     if stop_id is not None:
         stop = trip.stop(stop_id)
         if stop is None:

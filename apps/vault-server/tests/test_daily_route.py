@@ -211,7 +211,7 @@ class TestDailyBlocks:
 
         assert set(DailyBlock.model_fields) == {
             "id", "start", "end", "title", "source", "type", "completed",
-            "activity", "category", "state", "habit_progress",
+            "activity", "category", "state", "habit_progress", "ongoing",
         }
 
     def test_response_model_replaces_schedule_with_blocks(self):

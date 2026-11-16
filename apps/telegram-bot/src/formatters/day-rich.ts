@@ -106,9 +106,16 @@ function blockRow(b: DailyBlock, ahead: boolean, date: string): string {
   const glyph = ahead
     ? GLYPH_AHEAD
     : b.state === "approved" ? GLYPH_CONFIRMED : GLYPH_PENDING;
-  const time = `<td>${glyph} ${b.start}–${b.end}</td>`;
   const title = `<td>${escapeHtml(b.title)}</td>`;
   const marker = b.habit_progress ? escapeHtml(b.habit_progress) : facetLabel(b);
+
+  // Still going on: it runs to now (or on past midnight on the day it began),
+  // and there is nothing to confirm or adjust until it ends.
+  if (b.ongoing) {
+    const end = b.end === "24:00" ? "…" : "now";
+    return `<tr><td>${glyph} ${b.start}–${end}</td>${title}<td>ongoing</td></tr>`;
+  }
+  const time = `<td>${glyph} ${b.start}–${b.end}</td>`;
 
   // A still-ahead block gets no controls: it has not happened, so there is
   // nothing to confirm. That is what the `◌` is explaining.
@@ -326,7 +333,7 @@ export function buildDayRich(data: DailyResponse): InputRichMessage<InputFile> {
   // approve-all skips it server-side too.
   const pendingCount =
     data.blocks.filter(
-      (b) => b.state === "pending" && toMinutes(b.start) < elapsedMinutes,
+      (b) => b.state === "pending" && !b.ongoing && toMinutes(b.start) < elapsedMinutes,
     ).length +
     data.gaps.filter((g) => g.proposal !== null).length;
   if (pendingCount > 0) {

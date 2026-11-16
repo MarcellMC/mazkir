@@ -221,3 +221,21 @@ def test_the_decision_log_still_has_no_coordinates(tmp_path):
     rec = run(deps, clock, events_for(walk_with_a_stop()))
     lat = f"{rec['trip']['stops'][0]['lat']:.4f}"
     assert lat not in json.dumps(logs)
+
+
+def test_an_answer_saying_where_you_went_names_the_stop_after_the_place(tmp_path):     # 2026-11-15
+    deps, clock = make_deps(tmp_path)
+    rec = run(deps, clock, events_for(walk_with_a_stop())[:2])
+    assert rec["stops"]["s1"]["status"] == "asked"
+    apply_answer("1a2b3c4d", "s1", "Went to Chaser bar", "Chaser bar", deps)
+    assert deps.records.get("1a2b3c4d")["stops"]["s1"]["name"] == "Chaser bar"
+
+
+def test_a_purpose_that_says_more_than_the_place_is_kept(tmp_path):
+    from src.services.location.names import title_for
+
+    assert title_for("Went to Chaser bar", "Chaser bar") == "Chaser bar"
+    assert title_for("at chaser bar", "Chaser bar") == "Chaser bar"
+    assert title_for("I'm at Chaser bar", "Chaser bar") == "Chaser bar"
+    assert title_for("Drinks with Alex at Chaser bar", "Chaser bar") == "Drinks with Alex at Chaser bar"
+    assert title_for("Went to Chaser bar", None) == "Went to Chaser bar"

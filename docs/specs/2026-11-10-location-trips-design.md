@@ -242,7 +242,7 @@ A gap of over 10 minutes between points inside a share is **missing data**.
 
 - If the points on both sides of the gap are at the same stay, the stay continues, with lower confidence.
 - If they are apart, a trip happened inside the gap. It starts at the last point before it, and the block is marked `start_precision: "before"`, so the message says "left before 18:35". 8 Nov evening is this case.
-- No points for 30 minutes means the share has probably ended. The trip clock closes the open stay at its last point and sends "Location sharing stopped — share again to keep your day filling in", once.
+- No points for 30 minutes means the share has probably ended. The trip clock closes the open stay at its last point. (It also sent "Location sharing stopped — share again to keep your day filling in", once, until 2026-11-15, when the owner asked for it to go.)
 
 ---
 

@@ -478,7 +478,9 @@ class AgentService:
                         "properties": {
                             "trip_id": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
                             "stop_id": {"type": "string", "description": "s1, s2… — omit for the whole trip"},
-                            "purpose": {"type": "string", "description": "What it was, as the user would log it"},
+                            "purpose": {"type": "string", "description": (
+                                "The block's title, as the user would log it — a short name, not their "
+                                "sentence: 'Went to Chaser bar' is 'Chaser bar'; 'Drinks with Alex' stays")},
                             "place": {"type": "string", "description": "The place's name, when the answer names one"},
                             "_confidence": {"type": "number"},
                             "_reasoning": {"type": "string"},
@@ -1150,7 +1152,8 @@ class AgentService:
                                 "description": (
                                     "Name the block instead of its ID — 'the gym block', "
                                     "'dog walk'. Searched across the day being viewed and "
-                                    "today. Use this OR event_id."
+                                    "today. Use this OR event_id; when the message you are "
+                                    "answering names an event_id, use that instead."
                                 ),
                             },
                             "date": {
@@ -1237,7 +1240,8 @@ class AgentService:
                                 "description": (
                                     "Name the block instead of its ID — 'the gym block', "
                                     "'dog walk'. Searched across the day being viewed and "
-                                    "today. Use this OR event_id."
+                                    "today. Use this OR event_id; when the message you are "
+                                    "answering names an event_id, use that instead."
                                 ),
                             },
                             "date": {
@@ -3659,6 +3663,11 @@ class AgentService:
             return err(ErrorCode.PATH_NOT_FOUND, result["error"], details={"event_id": event_id})
 
         stored_date = result.get("date", current_date)
+        fragments = [] if result.get("moved_from") else self._update_fragments(
+            stored_date, event_id, result.get("event") or {}, updates, user_set_fields,
+            params.get("revert_fields"), defer_sync=bool(fast.get("defer_calendar_sync")))
+        if fragments:
+            result["fragments_updated"] = fragments
 
         # Push the edit upstream. The ledger holding the change is only half
         # of it: an un-propagated source value gets merged back over the
@@ -3704,6 +3713,51 @@ class AgentService:
                     ),
                 }
         return ok(result, items=items)
+
+    # What a block *is*, as opposed to when its piece of the day is: shared by
+    # every fragment of a block split at midnight.
+    _SHARED_FRAGMENT_FIELDS = ("name", "activity", "location")
+
+    def _update_fragments(self, date: str, event_id: str, event: dict, updates: dict,
+                          user_set_fields: list[str], revert_fields: list[str] | None,
+                          defer_sync: bool) -> list[str]:
+        """Carry a rename to the other halves of a block split at midnight.
+
+        `create_event` splits a cross-midnight block into one row per day
+        sharing a `logical_id`. To the user it is one block, so a name,
+        activity or place edit on either half applies to all of them
+        (2026-11-15: renaming the 14th's half of a night at a bar left the
+        15th's half under its old name). Times stay per fragment.
+        """
+        import datetime as _dt
+
+        logical_id = event.get("logical_id")
+        shared = {k: v for k, v in updates.items() if k in self._SHARED_FRAGMENT_FIELDS}
+        reverts = [f for f in (revert_fields or []) if f in self._SHARED_FRAGMENT_FIELDS]
+        if not logical_id or not (shared or reverts):
+            return []
+        try:
+            day = _dt.date.fromisoformat(date)
+        except ValueError:
+            return []
+        done: list[str] = []
+        for other in (day - _dt.timedelta(days=1), day + _dt.timedelta(days=1)):
+            other_date = other.isoformat()
+            for e in self.events.get_events(other_date):
+                if e.get("logical_id") != logical_id or e.get("id") == event_id:
+                    continue
+                res = self.events.update_event(
+                    date=other_date, event_id=e["id"], updates=shared,
+                    user_set_fields=[f for f in user_set_fields if f in shared],
+                    revert_fields=reverts or None,
+                )
+                if "error" in res:
+                    continue
+                done.append(e["id"])
+                if not defer_sync:
+                    from src.services.calendar_push import sync_block
+                    sync_block(self.calendar, self.events, other_date, e["id"])
+        return done
 
     def _tool_delete_event(self, params: dict) -> dict:
         if not self.events:

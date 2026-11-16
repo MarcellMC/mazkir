@@ -47,3 +47,20 @@ def canonical(name: str | None, known: dict[tuple[str, ...], str]) -> str | None
     if not name:
         return name
     return known.get(name_key(name), name)
+
+
+_WENT = re.compile(r"^(?:i\s+|i'm\s+|im\s+)?(?:went|go|going|been|was|am|is|stopped|stopping)?\s*(?:to|at|in|by)\s+(.+?)[.!]?$",
+                   re.IGNORECASE)
+
+
+def title_for(purpose: str | None, place: str | None) -> str | None:
+    """A block's title from an answer: "Went to Chaser bar" names the place, "Chaser bar".
+
+    Only a sentence that says nothing but where you went is shortened; one
+    that adds anything ("Drinks with Alex at Chaser bar") is kept as written
+    (2026-11-15: the agent passed the whole sentence through as the name).
+    """
+    if not purpose or not place:
+        return purpose
+    m = _WENT.match(purpose.strip())
+    return place if m and name_key(m.group(1)) == name_key(place) else purpose

@@ -7,7 +7,7 @@
   An event is written to `inbox.json` before it is queued and removed only
   once handled, so a restart in between loses nothing.
 - `tick(now)`, every 60 s from the lifespan loop, notices a share that
-  stopped (no point will carry that message) and learns home.
+  stopped (closing its stay, silently) and learns home.
 
 `inbox.json` is a file of its own rather than a key in each trip record: the
 worker holds a record for the seconds a model call takes, and an event queued
@@ -37,7 +37,6 @@ from src.services.location.tracker import Params, Tracker
 
 logger = logging.getLogger(__name__)
 
-SHARE_STOPPED = "Location sharing stopped — share again to keep your day filling in"
 HOME_FOUND = "I found home — trips from here will fill your day."
 HOME_DAYS = 14
 
@@ -178,8 +177,9 @@ class LocationRuntime:
             queued = [(self._inbox_add(ev), ev) for ev in events]
         for seq, ev in queued:
             self._dispatch(seq, ev)
-        if any(ev.kind == "SHARE_ENDED" for ev in events):
-            notices.append(notice_receipt(SHARE_STOPPED))
+        # A share that stops still closes the open stay (SHARE_ENDED), but
+        # says nothing: the owner did not want "Location sharing stopped"
+        # (2026-11-15). The list stays so the clock can push a notice again.
         return notices
 
     def _maybe_find_home(self, now: dt.datetime) -> None:
