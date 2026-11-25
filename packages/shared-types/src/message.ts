@@ -64,6 +64,8 @@ export interface MessageResponse {
   confirmation_choices?: { value: string; label: string }[] | null;
   /** Present when the fast lane acted (FAST_LANE_MODE=on). */
   receipt?: Receipt | null;
+  /** Receipts for trips the agent edited this turn, sent under the reply. */
+  trip_receipts?: Receipt[];
   /** Set when the fast lane is on. "in_flight": the same message_id is still
    *  being handled, and nothing ran for this delivery. */
   route?: "fast" | "mixed" | "fallthrough" | "router_fallback" | "error" | "in_flight";

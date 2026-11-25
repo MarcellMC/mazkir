@@ -241,7 +241,16 @@ export async function sendFinal(
   if (!receiptSaysItAll && response.response) {
     await sendRich(ctx, { markdown: response.response }, confirmExtra(response));
   }
-  if (response.receipt?.open_question) {
+  // Trip receipts (an edit to a trip) ride under the reply, drawn as the
+  // trip notify messages are; taps route through callbacks/trip.ts.
+  let tripQuestion: string | null = null;
+  for (const tripReceipt of response.trip_receipts ?? []) {
+    await sendRich(ctx, buildReceiptRich(tripReceipt));
+    if (tripReceipt.open_question) tripQuestion = tripReceipt.open_question;
+  }
+  if (tripQuestion) {
+    noteOpenQuestion(chatId, tripQuestion);
+  } else if (response.receipt?.open_question) {
     noteOpenQuestion(chatId, response.receipt.open_question);
   }
 }
