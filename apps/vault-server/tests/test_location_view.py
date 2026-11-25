@@ -183,8 +183,9 @@ def visit_deps(tmp_path, spans, place=(0.0, 0.0), accuracy=10.0):
         k = a
         while k <= b:
             ts = base + dt.timedelta(minutes=k)
+            acc = accuracy[k % len(accuracy)] if isinstance(accuracy, (list, tuple)) else accuracy
             append_point(tmp_path / "loc", {"source": "telegram", "kind": "live", "ts": ts, "lat": lat, "lng": lng,
-                                             "accuracy_m": accuracy}, TZ)
+                                             "accuracy_m": acc}, TZ)
             k += 1
     handles = handles_for(tmp_path)
     handles.anchor(CHAT, "location:7", lat, lng)
@@ -206,17 +207,35 @@ def test_a_two_minute_stay_is_no_visit(tmp_path):
     out = find_visit(deps, handles, CHAT, "location:7", date="2026-11-14")
     assert out["visits"] == []
     assert out["closest"]["distance_m"] == 0                          # says how close it came
+    assert_clean(out)
 
 
 def test_a_silence_over_ten_minutes_splits(tmp_path):
     deps, handles = visit_deps(tmp_path, [(0, 4), (20, 24)])
-    assert len(find_visit(deps, handles, CHAT, "location:7", date="2026-11-14")["visits"]) == 2
+    out = find_visit(deps, handles, CHAT, "location:7", date="2026-11-14")
+    assert len(out["visits"]) == 2
+    assert_clean(out)
 
 
 def test_poor_accuracy_is_poor_quality(tmp_path):
     deps, handles = visit_deps(tmp_path, [(0, 6)], accuracy=45.0)
-    [v] = find_visit(deps, handles, CHAT, "location:7", date="2026-11-14")["visits"]
+    out = find_visit(deps, handles, CHAT, "location:7", date="2026-11-14")
+    [v] = out["visits"]
     assert v["quality"] == "poor"
+    assert_clean(out)
+
+
+def test_quality_is_good_when_half_the_points_are_good(tmp_path):
+    # accuracy alternates 10 / 45 m: exactly half are <= 30 m
+    deps, handles = visit_deps(tmp_path, [(0, 7)], accuracy=[10.0, 45.0])
+    out = find_visit(deps, handles, CHAT, "location:7", date="2026-11-14")
+    assert out["visits"][0]["quality"] == "good"
+    assert_clean(out)
+    # one good point in four: poor
+    deps, handles = visit_deps(tmp_path / "b", [(0, 7)], accuracy=[10.0, 45.0, 45.0, 45.0])
+    out = find_visit(deps, handles, CHAT, "location:7", date="2026-11-14")
+    assert out["visits"][0]["quality"] == "poor"
+    assert_clean(out)
 
 
 def test_no_visit_reports_the_closest_approach(tmp_path):
@@ -244,3 +263,12 @@ def test_unknown_ref_is_search_again(tmp_path):
     deps, _ = closed_trip(tmp_path)
     with pytest.raises(KeyError, match="search again"):
         find_visit(deps, handles_for(tmp_path), CHAT, "m99", trip_id=TRIP)
+
+
+def test_no_fixes_at_all_returns_a_clean_empty_result(tmp_path):
+    deps, _ = closed_trip(tmp_path)
+    handles = handles_for(tmp_path)
+    handles.anchor(CHAT, "location:3", *at(500, 0))
+    out = find_visit(deps, handles, CHAT, "location:3", date="2026-11-20")
+    assert out == {"visits": [], "closest": None}
+    assert_clean(out)
