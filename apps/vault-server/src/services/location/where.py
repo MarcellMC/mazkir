@@ -31,7 +31,8 @@ from src.services.geo import haversine_m
 from src.services.location.guess import _metres
 from src.services.location.handles import Handles
 from src.services.location.map_lookup import kind_words, map_area, map_near, nearest_address
-from src.services.location.model import Stop, Trip
+from src.services.location.edits import trip_of
+from src.services.location.model import Stop
 
 LOOKUP_MIN_M = 40.0
 STOP_NEAR_M = 75.0       # a location you send is that stop only this close to it (or within its accuracy)
@@ -126,7 +127,7 @@ def _stop_at(records: Any, at: dt.datetime | None) -> tuple[str, Stop, str | Non
         return None
     for rec in records.all():
         try:
-            trip = Trip.from_dict(rec["trip"])
+            trip = trip_of(rec)
         except (KeyError, TypeError, ValueError):
             continue
         if trip.left_at > at or (trip.back_at is not None and trip.back_at < at):

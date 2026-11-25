@@ -33,6 +33,7 @@ from src.services.fast_lane.actions import STATED
 from src.services.fast_lane.places import Place, match_place
 from src.services.location.guess import _metres
 from src.services.photo_notes import embed_photos_in_note
+from src.services.location.edits import trip_of
 from src.services.location.model import Stop, Trip
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,7 @@ def _stop_spec(stop: Stop, name: str, place: str | None, places: list[Place]) ->
 
 
 def plan_blocks(rec: dict[str, Any], places: list[Place]) -> list[BlockSpec]:
-    trip = Trip.from_dict(rec["trip"])
+    trip = trip_of(rec)
     info = rec.get("stops") or {}
     purpose = rec.get("purpose") or None
     named = [(s, info[s.id]) for s in trip.stops if (info.get(s.id) or {}).get("status") == "named"]

@@ -28,9 +28,10 @@ from zoneinfo import ZoneInfo
 
 from src.services.fast_lane import places as places_mod
 from src.services.approval import resolve_state
+from src.services.location.edits import CHANGED_STOP, stop_changed, trip_of
 from src.services.location.home import find_home
 from src.services.location.messages import arrival_receipt, notice_receipt, question_receipt
-from src.services.location.model import TrackerEvent, Trip, safe_error
+from src.services.location.model import TrackerEvent, safe_error
 from src.services.location.pipeline import TripDeps, apply_answer, defer_stop, handle_event, options_for
 from src.services.location.raw import load_fixes, point_to_fix
 from src.services.location.writer import fragments
@@ -240,7 +241,12 @@ class LocationRuntime:
             return self._approve(rec, line, action, out)
 
         stop_id = None if line == "trip" else line
-        if stop_id is not None and Trip.from_dict(rec["trip"]).stop(stop_id) is None:
+        if stop_id is not None and trip_of(rec).stop(stop_id) is None:
+            if stop_changed(rec, stop_id):
+                # Split, merged or removed since this message was drawn: its
+                # buttons address a stop that is no longer one.
+                out["toast"] = CHANGED_STOP
+                return out
             raise KeyError(stop_id)
         if action == "t":
             options = options_for(rec, line)
@@ -362,6 +368,7 @@ def build_runtime(settings, *, agent, events, vault, claude, log) -> LocationRun
         boundary_hour=settings.fast_lane_day_boundary_hour, chat_id=lambda: None,
         now=lambda: dt.datetime.now(ZoneInfo(settings.vault_timezone)), log=log,
         derived_dir=Path(settings.location_data_path) / "derived",
+        raw_dir=Path(settings.location_data_path) / "raw",
     )
     if settings.location_map == "on":
         from src.services.location.map_update import index_path

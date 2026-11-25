@@ -31,6 +31,7 @@ from opentelemetry.trace import Status, StatusCode
 from src.services.fast_lane.places import PAUSE_KIND, add_pause_spot, learn_place, load_places, nearest
 from src.services.location.context import gather_context
 from src.services.location.decide import Decision, Option, decide
+from src.services.location.edits import trip_of
 from src.services.location.guess import Guess, describe_trip, guess
 from src.services.location.history import load_confirmed, score_history
 from src.services.location.map_lookup import map_area, map_near
@@ -68,6 +69,7 @@ class TripDeps:
     log: Callable[[dict], None]
     derived_dir: Path | None = None
     map_index: Path | None = None      # the local map copy (map spec); None: no map, stops asked as before
+    raw_dir: Path | None = None        # data/locations/raw: the points an edit's stop centre comes from
 
 
 def _places(deps: TripDeps):
@@ -147,15 +149,19 @@ def _on_stopped(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     sid = ev.stop_id
     if sid in rec["stops"]:
         return                                     # handled already: never ask twice
-    trip = Trip.from_dict(rec["trip"])
-    stop = trip.stop(sid)
+    # The place id is written on the tracker's own trip, never on the overlay:
+    # writing trip_of's result back would apply every edit twice.
+    base = Trip.from_dict(rec["trip"])
+    base_stop = base.stop(sid)
     info = _stop_info(rec, sid)
     # From places.json as it is now, not the tracker's start-up copy: a pause
     # spot or a place learned an hour ago counts at once.
-    known = nearest(stop.lat, stop.lng, [p for p in places if p.id != "home"]) if stop is not None else None
-    if known is not None and stop.place_id != known.id:
-        stop.place_id = known.id
-        rec["trip"] = trip.to_dict()
+    known = nearest(base_stop.lat, base_stop.lng, [p for p in places if p.id != "home"]) if base_stop else None
+    if known is not None and base_stop.place_id != known.id:
+        base_stop.place_id = known.id
+        rec["trip"] = base.to_dict()
+    trip = trip_of(rec)
+    stop = trip.stop(sid)
     if known is not None and known.kind == PAUSE_KIND:
         _log(deps, ev.kind, rec, sid, decision=Decision("quiet", reason="pause spot"))
         return
@@ -253,7 +259,7 @@ def _on_back_home(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
         _log(deps, ev.kind, rec, decision=Decision("name", (rec.get("purpose") or {}).get("name"),
                                                    reason="already named"))
         return
-    trip = Trip.from_dict(rec["trip"])
+    trip = trip_of(rec)
     guesses, dropped, history = _guess("trip", trip, None, deps, places)
     d = decide(guesses, history, known_place=None, may_ask=True)
     if d.action == "ask":
@@ -325,7 +331,7 @@ def defer_stop(trip_id: str, stop_id: str, deps: TripDeps) -> dict[str, Any]:
     """"Later": the stop's question waits for the arrival message. Raises KeyError for an unknown trip or stop."""
     with deps.records.lock_for(trip_id):
         rec = deps.records.get(trip_id)
-        if rec is None or Trip.from_dict(rec["trip"]).stop(stop_id) is None:
+        if rec is None or trip_of(rec).stop(stop_id) is None:
             raise KeyError(stop_id if rec else trip_id)
         info = _stop_info(rec, stop_id)
         if info["status"] in ("asked", "unnamed") and not info.get("answered"):
@@ -354,7 +360,7 @@ def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str |
     rec = deps.records.get(trip_id)
     if rec is None:
         raise KeyError(trip_id)
-    trip = Trip.from_dict(rec["trip"])
+    trip = trip_of(rec)
     conflict = None
     if purpose:
         # Your words, unless they are a name you already use spelled another way.

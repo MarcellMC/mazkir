@@ -22,9 +22,9 @@ SAME_START = dt.timedelta(minutes=5)
 
 
 def label_row(rec: dict, events) -> dict:
-    from src.services.location.model import Trip
+    from src.services.location.edits import trip_of
 
-    trip = Trip.from_dict(rec["trip"])
+    trip = trip_of(rec)
     legs = [leg for leg in trip.legs if leg.mode]
     blocks = []
     for ref in [*(rec.get("blocks") or {}).values(), *(rec.get("merged") or {}).values()]:

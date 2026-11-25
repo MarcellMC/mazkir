@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from src.services.approval import resolve_state
 from src.services.location.decide import Option
 from src.services.location.guess import _duration, _metres
+from src.services.location.edits import trip_of
 from src.services.location.model import Trip
 
 LABEL_MAX = 32
@@ -97,7 +98,7 @@ def question_receipt(rec: dict, stop_id: str | None, options: list[Option], now:
                      place_name: str | None = None, visits: int = 0, map_label: str | None = None,
                      area: str | None = None) -> dict[str, Any]:
     zone = ZoneInfo(tz)
-    trip = Trip.from_dict(rec["trip"])
+    trip = trip_of(rec)
     text = _question_text(trip, stop_id, place_name, now, zone, visits, map_label, area)
     # "Later" puts the question into the arrival message, so it is offered only while you are out.
     later = stop_id is not None and not rec.get("closed")
@@ -138,7 +139,7 @@ def arrival_receipt(rec: dict, events, tz: str) -> dict[str, Any]:
     line number refers to; the caller saves the record.
     """
     zone = ZoneInfo(tz)
-    trip = Trip.from_dict(rec["trip"])
+    trip = trip_of(rec)
     rows: list[tuple[str, str, dict, dict | None]] = []
     for part, ref in (rec.get("blocks") or {}).items():
         if not ref.get("gone"):

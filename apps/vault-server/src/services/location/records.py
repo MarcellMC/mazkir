@@ -79,5 +79,6 @@ class TripRecords:
 
     def on_day(self, day: dt.date, tz: str) -> list[dict[str, Any]]:
         zone = ZoneInfo(tz)
-        return [r for r in self.all()
-                if dt.datetime.fromisoformat(r["trip"]["left_at"]).astimezone(zone).date() == day]
+        from src.services.location.edits import trip_of
+
+        return [r for r in self.all() if trip_of(r).left_at.astimezone(zone).date() == day]

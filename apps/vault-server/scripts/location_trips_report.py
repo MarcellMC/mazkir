@@ -40,7 +40,7 @@ def main() -> None:
     from src.config import settings
     from src.services.approval import resolve_state
     from src.services.events_service import EventsService
-    from src.services.location.model import Trip
+    from src.services.location.edits import trip_of
     from src.services.location.records import TripRecords
 
     zone = ZoneInfo(settings.vault_timezone)
@@ -55,7 +55,7 @@ def main() -> None:
         return ts.astimezone(zone).strftime("%H:%M") if ts else "…"
 
     for rec in recs:
-        trip = Trip.from_dict(rec["trip"])
+        trip = trip_of(rec)
         purpose = (rec.get("purpose") or {})
         print(f"\n{hm(trip.left_at)}{'?' if trip.start_precision == 'before' else ''}–{hm(trip.back_at)}  "
               f"trip {rec['id']}  from {trip.origin}, up to {trip.max_from_home_m:.0f} m, "
