@@ -155,3 +155,34 @@ def test_ok_on_a_split_block_approves_every_fragment(tmp_path):          # I-6c
     rt.render_arrival(rec["id"])
     out = rt.tap(rec["id"], "1", "ok")
     assert sorted(a[0] for a in out["approvals"]) == ["2026-11-09", "2026-11-10"]
+
+
+def _trip_with_second_block(tmp_path, approved):
+    deps, _ = make_deps(tmp_path)
+    rt = LocationRuntime(tmp_path / "loc", deps, synchronous=True)
+    for p in points(Track(t(13, 7, 40)).stay(10).walk_to(250).walk_to(0).stay(5)):
+        rt.feed(p)
+    [rec] = deps.records.all()
+    extra = deps.events.create_event(date="2026-11-13", name="Cafe", start_time="2026-11-13T08:00:00",
+                                     end_time="2026-11-13T08:10:00")
+    deps.events.update_event(date="2026-11-13", event_id=extra["id"], updates={
+        "proposed": True, **({"state": "approved"} if approved else {})})
+    rec["blocks"]["stop:s1"] = {"date": "2026-11-13", "event_id": extra["id"]}
+    rec["arrival_lines"] = ["trip", "stop:s1"]
+    deps.records.save(rec)
+    return deps, rt, rec, extra
+
+
+def test_not_right_all_skips_approved_blocks(tmp_path):
+    deps, rt, rec, extra = _trip_with_second_block(tmp_path, approved=True)
+    ref = deps.records.get(rec["id"])["blocks"]["trip"]
+    out = rt.tap(rec["id"], "all", "no")
+    assert out["approvals"] == [(ref["date"], ref["event_id"], "dismissed")]
+    assert out["toast"] == "Dismissed the rest — kept what you ✓'d."
+
+
+def test_not_right_all_with_nothing_approved_dismisses_everything(tmp_path):
+    deps, rt, rec, extra = _trip_with_second_block(tmp_path, approved=False)
+    out = rt.tap(rec["id"], "all", "no")
+    assert len(out["approvals"]) == 2 and extra["id"] in [a[1] for a in out["approvals"]]
+    assert out["toast"] == "Dismissed"

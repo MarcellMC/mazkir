@@ -27,6 +27,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from src.services.fast_lane import places as places_mod
+from src.services.approval import resolve_state
 from src.services.location.home import find_home
 from src.services.location.messages import arrival_receipt, notice_receipt, question_receipt
 from src.services.location.model import TrackerEvent, Trip, safe_error
@@ -286,9 +287,13 @@ class LocationRuntime:
             out["toast"] = "That line is gone — refresh /day."
             return out
         state = "approved" if action == "ok" else "dismissed"
+        kept = 0
         for part in parts:
             ref = (rec.get("blocks") or {}).get(part)
             if ref and not ref.get("gone"):
+                if line == "all" and action == "no" and self._all_approved(ref):
+                    kept += 1               # ✕ Not right keeps what you ✓'d
+                    continue
                 # Every piece of a block split at midnight, not only the first.
                 for frag in fragments(ref):
                     out["approvals"].append((frag["date"], frag["event_id"], state))
@@ -304,7 +309,16 @@ class LocationRuntime:
         self.deps.records.save(rec)
         out["rerender"] = True
         out["toast"] = "✓ Confirmed" if action == "ok" else "Dismissed"
+        if kept:
+            out["toast"] = "Dismissed the rest — kept what you ✓'d."
         return out
+
+    def _all_approved(self, ref: dict) -> bool:
+        for frag in fragments(ref):
+            event = next((e for e in self.deps.events.get_events(frag["date"]) if e.get("id") == frag["event_id"]), None)
+            if event is None or resolve_state(event) != "approved":
+                return False
+        return True
 
     def _settle_merged(self, merged: dict, action: str) -> bool:
         """✓ keeps what location filled into your block; ✕ puts your block back as you left it.
