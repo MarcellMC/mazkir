@@ -126,16 +126,22 @@ def test_question_measures_use_real_history_not_constants(monkeypatch):
     assert strong["trips_named_without_question"] == 1
 
 
-def test_early_starts_counts_trips_started_well_before_the_first_point_away():
+def test_early_starts_checks_trips_begun_across_a_silence():
     from src.services.location.model import Fix, Trip
 
     mod = _script()
     home = (32.0, 34.8)
     d = _synthetic_trip().to_dict()
 
-    def trip(left):
-        return Trip.from_dict({**d, "left_at": left.isoformat()})
+    def trip(left, precision="before"):
+        return Trip.from_dict({**d, "left_at": left.isoformat(), "start_precision": precision})
 
-    away = Fix(t(9, 10, 20), 32.01, 34.8)   # about 1.1 km north of home
-    assert mod.early_starts([trip(t(9, 10, 19))], [away], home, 40.0) == 0
-    assert mod.early_starts([trip(t(9, 10, 5))], [away], home, 40.0) == 1
+    inside = Fix(t(9, 6, 0), 32.0, 34.8)
+    away = Fix(t(9, 10, 20), 32.01, 34.8)   # about 1.1 km north, hours after the last point inside
+    fixes = [inside, away]
+    # The old behaviour: stamped at the last point inside, hours before the first point away.
+    assert mod.early_starts([trip(t(9, 6, 0))], fixes, home, 40.0) == (1, 1)
+    # Fixed: stamped at the first point away.
+    assert mod.early_starts([trip(t(9, 10, 20))], fixes, home, 40.0) == (1, 0)
+    # A trip stamped at a point is not part of this measure.
+    assert mod.early_starts([trip(t(9, 6, 0), "location")], fixes, home, 40.0) == (0, 0)

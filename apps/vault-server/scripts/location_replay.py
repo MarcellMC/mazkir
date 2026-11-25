@@ -144,21 +144,30 @@ def question_measures(trips, places, confirmed_for, tz: str, map_options_for=Non
             "stops_asked": asked, "stops_named_by_place": by_place, "questions": asked + len(trips)}
 
 
-def early_starts(trips, fixes, home: tuple[float, float], radius_m: float, slack_min: float = 2.0) -> int:
-    """Trips from home whose start is more than `slack_min` before their first point outside home's radius.
+def early_starts(trips, fixes, home: tuple[float, float], radius_m: float, slack_min: float = 2.0) -> tuple[int, int]:
+    """(checked, early): of the trips from home stamped `before` (they began across a silence), how many
+    start more than `slack_min` before the first fix outside home's radius that follows the last fix inside.
 
-    A start stamped `before` (across a silence) is the tracker saying it does not know, and is not counted.
+    Searching from the last inside fix, not from the trip's own start, is what makes a trip that begins hours
+    before its first point away show up. A trip stamped at a point (`location`) starts at the last point
+    inside by design, so it is left out.
     """
     from src.services.location.tracker import _dist
 
-    n = 0
+    checked = early = 0
     for trip in trips:
-        if trip.origin != "home" or trip.start_precision == "before":
+        if trip.origin != "home" or trip.start_precision != "before":
             continue
-        out = next((f for f in fixes if f.ts >= trip.left_at and _dist(f, home) > radius_m), None)
-        if out is not None and (out.ts - trip.left_at).total_seconds() > slack_min * 60:
-            n += 1
-    return n
+        inside = [f for f in fixes if f.ts <= trip.left_at and _dist(f, home) <= radius_m]
+        since = inside[-1].ts if inside else None
+        out = next((f for f in fixes if (since is None or f.ts > since) and f.ts >= trip.left_at - dt.timedelta(days=1)
+                    and _dist(f, home) > radius_m), None)
+        if out is None:
+            continue
+        checked += 1
+        if (out.ts - trip.left_at).total_seconds() > slack_min * 60:
+            early += 1
+    return checked, early
 
 
 def _run_tracker(first: dt.date, last: dt.date, tz: str):
@@ -303,7 +312,8 @@ def main() -> None:
     print(f"trips_named_without_question  {qm['trips_named_without_question']}")
     print(f"stops_never_asked  {qm['stops_never_asked']}  (of {qm['stops']} stops: "
           f"{qm['stops_asked']} asked, {qm['stops_named_by_place']} named by a place of yours)")
-    print(f"early_starts  {early_starts(trips, fixes, home, home_radius)}")
+    checked, early = early_starts(trips, fixes, home, home_radius)
+    print(f"early_starts  {early}  (of {checked} trips begun across a silence)")
     per_day: Counter[str] = Counter()
     for tr in trips:
         per_day[tr.left_at.astimezone(zone).date().isoformat()] += len(tr.stops) + 1
