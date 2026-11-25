@@ -34,18 +34,24 @@ def covering_block(events, moment: dt.datetime) -> dict | None:
     The latest-starting one wins when two overlap: it is the more specific.
 
     Reads the persisted store, not a reconciled day: reconciling costs network
-    per photo, so a calendar/timeline block never opened through /day or
-    GET /events is not seen. On the `on` route the fast lane persists its own
-    writes before the agent builds content, and a miss is reported honestly.
+    per photo. The fast lane and the trip writer persist their blocks before
+    the agent builds content; on a miss the agent tries the reconciled day
+    (`covering_in`) before saying nothing covers the moment (repair spec §9).
     """
     day = moment.date().isoformat()
+    found = covering_in(events.get_events(day), moment)
+    return {**found, "date": day} if found else None
+
+
+def covering_in(day_events, moment: dt.datetime) -> dict | None:
+    """`covering_block`'s rule over a list of one day's events (the reconciled day, repair spec §9)."""
     wall = moment.replace(tzinfo=None)
     best = None
-    for e in events.get_events(day):
+    for e in day_events:
         if e.get("state") == "dismissed" or not e.get("start_time"):
             continue
         start = dt.datetime.fromisoformat(e["start_time"]).replace(tzinfo=None)
         end = dt.datetime.fromisoformat(e["end_time"]).replace(tzinfo=None) if e.get("end_time") else None
         if start <= wall and (end is None or wall <= end) and (best is None or start > best[0]):
             best = (start, e)
-    return {**best[1], "date": day} if best else None
+    return {**best[1], "date": moment.date().isoformat()} if best else None

@@ -279,7 +279,7 @@ class TestHandleMessageWithAttachments:
         # Content should be a list (multi-block) when photo is present
         assert isinstance(last_user_msg["content"], list)
 
-    def test_location_included_in_text(self, agent, mock_services):
+    def test_location_included_in_text(self, agent, mock_services, where_env):
         """Location coordinates appear in the text sent to Claude."""
         claude = mock_services[0]
 
@@ -306,12 +306,11 @@ class TestHandleMessageWithAttachments:
         messages = call_args.kwargs.get("messages", call_args[1].get("messages") if len(call_args) > 1 else None)
         last_user_msg = [m for m in messages if m["role"] == "user"][-1]
         content = last_user_msg["content"]
-        # Should contain location coordinates in text
-        if isinstance(content, list):
-            text_parts = [b["text"] for b in content if b.get("type") == "text"]
-            assert any("32.08" in t and "34.78" in t for t in text_parts)
-        else:
-            assert "32.08" in content and "34.78" in content
+        # The location in words, never its coordinates (repair spec §8).
+        text = content if isinstance(content, str) else " ".join(
+            b["text"] for b in content if b.get("type") == "text")
+        assert "[Location: where:" in text
+        assert "32.08" not in text and "34.78" not in text
 
     def test_reply_context_included(self, agent, mock_services):
         """Reply context appears in the text sent to Claude."""
@@ -356,7 +355,7 @@ class TestHandleMessageWithAttachments:
         assert result.response == "Hello!"
 
 
-    def test_photo_exif_extracted_and_surfaced(self, agent, mock_services, tmp_path):
+    def test_photo_exif_extracted_and_surfaced(self, agent, mock_services, tmp_path, where_env):
         """EXIF metadata is extracted and included in Claude context."""
         claude = mock_services[0]
 
@@ -391,8 +390,9 @@ class TestHandleMessageWithAttachments:
         content = last_user["content"]
         text_parts = [b["text"] for b in content if b.get("type") == "text"]
         combined = " ".join(text_parts)
-        assert "32.08" in combined  # GPS lat
-        assert "34.78" in combined  # GPS lng
+        # Words, never numbers (repair spec §8).
+        assert "where:" in combined and "EXIF GPS" not in combined
+        assert "32.08" not in combined and "34.78" not in combined
 
     def test_photo_metadata_json_written(self, agent, mock_services, tmp_path):
         """Sidecar metadata.json is written when photo is saved."""
@@ -3607,3 +3607,187 @@ def test_set_trip_purpose_unknown_trip(agent, monkeypatch):
     monkeypatch.setattr("src.services.location.runtime._runtime", rt)
     r = agent.run_tool("set_trip_purpose", {"trip_id": "1a2b3c4d", "purpose": "Run", "_confidence": 0.9})
     assert r["error"]["code"] == "PATH_NOT_FOUND"
+
+
+# --- Photos and locations in words (repair spec §8) ---------------------------
+
+import re as _re
+
+_COORD = _re.compile(r"\d+\.\d{4,}")
+
+
+@pytest.fixture
+def where_env(tmp_path, monkeypatch):
+    """No location runtime; places and handles under tmp_path, never data/."""
+    from src.config import settings
+    monkeypatch.setattr(settings, "events_data_path", tmp_path / "data" / "events")
+    monkeypatch.setattr(settings, "location_data_path", tmp_path / "data" / "locations")
+    monkeypatch.setattr("src.services.location.runtime._runtime", None)
+
+    async def _no_sources(day):
+        return [], set()
+    # A photo's moment is looked up on the reconciled day too; no real sources in a unit test.
+    monkeypatch.setattr("src.services.day_assembly.merge_from_sources", _no_sources)
+    return tmp_path / "data"
+
+
+def _text_of(content) -> str:
+    if isinstance(content, str):
+        return content
+    return " ".join(b["text"] for b in content if b.get("type") == "text")
+
+
+def _write_places(data_dir, places):
+    import json
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "places.json").write_text(json.dumps({"places": places}))
+    return data_dir / "places.json"
+
+
+def test_photo_gps_is_described_never_sent_as_numbers(agent, where_env):
+    import base64
+    from tests.test_exif_service import _make_jpeg_with_gps
+    data = base64.b64encode(_make_jpeg_with_gps(32.0853, 34.7818, accuracy=(1500, 100))).decode()
+    agent._current_chat_id = 7
+    text = _text_of(agent._build_user_content(
+        "look", [{"type": "photo", "data": data, "mime_type": "image/jpeg", "filename": "photo_test.jpg"}]))
+    assert "where:" in text and "EXIF GPS:" not in text
+    assert "GPS ±15 m" in text
+    assert not _COORD.search(text), text
+    from src.services.location.handles import Handles
+    anchor = Handles(where_env / "locations" / "handles.json").resolve(7, "photo:photo_test.jpg")
+    assert anchor["kind"] == "anchor" and anchor["accuracy_m"] == 15.0
+
+
+def test_photo_at_a_place_of_yours(agent, where_env):
+    import base64
+    from tests.test_exif_service import _make_jpeg_with_gps
+    _write_places(where_env, [{"id": "home", "name": "Home", "kind": "home",
+                               "lat": 32.0853, "lng": 34.7818, "radius_m": 40}])
+    data = base64.b64encode(_make_jpeg_with_gps(32.0853, 34.7818)).decode()
+    text = _text_of(agent._build_user_content("x", [{"type": "photo", "data": data, "filename": "h.jpg"}]))
+    assert "| at home" in text and not _COORD.search(text)
+
+
+def test_location_is_described_never_sent_as_numbers(agent, where_env):
+    _write_places(where_env, [{"id": "gym", "name": "The gym", "kind": "sport",
+                               "lat": 32.0853, "lng": 34.7818, "radius_m": 60}])
+    agent._current_chat_id = 7
+    text = _text_of(agent._build_user_content(
+        "here", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "message_id": 42}]))
+    assert "[Location: where: place:gym The gym (yours, 0 m)" in text
+    assert not _COORD.search(text) and "34.78" not in text
+    from src.services.location.handles import Handles
+    assert Handles(where_env / "locations" / "handles.json").resolve(7, "location:42")["kind"] == "anchor"
+
+
+def test_venue_keeps_its_title(agent, where_env):
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "title": "Café Noir"}]))
+    assert '[Location — "Café Noir": where: no map here]' in text
+    assert not _COORD.search(text)
+
+
+def test_forwarded_location_is_described_but_not_learned(agent, where_env):
+    path = _write_places(where_env, [{"id": "gym", "name": "The gym", "kind": "sport",
+                                      "lat": 31.0, "lng": 35.0, "radius_m": 60}])
+    before = path.read_bytes()
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "title": "Dana's"}],
+        forwarded_from={"from_name": "Dana", "text": ""}))
+    assert '[Location — "Dana\'s": where:' in text and not _COORD.search(text)
+    assert path.read_bytes() == before
+
+
+def test_location_uses_the_runtime_map_and_handles(agent, where_env, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from src.services.location.handles import Handles
+    from src.services.location.map_index import build_index
+    from src.services.location.records import TripRecords
+    from tests.test_location_where import OSM, P, _north
+    src = tmp_path / "w.osm"
+    src.write_text(OSM.format(cafe=_north(10), rest=_north(-25), bakery=_north(55), addr=_north(-8),
+                              area=_north(300)), encoding="utf-8")
+    build_index(src, tmp_path / "w.sqlite")
+    rt = SimpleNamespace(handles=Handles(tmp_path / "rt-handles.json"),
+                         deps=SimpleNamespace(map_index=tmp_path / "w.sqlite", records=TripRecords(tmp_path / "loc"),
+                                              places_path=tmp_path / "none.json"))
+    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    agent._current_chat_id = 7
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": P[0], "longitude": P[1], "message_id": 5}]))
+    assert "[Location: where: m1 Café X (café, 10 m)" in text and "on Herzl, by number 12" in text
+    assert not _COORD.search(text)
+    assert rt.handles.resolve(7, "m1")["label"] == "Café X"
+
+
+def test_conversation_log_text_has_no_coordinates():
+    from src.services.conversation_text import conversation_log_text
+    out = conversation_log_text("hi", [{"type": "location", "latitude": 32.0853123, "longitude": 34.7818456},
+                                       {"type": "location", "latitude": 32.0853123, "longitude": 34.7818456,
+                                        "title": "Café Noir"}], None)
+    assert not _COORD.search(out) and "32.08" not in out
+    assert "location" in out and "Café Noir" in out
+
+
+def test_photo_attaches_to_covering_block_when_shadow(tmp_path, monkeypatch, where_env):
+    from src.config import settings
+    from src.services.events_service import EventsService
+    monkeypatch.setattr(settings, "fast_lane_mode", "shadow")
+    events = EventsService(tmp_path / "ev")
+    prop = events.create_event("2026-11-20", "Walk to the park", "2026-11-20T13:00:00", "2026-11-20T13:40:00")
+    stored = events.get_events("2026-11-20")
+    for e in stored:
+        if e["id"] == prop["id"]:
+            e.update(proposed=True, trip={"id": "abcd1234", "part": "trip"})
+    events.save_events("2026-11-20", stored)
+    agent = AgentService(claude=MagicMock(), vault=MagicMock(), memory=MagicMock(), events=events,
+                         media_path=tmp_path / "media")
+    out = agent._place_photo({"exif_timestamp": "2026-11-20T13:10:00", "path": "m/p.jpg"})
+    assert "Walk to the park" in out[0]
+    assert next(e for e in events.get_events("2026-11-20") if e["id"] == prop["id"])["photos"]
+
+
+def test_photo_tries_the_reconciled_day_before_saying_nothing_covers(tmp_path, monkeypatch, where_env):
+    from src.config import settings
+    monkeypatch.setattr(settings, "fast_lane_mode", "off")
+    events = MagicMock()
+    events.get_events.return_value = []
+    events.attach_photo.return_value = {"attached": True, "event_id": "c1", "date": "2026-11-20"}
+    agent = AgentService(claude=MagicMock(), vault=MagicMock(), memory=MagicMock(), events=events,
+                         media_path=tmp_path / "media")
+    seen = []
+    monkeypatch.setattr(agent, "_reconciled_events", lambda d: (seen.append(d) or [
+        {"id": "c1", "name": "Lunch", "start_time": "2026-11-20T12:30:00", "end_time": "2026-11-20T13:30:00",
+         "date": d}], False))
+    out = agent._place_photo({"exif_timestamp": "2026-11-20T13:10:00", "path": "m/p.jpg"})
+    assert seen == ["2026-11-20"]
+    events.attach_photo.assert_called_once_with("2026-11-20", "c1", "m/p.jpg")
+    assert "Lunch" in out[0]
+
+    monkeypatch.setattr(agent, "_reconciled_events", lambda d: ([], False))
+    assert agent._place_photo({"exif_timestamp": "2026-11-20T13:10:00", "path": "m/p.jpg"}) == [
+        "no block covers that moment"]
+
+
+def test_a_reconciled_block_not_yet_stored_is_stored_then_attached(tmp_path, monkeypatch, where_env):
+    from src.config import settings
+    import src.services.day_assembly as day_assembly
+    monkeypatch.setattr(settings, "fast_lane_mode", "off")
+    events = MagicMock()
+    events.get_events.return_value = []
+    events.attach_photo.side_effect = [{"error": "Event c1 not found"},
+                                       {"attached": True, "event_id": "p9", "date": "2026-11-20"}]
+    events.refresh_events.return_value = [{"id": "p9", "source_ids": {"calendar_id": "g1"}}]
+
+    async def _merge(day):
+        return [], {"calendar"}
+    monkeypatch.setattr(day_assembly, "merge_from_sources", _merge)
+    agent = AgentService(claude=MagicMock(), vault=MagicMock(), memory=MagicMock(), events=events,
+                         media_path=tmp_path / "media")
+    monkeypatch.setattr(agent, "_reconciled_events", lambda d: ([
+        {"id": "c1", "name": "Lunch", "start_time": "2026-11-20T12:30:00", "end_time": "2026-11-20T13:30:00",
+         "source_ids": {"calendar_id": "g1"}, "date": d}], False))
+    out = agent._place_photo({"exif_timestamp": "2026-11-20T13:10:00", "path": "m/p.jpg"})
+    assert events.attach_photo.call_args.args == ("2026-11-20", "p9", "m/p.jpg")
+    assert "Lunch" in out[0]

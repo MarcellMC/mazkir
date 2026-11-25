@@ -2061,25 +2061,27 @@ class AgentService:
         }
 
     def _place_photo(self, photo_info: dict) -> list[str]:
-        """Fast lane on: attach the photo to the block covering its moment, and say so (spec §5.6).
+        """Attach the photo to the block covering its moment, and say so (spec §5.6, repair spec §9).
 
-        Looks in the persisted events store only (see `covering_block`); the
-        fast lane's writes for this message are already saved by the time the
-        agent builds its content, and "no block covers" is told to the agent.
+        In every fast-lane mode. The persisted store first (the fast lane's
+        and the trip writer's blocks, proposals included, are already saved);
+        on a miss, the day as `/day` shows it, so a calendar block nobody has
+        opened is found too. Only then is the agent told nothing covers it.
         """
-        from src.config import settings as _settings
-        if _settings.fast_lane_mode != "on" or not self.events or not photo_info.get("exif_timestamp"):
+        if not self.events or not photo_info.get("exif_timestamp"):
             return []
-        import datetime as dt
-        from zoneinfo import ZoneInfo
         from src.services.fast_lane.photos import covering_block
         try:
-            moment = dt.datetime.fromisoformat(photo_info["exif_timestamp"]).replace(
-                tzinfo=ZoneInfo(_settings.vault_timezone))
+            moment = self._local_moment(photo_info["exif_timestamp"])
+            if moment is None:
+                return []
             block = covering_block(self.events, moment)
+            attached = block is not None and "error" not in self.events.attach_photo(
+                block["date"], block["id"], photo_info["path"])
+            if not attached:
+                block = self._attach_on_reconciled_day(moment, photo_info["path"])
             if block is None:
                 return ["no block covers that moment"]
-            self.events.attach_photo(block["date"], block["id"], photo_info["path"])
             def _hm(v):
                 v = v or ""
                 return v[11:16] if len(v) >= 16 else v
@@ -2088,6 +2090,82 @@ class AgentService:
         except Exception:
             logger.warning("placing a photo failed", exc_info=True)
             return []
+
+    def _attach_on_reconciled_day(self, moment, photo_path: str) -> dict | None:
+        """The reconciled day's covering block, with the photo attached; None when nothing covers.
+
+        A block only the merge knows (a calendar entry never opened) has no row
+        to hold the photo, so the day is stored first, as an edit does
+        (`_resolve_reference`), and the block found again by its `source_ids`.
+        """
+        import datetime as dt
+        from src.services.fast_lane.photos import covering_in
+        day = moment.date().isoformat()
+        events, _degraded = self._reconciled_events(day)
+        block = covering_in(events, moment)
+        if block is None:
+            return None
+        result = self.events.attach_photo(day, block["id"], photo_path)
+        if "error" not in result:
+            return block
+        source_ids = block.get("source_ids") or {}
+        if not source_ids:
+            return None
+        from src.services.async_bridge import maybe_await
+        import src.services.day_assembly as day_assembly
+        fresh, available = maybe_await(day_assembly.merge_from_sources(dt.date.fromisoformat(day)))
+        persisted = self.events.refresh_events(day, fresh, available)
+        stored = next((e for e in persisted if (e.get("source_ids") or {}) == source_ids), None)
+        if stored is None or "error" in self.events.attach_photo(day, stored["id"], photo_path):
+            return None
+        return {**block, "id": stored["id"]}
+
+    @staticmethod
+    def _local_moment(timestamp: str | None):
+        """A saved photo's local wall-clock time as an aware datetime in the vault's zone, or None."""
+        if not timestamp:
+            return None
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        from src.config import settings as _settings
+        try:
+            return dt.datetime.fromisoformat(timestamp).replace(tzinfo=ZoneInfo(_settings.vault_timezone))
+        except ValueError:
+            return None
+
+    def _where(self, lat: float, lng: float, *, accuracy_m: float | None, at, anchor_key: str) -> str:
+        """A position in words for the model (repair spec §8); the numbers stay on the server.
+
+        With the location runtime on: its handle table, map copy, trip records
+        and places. Off: the places file the fast lane uses and a handle table
+        at the same path the runtime would use; no map, no trips.
+        """
+        from src.config import settings as _settings
+        from src.services.fast_lane.places import load_places
+        from src.services.location import runtime as location_runtime
+        from src.services.location.where import describe_where
+        try:
+            rt = location_runtime.get_runtime()
+            if rt is not None:
+                handles, deps = rt.handles, rt.deps
+                places_path, map_index, records = deps.places_path, getattr(deps, "map_index", None), deps.records
+            else:
+                from src.services.location.handles import Handles
+                handles = Handles(Path(_settings.location_data_path) / "handles.json")
+                places_path = Path(_settings.events_data_path).parent / "places.json"
+                map_index, records = None, None
+            try:
+                places = load_places(places_path)
+            except (OSError, ValueError):
+                places = []
+            return describe_where(lat, lng, accuracy_m=accuracy_m, at=at, chat_id=self._current_chat_id or 0,
+                                  places=places, map_index=map_index, handles=handles, records=records,
+                                  anchor_key=anchor_key)
+        except Exception as exc:
+            from src.services.location.model import safe_error
+            # Type and frame only: a message could quote the position.
+            logger.warning("describing a position failed: %s", safe_error(exc))
+            return "where: unknown (the lookup failed)"
 
     def _build_user_content(
         self,
@@ -2121,11 +2199,15 @@ class AgentService:
                         loc = photo_info.get("exif_location")
                         ts = photo_info.get("exif_timestamp")
                         cam = photo_info.get("exif_camera")
-                        if loc:
-                            parts.append(f"EXIF GPS: {loc['lat']}, {loc['lng']}")
                         if ts:
                             parts.append(f"taken {ts}" + (" (from the send time, approximate)"
                                                           if photo_info.get("exif_precision") == "approx" else ""))
+                        if loc:
+                            # Words, never the numbers (repair spec §8).
+                            parts.append(self._where(
+                                loc["lat"], loc["lng"], accuracy_m=loc.get("accuracy_m"),
+                                at=self._local_moment(ts), anchor_key=f"photo:{Path(photo_info['path']).name}"))
+                        if ts:
                             parts += self._place_photo(photo_info)
                         if cam:
                             parts.append(f"Camera: {cam}")
@@ -2134,12 +2216,22 @@ class AgentService:
                         text_parts.append("[Photo attachment failed to save]")
 
                 elif att["type"] == "location":
-                    lat = att.get("latitude", 0)
-                    lng = att.get("longitude", 0)
-                    loc_str = f"[Location: {lat}, {lng}]"
+                    if att.get("latitude") is None or att.get("longitude") is None:
+                        where = "where: unknown"
+                    else:
+                        # Words, never the numbers (repair spec §8). A forwarded location is
+                        # described the same way; nothing here learns a place from it.
+                        import datetime as _dt
+                        from zoneinfo import ZoneInfo as _Zone
+                        from src.config import settings as _settings
+                        key = f"location:{att.get('message_id') or uuid4().hex}"
+                        where = self._where(att["latitude"], att["longitude"], accuracy_m=att.get("accuracy_m"),
+                                            at=_dt.datetime.now(_Zone(_settings.vault_timezone)),
+                                            anchor_key=key)
                     if att.get("title"):
-                        loc_str = f"[Location: {lat}, {lng} — {att['title']}]"
-                    text_parts.append(loc_str)
+                        text_parts.append(f'[Location — "{att["title"]}": {where}]')
+                    else:
+                        text_parts.append(f"[Location: {where}]")
 
         if reply_to:
             from_role = reply_to.get("from", "user")

@@ -88,14 +88,16 @@ def test_mode_on_attaches_and_tells_the_agent(tmp_path, monkeypatch):
     assert stored.get("photos")
 
 
-def test_mode_off_does_not_attach(tmp_path, monkeypatch):
+def test_mode_off_attaches_too(tmp_path, monkeypatch):
+    # Every fast-lane mode, not only `on` (repair spec §9).
     from src.config import settings
     monkeypatch.setattr(settings, "fast_lane_mode", "off")
     agent, events, walk, att = _agent_with_walk(tmp_path)
     content = agent._build_user_content("look", [att])
-    assert "already attached" not in str(content) and "(from the send time, approximate)" in str(content)
+    assert "already attached it to “Dog walk”" in str(content)
+    assert "(from the send time, approximate)" in str(content)
     stored = next(e for e in events.get_events("2026-09-27") if e["id"] == walk["id"])
-    assert not stored.get("photos")
+    assert stored.get("photos")
 
 
 def test_overlapping_blocks_latest_start_wins(tmp_path):

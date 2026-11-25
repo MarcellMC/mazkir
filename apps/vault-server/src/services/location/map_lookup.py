@@ -24,7 +24,7 @@ import math
 import re
 import sqlite3
 import unicodedata
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from src.services.geo import haversine_m
@@ -74,9 +74,16 @@ class MapPlace:
     name: str | None
     street: str | None
     distance_m: float
+    # The feature's own position, for the per-chat handle table (repair spec §7). Never in
+    # `to_dict`: that dict goes into trip records and the decisions log.
+    lat: float | None = field(default=None, repr=False, compare=False)
+    lng: float | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        d.pop("lat")
+        d.pop("lng")
+        return d
 
 
 def kind_words(kind: str) -> str:
@@ -171,7 +178,7 @@ def _ranked(rows, lat: float, lng: float, radius_m: float) -> list[tuple[tuple, 
                 continue
             key = (1, dist)
         out.append((key, MapPlace(row["osm"], row["grp"], row["kind"], _label(row), row["name_en"] or row["name"],
-                                  row["street"], round(dist, 1))))
+                                  row["street"], round(dist, 1), row["lat"], row["lng"])))
     out.sort(key=lambda kv: kv[0])
     seen: set[str] = set()
     unique = []
@@ -182,12 +189,17 @@ def _ranked(rows, lat: float, lng: float, radius_m: float) -> list[tuple[tuple, 
     return unique
 
 
-def map_near(index: Path | None, lat: float, lng: float, spread_m: float) -> list[MapPlace]:
-    """Places at a stop, best first; addresses only when no place is near. [] without a usable index."""
+def map_near(index: Path | None, lat: float, lng: float, spread_m: float,
+             radius_m: float | None = None) -> list[MapPlace]:
+    """Places at a stop, best first; addresses only when no place is near. [] without a usable index.
+
+    `radius_m` replaces the stop's radius (spread + 30 m, capped at 80 m) when given: a photo or a
+    location message looks within `max(40 m, its GPS accuracy)`, uncapped (repair spec §8).
+    """
     con = _connect(index)
     if con is None:
         return []
-    radius = min((spread_m or 0.0) + RADIUS_EXTRA_M, RADIUS_CAP_M)
+    radius = radius_m if radius_m is not None else min((spread_m or 0.0) + RADIUS_EXTRA_M, RADIUS_CAP_M)
     try:
         places = _ranked(_query(con, lat, lng, radius, ("place",)), lat, lng, radius)
         if not places:
@@ -261,7 +273,8 @@ def map_search(index: Path | None, query: str, lat: float, lng: float, radius_m:
             if dist > radius_m:
                 continue
             hits.append((rank, dist, MapPlace(row["osm"], row["grp"], row["kind"], _label(row),
-                                              row["name_en"] or row["name"], row["street"], round(dist, 1))))
+                                              row["name_en"] or row["name"], row["street"], round(dist, 1),
+                                              row["lat"], row["lng"])))
         hits.sort(key=lambda h: (h[0], h[1]))
         out, streets = [], set()
         for _, _, place in hits:
@@ -277,8 +290,9 @@ def map_search(index: Path | None, query: str, lat: float, lng: float, radius_m:
         con.close()
 
 
-def map_address(index: Path | None, lat: float, lng: float, radius_m: float = 60) -> str | None:
-    """'<street> <number>' of the nearest address, or the street alone when it has no number."""
+def nearest_address(index: Path | None, lat: float, lng: float,
+                    radius_m: float = 60) -> tuple[str, str | None] | None:
+    """(street, house number or None) of the nearest address within `radius_m`."""
     con = _connect(index)
     if con is None:
         return None
@@ -292,12 +306,20 @@ def map_address(index: Path | None, lat: float, lng: float, radius_m: float = 60
                 best = (dist, row)
         if best is None:
             return None
-        row = best[1]
-        return f"{row['street']} {row['housenumber']}" if row["housenumber"] else row["street"]
+        return best[1]["street"], best[1]["housenumber"] or None
     except sqlite3.Error:
         return None
     finally:
         con.close()
+
+
+def map_address(index: Path | None, lat: float, lng: float, radius_m: float = 60) -> str | None:
+    """'<street> <number>' of the nearest address, or the street alone when it has no number."""
+    found = nearest_address(index, lat, lng, radius_m)
+    if found is None:
+        return None
+    street, number = found
+    return f"{street} {number}" if number else street
 
 
 def street_named(index: Path | None, name: str, lat: float, lng: float, radius_m: float = 300) -> bool:

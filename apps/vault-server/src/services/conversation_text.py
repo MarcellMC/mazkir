@@ -20,7 +20,9 @@ def conversation_log_text(
             if att["type"] == "photo":
                 att_notes.append(f"photo: {att.get('filename', 'photo')}")
             elif att["type"] == "location":
-                att_notes.append(f"location: {att.get('latitude')}, {att.get('longitude')}")
+                # Never the coordinates: this text is replayed to the model as history
+                # and kept in the vault's conversation note (repair spec §8).
+                att_notes.append(f"location: {att['title']}" if att.get("title") else "location")
         if att_notes:
             log_text = f"({', '.join(att_notes)}) {text}".strip()
     if reply_to:

@@ -186,3 +186,12 @@ def test_not_right_all_with_nothing_approved_dismisses_everything(tmp_path):
     out = rt.tap(rec["id"], "all", "no")
     assert len(out["approvals"]) == 2 and extra["id"] in [a[1] for a in out["approvals"]]
     assert out["toast"] == "Dismissed"
+
+
+def test_runtime_has_a_handle_table_under_its_root(tmp_path):
+    from src.services.location.handles import Handles
+    deps, _ = make_deps(tmp_path)
+    rt = LocationRuntime(tmp_path / "loc", deps, synchronous=True)
+    assert isinstance(rt.handles, Handles)
+    rt.handles.anchor(1, "photo:a.jpg", 32.0, 34.0)
+    assert (tmp_path / "loc" / "handles.json").exists()

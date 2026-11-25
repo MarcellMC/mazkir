@@ -302,7 +302,7 @@ def test_conversation_log_text_matches_the_old_prefixes():
     assert conversation_log_text("hi", None, None) == "hi"
     assert conversation_log_text("hi", [{"type": "photo"}, {"type": "location", "latitude": 1.5, "longitude": 2}],
                                  {"text": "x" * 60, "from": "assistant"}) == (
-        f'(replying to assistant: "{"x" * 50}") (photo: photo, location: 1.5, 2) hi')
+        f'(replying to assistant: "{"x" * 50}") (photo: photo, location) hi')   # never coordinates (repair §8)
     assert conversation_log_text("", [{"type": "photo", "filename": "a.jpg"}], None) == "(photo: a.jpg)"
 
 

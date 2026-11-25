@@ -43,6 +43,11 @@ def extract_exif_metadata(photo_bytes: bytes) -> dict[str, Any]:
                 gps_info.get("GPSLongitudeRef", "E"),
             )
             result["location"] = {"lat": lat, "lng": lng}
+            # How far off the fix may be: a photo taken indoors can be 30 m out,
+            # and the model should not pick the nearest café on faith (repair spec §8).
+            accuracy = _rational(gps_info.get("GPSHPositioningError"))
+            if accuracy is not None:
+                result["location"]["accuracy_m"] = accuracy
 
         # Extract timestamp
         dt_original = exif_data.get(36867)  # DateTimeOriginal tag
@@ -67,6 +72,20 @@ def extract_exif_metadata(photo_bytes: bytes) -> dict[str, Any]:
         logger.debug(f"EXIF extraction failed: {e}")
 
     return result
+
+
+def _rational(value) -> float | None:
+    """An EXIF rational (Pillow's IFDRational, or a (num, den) pair) as a float; None when absent or 0/0."""
+    if value is None:
+        return None
+    try:
+        if isinstance(value, tuple):
+            num, den = value
+            return float(num) / float(den) if den else None
+        out = float(value)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return None if out != out else out    # NaN from a 0/0 IFDRational
 
 
 def _dms_to_decimal(dms: tuple, ref: str) -> float:

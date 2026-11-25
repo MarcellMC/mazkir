@@ -68,6 +68,11 @@ def _prepare_agent_kwargs(body: MessageRequest) -> dict:
     attachments = None
     if body.attachments:
         attachments = [a.model_dump(by_alias=True, exclude_none=True) for a in body.attachments]
+        if body.message_id is not None:
+            # A location's position is kept server-side under `location:<message_id>` (repair spec §8).
+            for att in attachments:
+                if att.get("type") == "location":
+                    att.setdefault("message_id", body.message_id)
 
     reply_to = None
     if body.reply_to:

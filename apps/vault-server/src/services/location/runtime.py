@@ -75,6 +75,9 @@ class LocationRuntime:
         self.synchronous = synchronous
         self._lock = threading.RLock()
         self._state_path = self.root / "state.json"
+        # Map places and photo/location anchors the agent names by handle (repair spec §7, §8).
+        from src.services.location.handles import Handles
+        self.handles = Handles(self.root / "handles.json")
         self._inbox_path = self.root / "inbox.json"
         state = _read(self._state_path, {})
         self.chat_id: int | None = state.get("chat_id")
