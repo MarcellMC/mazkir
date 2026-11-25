@@ -556,9 +556,13 @@ def _follow_legs(rec: dict, edit: dict, deps, cancelled: dict[str, list[str]]) -
         candidates = [f"leg:{a2}-{b2}"] if b2 is not None else []
         candidates += [p for p in planned if b2 is not None and _leg_ends(p)[1] == b2]
         candidates += [p for p in planned if _leg_ends(p)[0] == a2]
-        target = next((p for p in candidates if p in planned and _free(rec, p, deps, _delete_if_pending)), None)
+        carry: list[dict] = []
+        target = next((p for p in candidates if p in planned and _free(rec, p, deps, _delete_if_pending, carry)),
+                      None)
         if target is None or not rekey_block(rec, part, target, deps):
             _cancel_block(rec, part, deps, cancelled)
+        else:
+            _carry_onto(rec, target, deps, carry)
 
 
 def _free(rec: dict, part: str, deps, delete_if_pending, carry: list[dict] | None = None) -> bool:
@@ -579,6 +583,16 @@ def _free(rec: dict, part: str, deps, delete_if_pending, carry: list[dict] | Non
             carry.extend(photos)
         return True
     return False
+
+
+def _carry_onto(rec: dict, part: str, deps, photos: list[dict]) -> None:
+    """Photos of a guess deleted to make room go onto the block now holding `part` (spec §9: never lost)."""
+    from src.services.location.writer import _carry_photos, fragments
+
+    ref = (rec.get("blocks") or {}).get(part)
+    if photos and ref is not None and not ref.get("gone"):
+        head = fragments(ref)[0]
+        _carry_photos(deps.events, head["date"], head["event_id"], photos)
 
 
 def _cancel_block(rec: dict, part: str, deps, cancelled: dict[str, list[str]]) -> None:
@@ -732,15 +746,21 @@ def _block_start(events, ref: dict, zone: ZoneInfo) -> dt.datetime | None:
     return parse_local(e.get("start_time"), zone) if e else None
 
 
-def _restamp(ref: dict, deps, trip_id: str | None, part: str | None) -> None:
-    """The store's `trip` field of every piece of a block: {id, part}, or none (the block is yours)."""
+def _restamp(ref: dict, deps, trip_id: str | None, part: str | None, *, yours: bool = False) -> None:
+    """The store's `trip` field of every piece of a block: {id, part}, or none.
+
+    `yours` also clears `proposed`, for a block you approved: no trip's
+    guess any more, so the writer's merge rules see it as yours. Never for
+    one you have not ✓'d, which would approve it without a tap (and let a
+    later edit push it to Google).
+    """
     from src.services.location.writer import fragments
 
     if ref.get("gone"):
         return
     updates: dict[str, Any] = {"trip": {"id": trip_id, "part": part} if trip_id else None}
-    if trip_id is None:
-        updates["proposed"] = False         # no trip's guess any more: the writer's merge rules see it as yours
+    if yours:
+        updates["proposed"] = False
     for frag in fragments(ref):
         if _find(deps.events, frag) is not None:
             deps.events.update_event(date=frag["date"], event_id=frag["event_id"], updates=updates)
@@ -806,9 +826,10 @@ def _settle_legs(rec: dict, deps, places) -> None:
             continue
         a, b = _leg_ends(part)
         candidates = [p for p in planned if _leg_ends(p)[1] == b] + [p for p in planned if _leg_ends(p)[0] == a]
-        target = next((p for p in candidates if _free(rec, p, deps, _delete_if_pending)), None)
-        if target is not None:
-            rekey_block(rec, part, target, deps)
+        carry: list[dict] = []
+        target = next((p for p in candidates if _free(rec, p, deps, _delete_if_pending, carry)), None)
+        if target is not None and rekey_block(rec, part, target, deps):
+            _carry_onto(rec, target, deps, carry)
 
 
 def _settle(rec: dict, deps, event: str) -> None:
@@ -831,13 +852,16 @@ def _join_trips(trip_id: str, args: dict, deps) -> dict[str, Any]:
     The later is appended to it as a `join` edit, its stop ids prefixed
     `j`; its record is kept, marked `joined_into`. Its blocks: one you
     approved (or ✕'d, or corrected) moves to the joined trip's part when
-    that is planned there and free, else it loses its `trip` field and is
-    yours, for the writer's merge rules; its pending guesses are dropped by
-    the re-plan, their photos going to the block that covers them.
+    that is planned there and free. Else: one you approved loses its `trip`
+    field and `proposed` and is yours, for the writer's merge rules; one you
+    ✕'d stays dismissed, nobody's; one you corrected but never ✓'d stays a
+    proposal, held by the joined trip under `joined:<other>:<part>` and
+    drawn with its ✓. Its pending guesses are dropped by the re-plan, their
+    photos going to the block that covers them.
     """
     from src.services.location import pipeline
     from src.services.location.messages import arrival_receipt
-    from src.services.location.writer import _carry_photos, _delete_if_pending, fragments, plan_blocks
+    from src.services.location.writer import _delete_if_pending, fragments, plan_blocks
 
     other_id = _required(args, "other_trip_id")
     if other_id == trip_id:
@@ -896,12 +920,21 @@ def _join_trips(trip_id: str, args: dict, deps) -> dict[str, Any]:
             target = next((p for p in _joined_parts(part, prefix, planned)
                            if p in planned and _free(first, p, deps, _delete_if_pending, carry)), None)
             if target is None:
-                _restamp(ref, deps, None, None)
+                stored = [(e or {}).get("state") for e in (_find(deps.events, f) for f in fragments(ref))]
+                if stored and all(x == "approved" for x in stored):
+                    _restamp(ref, deps, None, None, yours=True)       # you ✓'d it: yours now
+                elif "dismissed" in stored:
+                    _restamp(ref, deps, None, None)                   # you ✕'d it: it stays so, nobody's
+                else:
+                    # Corrected (✎) but never ✓'d: still a proposal, held by the joined trip as it is,
+                    # drawn with its ✓ until you answer it.
+                    key = f"joined:{second_id}:{part}"
+                    blocks[key] = ref
+                    _restamp(ref, deps, first_id, key)
                 continue
             blocks[target] = ref
             _restamp(ref, deps, first_id, target)
-            head = fragments(ref)[0]
-            _carry_photos(deps.events, head["date"], head["event_id"], carry)
+            _carry_onto(first, target, deps, carry)
         merged = first.setdefault("merged", {})
         for part, m in (second.get("merged") or {}).items():
             # Your block the other trip had merged with is yours again, for the joined trip to match;

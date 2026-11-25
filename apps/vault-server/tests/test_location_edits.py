@@ -972,3 +972,84 @@ def test_a_joined_trip_answers_through_the_trip_it_joined(tmp_path):
     assert deps.records.get(OTHER)["blocks"] == {}
     with pytest.raises(ValueError):
         apply_edit(OTHER, "remove_stop", {"stop_id": "s1"}, deps)
+
+
+# --- Task 10, fix round 1 ---------------------------------------------------------
+
+def correct(deps, rec, part):
+    """✎ on a block, never ✓: a field pinned, the block still a pending proposal."""
+    frag = fragments(rec["blocks"][part])[0]
+    e = block(deps, rec, part)
+    deps.events.update_event(date=frag["date"], event_id=frag["event_id"],
+                             updates={"start_time": e["start_time"]}, user_set_fields=["start_time"])
+    return frag["event_id"]
+
+
+def test_a_corrected_proposal_of_the_joined_trip_stays_a_proposal(tmp_path):   # finding 1
+    deps, _, _ = run_three(tmp_path)
+    other = deps.records.get(OTHER)
+    corrected = correct(deps, other, "trip")
+    approve(deps, deps.records.get(TRIP), "trip")       # the first's trip part is taken: nowhere to move it
+    out = apply_edit(TRIP, "join_trips", {"other_trip_id": OTHER}, deps)
+    first = out["record"]
+    e = next(e for e in deps.events.get_events("2026-11-13") if e["id"] == corrected)
+    assert e["proposed"] is True and resolve_state(e) == "pending"         # never approved without a ✓
+    assert not (e.get("source_ids") or {}).get("calendar_id")
+    assert owners(deps)[corrected] == [TRIP]
+    part = next(p for p, ref in first["blocks"].items() if ref.get("event_id") == corrected)
+    assert e["trip"] == {"id": TRIP, "part": part}
+    line = next(x for x in out["receipt"]["lines"] if x["text"] == e["name"])
+    assert line["buttons"] and line["buttons"][0]["data"].endswith(":ok")     # still asks for ✓
+    assert_no_event_owned_twice(deps)
+
+
+def test_a_dismissed_block_of_the_joined_trip_stays_dismissed(tmp_path):      # finding 1
+    deps, _, _ = run_three(tmp_path)
+    other = deps.records.get(OTHER)
+    frag = fragments(other["blocks"]["trip"])[0]
+    deps.events.update_event(date=frag["date"], event_id=frag["event_id"], updates={"state": "dismissed"})
+    approve(deps, deps.records.get(TRIP), "trip")
+    apply_edit(TRIP, "join_trips", {"other_trip_id": OTHER}, deps)
+    e = next(e for e in deps.events.get_events("2026-11-13") if e["id"] == frag["event_id"])
+    assert resolve_state(e) == "dismissed" and e.get("proposed") is True
+
+
+def photo_on(deps, rec, part, path="IMG_1.jpg"):
+    frag = fragments(rec["blocks"][part])[0]
+    deps.events.attach_photo(frag["date"], frag["event_id"], path)
+
+
+def test_a_photo_follows_onto_the_approved_leg_that_takes_its_place(tmp_path):   # finding 2, _follow_legs
+    deps, clock = closed_trip(tmp_path)
+    apply_answer(TRIP, None, "Walk", "Gan Meir", deps)
+    apply_answer(TRIP, "s1", "Market", None, deps)
+    apply_answer(TRIP, "s2", "Bakery", None, deps)
+    rec = deps.records.get(TRIP)
+    leg = approve(deps, rec, "leg:s1-s2")
+    # a pending guess holding a photo sits where the approved leg goes once s2 is removed
+    from src.services.location.edits import rekey_block
+    rekey_block(rec, "leg:s2-home", "leg:s1-home", deps)
+    photo_on(deps, rec, "leg:s1-home")
+    deps.records.save(rec)
+    out = apply_edit(TRIP, "remove_stop", {"stop_id": "s2"}, deps)
+    rec = out["record"]
+    assert rec["blocks"]["leg:s1-home"]["event_id"] == leg
+    assert [p["path"] for p in block(deps, rec, "leg:s1-home").get("photos") or []] == ["IMG_1.jpg"]
+
+
+def test_a_photo_follows_onto_the_approved_leg_a_split_or_join_settles(tmp_path):   # finding 2, _settle_legs
+    from src.services.location.edits import _settle_legs, rekey_block
+    from src.services.location.pipeline import _apply, _places
+
+    deps, clock = closed_trip(tmp_path)
+    apply_answer(TRIP, None, "Walk", "Gan Meir", deps)
+    apply_answer(TRIP, "s1", "Market", None, deps)
+    apply_answer(TRIP, "s2", "Bakery", None, deps)
+    rec = deps.records.get(TRIP)
+    leg = approve(deps, rec, "leg:s1-s2")
+    rekey_block(rec, "leg:s1-s2", "leg:x9-s2", deps)       # the approved leg under a key no longer planned
+    _apply(rec, deps, _places(deps))                         # … and a pending guess where it belongs
+    photo_on(deps, rec, "leg:s1-s2")
+    _settle_legs(rec, deps, _places(deps))
+    assert rec["blocks"]["leg:s1-s2"]["event_id"] == leg
+    assert [p["path"] for p in block(deps, rec, "leg:s1-s2").get("photos") or []] == ["IMG_1.jpg"]
