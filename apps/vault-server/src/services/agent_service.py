@@ -4,7 +4,7 @@ import base64
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -32,6 +32,7 @@ from src.services.tool_handlers.coding_handoff import (
     propose_coding_session as _propose_coding_session,
 )
 from src.services.conversation_text import conversation_log_text
+from src.services.location import turn_receipts
 from src.services.tool_response import ErrorCode, err, ok
 from src.services.vault_service import VaultService
 
@@ -236,6 +237,8 @@ class AgentResponse:
     # Options this confirmation offers, as [{"value", "label"}]. None means
     # a plain free-text yes/no gate -- the client falls back to that.
     confirmation_choices: list[dict] | None = None
+    # Trip messages an edit redrew this turn; the bot sends each under the reply.
+    trip_receipts: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -489,6 +492,144 @@ class AgentService:
                     },
                 },
                 "handler": self._tool_set_trip_purpose,
+                "risk": "write",
+                "pre_hooks": ["validate_schema"],
+            },
+            "get_trip": {
+                "schema": {
+                    "name": "get_trip",
+                    "description": (
+                        "Read a location trip: its stops and legs with times, names, kinds and "
+                        "distances, which blocks they became, and whether it is still open. Call it "
+                        "before answering anything about a trip, and never ask the user for a time "
+                        "the trip has. With neither argument, the latest trip. Places are short "
+                        "handles (m1, place:x) for find_visit / edit_trip."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "trip_id": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
+                            "date": {"type": "string", "description": "YYYY-MM-DD: every trip of that day"},
+                        },
+                        "required": [],
+                    },
+                },
+                "handler": self._tool_get_trip,
+                "risk": "safe",
+                "pre_hooks": ["validate_schema"],
+            },
+            "find_place": {
+                "schema": {
+                    "name": "find_place",
+                    "description": (
+                        "Search the local map and the user's own places by name, within 3 km of `near` "
+                        "(a handle, a place:<id>, a photo or location anchor; default home). Returns at "
+                        "most 8 places with a handle each, kind and distance."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "near": {"type": "string", "description": "A handle or anchor from an earlier result"},
+                        },
+                        "required": ["query"],
+                    },
+                },
+                "handler": self._tool_find_place,
+                "risk": "safe",
+                "pre_hooks": ["validate_schema"],
+            },
+            "find_visit": {
+                "schema": {
+                    "name": "find_visit",
+                    "description": (
+                        "When the user was at a place: the stretches of location points near `ref` (a "
+                        "find_place handle or a place:<id>) of at least 3 minutes. Use it to get times "
+                        "for add_stop or set_stop_times instead of asking."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "ref": {"type": "string"},
+                            "trip_id": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
+                            "date": {"type": "string", "description": "YYYY-MM-DD"},
+                        },
+                        "required": ["ref"],
+                    },
+                },
+                "handler": self._tool_find_visit,
+                "risk": "safe",
+                "pre_hooks": ["validate_schema"],
+            },
+            "edit_trip": {
+                "schema": {
+                    "name": "edit_trip",
+                    "description": (
+                        "Fix a location trip. The redrawn trip message is shown to the user under your "
+                        "reply (`shown_to_user`): do not repeat it, say in a sentence what changed. "
+                        "Ops: name_trip(name, destination?) · name_stop(stop_id, name, ref? | place?) · "
+                        "add_stop(start, end, ref?, name?) a stop the tracker missed, inside the trip's "
+                        "time · split_stop(stop_id, at) · merge_stops(stop_ids) adjacent stops · "
+                        "set_stop_times(stop_id, start?, end?) a time the user stated · "
+                        "remove_stop(stop_id) · split_trip(at: a stop id, its start or end, or a time; "
+                        "stop_side?, purpose_to?: first|second) · join_trips(other_trip_id) two adjacent "
+                        "closed trips · restore_block(part) a dismissed block back as a proposal. "
+                        "Times are ISO with offset or HH:MM today. An approved block is updated in "
+                        "place. A result `cancelled` lists approved blocks the edit removed: tell the "
+                        "user. Read get_trip first."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "trip_id": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
+                            "op": {"type": "string", "enum": [
+                                "name_trip", "name_stop", "add_stop", "split_stop", "merge_stops",
+                                "set_stop_times", "remove_stop", "split_trip", "join_trips", "restore_block"]},
+                            "name": {"type": "string"},
+                            "destination": {"type": "string", "description": "name_trip: where the trip went"},
+                            "stop_id": {"type": "string"},
+                            "stop_ids": {"type": "array", "items": {"type": "string"}},
+                            "ref": {"type": "string", "description": "A find_place handle"},
+                            "place": {"type": "string", "description": "name_stop: a place name to learn here"},
+                            "start": {"type": "string"},
+                            "end": {"type": "string"},
+                            "at": {"type": "string"},
+                            "stop_side": {"type": "string", "enum": ["first", "second"]},
+                            "purpose_to": {"type": "string", "enum": ["first", "second"]},
+                            "other_trip_id": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
+                            "part": {"type": "string", "description": "restore_block: stop:s2, leg:s1-s2, trip"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["trip_id", "op"],
+                    },
+                },
+                "handler": self._tool_edit_trip,
+                "risk": "write",
+                "pre_hooks": ["validate_schema"],
+            },
+            "edit_place": {
+                "schema": {
+                    "name": "edit_place",
+                    "description": (
+                        "Fix one of the user's own places (`place:<id>` from find_place or get_trip): "
+                        "forget it, rename it, add_alias (value: another name), or move_to (value: "
+                        "`<trip_id>:<stop_id>`, re-learn its position from that stop). Use move_to when "
+                        "naming a stop reports a `conflict` and it is the same place after all."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "ref": {"type": "string"},
+                            "op": {"type": "string", "enum": ["forget", "move_to", "rename", "add_alias"]},
+                            "value": {"type": "string"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["ref", "op"],
+                    },
+                },
+                "handler": self._tool_edit_place,
                 "risk": "write",
                 "pre_hooks": ["validate_schema"],
             },
@@ -997,7 +1138,8 @@ class AgentService:
                         "List a day's events exactly as /day shows them — calendar, "
                         "timeline, timed checkboxes and scheduled habits, merged. "
                         "Each row carries `complete`: false means the block is missing "
-                        "a start or an end time. Reaches the calendar, so it is not free."
+                        "a start or an end time. Reaches the calendar, so it is not free. "
+                        "For a trip's stops and times, call get_trip."
                     ),
                     "input_schema": {
                         "type": "object",
@@ -1381,13 +1523,14 @@ class AgentService:
                         "attachment_count": len(attachments or []),
                     },
                 ) as span:
-                    with with_span_status(span):
+                    with with_span_status(span), turn_receipts.collecting() as trip_receipts:
                         if len(text or "") > 2000:
                             span.set_attribute("truncated", True)
                         result = self._handle_message_inner(
                             text, chat_id, attachments, reply_to, forwarded_from,
                             skill=skill, prior_actions=prior_actions, text_handled=text_handled,
                         )
+                        result.trip_receipts = list(trip_receipts)
                     _output_text = result.response[:2000]
                     span.set_attribute(SpanAttributes.OUTPUT_VALUE, _output_text)
                     if len(result.response) > 2000:
@@ -1541,7 +1684,9 @@ class AgentService:
             ) as span:
                 if len(user_response) > 2000:
                     span.set_attribute("truncated", True)
-                result = self._handle_confirmation_inner(chat_id, action_id, user_response)
+                with turn_receipts.collecting() as trip_receipts:
+                    result = self._handle_confirmation_inner(chat_id, action_id, user_response)
+                    result.trip_receipts = list(trip_receipts)
                 _conf_output = result.response[:2000]
                 span.set_attribute(SpanAttributes.OUTPUT_VALUE, _conf_output)
                 if len(result.response) > 2000:
@@ -3397,19 +3542,116 @@ class AgentService:
 
         return ok({"event_id": event_id, "date": target_date})
 
+    _TRIPS_OFF = "Location trips are off (LOCATION_AWARENESS is not on)"
+
     def _tool_set_trip_purpose(self, params: dict) -> dict:
-        """The user's answer about a location trip (trips spec §6.2, §6.4)."""
-        from src.services.location import runtime as location_runtime
+        """The user's answer about a location trip: name_trip, or name_stop with a stop (spec §7.4)."""
+        args: dict = {"name": params["purpose"]}
+        if params.get("stop_id"):
+            args["stop_id"] = params["stop_id"]
+            if params.get("place"):
+                args["place"] = params["place"]
+            op = "name_stop"
+        else:
+            if params.get("place"):
+                args["destination"] = params["place"]
+            op = "name_trip"
+        return self._tool_edit_trip({"trip_id": params["trip_id"], "op": op, **args})
+
+    def _tool_get_trip(self, params: dict) -> dict:
+        from src.services.location import runtime as location_runtime, view
 
         rt = location_runtime.get_runtime()
         if rt is None:
-            return err(ErrorCode.STATE_CONFLICT, "Location trips are off (LOCATION_AWARENESS is not on)")
+            return err(ErrorCode.STATE_CONFLICT, self._TRIPS_OFF)
         try:
-            result = rt.answer(params["trip_id"], params.get("stop_id"), params["purpose"], params.get("place"))
+            return ok(view.get_trip(rt.deps, rt.handles, self._current_chat_id or 0,
+                                    trip_id=params.get("trip_id"), date=params.get("date")))
         except KeyError:
-            return err(ErrorCode.PATH_NOT_FOUND, "No such trip or stop",
-                       details={"trip_id": params.get("trip_id"), "stop_id": params.get("stop_id")})
-        return ok(result)
+            return err(ErrorCode.PATH_NOT_FOUND, "No such trip", details={"trip_id": params.get("trip_id")})
+        except ValueError as exc:
+            return err(ErrorCode.STATE_CONFLICT, str(exc))
+
+    def _tool_find_place(self, params: dict) -> dict:
+        from src.services.location import runtime as location_runtime, view
+
+        rt = location_runtime.get_runtime()
+        if rt is None:
+            return err(ErrorCode.STATE_CONFLICT, self._TRIPS_OFF)
+        try:
+            return ok(view.find_place(rt.deps, rt.handles, self._current_chat_id or 0,
+                                      params["query"], params.get("near")))
+        except KeyError:
+            return err(ErrorCode.PATH_NOT_FOUND, "search again")
+        except ValueError as exc:
+            return err(ErrorCode.STATE_CONFLICT, str(exc))
+
+    def _tool_find_visit(self, params: dict) -> dict:
+        from src.services.location import runtime as location_runtime, view
+
+        rt = location_runtime.get_runtime()
+        if rt is None:
+            return err(ErrorCode.STATE_CONFLICT, self._TRIPS_OFF)
+        try:
+            return ok(view.find_visit(rt.deps, rt.handles, self._current_chat_id or 0, params["ref"],
+                                      trip_id=params.get("trip_id"), date=params.get("date")))
+        except KeyError:
+            return err(ErrorCode.PATH_NOT_FOUND, "search again")
+        except ValueError as exc:
+            return err(ErrorCode.STATE_CONFLICT, str(exc))
+
+    def _tool_edit_trip(self, params: dict) -> dict:
+        """One trip edit (spec §7.4). The redrawn message goes to the turn, not to the model."""
+        from src.services.location import edits, runtime as location_runtime, view
+
+        rt = location_runtime.get_runtime()
+        if rt is None:
+            return err(ErrorCode.STATE_CONFLICT, self._TRIPS_OFF)
+        chat_id = self._current_chat_id or 0
+        trip_id, op = params["trip_id"], params["op"]
+        args = {k: v for k, v in params.items()
+                if k not in ("trip_id", "op", "_confidence", "_reasoning", "_fast") and v is not None}
+        try:
+            result = edits.apply_edit(trip_id, op, args, rt.deps,
+                                      resolve=lambda h: rt.handles.resolve(chat_id, h))
+            kept = result.get("trip_id") or trip_id
+            ids = [kept] + ([result["split_into"]] if result.get("split_into") else [])
+            trips = [t for i in ids for t in view.get_trip(rt.deps, rt.handles, chat_id, trip_id=i)["trips"][:1]]
+        except KeyError as exc:
+            msg = "search again" if exc.args and exc.args[0] == "search again" else "No such trip or stop"
+            return err(ErrorCode.PATH_NOT_FOUND, msg, details={"trip_id": trip_id, "stop_id": args.get("stop_id")})
+        except ValueError as exc:
+            return err(ErrorCode.STATE_CONFLICT, str(exc))
+        for receipt in (result.get("receipt"), result.get("other_receipt")):
+            turn_receipts.add(receipt)
+        data: dict = {"shown_to_user": True}
+        if len(trips) == 1:
+            data["trip"] = trips[0]
+        else:
+            data["trips"] = trips
+        if result.get("conflict"):
+            data["conflict"] = result["conflict"]
+        if result.get("cancelled"):
+            data["cancelled"] = list(result["cancelled"])
+        if result.get("calendar_failed"):
+            data["calendar_failed"] = list(result["calendar_failed"])
+        if result.get("street"):
+            data["note"] = "saved as the street, not as a place of yours"
+        return ok(data)
+
+    def _tool_edit_place(self, params: dict) -> dict:
+        from src.services.location import places_edit, runtime as location_runtime
+
+        rt = location_runtime.get_runtime()
+        if rt is None:
+            return err(ErrorCode.STATE_CONFLICT, self._TRIPS_OFF)
+        try:
+            return ok(places_edit.edit_place(rt.deps, rt.handles, self._current_chat_id or 0,
+                                             params["ref"], params["op"], params.get("value")))
+        except KeyError:
+            return err(ErrorCode.PATH_NOT_FOUND, "search again")
+        except ValueError as exc:
+            return err(ErrorCode.STATE_CONFLICT, str(exc))
 
     def _tool_create_event(self, params: dict) -> dict:
         import datetime as dt

@@ -169,7 +169,7 @@ def test_message_route_streams_sse_when_requested():
         if stream_callback is not None:
             stream_callback("Hello")
             stream_callback(" world")
-        return AgentResponse(response="Hello world", iterations=1)
+        return AgentResponse(response="Hello world", iterations=1, trip_receipts=[{"text": "t"}])
 
     with patch("src.api.routes.message.get_agent") as mock_get_agent:
         # We need to avoid importing src.main here; the route imports it lazily.
@@ -203,6 +203,7 @@ def test_message_route_streams_sse_when_requested():
     assert len(text_events) >= 1
     assert len(done_events) == 1
     assert done_events[0]["response"]["response"] == "Hello world"
+    assert done_events[0]["response"]["trip_receipts"] == [{"text": "t"}]
 
 
 def test_message_route_non_streaming_unchanged():
@@ -218,7 +219,7 @@ def test_message_route_non_streaming_unchanged():
                             forwarded_from=None, stream_callback=None,
                             selected_date=None):
         received_callback.append(stream_callback)
-        return AgentResponse(response="ok", iterations=1)
+        return AgentResponse(response="ok", iterations=1, trip_receipts=[{"text": "t"}])
 
     from src.api.routes.message import router
     app = FastAPI()
@@ -233,6 +234,15 @@ def test_message_route_non_streaming_unchanged():
 
     assert r.status_code == 200
     assert r.json()["response"] == "ok"
+    assert r.json()["trip_receipts"] == [{"text": "t"}]
     # Non-streaming path must NOT pass a stream_callback
     assert len(received_callback) == 1
     assert received_callback[0] is None
+
+
+def test_on_reply_carries_trip_receipts():
+    from src.api.routes.message import _on_reply
+    from src.services.agent_service import AgentResponse
+    r = AgentResponse(response="x", trip_receipts=[{"text": "t"}])
+    assert _on_reply(response="x", route="agent", receipt=None, result=r)["trip_receipts"] == [{"text": "t"}]
+    assert _on_reply(response="x", route="fast", receipt=None)["trip_receipts"] == []

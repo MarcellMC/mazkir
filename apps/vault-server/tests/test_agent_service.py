@@ -3562,16 +3562,42 @@ def test_set_trip_purpose_is_registered_as_write(agent):
     assert "[trip" in tool["schema"]["description"]
 
 
-def test_set_trip_purpose_answers_the_runtime(agent, monkeypatch):
+def _fake_rt():
     from unittest.mock import MagicMock
     rt = MagicMock()
-    rt.answer.return_value = {"trip_id": "1a2b3c4d", "stop_id": "s1", "purpose": "Sauna", "conflict": None,
-                              "blocks": {}}
-    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    rt.deps, rt.handles = MagicMock(), MagicMock()
+    return rt
+
+
+def _edit_result(**more):
+    return {"record": {"id": "1a2b3c4d", "trip": {"lat": 32.0812345}}, "receipt": {"text": "arrival"},
+            "conflict": None, "cancelled": [], **more}
+
+
+def test_set_trip_purpose_is_an_alias_of_name_stop(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    monkeypatch.setattr("src.services.location.runtime._runtime", _fake_rt())
+    edit = MagicMock(return_value=_edit_result())
+    monkeypatch.setattr("src.services.location.edits.apply_edit", edit)
+    monkeypatch.setattr("src.services.location.view.get_trip", lambda *a, **k: {"trips": [{"id": "1a2b3c4d"}]})
     r = agent.run_tool("set_trip_purpose", {"trip_id": "1a2b3c4d", "stop_id": "s1", "purpose": "Sauna",
+                                            "place": "Sauna Club", "_confidence": 0.9})
+    assert r["ok"], r
+    assert edit.call_args.args[:2] == ("1a2b3c4d", "name_stop")
+    assert edit.call_args.args[2] == {"stop_id": "s1", "name": "Sauna", "place": "Sauna Club"}
+
+
+def test_set_trip_purpose_without_stop_is_name_trip(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    monkeypatch.setattr("src.services.location.runtime._runtime", _fake_rt())
+    edit = MagicMock(return_value=_edit_result())
+    monkeypatch.setattr("src.services.location.edits.apply_edit", edit)
+    monkeypatch.setattr("src.services.location.view.get_trip", lambda *a, **k: {"trips": [{"id": "1a2b3c4d"}]})
+    r = agent.run_tool("set_trip_purpose", {"trip_id": "1a2b3c4d", "purpose": "Run", "place": "Park",
                                             "_confidence": 0.9})
     assert r["ok"], r
-    assert rt.answer.call_args.args[:3] == ("1a2b3c4d", "s1", "Sauna")
+    assert edit.call_args.args[:2] == ("1a2b3c4d", "name_trip")
+    assert edit.call_args.args[2] == {"name": "Run", "destination": "Park"}
 
 
 def test_set_trip_purpose_when_off(agent, monkeypatch):
@@ -3581,12 +3607,170 @@ def test_set_trip_purpose_when_off(agent, monkeypatch):
 
 
 def test_set_trip_purpose_unknown_trip(agent, monkeypatch):
-    from unittest.mock import MagicMock
-    rt = MagicMock()
-    rt.answer.side_effect = KeyError("1a2b3c4d")
-    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    monkeypatch.setattr("src.services.location.runtime._runtime", _fake_rt())
+
+    def boom(*a, **k):
+        raise KeyError("1a2b3c4d")
+    monkeypatch.setattr("src.services.location.edits.apply_edit", boom)
     r = agent.run_tool("set_trip_purpose", {"trip_id": "1a2b3c4d", "purpose": "Run", "_confidence": 0.9})
     assert r["error"]["code"] == "PATH_NOT_FOUND"
+
+
+# --- Trip repair, Task 12: five tools -------------------------------------------
+
+_TRIP_TOOLS = {"get_trip": "safe", "find_place": "safe", "find_visit": "safe",
+               "edit_trip": "write", "edit_place": "write"}
+
+
+def test_trip_tools_are_registered_with_their_risks(agent):
+    for name, risk in _TRIP_TOOLS.items():
+        assert agent.tools[name]["risk"] == risk, name
+        assert agent.tools[name]["schema"]["name"] == name
+    ops = agent.tools["edit_trip"]["schema"]["input_schema"]["properties"]["op"]["enum"]
+    assert set(ops) == {"name_trip", "name_stop", "add_stop", "split_stop", "merge_stops", "set_stop_times",
+                        "remove_stop", "split_trip", "join_trips", "restore_block"}
+    assert agent.tools["edit_place"]["schema"]["input_schema"]["properties"]["op"]["enum"] == [
+        "forget", "move_to", "rename", "add_alias"]
+    assert "get_trip" in agent.tools["list_events"]["schema"]["description"]
+
+
+def test_get_trip_find_place_find_visit_call_the_view(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    rt = _fake_rt()
+    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    gt = MagicMock(return_value={"trips": []})
+    fp = MagicMock(return_value={"places": []})
+    fv = MagicMock(return_value={"visits": []})
+    monkeypatch.setattr("src.services.location.view.get_trip", gt)
+    monkeypatch.setattr("src.services.location.view.find_place", fp)
+    monkeypatch.setattr("src.services.location.view.find_visit", fv)
+    assert agent.run_tool("get_trip", {"date": "2026-11-20"})["ok"]
+    assert gt.call_args.kwargs == {"trip_id": None, "date": "2026-11-20"}
+    assert agent.run_tool("find_place", {"query": "cafe", "near": "m1"})["ok"]
+    assert fp.call_args.args[3:] == ("cafe", "m1")
+    assert agent.run_tool("find_visit", {"ref": "m2", "trip_id": "1a2b3c4d"})["ok"]
+    assert fv.call_args.args[3] == "m2" and fv.call_args.kwargs["trip_id"] == "1a2b3c4d"
+
+
+def test_trip_tools_when_off(agent, monkeypatch):
+    monkeypatch.setattr("src.services.location.runtime._runtime", None)
+    for name, args in [("get_trip", {}), ("find_place", {"query": "x"}), ("find_visit", {"ref": "m1"}),
+                       ("edit_trip", {"trip_id": "1a2b3c4d", "op": "remove_stop", "stop_id": "s1", "_confidence": 0.9}),
+                       ("edit_place", {"ref": "place:x", "op": "forget", "_confidence": 0.9})]:
+        r = agent.run_tool(name, args)
+        assert r["ok"] is False and r["error"]["code"] == "STATE_CONFLICT", name
+        assert "Location trips are off" in r["error"]["message"]
+
+
+def test_edit_trip_sends_the_receipt_to_the_turn_not_the_result(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    from src.services.location import turn_receipts
+    rt = _fake_rt()
+    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    edit = MagicMock(return_value=_edit_result(cancelled=["stop:s2"]))
+    monkeypatch.setattr("src.services.location.edits.apply_edit", edit)
+    monkeypatch.setattr("src.services.location.view.get_trip",
+                        lambda *a, **k: {"trips": [{"id": "1a2b3c4d", "stops": []}]})
+    agent._current_chat_id = 7
+    with turn_receipts.collecting() as got:
+        r = agent.run_tool("edit_trip", {"trip_id": "1a2b3c4d", "op": "remove_stop", "stop_id": "s2",
+                                         "_confidence": 0.9, "_reasoning": "x"})
+    assert r["ok"], r
+    assert got == [{"text": "arrival"}]
+    assert "receipt" not in json.dumps(r) and "arrival" not in json.dumps(r)
+    data = r["data"]
+    assert data["shown_to_user"] is True and data["trip"]["id"] == "1a2b3c4d"
+    assert data["cancelled"] == ["stop:s2"]
+    # the op args, without the gate's fields, and a resolver bound to the chat
+    assert edit.call_args.args[:3] == ("1a2b3c4d", "remove_stop", {"stop_id": "s2"})
+    edit.call_args.kwargs["resolve"]("m1")
+    rt.handles.resolve.assert_called_with(7, "m1")
+
+
+def test_edit_trip_split_returns_both_trips_and_receipts(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    from src.services.location import turn_receipts
+    monkeypatch.setattr("src.services.location.runtime._runtime", _fake_rt())
+    monkeypatch.setattr("src.services.location.edits.apply_edit", MagicMock(return_value=_edit_result(
+        split_into="55667788", other_receipt={"text": "second"})))
+    monkeypatch.setattr("src.services.location.view.get_trip",
+                        lambda deps, h, c, trip_id=None, date=None: {"trips": [{"id": trip_id}]})
+    with turn_receipts.collecting() as got:
+        r = agent.run_tool("edit_trip", {"trip_id": "1a2b3c4d", "op": "split_trip", "at": "s2",
+                                         "_confidence": 0.9})
+    assert [t["id"] for t in r["data"]["trips"]] == ["1a2b3c4d", "55667788"]
+    assert got == [{"text": "arrival"}, {"text": "second"}]
+
+
+def test_edit_trip_street_note_and_errors(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    monkeypatch.setattr("src.services.location.runtime._runtime", _fake_rt())
+    monkeypatch.setattr("src.services.location.view.get_trip", lambda *a, **k: {"trips": [{"id": "x"}]})
+    monkeypatch.setattr("src.services.location.edits.apply_edit",
+                        MagicMock(return_value=_edit_result(street=True)))
+    args = {"trip_id": "1a2b3c4d", "op": "name_stop", "stop_id": "s1", "name": "Yesod", "_confidence": 0.9}
+    r = agent.run_tool("edit_trip", args)
+    assert "saved as the street, not as a place of yours" in json.dumps(r["data"])
+    for exc, code, text in [(KeyError("search again"), "PATH_NOT_FOUND", "search again"),
+                            (KeyError("1a2b3c4d"), "PATH_NOT_FOUND", None),
+                            (ValueError("stop s1 is still going on"), "STATE_CONFLICT", "still going on")]:
+        monkeypatch.setattr("src.services.location.edits.apply_edit", MagicMock(side_effect=exc))
+        r = agent.run_tool("edit_trip", args)
+        assert r["error"]["code"] == code
+        if text:
+            assert text in r["error"]["message"]
+
+
+def test_edit_place_calls_places_edit(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    rt = _fake_rt()
+    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    ep = MagicMock(return_value={"ref": "place:x", "op": "rename", "label": "New"})
+    monkeypatch.setattr("src.services.location.places_edit.edit_place", ep)
+    agent._current_chat_id = 7
+    r = agent.run_tool("edit_place", {"ref": "place:x", "op": "rename", "value": "New", "_confidence": 0.9})
+    assert r["ok"], r
+    assert ep.call_args.args[2:] == (7, "place:x", "rename", "New")
+    ep.side_effect = KeyError("search again")
+    assert agent.run_tool("edit_place", {"ref": "place:x", "op": "forget", "_confidence": 0.9})[
+        "error"]["code"] == "PATH_NOT_FOUND"
+    ep.side_effect = ValueError("rename needs a value")
+    assert agent.run_tool("edit_place", {"ref": "place:x", "op": "rename", "_confidence": 0.9})[
+        "error"]["code"] == "STATE_CONFLICT"
+
+
+def test_trip_tool_results_hold_no_coordinates(agent, monkeypatch):
+    import re
+    from unittest.mock import MagicMock
+    monkeypatch.setattr("src.services.location.runtime._runtime", _fake_rt())
+    # the view and edits hand back clean data; the record (with positions) must never be echoed
+    monkeypatch.setattr("src.services.location.view.get_trip", lambda *a, **k: {"trips": [{"id": "x", "stops": []}]})
+    monkeypatch.setattr("src.services.location.view.find_place", lambda *a, **k: {"places": [{"ref": "m1"}]})
+    monkeypatch.setattr("src.services.location.view.find_visit", lambda *a, **k: {"visits": []})
+    monkeypatch.setattr("src.services.location.edits.apply_edit", MagicMock(return_value=_edit_result()))
+    monkeypatch.setattr("src.services.location.places_edit.edit_place",
+                        MagicMock(return_value={"ref": "place:x", "op": "forget", "label": "X"}))
+    calls = [("get_trip", {}), ("find_place", {"query": "x"}), ("find_visit", {"ref": "m1"}),
+             ("edit_trip", {"trip_id": "1a2b3c4d", "op": "remove_stop", "stop_id": "s1", "_confidence": 0.9}),
+             ("edit_place", {"ref": "place:x", "op": "forget", "_confidence": 0.9})]
+    for name, args in calls:
+        text = json.dumps(agent.run_tool(name, args))
+        assert not re.search(r"\d+\.\d{4,}", text), name
+        for key in ('"lat"', '"lng"', '"osm"'):
+            assert key not in text, (name, key)
+
+
+def test_handle_message_collects_trip_receipts(agent):
+    from unittest.mock import patch
+    from src.services.location import turn_receipts
+
+    def inner(*a, **k):
+        turn_receipts.add({"text": "r1"})
+        return AgentResponse(response="ok")
+    with patch.object(agent, "_handle_message_inner", side_effect=inner):
+        res = agent.handle_message(text="hi", chat_id=1)
+    assert res.trip_receipts == [{"text": "r1"}]
+    turn_receipts.add({"text": "outside"})        # outside a turn: does nothing, raises nothing
 
 
 # --- Photos and locations in words (repair spec §8) ---------------------------

@@ -275,6 +275,7 @@ def _on_reply(*, response: str, route: str, receipt: dict | None, result=None) -
         "confirmation_choices": result.confirmation_choices if result else None,
         "receipt": receipt,
         "route": route,
+        "trip_receipts": result.trip_receipts if result else [],
     }
 
 
@@ -562,6 +563,7 @@ async def handle_message(body: MessageRequest, stream: bool = False):
             "awaiting_confirmation": result.awaiting_confirmation,
             "pending_action_id": result.pending_action_id,
             "confirmation_choices": result.confirmation_choices,
+            "trip_receipts": result.trip_receipts,
         }
 
     # Streaming path — return Server-Sent Events.
@@ -617,6 +619,7 @@ async def handle_message(body: MessageRequest, stream: bool = False):
             "awaiting_confirmation": result.awaiting_confirmation,
             "pending_action_id": result.pending_action_id,
             "confirmation_choices": result.confirmation_choices,
+            "trip_receipts": result.trip_receipts,
         }
         yield f"data: {json.dumps({'done': True, 'response': final_payload})}\n\n"
 
@@ -656,4 +659,5 @@ def handle_confirmation(body: ConfirmationRequest):
         "awaiting_confirmation": result.awaiting_confirmation,
         "pending_action_id": result.pending_action_id,
         "confirmation_choices": result.confirmation_choices,
+        "trip_receipts": result.trip_receipts,
     }
