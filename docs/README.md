@@ -29,6 +29,7 @@ and the repo `CLAUDE.md` overrides that, so a file appearing under
 - [`specs/2026-09-27-fast-lane-design.md`](specs/2026-09-27-fast-lane-design.md) — the current arc
 - [`specs/2026-11-10-location-trips-design.md`](specs/2026-11-10-location-trips-design.md) — location awareness: trips, stops, asking, filling the day (plan: [`plans/2026-11-10-location-trips.md`](plans/2026-11-10-location-trips.md))
 - [`research/jev-message-routing/report.md`](research/jev-message-routing/report.md) — whether TypeSafe AI's Jev fits Mazkir's message router
+- [`research/cross-midnight/report.md`](research/cross-midnight/report.md) — how apps and agents handle things that cross midnight, and an audit of Mazkir's own day rules
 
 ## Finding a doc
 
