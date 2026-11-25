@@ -28,11 +28,12 @@ from zoneinfo import ZoneInfo
 
 from src.services.fast_lane import places as places_mod
 from src.services.approval import resolve_state
-from src.services.location.edits import CHANGED_STOP, stop_changed, trip_of
+from src.services.location.edits import CHANGED_STOP, JOINED_TRIP, stop_changed, trip_of
 from src.services.location.home import find_home
 from src.services.location.messages import arrival_receipt, notice_receipt, part_for_line, question_receipt
 from src.services.location.model import TrackerEvent, safe_error
-from src.services.location.pipeline import TripDeps, apply_answer, defer_stop, handle_event, options_for
+from src.services.location.pipeline import (TripDeps, apply_answer, defer_stop, handle_event, joined_target,
+                                             options_for)
 from src.services.location.raw import load_fixes, point_to_fix
 from src.services.location.writer import fragments
 from src.services.location.tracker import Params, Tracker
@@ -207,6 +208,8 @@ class LocationRuntime:
     def answer(self, trip_id: str, stop_id: str | None, purpose: str, place: str | None) -> dict[str, Any]:
         out = apply_answer(trip_id, stop_id, purpose, place, self.deps)
         rec = out["record"]
+        if rec["id"] != trip_id:                  # joined into another trip since: answered there
+            trip_id, stop_id = joined_target(trip_id, stop_id, self.deps)
         return {"trip_id": trip_id, "stop_id": stop_id, "purpose": purpose, "conflict": out["conflict"],
                 "blocks": {part: ref.get("event_id") for part, ref in rec["blocks"].items()}}
 
@@ -237,6 +240,9 @@ class LocationRuntime:
             raise KeyError(trip_id)
         out: dict[str, Any] = {"receipt": None, "toast": None, "open_question": None, "approvals": [],
                                "syncs": [], "rerender": False}
+        if rec.get("joined_into"):
+            out["toast"] = JOINED_TRIP          # its blocks and questions are the trip it joined now
+            return out
         if action in ("ok", "no"):
             return self._approve(rec, line, action, out)
 

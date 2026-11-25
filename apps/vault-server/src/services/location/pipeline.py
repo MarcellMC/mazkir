@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -31,7 +32,7 @@ from opentelemetry.trace import Status, StatusCode
 from src.services.fast_lane.places import PAUSE_KIND, add_pause_spot, learn_place, load_places, nearest
 from src.services.location.context import gather_context
 from src.services.location.decide import Decision, Option, decide
-from src.services.location.edits import absorb_added, trip_of
+from src.services.location.edits import absorb_added, trip_of, window_end
 from src.services.location.guess import Guess, describe_trip, guess
 from src.services.location.history import load_confirmed, score_history
 from src.services.location.map_lookup import map_area, map_near
@@ -250,6 +251,11 @@ def _name_from_your_block(rec: dict, deps: TripDeps) -> None:
 
 
 def _on_back_home(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
+    close_trip(rec, deps, places, ev.kind)
+
+
+def close_trip(rec: dict, deps: TripDeps, places, event: str = "BACK_HOME") -> None:
+    """The trip is over (home, or an edit cut it): questions wait for the arrival message, and it asks why."""
     rec["closed"] = True
     for sid in rec.get("stops") or {}:
         deps.outbox.withdraw(question_key(rec["id"], sid))
@@ -257,15 +263,15 @@ def _on_back_home(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     _apply(rec, deps, places)
     _name_from_your_block(rec, deps)
     if (rec.get("purpose") or {}).get("name") or rec.get("trip_question"):
-        _log(deps, ev.kind, rec, decision=Decision("name", (rec.get("purpose") or {}).get("name"),
-                                                   reason="already named"))
+        _log(deps, event, rec, decision=Decision("name", (rec.get("purpose") or {}).get("name"),
+                                                 reason="already named"))
         return
     trip = trip_of(rec)
     guesses, dropped, history = _guess("trip", trip, None, deps, places)
     d = decide(guesses, history, known_place=None, may_ask=True)
     if d.action == "ask":
         rec["trip_question"] = {"options": [o.to_dict() for o in d.options], "asked_at": deps.now().isoformat()}
-    _log(deps, ev.kind, rec, None, history, guesses, dropped, d)
+    _log(deps, event, rec, None, history, guesses, dropped, d)
 
 
 def _apply(rec: dict, deps: TripDeps, places) -> None:
@@ -303,8 +309,49 @@ def handle_event(ev: TrackerEvent, deps: TripDeps) -> None:
 
 
 def _handle(ev: TrackerEvent, deps: TripDeps) -> None:
-    places = _places(deps)
+    # The records a split made of this trip are locked in trip order, as
+    # `edits` takes them, so the two can never wait on each other.
+    with ExitStack() as held:
+        rec = _route(ev, deps, held)
+        if rec is not None and rec.get("joined_into"):
+            rec["trip"] = ev.trip.to_dict()
+            deps.records.save(rec)
+            _log(deps, ev.kind, rec, ev.stop_id, extra={"skipped": "joined into another trip"})
+            return
+        _handle_on(rec, ev, deps)
+
+
+def _route(ev: TrackerEvent, deps: TripDeps, held: ExitStack) -> dict | None:
+    """The record an event belongs to: a trip you split goes on in the record it was split into.
+
+    Follows `split_into` while the event is at or after a record's cut, and
+    gives every record of the chain the tracker's trip as it is now: each
+    one's window edit keeps it to its own part.
+    """
     rec = deps.records.get(ev.trip.id)
+    chain: list[dict] = []
+    while rec is not None and all(r["id"] != rec["id"] for r in chain):
+        chain.append(rec)
+        nxt = rec.get("split_into")
+        if not nxt:
+            break
+        held.enter_context(deps.records.lock_for(nxt))
+        rec = deps.records.get(nxt)
+    if not chain:
+        return None
+    target = next((r for r in chain
+                   if not (r.get("split_into") and (cut := window_end(r)) is not None and ev.ts >= cut)), chain[-1])
+    for r in chain:
+        if r is target or (r.get("last_event_ts") and ev.ts < dt.datetime.fromisoformat(r["last_event_ts"])):
+            continue
+        r["trip"] = ev.trip.to_dict()
+        r["last_event_ts"] = ev.ts.isoformat()
+        deps.records.save(r)
+    return target
+
+
+def _handle_on(rec: dict | None, ev: TrackerEvent, deps: TripDeps) -> None:
+    places = _places(deps)
     if rec is not None and rec.get("last_event_ts") and ev.ts < dt.datetime.fromisoformat(rec["last_event_ts"]):
         # An older event replayed after newer ones (a failed one, from the
         # inbox) would rewind the trip: reopen stops, drop later parts.
@@ -347,9 +394,31 @@ def defer_stop(trip_id: str, stop_id: str, deps: TripDeps) -> dict[str, Any]:
 
 def apply_answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str | None, deps: TripDeps,
                  *, pause: bool = False, osm: str | None = None) -> dict[str, Any]:
-    """Your answer to a question about a stop or the whole trip. Raises KeyError for an unknown trip or stop."""
+    """Your answer to a question about a stop or the whole trip. Raises KeyError for an unknown trip or stop.
+
+    An answer about a trip since joined into another goes to that one, its
+    stop by the id the join gave it.
+    """
+    trip_id, stop_id = joined_target(trip_id, stop_id, deps)
     with deps.records.lock_for(trip_id):
         return _answer(trip_id, stop_id, purpose, place, deps, pause, osm)
+
+
+def joined_target(trip_id: str, stop_id: str | None, deps: TripDeps) -> tuple[str, str | None]:
+    """The trip (and stop id) a trip joined into another now is: itself when never joined."""
+    seen = set()
+    rec = deps.records.get(trip_id)
+    while rec is not None and rec.get("joined_into") and trip_id not in seen:
+        seen.add(trip_id)
+        into = deps.records.get(rec["joined_into"])
+        if into is None:
+            break
+        join = next((e for e in reversed(into.get("edits") or [])
+                     if e.get("op") == "join" and e.get("other_id") == trip_id), None)
+        if stop_id is not None:
+            stop_id = f"{(join or {}).get('prefix') or 'j'}{stop_id}"
+        trip_id, rec = into["id"], into
+    return trip_id, stop_id
 
 
 def _map_osm(info: dict, *names: str | None) -> str | None:

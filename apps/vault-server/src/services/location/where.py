@@ -126,6 +126,8 @@ def _stop_at(records: Any, at: dt.datetime | None) -> tuple[str, Stop, str | Non
     if records is None or at is None or at.tzinfo is None:
         return None
     for rec in records.all():
+        if rec.get("joined_into"):
+            continue                                   # its stops are the trip it was joined into
         try:
             trip = trip_of(rec)
         except (KeyError, TypeError, ValueError):

@@ -672,3 +672,303 @@ def test_absorb_log_line_carries_names_only(tmp_path):
     assert line["stop_ids"] == ["x1", "s2"] and line["cancelled"] == [] and line["calendar_failed"] == []
     text = json.dumps(line, default=str)
     assert '"lat"' not in text and not re.search(r"\d+\.\d{4,}", text)
+
+
+# --- Task 10: splitting and joining trips ---------------------------------------
+
+def owners(deps):
+    """event_id → the trip records that hold it in their blocks: never more than one."""
+    out: dict[str, list[str]] = {}
+    for rec in deps.records.all():
+        for ref in (rec.get("blocks") or {}).values():
+            if ref.get("gone"):
+                continue
+            for frag in fragments(ref):
+                out.setdefault(frag["event_id"], []).append(rec["id"])
+    return out
+
+
+def assert_no_event_owned_twice(deps):
+    twice = {k: v for k, v in owners(deps).items() if len(v) > 1}
+    assert not twice, twice
+
+
+def named_errands(deps):
+    apply_answer(TRIP, None, "Errands", None, deps)
+    apply_answer(TRIP, "s1", "Market", None, deps)
+    apply_answer(TRIP, "s2", "Bakery", None, deps)
+
+
+def test_split_closed_trip_at_a_stop(tmp_path):
+    deps, _ = closed_trip(tmp_path)
+    named_errands(deps)
+    bakery = approve(deps, deps.records.get(TRIP), "stop:s2")
+    out = apply_edit(TRIP, "split_trip", {"at": "s1"}, deps)
+    first = out["record"]
+    new_id = out["split_into"]
+    second = deps.records.get(new_id)
+    assert re.fullmatch(r"[0-9a-f]{8}", new_id) and new_id != TRIP
+    # the first ends where s1 ends, closed; the second starts there
+    t1, t2 = trip_of(first), trip_of(second)
+    assert stop_ids(first) == ["s1"] and stop_ids(second) == ["s2"]
+    assert t1.back_at == t1.stop("s1").end == t2.left_at
+    assert first["closed"] is True and first["split_into"] == new_id
+    assert second["split_from"] == TRIP and second["closed"] is True
+    assert first["edits"][-1] == {"op": "window", "end": t1.back_at.isoformat()}
+    assert {"op": "window", "start": t2.left_at.isoformat()}.items() <= second["edits"][-1].items()
+    # what you said about each stop went with it; the purpose stayed with the first
+    assert "s2" not in first["stops"] and second["stops"]["s2"]["name"] == "Bakery"
+    assert first["purpose"]["name"] == "Errands" and not (second.get("purpose") or {}).get("name")
+    # blocks went with their stops: the approved Bakery block is the second's, still approved
+    assert "stop:s2" not in first["blocks"] and second["blocks"]["stop:s2"]["event_id"] == bakery
+    [b] = by_name(deps, "Bakery")
+    assert resolve_state(b) == "approved" and b["trip"] == {"id": new_id, "part": "stop:s2"}
+    assert out["cancelled"] == []
+    # the first's trip block ends at the cut; the second has a pending trip proposal of its own
+    assert block(deps, first, "trip")["end_time"][11:16] == hm(t1.back_at)
+    own = block(deps, second, "trip")
+    assert own["proposed"] is True and resolve_state(own) == "pending" and own["trip"]["id"] == new_id
+    assert second["trip_question"] is not None                  # the second asks on its own
+    assert deps.outbox.find(TRIP, "arrival") and deps.outbox.find(new_id, "arrival")
+    assert_no_event_owned_twice(deps)
+
+
+def test_split_at_a_stop_into_the_second_with_the_purpose(tmp_path):
+    deps, _ = closed_trip(tmp_path)
+    named_errands(deps)
+    out = apply_edit(TRIP, "split_trip", {"at": "s2", "stop_side": "second", "purpose_to": "second"}, deps)
+    first, second = out["record"], deps.records.get(out["split_into"])
+    assert stop_ids(first) == ["s1"] and stop_ids(second) == ["s2"]
+    assert hm(trip_of(first).back_at) == "10:43" == hm(trip_of(second).left_at)
+    assert second["purpose"]["name"] == "Errands" and not first.get("purpose")
+    assert first["trip_question"] is not None                    # now the first has none: it asks
+    assert block(deps, second, "trip")["name"] == "Errands"
+    assert_no_event_owned_twice(deps)
+
+
+def test_split_by_time(tmp_path):
+    deps, _ = closed_trip(tmp_path)
+    out = apply_edit(TRIP, "split_trip", {"at": "10:39"}, deps)       # walking from s1 to s2
+    first, second = out["record"], deps.records.get(out["split_into"])
+    assert stop_ids(first) == ["s1"] and stop_ids(second) == ["s2"]
+    assert hm(trip_of(first).back_at) == "10:39" == hm(trip_of(second).left_at)
+    assert_no_event_owned_twice(deps)
+
+
+def test_split_by_a_time_inside_a_stop_goes_to_its_edge(tmp_path):
+    deps, _ = closed_trip(tmp_path)
+    out = apply_edit(TRIP, "split_trip", {"at": "10:50"}, deps)       # inside s2: s2 stays first
+    first = out["record"]
+    assert stop_ids(first) == ["s1", "s2"] and hm(trip_of(first).back_at) == "10:58"
+    assert stop_ids(deps.records.get(out["split_into"])) == []
+    deps, _ = closed_trip(tmp_path / "b")
+    out = apply_edit(TRIP, "split_trip", {"at": "10:50", "stop_side": "second"}, deps)
+    assert hm(trip_of(out["record"]).back_at) == "10:43"
+    assert stop_ids(deps.records.get(out["split_into"])) == ["s2"]
+
+
+def test_split_refused_outside_the_trip(tmp_path):
+    deps, _ = closed_trip(tmp_path)
+    for when in ("09:00", "11:40"):
+        with pytest.raises(ValueError):
+            apply_edit(TRIP, "split_trip", {"at": when}, deps)
+    with pytest.raises(KeyError):
+        apply_edit(TRIP, "split_trip", {"at": "s9"}, deps)
+    with pytest.raises(ValueError):
+        apply_edit(TRIP, "split_trip", {"at": "s1", "stop_side": "middle"}, deps)
+    rec = deps.records.get(TRIP)
+    assert not rec.get("split_into") and len(deps.records.all()) == 1
+
+
+def test_split_never_cancels_an_approved_leg(tmp_path):
+    deps, legs = walk_with_approved_legs(tmp_path)
+    out = apply_edit(TRIP, "split_trip", {"at": "s1"}, deps)
+    first, second = out["record"], deps.records.get(out["split_into"])
+    assert out["cancelled"] == []
+    for event_id in legs.values():
+        held = owners(deps)[event_id]
+        assert len(held) == 1
+        e = next(e for e in deps.events.get_events("2026-11-13") if e["id"] == event_id)
+        assert resolve_state(e) == "approved" and e["trip"]["id"] == held[0]
+    # the leg out of s1 starts at the cut: it is the second's
+    assert legs["leg:s1-s2"] in [r["event_id"] for r in second["blocks"].values()]
+    assert first["blocks"]["leg:start-s1"]["event_id"] == legs["leg:start-s1"]
+    assert_no_event_owned_twice(deps)
+
+
+def test_split_result_has_no_coordinates(tmp_path):
+    logs: list[dict] = []
+    deps, _ = closed_trip(tmp_path, logs=logs)
+    out = apply_edit(TRIP, "split_trip", {"at": "s1"}, deps)
+    shown = json.dumps({k: v for k, v in out.items() if k != "record"}, ensure_ascii=False, default=str)
+    assert '"lat"' not in shown and '"lng"' not in shown and not re.search(r"\d+\.\d{4,}", shown)
+    edits = [line for line in logs if line["event"] == "EDIT"]
+    assert edits and all(not re.search(r"\d+\.\d{4,}", json.dumps(x, default=str)) for x in edits)
+
+
+# --- Review Focus 5: split the open trip, then the tracker carries on --------------
+
+def test_split_open_trip_then_home(tmp_path):
+    deps, clock, evs, second = _open_until_s2(tmp_path)
+    apply_answer(TRIP, "s1", "Market", None, deps)
+    out = apply_edit(TRIP, "split_trip", {"at": "s1"}, deps)
+    new_id = out["split_into"]
+    first = deps.records.get(TRIP)
+    assert first["closed"] is True and deps.records.get(new_id)["closed"] is False
+    before = (trip_of(first).to_dict(), first["blocks"], first["stops"], first.get("purpose"))
+    run(deps, clock, evs[second:])                                  # STOPPED s2 … BACK_HOME
+    first, tail = deps.records.get(TRIP), deps.records.get(new_id)
+    assert tail["closed"] is True and stop_ids(tail) == ["s2"]
+    assert (trip_of(first).to_dict(), first["blocks"], first["stops"], first.get("purpose")) == before
+    # s2 was handled on the record it was split into: asked there, never on the first
+    assert "s2" in tail["stops"] and "s2" not in first["stops"]
+    # every record in the chain carries the tracker's trip; the windows keep them apart
+    assert first["trip"] == tail["trip"] and first["trip"]["back_at"] is not None
+    assert deps.outbox.find(new_id, "arrival") is not None
+    assert_no_event_owned_twice(deps)
+
+
+def test_tracker_events_follow_the_split_chain(tmp_path):
+    deps, clock, evs, second = _open_until_s2(tmp_path)
+    mid = apply_edit(TRIP, "split_trip", {"at": "s1"}, deps)["split_into"]
+    left_s2 = next(i for i, e in enumerate(evs) if e.kind == "LEFT_STOP" and e.stop_id == "s2")
+    run(deps, clock, evs[second:left_s2 + 1])                       # at s2 and away again: on `mid`
+    clock["now"] = evs[left_s2].ts
+    last = apply_edit(mid, "split_trip", {"at": "s2"}, deps)["split_into"]
+    run(deps, clock, evs[left_s2 + 1:])                             # BACK_HOME goes to the last one
+    a, b, c = (deps.records.get(i) for i in (TRIP, mid, last))
+    assert a["split_into"] == mid and b["split_from"] == TRIP and b["split_into"] == last
+    assert c["split_from"] == mid
+    assert stop_ids(a) == ["s1"] and stop_ids(b) == ["s2"] and stop_ids(c) == []
+    assert all(r["closed"] for r in (a, b, c))
+    assert trip_of(c).back_at is not None and a["trip"] == b["trip"] == c["trip"]
+    assert_no_event_owned_twice(deps)
+
+
+# --- joining --------------------------------------------------------------------
+
+OTHER = "5e6f7a8b"
+THIRD = "9c0d1e2f"
+
+
+def three_trips():
+    """TRIP (two_stops, home 11:15), OTHER out 12:00 to a stop at 500 m, THIRD out 13:20."""
+    return two_stops().stay(40).walk_to(500).stay(10).walk_to(0).stay(40).walk_to(300).stay(6) \
+        .walk_to(0).stay(5)
+
+
+def run_three(tmp_path, upto=None):
+    deps, clock = make_deps(tmp_path)
+    ids = iter([TRIP, OTHER, THIRD])
+    evs = feed_all(Tracker(HOME, [], new_id=lambda: next(ids)), three_trips().fixes)
+    if upto is not None:
+        evs = evs[:upto(evs)]
+    for ev in evs:
+        clock["now"] = ev.ts
+        handle_event(ev, deps)
+    return deps, clock, evs
+
+
+def test_join_two_closed_trips(tmp_path):
+    deps, _, _ = run_three(tmp_path)
+    apply_answer(TRIP, "s1", "Market", None, deps)
+    apply_answer(OTHER, "s1", "Kiosk", None, deps)
+    other_back = trip_of(deps.records.get(OTHER)).back_at
+    out = apply_edit(TRIP, "join_trips", {"other_trip_id": OTHER}, deps)
+    first, other = out["record"], deps.records.get(OTHER)
+    assert out["trip_id"] == TRIP
+    assert stop_ids(first) == ["s1", "s2", "js1"]
+    assert trip_of(first).back_at == other_back
+    assert first["stops"]["js1"]["name"] == "Kiosk"
+    assert other["joined_into"] == TRIP and other["blocks"] == {}
+    assert first["edits"][-1]["op"] == "join"
+    assert [s["id"] for s in first["edits"][-1]["trip"]["stops"]] == ["js1"]
+    # one arrival message for the joined trip
+    assert deps.outbox.find(TRIP, "arrival") is not None and deps.outbox.find(OTHER, "arrival") is None
+    # the other's pending guesses are gone; the joined trip's own blocks cover its stop
+    assert not [e for e in deps.events.get_events("2026-11-13") if (e.get("trip") or {}).get("id") == OTHER]
+    assert block(deps, first, "stop:js1")["name"] == "Kiosk"
+    assert block(deps, first, "trip")["end_time"][11:16] == hm(other_back)
+    assert_no_event_owned_twice(deps)
+
+
+def test_join_from_the_later_trip_keeps_the_first(tmp_path):
+    deps, _, _ = run_three(tmp_path)
+    out = apply_edit(OTHER, "join_trips", {"other_trip_id": TRIP}, deps)
+    assert out["trip_id"] == TRIP and deps.records.get(OTHER)["joined_into"] == TRIP
+
+
+def test_join_refused_while_open(tmp_path):
+    def at_other_stop(evs):
+        return next(i for i, e in enumerate(evs) if e.kind == "STOPPED" and e.trip.id == OTHER) + 1
+    deps, _, _ = run_three(tmp_path, upto=at_other_stop)
+    with pytest.raises(ValueError, match="a trip is still open"):
+        apply_edit(TRIP, "join_trips", {"other_trip_id": OTHER}, deps)
+    assert not deps.records.get(OTHER).get("joined_into")
+
+
+def test_join_refused_when_not_consecutive(tmp_path):
+    deps, _, _ = run_three(tmp_path)
+    with pytest.raises(ValueError):
+        apply_edit(TRIP, "join_trips", {"other_trip_id": THIRD}, deps)      # OTHER came between
+    with pytest.raises(ValueError):
+        apply_edit(TRIP, "join_trips", {"other_trip_id": TRIP}, deps)
+    with pytest.raises(KeyError):
+        apply_edit(TRIP, "join_trips", {"other_trip_id": "ffffffff"}, deps)
+
+
+def test_join_keeps_an_approved_block_of_the_joined_trip(tmp_path):
+    deps, _, _ = run_three(tmp_path)
+    apply_answer(OTHER, "s1", "Kiosk", None, deps)
+    other = deps.records.get(OTHER)
+    kiosk = approve(deps, other, "stop:s1")
+    own_trip = approve(deps, other, "trip")
+    approve(deps, deps.records.get(TRIP), "trip")                 # the first's trip block is yours too
+    out = apply_edit(TRIP, "join_trips", {"other_trip_id": OTHER}, deps)
+    first = out["record"]
+    # its stop is planned in the joined trip: re-keyed there, the same event, still approved
+    assert first["blocks"]["stop:js1"]["event_id"] == kiosk
+    [k] = by_name(deps, "Kiosk")
+    assert resolve_state(k) == "approved" and k["trip"] == {"id": TRIP, "part": "stop:js1"}
+    # its trip block has nowhere to go (the first holds one you approved): it is yours now,
+    # no trip's block; the writer's merge rules then treat it as a block of yours
+    e = next(e for e in deps.events.get_events("2026-11-13") if e["id"] == own_trip)
+    assert resolve_state(e) == "approved" and not e.get("proposed")
+    assert own_trip not in owners(deps)
+    assert_no_event_owned_twice(deps)
+
+
+def test_history_skips_a_joined_trip(tmp_path):
+    from src.services.location.history import load_confirmed
+
+    deps, clock, _ = run_three(tmp_path)
+    apply_answer(TRIP, None, "Errands", None, deps)
+    apply_answer(OTHER, None, "Gym", None, deps)
+    apply_edit(TRIP, "join_trips", {"other_trip_id": OTHER}, deps)
+    purposes = [c.purpose for c in load_confirmed(deps.labels_dir, deps.records, deps.events, TZ, clock["now"])]
+    assert "Gym" not in purposes and "Errands" in purposes
+
+
+def test_join_result_has_no_coordinates(tmp_path):
+    deps, _, _ = run_three(tmp_path)
+    out = apply_edit(TRIP, "join_trips", {"other_trip_id": OTHER}, deps)
+    shown = json.dumps({k: v for k, v in out.items() if k != "record"}, ensure_ascii=False, default=str)
+    assert '"lat"' not in shown and not re.search(r"\d+\.\d{4,}", shown)
+
+
+def test_a_joined_trip_answers_through_the_trip_it_joined(tmp_path):
+    deps, _, _ = run_three(tmp_path)
+    apply_edit(TRIP, "join_trips", {"other_trip_id": OTHER}, deps)
+    rt = LocationRuntime(tmp_path / "loc", deps, synchronous=True)
+    # a reply to the other trip's old message reaches the joined trip, its stop by its new id
+    out = rt.answer(OTHER, "s1", "Kiosk", None)
+    assert out["trip_id"] == TRIP and out["stop_id"] == "js1"
+    assert deps.records.get(TRIP)["stops"]["js1"]["name"] == "Kiosk"
+    other = deps.records.get(OTHER)
+    assert other["blocks"] == {} and not other["stops"].get("s1", {}).get("answered")
+    # a button on the old message does nothing there
+    tap = rt.tap(OTHER, "trip", "a0")
+    assert tap["toast"] == "That trip is part of another one now — see the latest message."
+    assert deps.records.get(OTHER)["blocks"] == {}
+    with pytest.raises(ValueError):
+        apply_edit(OTHER, "remove_stop", {"stop_id": "s1"}, deps)

@@ -115,7 +115,7 @@ def load_confirmed(labels_dir: Path, records, events, tz: str, now: dt.datetime,
     cache: dict[str, list[dict]] = {}
     for rec in records.all():
         purpose = rec.get("purpose")
-        if not purpose or not purpose.get("name"):
+        if rec.get("joined_into") or not purpose or not purpose.get("name"):
             continue
         trip = trip_of(rec)
         if trip.left_at < since or not _is_confirmed(rec, events, cache):

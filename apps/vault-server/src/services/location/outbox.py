@@ -95,6 +95,16 @@ class Outbox:
             self._persist()
             return True
 
+    def remove(self, item_id: str | None) -> bool:
+        """Take back an unsent message by id (a trip joined into another: its arrival is the other's now)."""
+        with self._lock:
+            before = len(self._items)
+            self._items = [i for i in self._items if i["id"] != item_id]
+            if len(self._items) == before:
+                return False
+            self._persist()
+            return True
+
     def find(self, trip_id: str, kind: str) -> dict[str, Any] | None:
         with self._lock:
             return next((dict(i) for i in self._items if i["trip_id"] == trip_id and i["kind"] == kind), None)
