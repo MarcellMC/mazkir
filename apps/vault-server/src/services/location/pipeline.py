@@ -35,7 +35,7 @@ from src.services.location.decide import Decision, Option, decide
 from src.services.location.edits import absorb_added, trip_of, window_end
 from src.services.location.guess import Guess, describe_trip, guess
 from src.services.location.history import load_confirmed, score_history
-from src.services.location.map_lookup import map_area, map_near
+from src.services.location.map_lookup import map_area, map_near, street_named
 from src.services.location.messages import arrival_receipt, question_receipt
 from src.services.location.model import TrackerEvent, Trip, safe_error
 from src.services.location.names import canonical, known_names, name_key, title_for
@@ -434,6 +434,7 @@ def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str |
         raise KeyError(trip_id)
     trip = trip_of(rec)
     conflict = None
+    street = False
     if purpose:
         # Your words, unless they are a name you already use spelled another way.
         confirmed = load_confirmed(deps.labels_dir, deps.records, deps.events, deps.tz, deps.now())
@@ -449,7 +450,12 @@ def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str |
             info.update(status="unnamed", name=None, place=None)
         else:
             info.update(status="named", name=purpose, place=place)
-            if place:
+            info.pop("street", None)
+            if place and street_named(deps.map_index, place, stop.lat, stop.lng):
+                # A street or an address is where the stop was, never a place of yours (spec §7.5).
+                info["street"] = True
+                street = True
+            elif place:
                 _, clash = learn_place(deps.places_path, place, stop.lat, stop.lng, stop.spread_m,
                                        osm=osm or _map_osm(info, place, purpose))
                 conflict = place if clash else None
@@ -463,7 +469,10 @@ def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str |
     _refresh_arrival(rec, deps)
     deps.records.save(rec)
     _log(deps, "ANSWER", rec, stop_id, extra={"answer": purpose, "pause": pause, "place": place})
-    return {"record": rec, "conflict": conflict}
+    out = {"record": rec, "conflict": conflict}
+    if street:
+        out["street"] = True
+    return out
 
 
 def options_for(rec: dict, line: str) -> list[Option]:
