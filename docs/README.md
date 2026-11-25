@@ -28,6 +28,7 @@ and the repo `CLAUDE.md` overrides that, so a file appearing under
 - [`specs/2026-08-21-time-management-phase2-capture-design.md`](specs/2026-08-21-time-management-phase2-capture-design.md) — the parent design behind the Ship 2–5 and Fast Lane work
 - [`specs/2026-09-27-fast-lane-design.md`](specs/2026-09-27-fast-lane-design.md) — the current arc
 - [`specs/2026-11-10-location-trips-design.md`](specs/2026-11-10-location-trips-design.md) — location awareness: trips, stops, asking, filling the day (plan: [`plans/2026-11-10-location-trips.md`](plans/2026-11-10-location-trips.md))
+- [`specs/2026-11-24-location-trip-repair-design.md`](specs/2026-11-24-location-trip-repair-design.md) — trips you can fix: every trip asks, trip tools for the agent, photos and locations looked up on the map (plan: [`plans/2026-11-24-location-trip-repair.md`](plans/2026-11-24-location-trip-repair.md))
 - [`research/jev-message-routing/report.md`](research/jev-message-routing/report.md) — whether TypeSafe AI's Jev fits Mazkir's message router
 - [`research/cross-midnight/report.md`](research/cross-midnight/report.md) — how apps and agents handle things that cross midnight, and an audit of Mazkir's own day rules
 

@@ -1,6 +1,6 @@
 # Location trips: trips you can fix
 
-**Status:** draft, for approval · **Date:** 2026-11-24 · **Builds on:**
+**Status:** built · **Date:** 2026-11-24 · **Builds on:**
 `docs/specs/2026-11-10-location-trips-design.md`, `docs/specs/2026-11-14-location-map-design.md` ·
 **Evidence:** `docs/research/cross-midnight/report.md` (the 16–23 Nov review)
 

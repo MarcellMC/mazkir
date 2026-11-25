@@ -10,7 +10,7 @@ data/eval/location/, and prints the §9 measures:
 - start/end error;
 - whether history alone names every dog walk (each day scored against the
   other days' labels, so a day never predicts itself);
-- how many questions a day that would mean.
+- how the asking rules treat them (trips named without a question, stops never asked, questions a day).
 
 --with-model also makes the real guess for each trip (about $0.007 a call), and
 refuses to run without --confirm-cost.
@@ -33,7 +33,6 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # apps/vault-server
 
 STRONG_SCORE = 0.75
-RUNNER_UP_MAX = 0.5
 COST_PER_CALL = 0.007
 
 
@@ -99,6 +98,35 @@ def measures(pairs: list[tuple[dict | None, dict | None]]) -> dict:
             "leaving_p50_min": _p(leaving, 50), "start_err_p50_min": _p(start_err, 50),
             "start_err_p90_min": _p(start_err, 90), "end_err_p50_min": _p(end_err, 50),
             "end_err_p90_min": _p(end_err, 90)}
+
+
+def question_measures(trips, places) -> dict:
+    """What the asking rules do to these trips (trip repair spec §4, §5, §11), through `decide` itself.
+
+    - trips_named_without_question: trips `decide` would name with no question (must be 0);
+    - stops_never_asked: stops that are neither named by a place of yours nor a pause spot, yet get
+      no question (must be 0);
+    - questions: one per stop asked, one per trip.
+    """
+    from src.services.location.decide import decide
+
+    by_id = {p.id: p for p in places}
+    named_trips = never = asked = by_place = stops = 0
+    for trip in trips:
+        if decide([], [], known_place=None, may_ask=True).action == "name":
+            named_trips += 1
+        for stop in trip.stops:
+            stops += 1
+            known = by_id.get(stop.place_id) if stop.place_id else None
+            d = decide([], [], known_place=known, may_ask=True, at_stop=True)
+            if d.action == "ask":
+                asked += 1
+            elif d.action == "name":
+                by_place += 1
+            elif d.reason != "pause spot":
+                never += 1
+    return {"trips_named_without_question": named_trips, "stops_never_asked": never, "stops": stops,
+            "stops_asked": asked, "stops_named_by_place": by_place, "questions": asked + len(trips)}
 
 
 def _run_tracker(first: dt.date, last: dt.date, tz: str):
@@ -209,7 +237,6 @@ def main() -> None:
 
     by_id = {t.id: t for t in trips}
     named, walks = 0, 0
-    questions: Counter[str] = Counter()
     for trip, lab in pairs:
         if trip is None:
             continue
@@ -217,19 +244,24 @@ def main() -> None:
         day = tr.left_at.astimezone(zone).date().isoformat()
         ranked = score_history(tr, confirmed_except(day), tr.back_at or tr.left_at, tz)
         top = ranked[0] if ranked else None
-        runner = ranked[1].score if len(ranked) > 1 else 0.0
-        strong = top is not None and top.score >= STRONG_SCORE and runner < RUNNER_UP_MAX
         if lab is not None and lab["purpose"] == "Dog walk":
             walks += 1
-            ok = strong and top.purpose == "Dog walk"
+            ok = top is not None and top.score >= STRONG_SCORE and top.purpose == "Dog walk"
             named += ok
             if not ok:
-                print(f"    walk not named  {day} {tr.left_at.astimezone(zone):%H:%M}  "
+                print(f"    walk not a strong history match  {day} {tr.left_at.astimezone(zone):%H:%M}  "
                       f"top={top.purpose if top else None} {top.score if top else ''}")
-        questions[day] += len(tr.stops) + (0 if strong else 1)
-    print(f"dog walks named from history  {named} / {walks}")
-    print("questions a day (stops + unnamed trips, before the cap of 6):  "
-          + ", ".join(f"{d[5:]} {n}" for d, n in sorted(questions.items())))
+    print(f"dog walks history ranks first and strongly (a button, not a name)  {named} / {walks}")
+    from src.services.fast_lane.places import load_places
+    qm = question_measures(trips, load_places(settings.events_data_path.parent / "places.json"))
+    print(f"trips_named_without_question  {qm['trips_named_without_question']}")
+    print(f"stops_never_asked  {qm['stops_never_asked']}  (of {qm['stops']} stops: "
+          f"{qm['stops_asked']} asked, {qm['stops_named_by_place']} named by a place of yours)")
+    per_day: Counter[str] = Counter()
+    for tr in trips:
+        per_day[tr.left_at.astimezone(zone).date().isoformat()] += len(tr.stops) + 1
+    print("questions a day (stops + the trip, no cap):  "
+          + ", ".join(f"{d[5:]} {n}" for d, n in sorted(per_day.items())))
 
     if args.map:
         from src.services.location.map_update import index_path

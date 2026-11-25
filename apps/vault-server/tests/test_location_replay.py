@@ -61,3 +61,30 @@ def test_map_flag_prints_labels_not_coordinates(tmp_path):
     lines = mod.map_lines([trip], index, "Asia/Jerusalem")
     assert lines == ["    11-14 16:23  stop s1  map: קפה ברזילי  area: -"]
     assert "32.02" not in "\n".join(lines) and "34.8" not in "\n".join(lines)
+
+
+def _synthetic_trip():
+    from src.services.location.model import Stop, Trip
+
+    s = t(9, 10, 10)
+    def stop(sid, a, b, place_id=None):
+        return Stop(sid, t(9, 10, a), t(9, 10, b), 32.0, 34.8, 20.0, 300.0, place_id)
+    return Trip.from_dict({
+        "id": "aa000001", "origin": "home", "left_at": s.isoformat(), "start_precision": "location",
+        "stops": [stop("s1", 12, 20).to_dict(), stop("s2", 30, 40, "gym").to_dict()],
+        "legs": [], "back_at": t(9, 10, 50).isoformat(), "end_precision": "location",
+        "distance_m": 1000.0, "max_from_home_m": 400.0})
+
+
+def test_question_measures_every_trip_and_stop_is_asked():
+    from src.services.fast_lane.places import Place
+
+    mod = _script()
+    gym = Place(id="gym", name="Gym", lat=32.0, lng=34.8, radius_m=50.0)
+    m = mod.question_measures([_synthetic_trip()], [gym])
+    # The trip is never named without asking; the stop on the user's own place is named by it
+    # (answered), the other one is asked; none is left unasked.
+    assert m["trips_named_without_question"] == 0
+    assert m["stops_never_asked"] == 0
+    assert m["stops"] == 2 and m["stops_asked"] == 1 and m["stops_named_by_place"] == 1
+    assert m["questions"] == 2   # one stop, one trip
