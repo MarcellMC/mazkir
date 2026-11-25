@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # apps/vault-serv
 
 STRONG_SCORE = 0.75
 COST_PER_CALL = 0.007
+MAP_CLOSE_M = 15.0   # as pipeline.MAP_CLOSE_M
 
 
 def _ts(value: str | None) -> dt.datetime | None:
@@ -100,8 +101,13 @@ def measures(pairs: list[tuple[dict | None, dict | None]]) -> dict:
             "end_err_p90_min": _p(end_err, 90)}
 
 
-def question_measures(trips, places) -> dict:
-    """What the asking rules do to these trips (trip repair spec §4, §5, §11), through `decide` itself.
+def question_measures(trips, places, confirmed_for, tz: str, map_options_for=None) -> dict:
+    """What the asking rules do to these trips (trip repair spec §4, §5, §11), through `decide` itself,
+    fed the same offline inputs the pipeline builds: history candidates from `score_history` over
+    `confirmed_for(trip)` (leave-one-day-out labels in the replay), the stop's place of yours or pause
+    spot, `at_stop` for stops, and the map options `map_options_for(stop)` gives (None: no map).
+    The model's guesses are left out (offline, free), so this covers the code's decision, not the
+    model's.
 
     - trips_named_without_question: trips `decide` would name with no question (must be 0);
     - stops_never_asked: stops that are neither named by a place of yours nor a pause spot, yet get
@@ -109,16 +115,25 @@ def question_measures(trips, places) -> dict:
     - questions: one per stop asked, one per trip.
     """
     from src.services.location.decide import decide
+    from src.services.location.history import score_history
 
     by_id = {p.id: p for p in places}
     named_trips = never = asked = by_place = stops = 0
     for trip in trips:
-        if decide([], [], known_place=None, may_ask=True).action == "name":
+        now = trip.back_at or trip.left_at
+        confirmed = confirmed_for(trip)
+        history = score_history(trip, confirmed, now, tz)
+        if decide([], history, known_place=None, may_ask=True).action == "name":
             named_trips += 1
         for stop in trip.stops:
             stops += 1
             known = by_id.get(stop.place_id) if stop.place_id else None
-            d = decide([], [], known_place=known, may_ask=True, at_stop=True)
+            if known is None:
+                shist = [h for h in score_history(trip, confirmed, now, tz, stop=stop) if h.destination]
+                opts = map_options_for(stop) if map_options_for else ()
+            else:
+                shist, opts = [], ()
+            d = decide([], shist, known_place=known, may_ask=True, at_stop=True, map_options=opts)
             if d.action == "ask":
                 asked += 1
             elif d.action == "name":
@@ -127,6 +142,23 @@ def question_measures(trips, places) -> dict:
                 never += 1
     return {"trips_named_without_question": named_trips, "stops_never_asked": never, "stops": stops,
             "stops_asked": asked, "stops_named_by_place": by_place, "questions": asked + len(trips)}
+
+
+def early_starts(trips, fixes, home: tuple[float, float], radius_m: float, slack_min: float = 2.0) -> int:
+    """Trips from home whose start is more than `slack_min` before their first point outside home's radius.
+
+    A start stamped `before` (across a silence) is the tracker saying it does not know, and is not counted.
+    """
+    from src.services.location.tracker import _dist
+
+    n = 0
+    for trip in trips:
+        if trip.origin != "home" or trip.start_precision == "before":
+            continue
+        out = next((f for f in fixes if f.ts >= trip.left_at and _dist(f, home) > radius_m), None)
+        if out is not None and (out.ts - trip.left_at).total_seconds() > slack_min * 60:
+            n += 1
+    return n
 
 
 def _run_tracker(first: dt.date, last: dt.date, tz: str):
@@ -159,7 +191,7 @@ def _run_tracker(first: dt.date, last: dt.date, tz: str):
         closed += [e.trip for e in tracker.tick(fixes[-1].ts + dt.timedelta(seconds=61)) if e.kind == "BACK_HOME"]
     if tracker.trip is not None:
         closed.append(tracker.trip)
-    return closed, detected
+    return closed, detected, fixes, home, tracker.params.home_radius_m
 
 
 def map_lines(trips, index: Path | None, tz: str) -> list[str]:
@@ -202,7 +234,7 @@ def main() -> None:
     tz = settings.vault_timezone
     zone = ZoneInfo(tz)
     first, last = dt.date.fromisoformat(args.start), dt.date.fromisoformat(args.end)
-    trips, detected = _run_tracker(first, last, tz)
+    trips, detected, fixes, home, home_radius = _run_tracker(first, last, tz)
     labels = _labels(settings.events_data_path.parent / "eval" / "location", first, last)
     trip_dicts = [{**t.to_dict(), "detected_at": detected.get(t.id).isoformat() if detected.get(t.id) else None}
                   for t in trips]
@@ -253,10 +285,25 @@ def main() -> None:
                       f"top={top.purpose if top else None} {top.score if top else ''}")
     print(f"dog walks history ranks first and strongly (a button, not a name)  {named} / {walks}")
     from src.services.fast_lane.places import load_places
-    qm = question_measures(trips, load_places(settings.events_data_path.parent / "places.json"))
+    map_options_for = None
+    if settings.location_map == "on":
+        from src.services.location.decide import Option
+        from src.services.location.map_lookup import map_near
+        from src.services.location.map_update import index_path
+
+        index = index_path(settings.location_map_path)
+        if Path(index).exists():
+            def map_options_for(stop):
+                near = [m for m in map_near(index, stop.lat, stop.lng, stop.spread_m) if m.group == "place"]
+                close = [m for m in near if m.distance_m <= MAP_CLOSE_M][:3] or near[:1]
+                return [Option(m.label, m.label, m.osm) for m in close]
+    qm = question_measures(trips, load_places(settings.events_data_path.parent / "places.json"),
+                           lambda tr: confirmed_except(tr.left_at.astimezone(zone).date().isoformat()), tz,
+                           map_options_for)
     print(f"trips_named_without_question  {qm['trips_named_without_question']}")
     print(f"stops_never_asked  {qm['stops_never_asked']}  (of {qm['stops']} stops: "
           f"{qm['stops_asked']} asked, {qm['stops_named_by_place']} named by a place of yours)")
+    print(f"early_starts  {early_starts(trips, fixes, home, home_radius)}")
     per_day: Counter[str] = Counter()
     for tr in trips:
         per_day[tr.left_at.astimezone(zone).date().isoformat()] += len(tr.stops) + 1

@@ -76,15 +76,66 @@ def _synthetic_trip():
         "distance_m": 1000.0, "max_from_home_m": 400.0})
 
 
+def _confirmed(n=4):
+    from src.services.location.history import ConfirmedTrip
+
+    return [ConfirmedTrip("Dog walk", None, t(d, 9, 10), 1800.0, "home", "walk", 1000.0, 400.0) for d in range(1, n + 1)]
+
+
 def test_question_measures_every_trip_and_stop_is_asked():
     from src.services.fast_lane.places import Place
 
     mod = _script()
     gym = Place(id="gym", name="Gym", lat=32.0, lng=34.8, radius_m=50.0)
-    m = mod.question_measures([_synthetic_trip()], [gym])
+    m = mod.question_measures([_synthetic_trip()], [gym], lambda tr: [], "UTC")
     # The trip is never named without asking; the stop on the user's own place is named by it
     # (answered), the other one is asked; none is left unasked.
     assert m["trips_named_without_question"] == 0
     assert m["stops_never_asked"] == 0
     assert m["stops"] == 2 and m["stops_asked"] == 1 and m["stops_named_by_place"] == 1
     assert m["questions"] == 2   # one stop, one trip
+
+
+def test_question_measures_use_real_history_not_constants(monkeypatch):
+    """A trip with one strong history candidate still counts as asked. Before the repair, `decide`
+    named it silently; if it does again, the measure must show it."""
+    import src.services.location.decide as decide_mod
+
+    mod = _script()
+    seen = []
+    real = decide_mod.decide
+
+    def spy(guesses, history, **kw):
+        seen.append(history)
+        return real(guesses, history, **kw)
+
+    monkeypatch.setattr(decide_mod, "decide", spy)
+    m = mod.question_measures([_synthetic_trip()], [], lambda tr: _confirmed(), "UTC")
+    assert any(h for h in seen), "decide was never given the history candidates"
+    assert m["trips_named_without_question"] == 0 and m["questions"] >= 1
+
+    # A decide that names a strong history candidate silently (the old rule) must be caught.
+    def old_decide(guesses, history, *, known_place, may_ask, at_stop=False, map_options=()):
+        if history and not at_stop and history[0].score >= 0.75:
+            return decide_mod.Decision("name", history[0].purpose)
+        return real(guesses, history, known_place=known_place, may_ask=may_ask, at_stop=at_stop,
+                    map_options=map_options)
+
+    monkeypatch.setattr(decide_mod, "decide", old_decide)
+    strong = mod.question_measures([_synthetic_trip()], [], lambda tr: _confirmed(), "UTC")
+    assert strong["trips_named_without_question"] == 1
+
+
+def test_early_starts_counts_trips_started_well_before_the_first_point_away():
+    from src.services.location.model import Fix, Trip
+
+    mod = _script()
+    home = (32.0, 34.8)
+    d = _synthetic_trip().to_dict()
+
+    def trip(left):
+        return Trip.from_dict({**d, "left_at": left.isoformat()})
+
+    away = Fix(t(9, 10, 20), 32.01, 34.8)   # about 1.1 km north of home
+    assert mod.early_starts([trip(t(9, 10, 19))], [away], home, 40.0) == 0
+    assert mod.early_starts([trip(t(9, 10, 5))], [away], home, 40.0) == 1
