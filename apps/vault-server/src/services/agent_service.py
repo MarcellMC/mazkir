@@ -823,7 +823,9 @@ class AgentService:
                         "Attach a saved photo or file to a daily note (today's by default). "
                         "Pass 'date' to target a different day's note. "
                         "Use after a photo has been saved to disk. "
-                        "Can include wikilinks (e.g. [[City Watch]]) and location coordinates."
+                        "Can include wikilinks (e.g. [[City Watch]]). A map link is added by the server "
+                        "from where the photo was taken, or from `anchor` (a sent location); you never "
+                        "give a position yourself."
                     ),
                     "input_schema": {
                         "type": "object",
@@ -844,11 +846,17 @@ class AgentService:
                             "location": {
                                 "type": "object",
                                 "properties": {
-                                    "lat": {"type": "number"},
-                                    "lng": {"type": "number"},
                                     "name": {"type": "string"},
                                 },
-                                "description": "Location coordinates — rendered as a map link in the daily note (name used as the link label)",
+                                "description": "The map link's label, e.g. the place's name (default 'Map')",
+                            },
+                            "anchor": {
+                                "type": "string",
+                                "description": (
+                                    "For a note that is not a photo: the sent location to link, "
+                                    "'location:<message_id>' or 'photo:<file>'. A photo's own position "
+                                    "is used without it."
+                                ),
                             },
                             "section": {
                                 "type": "string",
@@ -2121,6 +2129,15 @@ class AgentService:
         return {**block, "id": stored["id"]}
 
     @staticmethod
+    def _handles():
+        """The per-chat handle table: the location runtime's, or one at the same path when it is off."""
+        from src.config import settings as _settings
+        from src.services.location import runtime as location_runtime
+        from src.services.location.handles import Handles
+        rt = location_runtime.get_runtime()
+        return rt.handles if rt is not None else Handles(Path(_settings.location_data_path) / "handles.json")
+
+    @staticmethod
     def _local_moment(timestamp: str | None):
         """A saved photo's local wall-clock time as an aware datetime in the vault's zone, or None."""
         if not timestamp:
@@ -2133,7 +2150,8 @@ class AgentService:
         except ValueError:
             return None
 
-    def _where(self, lat: float, lng: float, *, accuracy_m: float | None, at, anchor_key: str) -> str:
+    def _where(self, lat: float, lng: float, *, accuracy_m: float | None, at, anchor_key: str,
+               stop_near_only: bool = False) -> str:
         """A position in words for the model (repair spec §8); the numbers stay on the server.
 
         With the location runtime on: its handle table, map copy, trip records
@@ -2146,12 +2164,11 @@ class AgentService:
         from src.services.location.where import describe_where
         try:
             rt = location_runtime.get_runtime()
+            handles = self._handles()
             if rt is not None:
-                handles, deps = rt.handles, rt.deps
+                deps = rt.deps
                 places_path, map_index, records = deps.places_path, getattr(deps, "map_index", None), deps.records
             else:
-                from src.services.location.handles import Handles
-                handles = Handles(Path(_settings.location_data_path) / "handles.json")
                 places_path = Path(_settings.events_data_path).parent / "places.json"
                 map_index, records = None, None
             try:
@@ -2160,7 +2177,7 @@ class AgentService:
                 places = []
             return describe_where(lat, lng, accuracy_m=accuracy_m, at=at, chat_id=self._current_chat_id or 0,
                                   places=places, map_index=map_index, handles=handles, records=records,
-                                  anchor_key=anchor_key)
+                                  anchor_key=anchor_key, stop_near_only=stop_near_only)
         except Exception as exc:
             from src.services.location.model import safe_error
             # Type and frame only: a message could quote the position.
@@ -2220,14 +2237,14 @@ class AgentService:
                         where = "where: unknown"
                     else:
                         # Words, never the numbers (repair spec §8). A forwarded location is
-                        # described the same way; nothing here learns a place from it.
+                        # somebody else's place: described, never your stop, never learned.
                         import datetime as _dt
                         from zoneinfo import ZoneInfo as _Zone
                         from src.config import settings as _settings
                         key = f"location:{att.get('message_id') or uuid4().hex}"
+                        at = None if forwarded_from else _dt.datetime.now(_Zone(_settings.vault_timezone))
                         where = self._where(att["latitude"], att["longitude"], accuracy_m=att.get("accuracy_m"),
-                                            at=_dt.datetime.now(_Zone(_settings.vault_timezone)),
-                                            anchor_key=key)
+                                            at=at, anchor_key=key, stop_near_only=True)
                     if att.get("title"):
                         text_parts.append(f'[Location — "{att["title"]}": {where}]')
                     else:
@@ -3050,9 +3067,12 @@ class AgentService:
         if wikilinks:
             meta_parts.append(" | ".join(f"[[{link}]]" for link in wikilinks))
         lines.append(" | ".join(meta_parts))
-        if location:
-            lat, lng = location["lat"], location["lng"]
-            label = location.get("name") or "Map"
+        # The link's position comes from the server, never from the model (repair spec §8):
+        # the photo's own EXIF, else the anchor the agent names. No position, no link.
+        position = self._photo_position(vault_path) or self._anchor_position(params.get("anchor"))
+        if position is not None:
+            lat, lng = position
+            label = (location or {}).get("name") or "Map"
             map_url = f"https://www.google.com/maps?q={lat},{lng}"
             lines.append(f"\U0001f4cd [{label}]({map_url})")
 
@@ -3066,9 +3086,45 @@ class AgentService:
                 "path": daily_path,
                 "section": section,
                 "attachment": vault_path,
+                "map_link": position is not None,
             },
             items=[daily_path],
         )
+
+    def _photo_position(self, vault_path: str) -> tuple[float, float] | None:
+        """Where a saved photo was taken, from its sidecar `metadata.json` (durable, local)."""
+        name = Path(vault_path).name
+        candidates = []
+        # The path is the model's words: read a sidecar only from inside the media folder.
+        direct = ((self.media_path.parent.parent / vault_path).parent / "metadata.json").resolve()
+        if direct.is_relative_to(self.media_path.resolve()):
+            candidates.append(direct)
+        if self.media_path.exists():
+            candidates += sorted(self.media_path.glob("*/metadata.json"), reverse=True)
+        for meta in candidates:
+            try:
+                entries = json.loads(meta.read_text()) if meta.is_file() else []
+            except (OSError, ValueError):
+                continue
+            for entry in reversed(entries if isinstance(entries, list) else []):
+                if entry.get("path") == vault_path or entry.get("filename") == name:
+                    loc = entry.get("exif_location") or {}
+                    if loc.get("lat") is not None and loc.get("lng") is not None:
+                        return float(loc["lat"]), float(loc["lng"])
+                    return None
+        return None
+
+    def _anchor_position(self, anchor: str | None) -> tuple[float, float] | None:
+        """A `photo:<file>` / `location:<message_id>` anchor of this chat, resolved server-side."""
+        if not anchor:
+            return None
+        try:
+            found = self._handles().resolve(self._current_chat_id or 0, anchor)
+        except Exception:
+            return None
+        if not found or found.get("kind") != "anchor":
+            return None
+        return float(found["lat"]), float(found["lng"])
 
     def _tool_delete_task(self, params: dict) -> dict:
         from src.services.resolver import resolve_item

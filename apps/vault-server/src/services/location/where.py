@@ -9,6 +9,7 @@ search around it or learn a place at it.
 Order of what wins:
 1. a trip stop at that moment: "at stop s3 of trip <id> (<name>)", with that
    stop's map places;
+   (a location the user sends: only near the stop; a forwarded one: never);
 2. home: "at home";
 3. another place of the user's: its handle, then the street and the area;
 4. the map: up to 5 places within `max(40 m, GPS accuracy)`, nearest first,
@@ -33,6 +34,7 @@ from src.services.location.map_lookup import kind_words, map_area, map_near, nea
 from src.services.location.model import Stop, Trip
 
 LOOKUP_MIN_M = 40.0
+STOP_NEAR_M = 75.0       # a location you send is that stop only this close to it (or within its accuracy)
 MAX_PLACES = 5
 NO_MAP = "no map here"
 
@@ -49,12 +51,21 @@ def describe_where(
     handles: Handles,
     records: Any = None,
     anchor_key: str,
+    stop_near_only: bool = False,
 ) -> str:
-    """The segment a photo or location line carries: "at home", "at stop …", or "where: …"."""
+    """The segment a photo or location line carries: "at home", "at stop …", or "where: …".
+
+    A photo taken during a stop is that stop, by time alone (spec §8). A location the user
+    sends (`stop_near_only`) is the stop only within `max(75 m, accuracy)` of its centre: a
+    venue across town shared mid-stop is somewhere else. A forwarded location passes no `at`.
+    """
     handles.anchor(chat_id, anchor_key, lat, lng, accuracy_m)
     gps = f" | GPS ±{round(accuracy_m)} m" if accuracy_m is not None else ""
 
     found = _stop_at(records, at)
+    if found is not None and stop_near_only and \
+            haversine_m(lat, lng, found[1].lat, found[1].lng) > max(STOP_NEAR_M, accuracy_m or 0.0):
+        found = None
     if found is not None:
         trip_id, stop, name = found
         # The stop's own radius, so these are the places its question offered.

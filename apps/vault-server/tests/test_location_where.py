@@ -142,3 +142,25 @@ def test_no_map(handles):
 def test_no_map_but_a_place_of_yours(handles):
     gym = Place("gym", "The gym", (), "sport", P[0], P[1], 60.0)
     assert _where(handles, None, places=[gym]).startswith("where: place:gym The gym (yours, 0 m)")
+
+
+def _open_stop_records(tmp_path, start):
+    records = TripRecords(tmp_path / "loc")
+    stop = Stop("s3", start, None, P[0], P[1], 10.0, 400.0)
+    records.save(new_record(Trip("abcd1234", "home", start - dt.timedelta(minutes=20), "location", [stop])))
+    return records
+
+
+def test_near_only_matches_the_stop_within_75_m(handles, index, tmp_path):
+    start = dt.datetime(2026, 11, 20, 13, 0, tzinfo=ZONE)
+    records = _open_stop_records(tmp_path, start)
+    at = start + dt.timedelta(minutes=5)
+    near = describe_where(*_north(50), accuracy_m=None, at=at, chat_id=CHAT, places=[], map_index=index,
+                          handles=handles, records=records, anchor_key="location:1", stop_near_only=True)
+    far = describe_where(*_north(500), accuracy_m=None, at=at, chat_id=CHAT, places=[], map_index=index,
+                         handles=handles, records=records, anchor_key="location:2", stop_near_only=True)
+    poor = describe_where(*_north(150), accuracy_m=200.0, at=at, chat_id=CHAT, places=[], map_index=index,
+                          handles=handles, records=records, anchor_key="location:3", stop_near_only=True)
+    assert near.startswith("at stop s3") and far.startswith("where: ") and poor.startswith("at stop s3")
+    # A photo keeps the time-only rule.
+    assert _where(handles, index, at=at, records=records, pos=_north(500)).startswith("at stop s3")

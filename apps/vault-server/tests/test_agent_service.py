@@ -1,5 +1,6 @@
 """Tests for AgentService — tool registry, confidence gate, loop control."""
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -595,47 +596,26 @@ class TestAttachToDaily:
         assert result["ok"] is True
         assert vault.append_to_daily_section.call_args.kwargs["date"] is None
 
-    def test_attach_to_daily_with_location(self, agent, mock_services):
+    def test_attach_to_daily_ignores_coordinates_from_the_model(self, agent, mock_services, where_env):
+        # The model never has coordinates (repair spec §8); any it sends are made up.
         vault = mock_services[1]
-
-        vault.append_to_daily_section.return_value = {
-            "path": "10-daily/2026-03-04.md",
-            "section": "Notes",
-        }
-
+        vault.append_to_daily_section.return_value = {"path": "10-daily/2026-03-04.md", "section": "Notes"}
         result = agent._tool_attach_to_daily({
             "vault_path": "data/media/2026-03-04/photo.jpg",
             "caption": "Street photo",
             "location": {"lat": 32.08, "lng": 34.78, "name": "Tel Aviv"},
             "section": "Notes",
         })
-
         assert result["ok"] is True
-        assert "path" in result["data"]
-        call_args = vault.append_to_daily_section.call_args
-        content = call_args.kwargs.get("content") or call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs["content"]
-        # Coordinates render as a map link, not raw numbers
-        assert "[Tel Aviv](https://www.google.com/maps?q=32.08,34.78)" in content
-        assert "\U0001f4cd" in content
+        content = vault.append_to_daily_section.call_args.kwargs["content"]
+        assert "google.com/maps" not in content and "32.08" not in content
 
-    def test_attach_to_daily_location_without_name_uses_map_label(self, agent, mock_services):
-        vault = mock_services[1]
-        vault.append_to_daily_section.return_value = {
-            "path": "10-daily/2026-03-04.md",
-            "section": "Notes",
-        }
-
-        result = agent._tool_attach_to_daily({
-            "vault_path": "data/media/2026-03-04/photo.jpg",
-            "caption": "Street photo",
-            "location": {"lat": 32.08, "lng": 34.78},
-            "section": "Notes",
-        })
-
-        assert result["ok"] is True
-        call_args = vault.append_to_daily_section.call_args
-        content = call_args.kwargs.get("content") or call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs["content"]
-        assert "[Map](https://www.google.com/maps?q=32.08,34.78)" in content
+    def test_attach_to_daily_schema_takes_no_coordinates(self, agent):
+        schema = agent.tools["attach_to_daily"]["schema"]
+        props = schema["input_schema"]["properties"]
+        assert set(props["location"]["properties"]) == {"name"}
+        assert "anchor" in props
+        assert "coordinates" not in schema["description"]
 
     def test_attach_to_daily_emits_wikilink_embed(self, mock_services):
         claude, vault, memory, calendar, events = mock_services
@@ -3791,3 +3771,88 @@ def test_a_reconciled_block_not_yet_stored_is_stored_then_attached(tmp_path, mon
     out = agent._place_photo({"exif_timestamp": "2026-11-20T13:10:00", "path": "m/p.jpg"})
     assert events.attach_photo.call_args.args == ("2026-11-20", "p9", "m/p.jpg")
     assert "Lunch" in out[0]
+
+
+def test_attach_to_daily_links_a_photo_from_its_own_exif(agent, mock_services, where_env):
+    import base64
+    from tests.test_exif_service import _make_jpeg_with_gps
+    info = agent._save_photo({"type": "photo", "filename": "street.jpg",
+                              "data": base64.b64encode(_make_jpeg_with_gps(32.0853, 34.7818)).decode()})
+    vault = mock_services[1]
+    vault.append_to_daily_section.return_value = {"path": "10-daily/x.md", "section": "Notes"}
+    result = agent._tool_attach_to_daily({"vault_path": info["path"], "caption": "Street",
+                                          "location": {"name": "Herzl corner", "lat": 1.0, "lng": 2.0}})
+    assert result["ok"] is True
+    content = vault.append_to_daily_section.call_args.kwargs["content"]
+    lat, lng = info["exif_location"]["lat"], info["exif_location"]["lng"]
+    assert f"\U0001f4cd [Herzl corner](https://www.google.com/maps?q={lat},{lng})" in content
+    assert "q=1.0,2.0" not in content
+    assert not _COORD.search(json.dumps(result["data"]))
+
+
+def test_attach_to_daily_links_an_anchor(agent, mock_services, where_env):
+    from src.services.location.handles import Handles
+    Handles(where_env / "locations" / "handles.json").anchor(7, "location:42", 32.0853, 34.7818)
+    agent._current_chat_id = 7
+    vault = mock_services[1]
+    vault.append_to_daily_section.return_value = {"path": "10-daily/x.md", "section": "Notes"}
+    agent._tool_attach_to_daily({"vault_path": "note.md", "caption": "Here", "anchor": "location:42"})
+    content = vault.append_to_daily_section.call_args.kwargs["content"]
+    assert "[Map](https://www.google.com/maps?q=32.0853,34.7818)" in content
+
+
+def test_attach_to_daily_without_a_position_writes_no_link(agent, mock_services, where_env):
+    vault = mock_services[1]
+    vault.append_to_daily_section.return_value = {"path": "10-daily/x.md", "section": "Notes"}
+    result = agent._tool_attach_to_daily({"vault_path": "nowhere.jpg", "caption": "x", "anchor": "location:999"})
+    assert result["ok"] is True
+    assert "google.com/maps" not in vault.append_to_daily_section.call_args.kwargs["content"]
+
+
+def _runtime_with_open_stop(tmp_path, centre):
+    import datetime as dt
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+    from src.services.location.handles import Handles
+    from src.services.location.model import Stop, Trip
+    from src.services.location.records import TripRecords, new_record
+    now = dt.datetime.now(ZoneInfo("Asia/Jerusalem"))
+    records = TripRecords(tmp_path / "loc")
+    stop = Stop("s3", now - dt.timedelta(minutes=10), None, centre[0], centre[1], 10.0, 900.0)
+    records.save(new_record(Trip("abcd1234", "home", now - dt.timedelta(minutes=30), "location", [stop])))
+    return SimpleNamespace(handles=Handles(tmp_path / "rt-handles.json"),
+                           deps=SimpleNamespace(map_index=None, records=records, places_path=tmp_path / "none.json"))
+
+
+def test_own_location_at_the_open_stop_is_that_stop(agent, where_env, tmp_path, monkeypatch):
+    monkeypatch.setattr("src.services.location.runtime._runtime", _runtime_with_open_stop(tmp_path, (32.1, 34.9)))
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": 32.1 + 20 / 111195, "longitude": 34.9}]))
+    assert "[Location: at stop s3 of trip abcd1234 (unnamed)" in text
+
+
+def test_own_location_far_from_the_open_stop_is_looked_up(agent, where_env, tmp_path, monkeypatch):
+    monkeypatch.setattr("src.services.location.runtime._runtime", _runtime_with_open_stop(tmp_path, (32.1, 34.9)))
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": 32.1 + 500 / 111195, "longitude": 34.9, "title": "Bar"}]))
+    assert '[Location — "Bar": where:' in text and "at stop" not in text
+
+
+def test_forwarded_location_during_an_open_stop_is_not_your_stop(agent, where_env, tmp_path, monkeypatch):
+    monkeypatch.setattr("src.services.location.runtime._runtime", _runtime_with_open_stop(tmp_path, (32.1, 34.9)))
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": 32.1, "longitude": 34.9, "title": "Dana's"}],
+        forwarded_from={"from_name": "Dana", "text": ""}))
+    assert '[Location — "Dana\'s": where:' in text and "at stop" not in text
+
+
+def test_attach_to_daily_reads_no_sidecar_outside_the_media_folder(agent, mock_services, where_env, tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "metadata.json").write_text(json.dumps(
+        [{"filename": "x.jpg", "path": "x.jpg", "exif_location": {"lat": 1.5, "lng": 2.5}}]))
+    vault = mock_services[1]
+    vault.append_to_daily_section.return_value = {"path": "10-daily/x.md", "section": "Notes"}
+    rel = str((outside / "x.jpg").relative_to(agent.media_path.parent.parent))
+    agent._tool_attach_to_daily({"vault_path": rel, "caption": "x"})
+    assert "google.com/maps" not in vault.append_to_daily_section.call_args.kwargs["content"]
