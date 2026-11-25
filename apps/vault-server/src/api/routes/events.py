@@ -485,6 +485,16 @@ async def set_event_state(date: date_type, event_id: str, body: SetStateBody):
     ):
         calendar_sync = await _settle_proposal(event, date_str)
 
+    # A dismissed proposal takes its photos back to the daily note: the
+    # photo was taken, and nothing else is left to hold it.
+    photos_moved = False
+    if body.state == "dismissed" and event.get("proposed") and event.get("photos"):
+        lines = [f"![[{str(p.get('path') or '').rsplit('/', 1)[-1]}]]" for p in event["photos"] if p.get("path")]
+        if lines:
+            get_vault().append_to_daily_section(
+                section="Notes", content="\n".join(lines), date=datetime.combine(date, time(12, 0)))
+            photos_moved = True
+
     # --- store the state -------------------------------------------------
     # Persist the reconciled day so the row exists to carry the state. This
     # is the deliberate exception to "reads never persist": an explicit user
@@ -497,6 +507,8 @@ async def set_event_state(date: date_type, event_id: str, body: SetStateBody):
         for candidate in merged:
             if candidate.get("id") == event_id:
                 candidate["state"] = body.state
+                if photos_moved:
+                    candidate["photos"] = []
                 if settled_ids:
                     candidate["source_ids"] = {**(candidate.get("source_ids") or {}), **settled_ids}
         events_svc.save_events(date_str, merged)

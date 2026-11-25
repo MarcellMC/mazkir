@@ -37,6 +37,8 @@ from src.services.location.model import Stop, Trip
 logger = logging.getLogger(__name__)
 
 LEG_FOLD_S = 120
+LEG_BREAK_STOP_S = 600
+REKEY_WINDOW_S = 60
 MERGE_WINDOW = dt.timedelta(minutes=15)
 DISAGREE = dt.timedelta(minutes=15)
 MERGE_OVERLAP = 0.5
@@ -116,35 +118,46 @@ def _travel(trip: Trip, purpose: dict, named, places: list[Place]) -> list[Block
         longest = max(trip.stops, key=length)
         named = [(longest, {"name": purpose["name"], "place": purpose.get("destination")})]
 
+    # What ends a leg: a stop you named, or any stop long enough that you were
+    # not moving through it (spec §6). Only named ones get a block of their own.
+    info_by_id = {stop.id: info for stop, info in named}
+    breakers = [s for s in trip.stops
+                if s.id in info_by_id or s.end is None
+                or (s.end - s.start).total_seconds() >= LEG_BREAK_STOP_S]
     specs: list[BlockSpec] = []
-    prev_end, prev_precision = trip.left_at, trip.start_precision
-    n = 0
-    for stop, info in named:
-        n += 1
-        place_id, place_text, shown = _place(info.get("place"), stop, places)
-        target = shown or info.get("name") or "stop"
-        stop_spec = _stop_spec(stop, info.get("name") or target, info.get("place"), places)
+    prev_end, prev_precision, prev_id = trip.left_at, trip.start_precision, "start"
+    for stop in breakers:
+        info = info_by_id.get(stop.id)
+        stop_spec = None
+        target = None
+        if info is not None:
+            place_id, place_text, shown = _place(info.get("place"), stop, places)
+            target = shown or info.get("name") or "stop"
+            stop_spec = _stop_spec(stop, info.get("name") or target, info.get("place"), places)
         leg_s = (stop.start - prev_end).total_seconds()
         if leg_s < LEG_FOLD_S:
-            stop_spec = BlockSpec(stop_spec.part, stop_spec.name, prev_end, stop_spec.end, prev_precision,
-                                  stop_spec.end_precision, stop_spec.place_id, stop_spec.place_text)
+            if stop_spec is not None:
+                stop_spec = BlockSpec(stop_spec.part, stop_spec.name, prev_end, stop_spec.end, prev_precision,
+                                      stop_spec.end_precision, stop_spec.place_id, stop_spec.place_text)
         else:
-            specs.append(BlockSpec(f"leg:{n}", f"{_mode(trip, prev_end, stop.start)} to {target}",
+            mode = _mode(trip, prev_end, stop.start)
+            specs.append(BlockSpec(f"leg:{prev_id}-{stop.id}", f"{mode} to {target}" if target else mode,
                                    prev_end, stop.start, prev_precision, "location"))
-        specs.append(stop_spec)
+        if stop_spec is not None:
+            specs.append(stop_spec)
         if stop.end is None:
             return specs
-        prev_end, prev_precision = stop.end, "location"
+        prev_end, prev_precision, prev_id = stop.end, "location", stop.id
 
-    n += 1
     if trip.back_at is not None and (trip.back_at - prev_end).total_seconds() < LEG_FOLD_S:
-        last = specs[-1]
-        specs[-1] = BlockSpec(last.part, last.name, last.start, trip.back_at, last.start_precision,
-                              trip.end_precision, last.place_id, last.place_text)
+        if specs and specs[-1].part.startswith("stop:") and specs[-1].end == prev_end:
+            last = specs[-1]
+            specs[-1] = BlockSpec(last.part, last.name, last.start, trip.back_at, last.start_precision,
+                                  trip.end_precision, last.place_id, last.place_text)
         return specs
     mode = _mode(trip, prev_end, trip.back_at)
     name = f"{mode} home" if trip.back_at is not None else mode
-    specs.append(BlockSpec(f"leg:{n}", name, prev_end, trip.back_at, prev_precision, trip.end_precision))
+    specs.append(BlockSpec(f"leg:{prev_id}-home", name, prev_end, trip.back_at, prev_precision, trip.end_precision))
     return specs
 
 
@@ -263,17 +276,42 @@ def _pinned(loaded) -> set[str]:
     return {k for _, e in loaded if e for k in (e.get("user_set") or {})}
 
 
-def _delete_if_pending(events, ref: dict) -> bool:
-    """Delete a trip-owned block that is still only Mazkir's guess; return whether it is gone.
+def _delete_if_pending(events, ref: dict) -> list[dict] | None:
+    """Delete a trip-owned block that is still only Mazkir's guess.
 
-    Never one you approved or corrected: a pinned field is your word.
+    Returns the photos it held (an empty list when none), or None when the
+    block was kept: never one you approved or corrected, a pinned field is
+    your word.
     """
     loaded = [(f, e) for f, e in _load(events, ref) if e is not None]
     if any(resolve_state(e) != "pending" for _, e in loaded) or _pinned(loaded):
-        return False
+        return None
+    photos = [p for _, e in loaded for p in e.get("photos") or []]
     for frag, e in loaded:
         events.delete_event(frag["date"], e["id"])
-    return True
+    return photos
+
+
+def _carry_photos(events, day: str, event_id: str | None, photos: list[dict]) -> None:
+    for photo in photos:
+        if event_id and photo.get("path"):
+            events.attach_photo(day, event_id, photo["path"], photo.get("caption"), photo.get("wikilinks") or None)
+
+
+def _rekey_legs(rec: dict, specs: list[BlockSpec], events, zone: ZoneInfo) -> None:
+    """Rename old positional `leg:<n>` keys to the planned `leg:<a>-<b>` key that starts where they do."""
+    blocks = rec.get("blocks") or {}
+    planned = [s for s in specs if s.part.startswith("leg:") and not s.part[4:].isdigit()]
+    for key in [k for k in blocks if k.startswith("leg:") and k[4:].isdigit()]:
+        ref = blocks[key]
+        first = _find(events, fragments(ref)[0]["date"], fragments(ref)[0]["event_id"])
+        start = _parse(first.get("start_time"), zone) if first else None
+        if start is None:
+            continue
+        for spec in planned:
+            if spec.part not in blocks and abs((spec.start - start).total_seconds()) <= REKEY_WINDOW_S:
+                blocks[spec.part] = blocks.pop(key)
+                break
 
 
 def _trip_field(rec: dict, part: str) -> dict:
@@ -316,7 +354,7 @@ def _merge(rec: dict, spec: BlockSpec, day: str, e: dict, previous: dict | None,
             "disagree": disagree}
 
 
-def _create(rec: dict, spec: BlockSpec, run_tool, events, zone) -> dict | None:
+def _create(rec: dict, spec: BlockSpec, run_tool, events, zone, photos: list[dict] | None = None) -> dict | None:
     fields: dict[str, Any] = {"trip": _trip_field(rec, spec.part), "start_precision": spec.start_precision}
     if spec.end is not None:
         fields["end_precision"] = spec.end_precision or "location"
@@ -340,10 +378,13 @@ def _create(rec: dict, spec: BlockSpec, run_tool, events, zone) -> dict | None:
     if data.get("fragments"):
         ref["fragments"] = [{"date": events.resolve_event_date(i, params["date"]) or params["date"], "event_id": i}
                             for i in data["fragments"]]
+    first = (ref.get("fragments") or [ref])[0]
+    _carry_photos(events, first["date"], first["event_id"], photos or [])
     return ref
 
 
-def _update_owned(rec: dict, spec: BlockSpec, ref: dict, events, run_tool, zone) -> dict | None:
+def _update_owned(rec: dict, spec: BlockSpec, ref: dict, events, run_tool, zone,
+                  carry: list[dict] | None = None) -> dict | None:
     """Bring a trip-owned block up to date. Returns the ref to keep, or None to recreate it.
 
     A block still wholly Mazkir's guess is recreated when its shape changes
@@ -367,7 +408,12 @@ def _update_owned(rec: dict, spec: BlockSpec, ref: dict, events, run_tool, zone)
                or _parse(first.get("start_time"), zone) != spec.start
                or (spec.end is not None and _parse(last.get("end_time"), zone) != spec.end))
     if guessed and (crosses != split or (split and differs)):
-        return None if _delete_if_pending(events, ref) else ref
+        photos = _delete_if_pending(events, ref)
+        if photos is None:
+            return ref
+        if carry is not None:
+            carry.extend(photos)
+        return None
 
     for i, (frag, e) in enumerate(loaded):
         own_pins = e.get("user_set") or {}
@@ -401,30 +447,35 @@ def apply_blocks(rec: dict[str, Any], specs: list[BlockSpec], *, run_tool: Calla
     days = _days(specs, rec, zone)
     # Blocks this trip wrote that its record does not know (a crash between
     # the write and the save) are adopted rather than written twice.
+    held = {f["event_id"] for ref in blocks.values() for f in fragments(ref)}
     for part, ref in _owned_in_store(events, days, rec["id"]).items():
-        if part not in blocks:
+        if part not in blocks and not any(f["event_id"] in held for f in fragments(ref)):
             blocks[part] = ref
+    _rekey_legs({"blocks": blocks}, specs, events, zone)
     owned = {f["event_id"] for ref in blocks.values() for f in fragments(ref)}
     matches = _match(specs, _user_blocks(events, days, rec["id"], owned, zone), zone)
     by_event = {m["event_id"]: m for m in previous_merged.values()}
 
     merged: dict[str, dict] = {}
     for spec in specs:
+        carried: list[dict] = []
         if spec.part in matches:
             day, e = matches[spec.part]
             if spec.part in blocks and not blocks[spec.part].get("gone"):
-                if _delete_if_pending(events, blocks[spec.part]):
+                photos = _delete_if_pending(events, blocks[spec.part])
+                if photos is not None:
                     blocks.pop(spec.part)
+                    _carry_photos(events, day, e["id"], photos)
             merged[spec.part] = _merge(rec, spec, day, e, by_event.get(e["id"]), run_tool, zone)
             continue
         ref = blocks.get(spec.part)
         if ref is not None:
-            kept = _update_owned(rec, spec, ref, events, run_tool, zone)
+            kept = _update_owned(rec, spec, ref, events, run_tool, zone, carried)
             if kept is not None:
                 blocks[spec.part] = kept
                 continue
             blocks.pop(spec.part)
-        created = _create(rec, spec, run_tool, events, zone)
+        created = _create(rec, spec, run_tool, events, zone, carried)
         if created is not None:
             blocks[spec.part] = created
 
@@ -432,7 +483,7 @@ def apply_blocks(rec: dict[str, Any], specs: list[BlockSpec], *, run_tool: Calla
     for part in list(blocks):
         if part not in planned or part in merged:
             ref = blocks[part]
-            if ref.get("gone") or _delete_if_pending(events, ref):
+            if ref.get("gone") or _delete_if_pending(events, ref) is not None:
                 blocks.pop(part)
     rec["blocks"] = blocks
     rec["merged"] = merged
