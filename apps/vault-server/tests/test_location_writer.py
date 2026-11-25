@@ -406,3 +406,34 @@ def test_dismissing_a_proposal_moves_its_photos_to_the_note(tmp_path, monkeypatc
     kwargs = vault.append_to_daily_section.call_args
     assert "![[a.jpg]]" in (kwargs.kwargs.get("content") or kwargs.args[1])
     assert events.get_events("2026-01-10")[0]["photos"] == []
+
+
+def _leg_with_photo(store, rec, part, start, end):
+    events, _ = store
+    e = events.create_event(date="2026-11-07", name="Walk", start_time=start, end_time=end)
+    events.update_event(date="2026-11-07", event_id=e["id"], updates={"proposed": True})
+    events.attach_photo("2026-11-07", e["id"], "/m/a.jpg")
+    rec["blocks"] = {part: {"date": "2026-11-07", "event_id": e["id"]}}
+    return e
+
+
+def test_photo_of_a_dropped_leg_moves_to_its_replacement(store):
+    events, _ = store
+    stops = [stop("s1", t(7, 8, 4), t(7, 8, 20), 900), stop("s2", t(7, 8, 30), t(7, 8, 35), 1200),
+             stop("s3", t(7, 9, 20), t(7, 9, 40), 1700)]
+    rec = record(t(7, 7, 54), t(7, 10, 0), stops, purpose=TRAVEL,
+                 named={"s1": ("Café", "Gan Meir"), "s3": ("Bakery", "Bakery")})
+    _leg_with_photo(store, rec, "leg:s1-s2", "2026-11-07T08:20:00", "2026-11-07T08:30:00")
+    rec = apply(rec, store)
+    new = next(e for e in events.get_events("2026-11-07") if e["id"] == rec["blocks"]["leg:s1-s3"]["event_id"])
+    assert [p["path"] for p in new["photos"]] == ["/m/a.jpg"]
+
+
+def test_photo_with_no_replacement_goes_to_the_note(store):
+    events, _ = store
+    rec = record(t(7, 7, 54), t(7, 8, 10), purpose=WALK)
+    _leg_with_photo(store, rec, "stop:s9", "2026-11-07T15:00:00", "2026-11-07T15:20:00")
+    vault = MagicMock()
+    events_, run_tool = store
+    apply_blocks(rec, plan_blocks(rec, []), run_tool=run_tool, events=events_, tz=TZ, vault=vault)
+    assert "![[a.jpg]]" in vault.append_to_daily_section.call_args.kwargs["content"]

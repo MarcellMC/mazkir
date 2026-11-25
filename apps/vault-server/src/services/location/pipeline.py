@@ -262,7 +262,8 @@ def _on_back_home(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
 
 
 def _apply(rec: dict, deps: TripDeps, places) -> None:
-    apply_blocks(rec, plan_blocks(rec, places), run_tool=deps.run_tool, events=deps.events, tz=deps.tz)
+    apply_blocks(rec, plan_blocks(rec, places), run_tool=deps.run_tool, events=deps.events, tz=deps.tz,
+                 vault=deps.vault)
 
 
 def _refresh_arrival(rec: dict, deps: TripDeps) -> None:

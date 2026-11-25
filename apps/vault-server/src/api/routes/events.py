@@ -489,11 +489,8 @@ async def set_event_state(date: date_type, event_id: str, body: SetStateBody):
     # photo was taken, and nothing else is left to hold it.
     photos_moved = False
     if body.state == "dismissed" and event.get("proposed") and event.get("photos"):
-        lines = [f"![[{str(p.get('path') or '').rsplit('/', 1)[-1]}]]" for p in event["photos"] if p.get("path")]
-        if lines:
-            get_vault().append_to_daily_section(
-                section="Notes", content="\n".join(lines), date=datetime.combine(date, time(12, 0)))
-            photos_moved = True
+        from src.services.photo_notes import embed_photos_in_note
+        photos_moved = embed_photos_in_note(get_vault(), date, event["photos"])
 
     # --- store the state -------------------------------------------------
     # Persist the reconciled day so the row exists to carry the state. This

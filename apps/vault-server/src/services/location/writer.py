@@ -32,6 +32,7 @@ from src.services.approval import resolve_state
 from src.services.fast_lane.actions import STATED
 from src.services.fast_lane.places import Place, match_place
 from src.services.location.guess import _metres
+from src.services.photo_notes import embed_photos_in_note
 from src.services.location.model import Stop, Trip
 
 logger = logging.getLogger(__name__)
@@ -298,6 +299,24 @@ def _carry_photos(events, day: str, event_id: str | None, photos: list[dict]) ->
             events.attach_photo(day, event_id, photo["path"], photo.get("caption"), photo.get("wikilinks") or None)
 
 
+def _replacement(part: str, start, end, specs: list[BlockSpec]) -> str | None:
+    """The planned part that takes over a dropped block's photos: a leg from the same
+    stop first, otherwise whichever planned block overlaps it most in time."""
+    if start is None:
+        return None
+    if part.startswith("leg:"):
+        origin = part[4:].split("-")[0]
+        same = [s for s in specs if s.part.startswith(f"leg:{origin}-")]
+        if same:
+            return same[0].part
+    best, best_ratio = None, 0.0
+    for s in specs:
+        ratio = _overlap_ratio((start, end), _interval(s.start, s.end))
+        if ratio > best_ratio:
+            best, best_ratio = s.part, ratio
+    return best
+
+
 def _rekey_legs(rec: dict, specs: list[BlockSpec], events, zone: ZoneInfo) -> None:
     """Rename old positional `leg:<n>` keys to the planned `leg:<a>-<b>` key that starts where they do."""
     blocks = rec.get("blocks") or {}
@@ -440,7 +459,7 @@ def _update_owned(rec: dict, spec: BlockSpec, ref: dict, events, run_tool, zone,
 
 
 def apply_blocks(rec: dict[str, Any], specs: list[BlockSpec], *, run_tool: Callable[[str, dict], dict],
-                 events, tz: str) -> dict[str, Any]:
+                 events, tz: str, vault=None) -> dict[str, Any]:
     zone = ZoneInfo(tz)
     blocks: dict[str, dict] = dict(rec.get("blocks") or {})
     previous_merged: dict[str, dict] = dict(rec.get("merged") or {})
@@ -455,6 +474,32 @@ def apply_blocks(rec: dict[str, Any], specs: list[BlockSpec], *, run_tool: Calla
     owned = {f["event_id"] for ref in blocks.values() for f in fragments(ref)}
     matches = _match(specs, _user_blocks(events, days, rec["id"], owned, zone), zone)
     by_event = {m["event_id"]: m for m in previous_merged.values()}
+
+    # A pending part that left the plan goes before the new blocks are made; its
+    # photos go to the planned block that replaces it (spec §9), else to the note.
+    planned = {s.part for s in specs}
+    homeless: list[tuple[str, dt.datetime, dt.datetime, list[dict]]] = []
+    for part in [p for p in blocks if p not in planned]:
+        ref = blocks[part]
+        if ref.get("gone"):
+            continue
+        loaded = [e for _, e in _load(events, ref) if e is not None]
+        span = _interval(_parse(loaded[0].get("start_time"), zone) if loaded else None,
+                         _parse(loaded[-1].get("end_time"), zone) if loaded else None)
+        photos = _delete_if_pending(events, ref)
+        if photos is not None:
+            blocks.pop(part)
+            if photos and span is not None:
+                homeless.append((part, span[0], span[1], photos))
+            elif photos:
+                homeless.append((part, None, None, photos))
+    rehomed: dict[str, list[dict]] = {}
+    for part, start, end, photos in homeless:
+        target = _replacement(part, start, end, specs)
+        if target is not None:
+            rehomed.setdefault(target, []).extend(photos)
+        elif start is not None and vault is not None:
+            embed_photos_in_note(vault, start.astimezone(zone).date(), photos)
 
     merged: dict[str, dict] = {}
     for spec in specs:
@@ -479,7 +524,12 @@ def apply_blocks(rec: dict[str, Any], specs: list[BlockSpec], *, run_tool: Calla
         if created is not None:
             blocks[spec.part] = created
 
-    planned = {s.part for s in specs}
+    for part, photos in rehomed.items():
+        if part in merged:
+            _carry_photos(events, merged[part]["date"], merged[part]["event_id"], photos)
+        elif part in blocks and not blocks[part].get("gone"):
+            first = fragments(blocks[part])[0]
+            _carry_photos(events, first["date"], first["event_id"], photos)
     for part in list(blocks):
         if part not in planned or part in merged:
             ref = blocks[part]
