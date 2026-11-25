@@ -313,8 +313,8 @@ def _handle(ev: TrackerEvent, deps: TripDeps) -> None:
     rec = rec or new_record(ev.trip)
     rec["trip"] = ev.trip.to_dict()
     rec["last_event_ts"] = ev.ts.isoformat()
-    for added, stop_id in absorb_added(rec, deps):
-        _log(deps, "ABSORB", rec, stop_id, extra={"stop_ids": [added, stop_id]})
+    for absorbed in absorb_added(rec, deps):
+        _log(deps, "ABSORB", rec, absorbed["stop_ids"][1], extra=absorbed)
     if ev.kind == "STOPPED":
         _on_stopped(rec, ev, deps, places)
     elif ev.kind == "LEFT_STOP":

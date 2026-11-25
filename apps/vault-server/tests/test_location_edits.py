@@ -547,3 +547,128 @@ def test_split_of_an_asked_stop_asks_at_home(tmp_path):               # finding 
     rec = apply_edit(TRIP, "split_stop", {"stop_id": "s1", "at": "10:25"}, deps)["record"]
     assert rec["stops"]["s1a"]["status"] == "later"
     assert not [i for i in deps.outbox.serve() if i["kind"] == "question"]
+
+
+# --- fix round 2 ----------------------------------------------------------------
+
+def walk_with_approved_legs(tmp_path):
+    """Walk → Gan Meir via Market (s1) and Bakery (s2), every leg approved."""
+    deps, clock = closed_trip(tmp_path)
+    deps.calendar = FakeCalendar()
+    apply_answer(TRIP, None, "Walk", "Gan Meir", deps)
+    apply_answer(TRIP, "s1", "Market", None, deps)
+    apply_answer(TRIP, "s2", "Bakery", None, deps)
+    rec = deps.records.get(TRIP)
+    legs = {p: approve(deps, rec, p) for p in rec["blocks"] if p.startswith("leg:")}
+    assert sorted(legs) == ["leg:s1-s2", "leg:s2-home", "leg:start-s1"]
+    return deps, legs
+
+
+def state_of(deps, rec, part):
+    return resolve_state(block(deps, rec, part))
+
+
+def assert_legs_sound(deps, out):
+    """No approved leg orphaned, no leg drawn twice."""
+    rec = out["record"]
+    drawn = [line["text"] for line in out["receipt"]["lines"] if line["text"].startswith("Walk")]
+    assert len(drawn) == len(set(drawn)), drawn
+    for part, ref in rec["blocks"].items():
+        if part.startswith("leg:") and not ref.get("cancelled"):
+            assert part in rec["arrival_lines"], part          # every live leg is planned and drawn
+
+
+def test_remove_stop_hands_its_approved_leg_to_the_joined_leg(tmp_path):
+    deps, legs = walk_with_approved_legs(tmp_path)
+    out = apply_edit(TRIP, "remove_stop", {"stop_id": "s2"}, deps)
+    rec = out["record"]
+    assert_legs_sound(deps, out)
+    # s1→s2 is now the joined leg s1→home: the same event, still approved, times updated in place
+    assert rec["blocks"]["leg:s1-home"]["event_id"] == legs["leg:s1-s2"]
+    assert state_of(deps, rec, "leg:s1-home") == "approved"
+    e = block(deps, rec, "leg:s1-home")
+    assert (e["start_time"][11:16], e["end_time"][11:16], e["name"]) == ("10:35", "11:15", "Walk home")
+    # s2→home led out of the removed stop: cancelled, reversibly, never deleted
+    assert rec["blocks"]["leg:s2-home"]["cancelled"] is True
+    assert state_of(deps, rec, "leg:s2-home") == "dismissed"
+    assert out["cancelled"] == ["leg:s2-home"]
+    assert state_of(deps, rec, "leg:start-s1") == "approved"
+
+
+def test_merge_stops_moves_the_leg_out_and_cancels_the_one_inside(tmp_path):
+    deps, legs = walk_with_approved_legs(tmp_path)
+    out = apply_edit(TRIP, "merge_stops", {"stop_ids": ["s1", "s2"]}, deps)
+    rec = out["record"]
+    assert_legs_sound(deps, out)
+    assert rec["blocks"]["leg:s1-home"]["event_id"] == legs["leg:s2-home"]
+    assert state_of(deps, rec, "leg:s1-home") == "approved"
+    assert state_of(deps, rec, "leg:s1-s2") == "dismissed" and out["cancelled"] == ["leg:s1-s2"]
+    assert rec["blocks"]["leg:start-s1"]["event_id"] == legs["leg:start-s1"]
+
+
+def test_split_stop_moves_both_legs_onto_the_halves(tmp_path):
+    deps, legs = walk_with_approved_legs(tmp_path)
+    out = apply_edit(TRIP, "split_stop", {"stop_id": "s1", "at": "10:27"}, deps)
+    rec = out["record"]
+    assert_legs_sound(deps, out)
+    assert rec["blocks"]["leg:start-s1a"]["event_id"] == legs["leg:start-s1"]
+    # s1b (8 unnamed minutes) is no leg break, so the leg into s2 now starts at s1a
+    assert rec["blocks"]["leg:s1a-s2"]["event_id"] == legs["leg:s1-s2"]
+    assert {state_of(deps, rec, p) for p in ("leg:start-s1a", "leg:s1a-s2", "leg:s2-home")} == {"approved"}
+    assert block(deps, rec, "leg:s1a-s2")["start_time"][11:16] == "10:27"
+    assert "leg:start-s1" not in rec["blocks"] and "leg:s1-s2" not in rec["blocks"]
+    assert out["cancelled"] == []
+    assert block(deps, rec, "leg:s1a-s2")["trip"]["part"] == "leg:s1a-s2"
+
+
+def test_absorb_judges_overlap_by_your_edited_times(tmp_path):         # the pin probe
+    logs: list[dict] = []
+    deps, clock = make_deps(tmp_path, logs=logs)
+    evs = events_of(two_stops())
+    second = next(i for i, e in enumerate(evs) if e.kind == "STOPPED" and e.stop_id == "s2")
+    run(deps, clock, evs[:second])
+    clock["now"] = t(13, 10, 46)
+    apply_edit(TRIP, "set_stop_times", {"stop_id": "s1", "end": "10:26"}, deps)   # tracker says 10:35
+    lat, lng = at(760)
+    apply_edit(TRIP, "add_stop", {"start": "10:30", "end": "10:34", "ref": "location:7", "name": "Kiosk"}, deps,
+               resolve=lambda h: {"kind": "anchor", "lat": lat, "lng": lng, "accuracy_m": 10})
+    approve(deps, deps.records.get(TRIP), "stop:x1")
+    rec = run(deps, clock, evs[second:second + 1])
+    assert stop_ids(rec) == ["s1", "x1", "s2"]
+    assert not rec["edits"][1].get("absorbed_by")
+    [kiosk] = by_name(deps, "Kiosk")
+    assert resolve_state(kiosk) == "approved" and not rec["blocks"]["stop:x1"].get("cancelled")
+    assert not [line for line in logs if line["event"] == "ABSORB"]
+
+
+def test_no_absorb_into_a_stop_you_named(tmp_path):
+    deps, clock, evs, second = _open_until_s2(tmp_path)
+    apply_answer(TRIP, "s1", "Market", None, deps)
+    clock["now"] = t(13, 10, 37)
+    rec = deps.records.get(TRIP)
+    # an added stop the tracker's s1 (10:18–10:35) would cover, were it not answered
+    rec.setdefault("edits", []).append({"op": "add_stop", "id": "x1", "start": t(13, 10, 30).isoformat(),
+                                        "end": t(13, 10, 34).isoformat(), "lat": at(760)[0], "lng": at(760)[1],
+                                        "spread_m": 5, "from_home_m": 760})
+    rec["stops"]["x1"] = {"status": "named", "name": "Kiosk", "answered": True}
+    deps.records.save(rec)
+    rec = run(deps, clock, evs[second:second + 1])
+    assert not rec["edits"][0].get("absorbed_by")
+    assert rec["stops"]["s1"]["name"] == "Market"
+
+
+def test_absorb_log_line_carries_names_only(tmp_path):
+    logs: list[dict] = []
+    deps, clock = make_deps(tmp_path, logs=logs)
+    evs = events_of(two_stops())
+    second = next(i for i, e in enumerate(evs) if e.kind == "STOPPED" and e.stop_id == "s2")
+    run(deps, clock, evs[:second])
+    clock["now"] = t(13, 10, 46)
+    lat, lng = at(1400)
+    apply_edit(TRIP, "add_stop", {"start": "10:43", "end": "10:46", "ref": "location:7", "name": "Bakery"}, deps,
+               resolve=lambda h: {"kind": "anchor", "lat": lat, "lng": lng, "accuracy_m": 10})
+    run(deps, clock, evs[second:second + 1])
+    [line] = [x for x in logs if x["event"] == "ABSORB"]
+    assert line["stop_ids"] == ["x1", "s2"] and line["cancelled"] == [] and line["calendar_failed"] == []
+    text = json.dumps(line, default=str)
+    assert '"lat"' not in text and not re.search(r"\d+\.\d{4,}", text)

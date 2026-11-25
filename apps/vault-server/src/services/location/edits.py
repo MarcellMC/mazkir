@@ -127,38 +127,60 @@ def _merged(stops: list[Stop], stop_id: str) -> Stop:
                    spread_m=spread)
 
 
-def absorb_added(rec: dict[str, Any], deps) -> list[tuple[str, str]]:
+def absorb_added(rec: dict[str, Any], deps) -> list[dict[str, Any]]:
     """A stop the tracker now reports over one you added: the tracker's stop takes it in.
 
-    Called after every tracker event has rewritten `rec["trip"]`. The added
-    stop's edit is marked `absorbed_by` (trip_of skips it); what you said
-    about it (a name, a place) moves to the tracker's stop unless that has an
-    answer of its own, and so does its block. Returns (added id, stop id) pairs.
+    Called after every tracker event has rewritten `rec["trip"]`. Overlap is
+    judged on the trip as you edited it (`trip_of`: times you pinned win over
+    the tracker's), and only into a tracker stop with no answer of its own.
+    The added stop's edit is marked `absorbed_by` (trip_of skips it); what you
+    said about it moves to the tracker's stop, and so does its block. A block
+    of yours that cannot move (the tracker's stop holds one already) is never
+    cancelled by this: the added stop is then left as it is.
+
+    Returns one {stop_ids: [added, tracker], cancelled, calendar_failed} per absorption.
     """
-    base = Trip.from_dict(rec["trip"])
-    # Only a stop still on the trip as you left it: never one you removed, merged away or split.
-    current = {s.id for s in trip_of(rec).stops}
+    base_ids = {s["id"] for s in (rec.get("trip") or {}).get("stops") or []}
+    view = trip_of(rec)          # tracker stops with your edits: removed, merged-away and split ones are gone
     infos = rec.setdefault("stops", {})
+    blocks = rec.get("blocks") or {}
     out = []
     for e in rec.get("edits") or []:
         if e.get("op") != "add_stop" or e.get("absorbed_by"):
             continue
         start, end = _parse(e["start"]), _parse(e["end"])
-        over = next((s for s in base.stops if s.id in current and s.start < end
-                     and (s.end is None or s.end > start)), None)
+        over = next((s for s in view.stops
+                     if s.id in base_ids and s.id != e["id"] and not _answered(infos.get(s.id))
+                     and s.start < end and (s.end is None or s.end > start)), None)
         if over is None:
             continue
+        mine, x_part, s_part = infos.get(e["id"]) or {}, f"stop:{e['id']}", f"stop:{over.id}"
+        if x_part in blocks and s_part in blocks and _kept(rec, x_part, deps):
+            continue
         e["absorbed_by"] = over.id
-        mine = infos.get(e["id"]) or {}
+        sink: dict[str, list[str]] = {"cancelled": [], "calendar_failed": []}
         # An unanswered added stop moves nothing: the tracker's stop is then asked about as usual.
-        if over.id not in infos and (mine.get("answered") or mine.get("status") == "named"):
+        if _answered(mine):
             infos[over.id] = {**mine, "source": EDIT_SOURCE}
-            if not rekey_block(rec, f"stop:{e['id']}", f"stop:{over.id}", deps):
-                _cancel_block(rec, f"stop:{e['id']}", deps, {"cancelled": [], "calendar_failed": []})
-        else:
-            _cancel_block(rec, f"stop:{e['id']}", deps, {"cancelled": [], "calendar_failed": []})
-        out.append((e["id"], over.id))
+            rekey_block(rec, x_part, s_part, deps)      # a pending one left behind, the re-plan deletes
+        out.append({"stop_ids": [e["id"], over.id], **sink})
     return out
+
+
+def _answered(info: dict | None) -> bool:
+    return bool(info and (info.get("answered") or info.get("status") == "named"))
+
+
+def _kept(rec: dict, part: str, deps) -> bool:
+    """Whether the writer would keep this block when it leaves the plan: you approved, ✕'d or corrected it."""
+    from src.services.approval import resolve_state
+    from src.services.location.writer import fragments
+
+    ref = (rec.get("blocks") or {}).get(part)
+    if ref is None or ref.get("gone"):
+        return False
+    loaded = [e for f in fragments(ref) if (e := _find(deps.events, f)) is not None]
+    return bool(loaded) and (any(resolve_state(e) != "pending" for e in loaded) or any(e.get("user_set") for e in loaded))
 
 
 def known_stop_ids(rec: dict[str, Any]) -> set[str]:
@@ -342,6 +364,8 @@ def _overlay_edit(rec: dict, trip: Trip, op: str, args: dict, deps, resolve,
         deps.outbox.withdraw(pipeline.question_key(rec["id"], gone))
         if op in ("merge_stops", "remove_stop"):
             _cancel_block(rec, f"stop:{gone}", deps, cancelled)
+    if op in ("split_stop", "merge_stops", "remove_stop"):
+        _follow_legs(rec, edit, deps, cancelled)
     deps.records.save(rec)
     if name:
         out = pipeline.apply_answer(rec["id"], edit["id"], name, place, deps, osm=osm)
@@ -393,6 +417,79 @@ def rekey_block(rec: dict, old: str, new: str, deps) -> bool:
                 deps.events.update_event(date=frag["date"], event_id=frag["event_id"],
                                          updates={"trip": {"id": rec["id"], "part": new}})
     return True
+
+
+def _leg_ends(part: str) -> tuple[str, str] | None:
+    """`leg:<from>-<to>` as (from, to); None for anything else (an old positional `leg:<n>`)."""
+    if not part.startswith("leg:") or "-" not in part:
+        return None
+    a, b = part[4:].split("-", 1)
+    return a, b
+
+
+def _follow_legs(rec: dict, edit: dict, deps, cancelled: dict[str, list[str]]) -> None:
+    """Legs you approved follow the stops they join (spec §7.4: legs keyed by what they join).
+
+    Legs are keyed by their two ends, so a split, merge or remove leaves an
+    approved leg under a key the new plan no longer has: drawn beside the new
+    pending leg that replaces it. Before re-planning, each such leg is handed
+    to the planned leg it now is, edited in place there and still approved;
+    a leg with nothing left to be (it led out of a removed stop, or ran
+    inside a merged span) is cancelled, reversibly. Pending legs need
+    nothing: the writer replaces them.
+      split s:  x→s becomes x→sa;  s→y becomes sb→y (else the planned leg into y)
+      merge:    legs inside the span go; s_last→y becomes s_first→y; x→s_i becomes x→s_first
+      remove s: x→s becomes the joined leg out of x;  s→y goes
+    """
+    from src.services.location import pipeline
+    from src.services.location.writer import _delete_if_pending, plan_blocks
+
+    blocks = rec.get("blocks") or {}
+    planned = [s.part for s in plan_blocks(rec, pipeline._places(deps)) if _leg_ends(s.part)]
+    op = edit["op"]
+    if op == "split_stop":
+        sid, (first, second) = edit["stop_id"], edit["ids"]
+        as_from, as_to, inside = {sid: second}, {sid: first}, set()
+    elif op == "merge_stops":
+        ids, keep = edit["stop_ids"], edit["id"]
+        as_from = {i: keep for i in ids}
+        as_to = {i: keep for i in ids}
+        inside = set(ids)
+    else:
+        sid = edit["stop_id"]
+        as_from, as_to, inside = {sid: None}, {sid: None}, set()
+
+    for part in [p for p in list(blocks) if _leg_ends(p) and p not in planned]:
+        if not _kept(rec, part, deps) or blocks[part].get("cancelled"):
+            continue
+        a, b = _leg_ends(part)
+        if a in inside and b in inside:
+            _cancel_block(rec, part, deps, cancelled)
+            continue
+        a2, b2 = as_from.get(a, a), as_to.get(b, b)
+        if a2 is None:                                    # it led out of a stop that is gone
+            _cancel_block(rec, part, deps, cancelled)
+            continue
+        candidates = [f"leg:{a2}-{b2}"] if b2 is not None else []
+        candidates += [p for p in planned if b2 is not None and _leg_ends(p)[1] == b2]
+        candidates += [p for p in planned if _leg_ends(p)[0] == a2]
+        target = next((p for p in candidates if p in planned and _free(rec, p, deps, _delete_if_pending)), None)
+        if target is None or not rekey_block(rec, part, target, deps):
+            _cancel_block(rec, part, deps, cancelled)
+
+
+def _free(rec: dict, part: str, deps, delete_if_pending) -> bool:
+    """A planned part nothing holds, or held only by a pending guess, which goes to make room."""
+    blocks = rec.get("blocks") or {}
+    ref = blocks.get(part)
+    if ref is None:
+        return True
+    if _kept(rec, part, deps):
+        return False
+    if ref.get("gone") or delete_if_pending(deps.events, ref) is not None:
+        blocks.pop(part)
+        return True
+    return False
 
 
 def _cancel_block(rec: dict, part: str, deps, cancelled: dict[str, list[str]]) -> None:
