@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="mazkir-test">
+  <node id="201" version="1" lat="32.1035973" lon="34.9000000">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="קפה"/>
+  </node>
+  <node id="202" version="1" lat="32.1004497" lon="34.9000000">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="קפה גן"/>
+  </node>
+  <node id="203" version="1" lat="32.1000899" lon="34.9000000">
+    <tag k="amenity" v="restaurant"/>
+    <tag k="name" v="בית קפה"/>
+  </node>
+  <node id="204" version="1" lat="32.1000000" lon="34.9021209">
+    <tag k="amenity" v="bakery"/>
+    <tag k="name" v="מאפיית שלום"/>
+  </node>
+  <node id="205" version="1" lat="32.1000000" lon="34.8968187">
+    <tag k="shop" v="bakery"/>
+    <tag k="name" v="מאפה"/>
+    <tag k="name:en" v="Sunrise Bakery"/>
+  </node>
+  <node id="206" version="1" lat="32.1449661" lon="34.9000000">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="קפה רחוק"/>
+  </node>
+  <node id="207" version="1" lat="32.1000000" lon="34.9006363">
+    <tag k="amenity" v="bench"/>
+    <tag k="name" v="קפה ספסל"/>
+  </node>
+  <node id="208" version="1" lat="32.0991007" lon="34.9000000">
+    <tag k="addr:street" v="יסוד המעלה"/>
+    <tag k="addr:housenumber" v="12"/>
+    <tag k="addr:city" v="Tel Aviv"/>
+  </node>
+  <node id="209" version="1" lat="32.0997302" lon="34.9002121">
+    <tag k="addr:street" v="יסוד המעלה"/>
+    <tag k="addr:housenumber" v="14"/>
+  </node>
+  <node id="211" version="1" lat="32.2008993" lon="34.9000000">
+    <tag k="addr:street" v="יסוד המעלה"/>
+    <tag k="addr:housenumber" v="3"/>
+  </node>
+  <node id="212" version="1" lat="32.2009893" lon="34.9000000">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="יסוד המעלה"/>
+  </node>
+</osm>

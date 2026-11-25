@@ -21,7 +21,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import sqlite3
+import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -211,5 +213,106 @@ def map_area(index: Path | None, lat: float, lng: float) -> str | None:
         return best[1]["name_en"] or best[1]["name"]
     except sqlite3.Error:
         return None
+    finally:
+        con.close()
+
+
+_FINALS = str.maketrans("ךםןףץ", "כמנפצ")
+_NIQQUD = re.compile("[\u0591-\u05c7]")
+_PUNCT = re.compile(r"[^\w\s]|_")
+
+
+def _fold(text: str | None) -> str:
+    """Comparable form: casefolded, no niqqud or punctuation, Hebrew final letters as their medial forms."""
+    text = unicodedata.normalize("NFC", _NIQQUD.sub("", unicodedata.normalize("NFD", text or "")))
+    return " ".join(_PUNCT.sub(" ", text.casefold().translate(_FINALS)).split())
+
+
+def _match_rank(query: str, *fields: str | None) -> int | None:
+    """0 exact, 1 prefix, 2 substring, over the best field; None when none match."""
+    best = None
+    for field in fields:
+        f = _fold(field)
+        if not f:
+            continue
+        rank = 0 if f == query else 1 if f.startswith(query) else 2 if query in f else None
+        if rank is not None and (best is None or rank < best):
+            best = rank
+    return best
+
+
+def map_search(index: Path | None, query: str, lat: float, lng: float, radius_m: float = 3000,
+               limit: int = 8) -> list[MapPlace]:
+    """Places and addresses near a point whose name (or street) matches: exact, prefix, substring, then nearest."""
+    q = _fold(query)
+    con = _connect(index) if q else None
+    if con is None:
+        return []
+    try:
+        hits = []
+        for row in _query(con, lat, lng, radius_m, ("place", "address")):
+            if row["grp"] == "place" and row["kind"] in NOT_A_DESTINATION:
+                continue
+            fields = (row["street"],) if row["grp"] == "address" else (row["name"], row["name_en"])
+            rank = _match_rank(q, *fields)
+            if rank is None:
+                continue
+            dist = haversine_m(lat, lng, row["lat"], row["lng"])
+            if dist > radius_m:
+                continue
+            hits.append((rank, dist, MapPlace(row["osm"], row["grp"], row["kind"], _label(row),
+                                              row["name_en"] or row["name"], row["street"], round(dist, 1))))
+        hits.sort(key=lambda h: (h[0], h[1]))
+        out, streets = [], set()
+        for _, _, place in hits:
+            if place.group == "address":
+                if _fold(place.street) in streets:
+                    continue
+                streets.add(_fold(place.street))
+            out.append(place)
+        return out[:limit]
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+
+
+def map_address(index: Path | None, lat: float, lng: float, radius_m: float = 60) -> str | None:
+    """'<street> <number>' of the nearest address, or the street alone when it has no number."""
+    con = _connect(index)
+    if con is None:
+        return None
+    try:
+        best = None
+        for row in _query(con, lat, lng, radius_m, ("address",)):
+            if not row["street"]:
+                continue
+            dist = haversine_m(lat, lng, row["lat"], row["lng"])
+            if dist <= radius_m and (best is None or dist < best[0]):
+                best = (dist, row)
+        if best is None:
+            return None
+        row = best[1]
+        return f"{row['street']} {row['housenumber']}" if row["housenumber"] else row["street"]
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+
+
+def street_named(index: Path | None, name: str, lat: float, lng: float, radius_m: float = 300) -> bool:
+    """True when the name is a street here (an address has it) and no place nearby carries it (spec §7.5)."""
+    q = _fold(name)
+    con = _connect(index) if q else None
+    if con is None:
+        return False
+    try:
+        rows = _query(con, lat, lng, radius_m, ("place", "address"))
+        near = [r for r in rows if haversine_m(lat, lng, r["lat"], r["lng"]) <= radius_m]
+        if any(r["grp"] == "place" and q in (_fold(r["name"]), _fold(r["name_en"])) for r in near):
+            return False
+        return any(r["grp"] == "address" and _fold(r["street"]) == q for r in near)
+    except sqlite3.Error:
+        return False
     finally:
         con.close()
