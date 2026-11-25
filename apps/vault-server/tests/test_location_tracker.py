@@ -82,7 +82,7 @@ def test_silence_then_far_means_left_before():               # rules 4, 8 (8 Nov
     events = feed_all(tr, track.fixes)
     left = events[0]
     assert left.kind == "LEFT" and left.trip.start_precision == "before"
-    assert left.trip.left_at == last_home.ts
+    assert left.trip.left_at == last_home.ts + dt.timedelta(minutes=112, seconds=30)
 
 
 def test_stop_near_home_does_not_swallow_the_walk_back():    # rule 7
@@ -185,3 +185,40 @@ def test_a_share_resuming_at_home_ends_the_trip_when_it_went_quiet():   # I-9
     back = events[-1]
     assert back.kind == "BACK_HOME"
     assert back.trip.back_at == last_away.ts and back.trip.end_precision == "after"
+
+
+def test_trip_after_silence_starts_at_first_point_away():
+    tr = tracker()
+    track = Track(t(8, 17, 0)).stay(41)          # last home point 17:40:30
+    track.now = t(8, 19, 1)
+    track.pos = (500, 0)
+    track.stay(2)
+    left = feed_all(tr, track.fixes)[0]
+    assert left.kind == "LEFT"
+    assert left.trip.left_at == t(8, 19, 1)
+    assert left.trip.start_precision == "before"
+    assert left.trip.legs[0].start == left.trip.left_at
+
+
+def test_trip_without_silence_starts_at_last_point_inside():
+    tr = tracker()
+    from src.services.geo import haversine_m
+    track = Track(t(8, 17, 0)).stay(10).walk_to(300).stay(5)
+    last_home = [f for f in track.fixes if haversine_m(f.lat, f.lng, *HOME) <= 40][-1]
+    left = feed_all(tr, track.fixes)[0]
+    assert left.trip.left_at == last_home.ts and left.trip.start_precision == "location"
+
+
+def test_leg_after_a_stop_across_silence_starts_at_first_point_away():
+    tr = tracker()
+    track = Track(t(8, 17, 0)).stay(5).walk_to(400).stay(6)
+    stop_last = track.fixes[-1].ts
+    track.now = stop_last + dt.timedelta(minutes=60)
+    track.pos = (900, 0)
+    track.stay(3)
+    first_away = track.fixes[-6].ts
+    events = feed_all(tr, track.fixes)
+    left_stop = next(e for e in events if e.kind == "LEFT_STOP")
+    stop = left_stop.trip.stops[0]
+    assert stop.end == stop_last
+    assert tr._trip.legs[1].start == first_away

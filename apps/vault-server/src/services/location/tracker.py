@@ -308,10 +308,14 @@ class Tracker:
         departed = stay.last_inside_ts
         gap = (self._outside[0].ts - departed).total_seconds()
         precision = "before" if gap > self.params.silence_s else "location"
+        # Across a silence the stay's last point is no departure time: the phone sat
+        # quiet and the next point is already away. The first point away is the
+        # earliest the trip is known to have started (the stop's own end stays put).
+        started = self._outside[0].ts if precision == "before" else departed
         now = self._outside[-1].ts
         if self._trip is None:
-            self._trip = Trip(id=self.new_id(), origin=self._origin(stay), left_at=departed,
-                              start_precision=precision, legs=[Leg(departed, None)])
+            self._trip = Trip(id=self.new_id(), origin=self._origin(stay), left_at=started,
+                              start_precision=precision, legs=[Leg(started, None)])
             if self.home is not None:
                 self._trip.max_from_home_m = max(_dist(f, self.home) for f in self._outside)
             events.append(self._event("LEFT", now))
@@ -320,7 +324,7 @@ class Tracker:
             if stop is not None:
                 stop.end = departed
                 events.append(self._event("LEFT_STOP", now, stop.id))
-            self._trip.legs.append(Leg(departed, None))
+            self._trip.legs.append(Leg(started, None))
         self._speeds = []
         # What lay outside may be the start of the next stay (the shop next door).
         seed = [f for f in self._outside if _dist(f, self._outside[-1]) <= self.params.stay_radius_m]
