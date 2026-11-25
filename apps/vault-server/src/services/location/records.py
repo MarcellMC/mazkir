@@ -26,10 +26,6 @@ def new_record(trip: Trip) -> dict[str, Any]:
             "blocks": {}, "merged": {}, "arrival_item": None, "confirmed": False}
 
 
-def _logical_day(ts: dt.datetime, tz: str, boundary_hour: int) -> dt.date:
-    return (ts.astimezone(ZoneInfo(tz)) - dt.timedelta(hours=boundary_hour)).date()
-
-
 class TripRecords:
     def __init__(self, root: Path):
         self.dir = Path(root) / "trips"
@@ -85,12 +81,3 @@ class TripRecords:
         zone = ZoneInfo(tz)
         return [r for r in self.all()
                 if dt.datetime.fromisoformat(r["trip"]["left_at"]).astimezone(zone).date() == day]
-
-    def questions_on(self, day: dt.date, tz: str, boundary_hour: int) -> int:
-        n = 0
-        for rec in self.all():
-            stamps = [s.get("asked_at") for s in (rec.get("stops") or {}).values()]
-            stamps.append((rec.get("trip_question") or {}).get("asked_at"))
-            n += sum(1 for s in stamps
-                     if s and _logical_day(dt.datetime.fromisoformat(s), tz, boundary_hour) == day)
-        return n

@@ -35,24 +35,6 @@ def test_on_day_is_by_left_at(tmp_path):
     assert [r["id"] for r in recs.on_day(dt.date(2026, 11, 13), TZ)] == ["bbbbbbbb"]
 
 
-def test_questions_on_uses_the_logical_day(tmp_path):
-    recs = TripRecords(tmp_path)
-    rec = new_record(trip())
-    rec["stops"]["s1"] = {"status": "asked", "name": None, "place": None, "options": [],
-                          "asked_at": t(13, 2, 0).isoformat()}
-    recs.save(rec)
-    assert recs.questions_on(dt.date(2026, 11, 12), TZ, 5) == 1
-    assert recs.questions_on(dt.date(2026, 11, 13), TZ, 5) == 0
-
-
-def test_trip_questions_count_too(tmp_path):
-    recs = TripRecords(tmp_path)
-    rec = new_record(trip())
-    rec["trip_question"] = {"options": [], "asked_at": t(12, 23, 0).isoformat()}
-    recs.save(rec)
-    assert recs.questions_on(dt.date(2026, 11, 12), TZ, 5) == 1
-
-
 def test_safe_error_never_carries_the_message():
     from src.services.location.model import safe_error
     try:

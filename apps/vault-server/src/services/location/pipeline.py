@@ -117,12 +117,6 @@ def _guess(subject: str, trip: Trip, stop, deps: TripDeps, places, *, trip_purpo
     return kept, dropped, history
 
 
-def _questions_today(deps: TripDeps) -> int:
-    now = deps.now()
-    day = (now - dt.timedelta(hours=deps.boundary_hour)).date()
-    return deps.records.questions_on(day, deps.tz, deps.boundary_hour)
-
-
 def _log(deps: TripDeps, event: str, rec: dict, stop_id: str | None = None, history=(), guesses=(),
          dropped=(), decision: Decision | None = None, extra: dict | None = None) -> None:
     line = {
@@ -185,7 +179,7 @@ def _on_stopped(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     # A STOPPED handled long after it happened (the server was down, or the
     # inbox is replaying) is about a stop you have likely left: never ask then.
     fresh = (deps.now() - ev.ts) <= STALE_QUESTION
-    d = decide(guesses, history, known_place=known, may_ask=fresh, questions_today=_questions_today(deps),
+    d = decide(guesses, history, known_place=known, may_ask=fresh,
                at_stop=True, map_options=map_options)
     if d.action == "name":
         info.update(status="named", name=d.name, place=d.destination or (known.name if known else None))
@@ -226,7 +220,15 @@ def _on_left_stop(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     # Unanswered, it stays unnamed and gets no block (the user's rule): no
     # second guess once you have left.
     deps.outbox.withdraw(question_key(rec["id"], sid))
+    _later_if_asked(rec, sid)
     _log(deps, ev.kind, rec, sid)
+
+
+def _later_if_asked(rec: dict, sid: str) -> None:
+    """An asked stop nobody answered waits for the arrival message as a ? line."""
+    info = (rec.get("stops") or {}).get(sid)
+    if info and info.get("status") == "asked" and not info.get("answered"):
+        info["status"] = "later"
 
 
 def _name_from_your_block(rec: dict, deps: TripDeps) -> None:
@@ -244,6 +246,7 @@ def _on_back_home(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     rec["closed"] = True
     for sid in rec.get("stops") or {}:
         deps.outbox.withdraw(question_key(rec["id"], sid))
+        _later_if_asked(rec, sid)
     _apply(rec, deps, places)
     _name_from_your_block(rec, deps)
     if (rec.get("purpose") or {}).get("name") or rec.get("trip_question"):
@@ -252,10 +255,8 @@ def _on_back_home(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
         return
     trip = Trip.from_dict(rec["trip"])
     guesses, dropped, history = _guess("trip", trip, None, deps, places)
-    d = decide(guesses, history, known_place=None, may_ask=True, questions_today=_questions_today(deps))
-    if d.action == "name":
-        rec["purpose"] = {"name": d.name, "destination": d.destination, "source": "guess"}
-    elif d.action == "ask":
+    d = decide(guesses, history, known_place=None, may_ask=True)
+    if d.action == "ask":
         rec["trip_question"] = {"options": [o.to_dict() for o in d.options], "asked_at": deps.now().isoformat()}
     _log(deps, ev.kind, rec, None, history, guesses, dropped, d)
 

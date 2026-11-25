@@ -1,8 +1,8 @@
 """Name it silently, ask, or stay quiet (trips spec §5.4). Code, not the model.
 
 The thresholds for asking live here, so they can be tuned without touching
-the prompt. A question is a cost: at most once per stop, never about a stop
-already left, and at most 6 a day.
+the prompt. At most one question per stop, never about a stop already left,
+and no daily limit: every trip asks back home (trip repair spec §4, §5).
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from src.services.fast_lane.places import PAUSE_KIND, Place
 from src.services.location.guess import Guess
 from src.services.location.history import HistoryCandidate
 
-QUESTION_CAP = 6
 MAX_OPTIONS = 3
 
 
@@ -42,7 +41,7 @@ class Decision:
 
 
 def decide(guesses: list[Guess], history: list[HistoryCandidate], *, known_place: Place | None,
-           may_ask: bool, questions_today: int, at_stop: bool = False,
+           may_ask: bool, at_stop: bool = False,
            map_options: tuple[Option, ...] | list[Option] = ()) -> Decision:
     """At a stop, a guess is only ever offered: a stop is named silently from a
     place you have named, never from the model (2026-11-14).
@@ -54,19 +53,12 @@ def decide(guesses: list[Guess], history: list[HistoryCandidate], *, known_place
     if known_place is not None and known_place.kind == PAUSE_KIND:
         return Decision("quiet", reason="pause spot")
 
-    strong = [g for g in guesses if g.likelihood == "strong"]
     live = [g for g in guesses if g.likelihood in ("strong", "plausible")]
-    if not at_stop and len(strong) == 1 and len(live) == 1:
-        only = strong[0]
-        return Decision("name", only.purpose, only.destination, reason="one strong guess")
-
-    if known_place is not None:
+    if at_stop and known_place is not None:
         return Decision("name", known_place.name, known_place.name, reason="known place")
 
     if not may_ask:
         return Decision("quiet", reason="not asking now")
-    if questions_today >= QUESTION_CAP:
-        return Decision("quiet", reason="daily cap")
 
     if live:
         options = _unique([Option(g.purpose, g.destination, g.osm) for g in live])

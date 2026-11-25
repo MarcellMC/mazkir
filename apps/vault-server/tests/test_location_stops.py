@@ -73,7 +73,7 @@ def test_a_stop_left_unanswered_stays_unnamed_with_no_block(tmp_path):
     deps.vault.read_daily_note.return_value = {"content": "- [ ] coffee with Dana\n"}
     deps.claude.by_subject = {"stop": [guess("Coffee with Dana", cites=["c1"], destination="Café")]}
     rec = run(deps, clock, events_for(walk_with_a_stop()))
-    assert rec["stops"]["s1"]["status"] == "asked"
+    assert rec["stops"]["s1"]["status"] == "later"      # asked, never answered, left
     parts = [(b.get("trip") or {}).get("part") for b in deps.events.get_events("2026-11-13")]
     assert parts == ["trip"]
 
@@ -175,7 +175,7 @@ def test_a_guess_takes_your_habits_name(tmp_path):
     _say(deps, "Dog walking")
     deps.claude.by_subject = {"trip": [guess("Dog walking", cites=["c1"])]}
     rec = run(deps, clock, events_for(Track(t(13, 16, 0)).stay(10).walk_to(250).walk_to(0).stay(5)))
-    assert rec["purpose"]["name"] == "Dog Walk"
+    assert rec["trip_question"]["options"][0]["name"] == "Dog Walk"
 
 
 def test_your_history_name_wins_over_the_habit_name(tmp_path):
@@ -185,7 +185,7 @@ def test_your_history_name_wins_over_the_habit_name(tmp_path):
     _say(deps, "Dog walking")
     deps.claude.by_subject = {"trip": [guess("dog walks", cites=["c1"])]}
     rec = run(deps, clock, events_for(Track(t(13, 16, 0)).stay(10).walk_to(250).walk_to(0).stay(5)))
-    assert rec["purpose"]["name"] == "Dog walk"
+    assert rec["trip_question"]["options"][0]["name"] == "Dog walk"
 
 
 def test_an_answer_naming_the_trip_takes_the_usual_name_but_nothing_else_changes(tmp_path):
