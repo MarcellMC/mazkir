@@ -49,7 +49,14 @@ def test_resolve_returns_map_place(tmp_path):
     h = Handles(tmp_path / "handles.json", now=Clock(T0))
     handle = _place(h, 1)
     got = h.resolve(1, handle)
-    assert got == {"kind": "map", "osm": "node/1", "label": "Dog park", "lat": 32.08, "lng": 34.78}
+    assert got == {
+        "kind": "map",
+        "osm": "node/1",
+        "label": "Dog park",
+        "place_kind": "leisure",
+        "lat": 32.08,
+        "lng": 34.78,
+    }
 
 
 def test_resolve_unknown_handle_is_none(tmp_path):

@@ -100,6 +100,7 @@ class Handles:
                 "kind": "map",
                 "osm": entry["osm"],
                 "label": entry["label"],
+                "place_kind": entry.get("kind_of_place"),
                 "lat": entry["lat"],
                 "lng": entry["lng"],
             }
