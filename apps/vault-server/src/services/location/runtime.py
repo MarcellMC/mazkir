@@ -30,7 +30,7 @@ from src.services.fast_lane import places as places_mod
 from src.services.approval import resolve_state
 from src.services.location.edits import CHANGED_STOP, stop_changed, trip_of
 from src.services.location.home import find_home
-from src.services.location.messages import arrival_receipt, notice_receipt, question_receipt
+from src.services.location.messages import arrival_receipt, notice_receipt, part_for_line, question_receipt
 from src.services.location.model import TrackerEvent, safe_error
 from src.services.location.pipeline import TripDeps, apply_answer, defer_stop, handle_event, options_for
 from src.services.location.raw import load_fixes, point_to_fix
@@ -288,10 +288,11 @@ class LocationRuntime:
 
     def _approve(self, rec: dict, line: str, action: str, out: dict[str, Any]) -> dict[str, Any]:
         order = rec.get("arrival_lines") or []
+        part = part_for_line(rec, int(line)) if line.isdigit() else None
         if line == "all":
             parts = list(order)
-        elif line.isdigit() and 1 <= int(line) <= len(order):
-            parts = [order[int(line) - 1]]
+        elif part is not None:
+            parts = [part]
         else:
             out["toast"] = "That line is gone — refresh /day."
             return out
@@ -369,6 +370,7 @@ def build_runtime(settings, *, agent, events, vault, claude, log) -> LocationRun
         now=lambda: dt.datetime.now(ZoneInfo(settings.vault_timezone)), log=log,
         derived_dir=Path(settings.location_data_path) / "derived",
         raw_dir=Path(settings.location_data_path) / "raw",
+        calendar=getattr(agent, "calendar", None),
     )
     if settings.location_map == "on":
         from src.services.location.map_update import index_path

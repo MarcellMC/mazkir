@@ -367,3 +367,183 @@ def test_records_on_day_and_trip_id(tmp_path):
     deps, _ = closed_trip(tmp_path)
     [rec] = deps.records.on_day(t(13, 12, 0).date(), TZ)
     assert trip_of(rec).id == TRIP
+
+
+# --- fix round 1 ----------------------------------------------------------------
+
+def approve(deps, rec, part, google=None):
+    frag = fragments(rec["blocks"][part])[0]
+    updates = {"state": "approved"}
+    if google:
+        updates["source_ids"] = {"calendar_id": google}
+    deps.events.update_event(date=frag["date"], event_id=frag["event_id"], updates=updates)
+    return frag["event_id"]
+
+
+class FakeCalendar:
+    def __init__(self, ok=True):
+        self.ok = ok
+        self.cancelled: list[str] = []
+
+    async def cancel_event(self, event_id):
+        self.cancelled.append(event_id)
+        return self.ok
+
+
+def by_name(deps, name, day="2026-11-13"):
+    return [e for e in deps.events.get_events(day) if e.get("name") == name]
+
+
+def test_split_keeps_an_approved_block_in_place(tmp_path):            # finding 1
+    deps, _ = closed_trip(tmp_path)
+    apply_answer(TRIP, "s1", "Café", None, deps)
+    event_id = approve(deps, deps.records.get(TRIP), "stop:s1")
+    out = apply_edit(TRIP, "split_stop", {"stop_id": "s1", "at": "10:27"}, deps)
+    rec = out["record"]
+    assert "stop:s1" not in rec["blocks"] and rec["blocks"]["stop:s1a"]["event_id"] == event_id
+    [cafe] = by_name(deps, "Café")
+    assert cafe["id"] == event_id and resolve_state(cafe) == "approved"
+    assert (cafe["start_time"][11:16], cafe["end_time"][11:16]) == ("10:18", "10:27")
+    assert cafe["trip"]["part"] == "stop:s1a"
+    assert out["cancelled"] == []
+
+
+def test_merge_extends_the_first_approved_block_and_cancels_the_other(tmp_path):   # finding 1
+    deps, _ = closed_trip(tmp_path)
+    deps.calendar = FakeCalendar()
+    apply_answer(TRIP, "s1", "Market", None, deps)
+    apply_answer(TRIP, "s2", "Bakery", None, deps)
+    rec = deps.records.get(TRIP)
+    market = approve(deps, rec, "stop:s1")
+    approve(deps, rec, "stop:s2", google="g-bakery")
+    out = apply_edit(TRIP, "merge_stops", {"stop_ids": ["s1", "s2"]}, deps)
+    [m] = by_name(deps, "Market")
+    assert m["id"] == market and resolve_state(m) == "approved" and m["end_time"][11:16] == "10:58"
+    [b] = by_name(deps, "Bakery")                                        # never hard-deleted
+    assert resolve_state(b) == "dismissed"
+    assert deps.calendar.cancelled == ["g-bakery"]
+    assert out["cancelled"] == ["stop:s2"] and out["calendar_failed"] == []
+    assert not any(line["text"] == "Bakery" for line in out["receipt"]["lines"])
+
+
+def test_remove_cancels_an_approved_block(tmp_path):                  # finding 1
+    deps, _ = closed_trip(tmp_path)
+    deps.calendar = FakeCalendar(ok=False)
+    apply_answer(TRIP, "s2", "Bakery", None, deps)
+    approve(deps, deps.records.get(TRIP), "stop:s2", google="g-bakery")
+    out = apply_edit(TRIP, "remove_stop", {"stop_id": "s2"}, deps)
+    [b] = by_name(deps, "Bakery")
+    assert resolve_state(b) == "dismissed"
+    assert out["cancelled"] == ["stop:s2"] and out["calendar_failed"] == ["stop:s2"]
+    assert "g-bakery" not in json.dumps({k: v for k, v in out.items() if k != "record"})
+
+
+def test_remove_without_google_just_dismisses(tmp_path):               # finding 1
+    deps, _ = closed_trip(tmp_path)
+    apply_answer(TRIP, "s2", "Bakery", None, deps)
+    approve(deps, deps.records.get(TRIP), "stop:s2")
+    out = apply_edit(TRIP, "remove_stop", {"stop_id": "s2"}, deps)
+    [b] = by_name(deps, "Bakery")
+    assert resolve_state(b) == "dismissed" and out["cancelled"] == ["stop:s2"]
+
+
+def _open_until_s2(tmp_path):
+    deps, clock = make_deps(tmp_path)
+    evs = events_of(two_stops())
+    second = next(i for i, e in enumerate(evs) if e.kind == "STOPPED" and e.stop_id == "s2")
+    run(deps, clock, evs[:second])
+    clock["now"] = t(13, 10, 46)
+    return deps, clock, evs, second
+
+
+def test_tracker_stop_absorbs_an_added_stop(tmp_path):                 # finding 2 (the probe)
+    deps, clock, evs, second = _open_until_s2(tmp_path)
+    lat, lng = at(1400)
+    apply_edit(TRIP, "add_stop", {"start": "10:43", "end": "10:46", "ref": "location:7", "name": "Bakery"}, deps,
+               resolve=lambda h: {"kind": "anchor", "lat": lat, "lng": lng, "accuracy_m": 10})
+    assert "stop:x1" in deps.records.get(TRIP)["blocks"]
+    rec = run(deps, clock, evs[second:second + 1])                       # STOPPED s2, from 10:43
+    assert stop_ids(rec) == ["s1", "s2"]
+    assert rec["edits"][0]["absorbed_by"] == "s2"
+    assert rec["stops"]["s2"]["name"] == "Bakery"
+    assert "stop:x1" not in rec["blocks"] and "stop:s2" in rec["blocks"]
+    assert not [i for i in deps.outbox.serve() if i["kind"] == "question"]   # answered already
+    rec = run(deps, clock, evs[second + 1:])
+    assert stop_ids(rec) == ["s1", "s2"]
+    [bakery] = by_name(deps, "Bakery")
+    assert bakery["trip"]["part"] == "stop:s2" and bakery["end_time"][11:16] == "10:58"
+
+
+def test_an_unanswered_added_stop_leaves_the_tracker_stop_to_be_asked(tmp_path):   # finding 2
+    deps, clock, evs, second = _open_until_s2(tmp_path)
+    lat, lng = at(1400)
+    apply_edit(TRIP, "add_stop", {"start": "10:43", "end": "10:46", "ref": "location:7"}, deps,
+               resolve=lambda h: {"kind": "anchor", "lat": lat, "lng": lng, "accuracy_m": 10})
+    rec = run(deps, clock, evs[second:second + 1])
+    assert stop_ids(rec) == ["s1", "s2"]
+    assert rec["stops"]["s2"]["status"] == "asked"
+
+
+def test_arrival_line_ids_survive_an_edit(tmp_path):                  # finding 3
+    deps, _ = closed_trip(tmp_path)
+    rt = LocationRuntime(tmp_path / "loc", deps, synchronous=True)
+    apply_answer(TRIP, "s2", "Bakery", None, deps)
+    sent = rt.render_arrival(TRIP)
+    bakery = next(line for line in sent["lines"] if line["text"] == "Bakery")
+    data = bakery["buttons"][0]["data"]                                # trip:<id>:<n>:ok
+    apply_edit(TRIP, "add_stop", {"start": "10:37", "end": "10:41", "name": "Kiosk"}, deps)  # a line before it
+    line = data.split(":")[2]
+    out = rt.tap(TRIP, line, "ok")
+    rec = deps.records.get(TRIP)
+    frag = fragments(rec["blocks"]["stop:s2"])[0]
+    assert out["approvals"] == [(frag["date"], frag["event_id"], "approved")]
+    # the trip line keeps its number too, and the new line gets one never used before
+    ids = rec["line_ids"]
+    assert len(set(ids.values())) == len(ids) and ids["stop:x1"] == max(ids.values())
+
+
+def test_arrival_line_gone_after_its_stop_is_removed(tmp_path):        # finding 3
+    deps, _ = closed_trip(tmp_path)
+    rt = LocationRuntime(tmp_path / "loc", deps, synchronous=True)
+    apply_answer(TRIP, "s2", "Bakery", None, deps)
+    sent = rt.render_arrival(TRIP)
+    line = next(x for x in sent["lines"] if x["text"] == "Bakery")["buttons"][0]["data"].split(":")[2]
+    apply_edit(TRIP, "remove_stop", {"stop_id": "s2"}, deps)
+    out = rt.tap(TRIP, line, "ok")
+    assert out["toast"] == "That line is gone — refresh /day." and out["approvals"] == []
+
+
+def test_old_record_without_line_ids_keeps_its_drawn_order(tmp_path):  # finding 3
+    deps, _ = closed_trip(tmp_path)
+    rt = LocationRuntime(tmp_path / "loc", deps, synchronous=True)
+    apply_answer(TRIP, "s2", "Bakery", None, deps)
+    rec = deps.records.get(TRIP)
+    rec.pop("line_ids", None)
+    rec["arrival_lines"] = ["trip", "stop:s2"]                          # as an old message drew it
+    deps.records.save(rec)
+    out = rt.tap(TRIP, "2", "ok")
+    frag = fragments(rec["blocks"]["stop:s2"])[0]
+    assert out["approvals"] == [(frag["date"], frag["event_id"], "approved")]
+
+
+def test_restore_block_of_a_stop_no_longer_planned_refused(tmp_path):  # finding 4
+    deps, _ = closed_trip(tmp_path)
+    apply_answer(TRIP, "s2", "Bakery", None, deps)
+    approve(deps, deps.records.get(TRIP), "stop:s2")
+    apply_edit(TRIP, "remove_stop", {"stop_id": "s2"}, deps)
+    with pytest.raises(ValueError):
+        apply_edit(TRIP, "restore_block", {"part": "stop:s2"}, deps)
+    [b] = by_name(deps, "Bakery")
+    assert resolve_state(b) == "dismissed"
+
+
+def test_split_of_an_asked_stop_asks_at_home(tmp_path):               # finding 5
+    deps, clock = make_deps(tmp_path)
+    evs = events_of(two_stops())
+    first_left = next(i for i, e in enumerate(evs) if e.kind == "LEFT_STOP")
+    run(deps, clock, evs[:first_left])                                  # at s1, its question live
+    assert deps.records.get(TRIP)["stops"]["s1"]["status"] == "asked"
+    clock["now"] = t(13, 10, 30)
+    rec = apply_edit(TRIP, "split_stop", {"stop_id": "s1", "at": "10:25"}, deps)["record"]
+    assert rec["stops"]["s1a"]["status"] == "later"
+    assert not [i for i in deps.outbox.serve() if i["kind"] == "question"]

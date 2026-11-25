@@ -31,7 +31,7 @@ from opentelemetry.trace import Status, StatusCode
 from src.services.fast_lane.places import PAUSE_KIND, add_pause_spot, learn_place, load_places, nearest
 from src.services.location.context import gather_context
 from src.services.location.decide import Decision, Option, decide
-from src.services.location.edits import trip_of
+from src.services.location.edits import absorb_added, trip_of
 from src.services.location.guess import Guess, describe_trip, guess
 from src.services.location.history import load_confirmed, score_history
 from src.services.location.map_lookup import map_area, map_near
@@ -70,6 +70,7 @@ class TripDeps:
     derived_dir: Path | None = None
     map_index: Path | None = None      # the local map copy (map spec); None: no map, stops asked as before
     raw_dir: Path | None = None        # data/locations/raw: the points an edit's stop centre comes from
+    calendar: Any = None               # CalendarService: an edit cancels the Google entry of a block it drops
 
 
 def _places(deps: TripDeps):
@@ -312,6 +313,8 @@ def _handle(ev: TrackerEvent, deps: TripDeps) -> None:
     rec = rec or new_record(ev.trip)
     rec["trip"] = ev.trip.to_dict()
     rec["last_event_ts"] = ev.ts.isoformat()
+    for added, stop_id in absorb_added(rec, deps):
+        _log(deps, "ABSORB", rec, stop_id, extra={"stop_ids": [added, stop_id]})
     if ev.kind == "STOPPED":
         _on_stopped(rec, ev, deps, places)
     elif ev.kind == "LEFT_STOP":

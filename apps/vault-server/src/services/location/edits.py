@@ -9,7 +9,8 @@ tracker's own bookkeeping reads `rec["trip"]` directly.
 
 The edit dicts, as stored (times ISO with offset; positions stay on this
 machine, like the tracker's own stops):
-- `{op: "add_stop", id: "x<n>", start, end, lat, lng, spread_m, from_home_m}`
+- `{op: "add_stop", id: "x<n>", start, end, lat, lng, spread_m, from_home_m, absorbed_by?}`
+  (`absorbed_by`: a tracker stop later reported over it took it in, `absorb_added`)
 - `{op: "split_stop", stop_id, at, ids: ["<sid>a", "<sid>b"], centres: [{lat, lng, spread_m, from_home_m}, ×2]}`
   (a centre is None when that half had no points of its own: it keeps the stop's)
 - `{op: "merge_stops", stop_ids (in trip order), id: first}`
@@ -20,6 +21,11 @@ Applied to the trip as it is now, not as it was: a split cuts the stop's
 current span at `at`, so a later LEFT_STOP still moves the second half's end;
 a time you set is pinned and wins over the tracker's. An edit whose stop has
 gone from under it (the tracker no longer reports it) is skipped.
+
+A block you approved stays yours: a split hands the stop's block to the
+first half, edited in place; a merge extends the first stop's; a stop merged
+away or removed has its block cancelled (dismissed, its Google entry
+cancelled), never deleted.
 
 `name_trip`, `name_stop` and `restore_block` are not overlay edits: the first
 two are answers (`pipeline.apply_answer`), the last puts a dismissed block
@@ -79,7 +85,7 @@ def _with_centre(stop: Stop, stop_id: str, start, end, centre: dict | None) -> S
 def _overlay(trip: Trip, e: dict[str, Any]) -> None:
     op = e.get("op")
     if op == "add_stop":
-        if trip.stop(e["id"]) is None:
+        if not e.get("absorbed_by") and trip.stop(e["id"]) is None:
             trip.stops.append(Stop(e["id"], _parse(e["start"]), _parse(e["end"]), float(e["lat"]), float(e["lng"]),
                                    float(e.get("spread_m") or 0.0), e.get("from_home_m")))
     elif op == "split_stop":
@@ -121,6 +127,40 @@ def _merged(stops: list[Stop], stop_id: str) -> Stop:
                    spread_m=spread)
 
 
+def absorb_added(rec: dict[str, Any], deps) -> list[tuple[str, str]]:
+    """A stop the tracker now reports over one you added: the tracker's stop takes it in.
+
+    Called after every tracker event has rewritten `rec["trip"]`. The added
+    stop's edit is marked `absorbed_by` (trip_of skips it); what you said
+    about it (a name, a place) moves to the tracker's stop unless that has an
+    answer of its own, and so does its block. Returns (added id, stop id) pairs.
+    """
+    base = Trip.from_dict(rec["trip"])
+    # Only a stop still on the trip as you left it: never one you removed, merged away or split.
+    current = {s.id for s in trip_of(rec).stops}
+    infos = rec.setdefault("stops", {})
+    out = []
+    for e in rec.get("edits") or []:
+        if e.get("op") != "add_stop" or e.get("absorbed_by"):
+            continue
+        start, end = _parse(e["start"]), _parse(e["end"])
+        over = next((s for s in base.stops if s.id in current and s.start < end
+                     and (s.end is None or s.end > start)), None)
+        if over is None:
+            continue
+        e["absorbed_by"] = over.id
+        mine = infos.get(e["id"]) or {}
+        # An unanswered added stop moves nothing: the tracker's stop is then asked about as usual.
+        if over.id not in infos and (mine.get("answered") or mine.get("status") == "named"):
+            infos[over.id] = {**mine, "source": EDIT_SOURCE}
+            if not rekey_block(rec, f"stop:{e['id']}", f"stop:{over.id}", deps):
+                _cancel_block(rec, f"stop:{e['id']}", deps, {"cancelled": [], "calendar_failed": []})
+        else:
+            _cancel_block(rec, f"stop:{e['id']}", deps, {"cancelled": [], "calendar_failed": []})
+        out.append((e["id"], over.id))
+    return out
+
+
 def known_stop_ids(rec: dict[str, Any]) -> set[str]:
     """Every stop id this trip has ever had: the tracker's, the edits', the answered ones."""
     ids = {s["id"] for s in (rec.get("trip") or {}).get("stops") or []}
@@ -143,9 +183,13 @@ def stop_changed(rec: dict[str, Any], stop_id: str) -> bool:
 def apply_edit(trip_id: str, op: str, args: dict[str, Any], deps, *, resolve: Resolve | None = None) -> dict[str, Any]:
     """One edit, made under the trip's lock: validate, record, re-plan, redraw.
 
-    Returns `{"record", "receipt", "conflict"}`; only `record` holds
-    positions. Raises KeyError for an unknown trip, stop, block or handle
-    ("search again"), ValueError for an edit that cannot be made.
+    Returns `{"record", "receipt", "conflict", "cancelled", "calendar_failed"}`;
+    only `record` holds positions. `cancelled` names the parts (`stop:s2`) of
+    blocks you had approved or corrected whose stop the edit merged away or
+    removed: they are stored dismissed, and their Google entry cancelled
+    (restorable there); `calendar_failed` the ones Google did not cancel.
+    Raises KeyError for an unknown trip, stop, block or handle ("search
+    again"), ValueError for an edit that cannot be made.
     """
     from src.services.location import pipeline
 
@@ -160,6 +204,7 @@ def apply_edit(trip_id: str, op: str, args: dict[str, Any], deps, *, resolve: Re
             raise KeyError(trip_id)
         trip = trip_of(rec)
         conflict = None
+        cancelled: dict[str, list[str]] = {"cancelled": [], "calendar_failed": []}
         if op == "name_trip":
             out = pipeline.apply_answer(trip_id, None, _required(args, "name"),
                                         args.get("destination") or args.get("place"), deps)
@@ -175,13 +220,13 @@ def apply_edit(trip_id: str, op: str, args: dict[str, Any], deps, *, resolve: Re
             touched = _restore(rec, args, deps)
             _replan(rec, deps)
         else:
-            rec, conflict, touched = _overlay_edit(rec, trip, op, args, deps, resolve)
+            rec, conflict, touched = _overlay_edit(rec, trip, op, args, deps, resolve, cancelled)
         pipeline._log(deps, "EDIT", rec, extra={"op": op, "stop_ids": touched})
         from src.services.location.messages import arrival_receipt
 
         receipt = arrival_receipt(rec, deps.events, deps.tz)    # records the line order a tap refers to
         deps.records.save(rec)
-        return {"record": rec, "receipt": receipt, "conflict": conflict}
+        return {"record": rec, "receipt": receipt, "conflict": conflict, **cancelled}
 
 
 def _replan(rec: dict, deps) -> None:
@@ -192,7 +237,8 @@ def _replan(rec: dict, deps) -> None:
     deps.records.save(rec)
 
 
-def _overlay_edit(rec: dict, trip: Trip, op: str, args: dict, deps, resolve) -> tuple[dict, str | None, list[str]]:
+def _overlay_edit(rec: dict, trip: Trip, op: str, args: dict, deps, resolve,
+                  cancelled: dict[str, list[str]]) -> tuple[dict, str | None, list[str]]:
     from src.services.location import pipeline
 
     zone = ZoneInfo(deps.tz)
@@ -239,8 +285,14 @@ def _overlay_edit(rec: dict, trip: Trip, op: str, args: dict, deps, resolve) -> 
             centres.append({**c, "from_home_m": _from_home(deps, c)} if c else None)
         edit = {"op": op, "stop_id": sid, "at": at.isoformat(), "ids": ids, "centres": centres}
         # The first half keeps what you said about the stop; the second is asked about.
-        infos[ids[0]] = {**(infos.get(sid) or _fresh_info()), "source": EDIT_SOURCE}
+        first = {**(infos.get(sid) or _fresh_info()), "source": EDIT_SOURCE}
+        if first.get("status") == "asked":
+            first["status"] = "later"      # its live question is withdrawn below: ask at home
+        infos[ids[0]] = first
         infos[ids[1]] = _fresh_info()
+        # The stop's block is the first half's now, edited in place: one you
+        # approved stays approved (spec §7.4), and only the second half is new.
+        rekey_block(rec, f"stop:{sid}", f"stop:{ids[0]}", deps)
         touched = [sid, *ids]
     elif op == "merge_stops":
         wanted = args.get("stop_ids") or []
@@ -288,6 +340,8 @@ def _overlay_edit(rec: dict, trip: Trip, op: str, args: dict, deps, resolve) -> 
     current = {s.id for s in trip_of(rec).stops}
     for gone in [s for s in touched if s not in current]:
         deps.outbox.withdraw(pipeline.question_key(rec["id"], gone))
+        if op in ("merge_stops", "remove_stop"):
+            _cancel_block(rec, f"stop:{gone}", deps, cancelled)
     deps.records.save(rec)
     if name:
         out = pipeline.apply_answer(rec["id"], edit["id"], name, place, deps, osm=osm)
@@ -303,7 +357,12 @@ def _restore(rec: dict, args: dict, deps) -> list[str]:
         raise KeyError(part)
     if ref.get("gone"):
         raise ValueError("that block was deleted, not dismissed")
-    from src.services.location.writer import fragments
+    from src.services.location import pipeline
+    from src.services.location.writer import fragments, plan_blocks
+
+    if part not in {s.part for s in plan_blocks(rec, pipeline._places(deps))}:
+        # Its stop was merged away or removed: made pending, the re-plan would delete it at once.
+        raise ValueError("that block's stop is no longer part of the trip")
 
     dismissed = [f for f in fragments(ref)
                  if (next((e for e in deps.events.get_events(f["date"]) if e.get("id") == f["event_id"]), None)
@@ -313,6 +372,67 @@ def _restore(rec: dict, args: dict, deps) -> list[str]:
     for frag in fragments(ref):
         deps.events.update_event(date=frag["date"], event_id=frag["event_id"], updates={"state": None})
     return [part[5:]] if part.startswith("stop:") else []
+
+
+def _find(events, frag: dict) -> dict | None:
+    return next((e for e in events.get_events(frag["date"]) if e.get("id") == frag["event_id"]), None)
+
+
+def rekey_block(rec: dict, old: str, new: str, deps) -> bool:
+    """Hand the block planned as `old` to the part `new`, the store's `trip` field included."""
+    from src.services.location.writer import fragments
+
+    blocks = rec.get("blocks") or {}
+    if old not in blocks or new in blocks:
+        return False
+    blocks[new] = blocks.pop(old)
+    if not blocks[new].get("gone"):
+        for frag in fragments(blocks[new]):
+            e = _find(deps.events, frag)
+            if e is not None and (e.get("trip") or {}).get("part") == old:
+                deps.events.update_event(date=frag["date"], event_id=frag["event_id"],
+                                         updates={"trip": {"id": rec["id"], "part": new}})
+    return True
+
+
+def _cancel_block(rec: dict, part: str, deps, cancelled: dict[str, list[str]]) -> None:
+    """A block whose stop is gone, which the writer would keep (approved or corrected): cancel it, reversibly.
+
+    Still only Mazkir's guess, the re-plan deletes it as usual. Otherwise it
+    is never deleted: it is stored dismissed, and its Google entry, when it
+    has one in Mazkir's calendar, is cancelled there (as `POST
+    /events/{date}/{id}/cancel` does), where it can be restored.
+    """
+    from src.services.approval import resolve_state
+    from src.services.async_bridge import maybe_await
+    from src.services.location.writer import fragments
+
+    ref = (rec.get("blocks") or {}).get(part)
+    if ref is None or ref.get("gone") or ref.get("cancelled"):
+        return
+    loaded = [(f, e) for f in fragments(ref) if (e := _find(deps.events, f)) is not None]
+    pinned = any(e.get("user_set") for _, e in loaded)
+    states = {resolve_state(e) for _, e in loaded}
+    if not loaded or (states == {"pending"} and not pinned):
+        return
+    if states == {"dismissed"}:
+        ref["cancelled"] = True        # you had ✕'d it already: just no longer drawn
+        return
+    failed = False
+    for frag, e in loaded:
+        google = (e.get("source_ids") or {}).get("calendar_id")
+        if google and e.get("calendar") in (None, "Mazkir"):
+            calendar = getattr(deps, "calendar", None)
+            try:
+                ok = bool(calendar is not None and maybe_await(calendar.cancel_event(google)))
+            except Exception:
+                ok = False
+            failed = failed or not ok
+        deps.events.update_event(date=frag["date"], event_id=frag["event_id"], updates={"state": "dismissed"})
+    ref["cancelled"] = True
+    cancelled["cancelled"].append(part)
+    if failed:
+        cancelled["calendar_failed"].append(part)
 
 
 # --- helpers ------------------------------------------------------------------

@@ -132,17 +132,46 @@ def _merged_reason(m: dict) -> str:
     return " · ".join(parts)
 
 
+def line_ids(rec: dict) -> dict[str, int]:
+    """Each block part's line number on the arrival message: stable and never reused.
+
+    A tap carries the number, and an edit can add or drop lines between the
+    message being drawn and the tap: by position, ✓ on an old message could
+    land on another block. A record from before line ids starts from the
+    order it was last drawn in, which is what its sent buttons carry.
+    """
+    ids = rec.get("line_ids")
+    if ids is None:
+        ids = {part: n for n, part in enumerate(rec.get("arrival_lines") or [], start=1)}
+        rec["line_ids"] = ids
+    return ids
+
+
+def line_id(rec: dict, part: str) -> int:
+    ids = line_ids(rec)
+    if part not in ids:
+        ids[part] = max(ids.values(), default=0) + 1      # entries are never removed, so never reused
+    return ids[part]
+
+
+def part_for_line(rec: dict, n: int) -> str | None:
+    """The part a tapped line number names, while it is still drawn; None once it is not."""
+    part = next((p for p, i in line_ids(rec).items() if i == n), None)
+    return part if part in (rec.get("arrival_lines") or []) else None
+
+
 def arrival_receipt(rec: dict, events, tz: str) -> dict[str, Any]:
     """One line per block of the trip, ✓ ✎ on each still open, ✓ All / ✕ Not right at the end.
 
-    Records the line order in `rec["arrival_lines"]`, which is what a tap's
-    line number refers to; the caller saves the record.
+    Records the parts drawn, in order, in `rec["arrival_lines"]`, and each
+    part's stable line number in `rec["line_ids"]` (what a tap carries); the
+    caller saves the record.
     """
     zone = ZoneInfo(tz)
     trip = trip_of(rec)
     rows: list[tuple[str, str, dict, dict | None]] = []
     for part, ref in (rec.get("blocks") or {}).items():
-        if not ref.get("gone"):
+        if not ref.get("gone") and not ref.get("cancelled"):
             rows.append((part, "own", ref, None))
     for part, m in (rec.get("merged") or {}).items():
         rows.append((part, "merged", m, m))
@@ -181,7 +210,7 @@ def arrival_receipt(rec: dict, events, tz: str) -> dict[str, Any]:
     any_open = False
     for _, part, kind, ref, m, e in found:
         order.append(part)
-        n = len(order)
+        n = line_id(rec, part)
         state = e["_state"]
         confirmed = bool(m and m.get("confirmed"))
         open_ = state == "pending" or (kind == "merged" and not confirmed and bool(m.get("filled") or m.get("disagree")))
@@ -204,6 +233,6 @@ def arrival_receipt(rec: dict, events, tz: str) -> dict[str, Any]:
 
     footer = ([_button("✓ All", f"trip:{rec['id']}:all:ok"), _button("✕ Not right", f"trip:{rec['id']}:all:no")]
               if any_open else [])
-    lines.append(_line(len(order) + 1, "", "", "", footer, f"trip {rec['id']}"))
+    lines.append(_line(max(line_ids(rec).values(), default=0) + 1, "", "", "", footer, f"trip {rec['id']}"))
     rec["arrival_lines"] = order
     return _receipt(rec["id"], lines, open_question)
