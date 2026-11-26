@@ -68,6 +68,11 @@ def _prepare_agent_kwargs(body: MessageRequest) -> dict:
     attachments = None
     if body.attachments:
         attachments = [a.model_dump(by_alias=True, exclude_none=True) for a in body.attachments]
+        if body.message_id is not None:
+            # A location's position is kept server-side under `location:<message_id>` (repair spec §8).
+            for att in attachments:
+                if att.get("type") == "location":
+                    att.setdefault("message_id", body.message_id)
 
     reply_to = None
     if body.reply_to:
@@ -270,6 +275,7 @@ def _on_reply(*, response: str, route: str, receipt: dict | None, result=None) -
         "confirmation_choices": result.confirmation_choices if result else None,
         "receipt": receipt,
         "route": route,
+        "trip_receipts": result.trip_receipts if result else [],
     }
 
 
@@ -557,6 +563,7 @@ async def handle_message(body: MessageRequest, stream: bool = False):
             "awaiting_confirmation": result.awaiting_confirmation,
             "pending_action_id": result.pending_action_id,
             "confirmation_choices": result.confirmation_choices,
+            "trip_receipts": result.trip_receipts,
         }
 
     # Streaming path — return Server-Sent Events.
@@ -612,6 +619,7 @@ async def handle_message(body: MessageRequest, stream: bool = False):
             "awaiting_confirmation": result.awaiting_confirmation,
             "pending_action_id": result.pending_action_id,
             "confirmation_choices": result.confirmation_choices,
+            "trip_receipts": result.trip_receipts,
         }
         yield f"data: {json.dumps({'done': True, 'response': final_payload})}\n\n"
 
@@ -651,4 +659,5 @@ def handle_confirmation(body: ConfirmationRequest):
         "awaiting_confirmation": result.awaiting_confirmation,
         "pending_action_id": result.pending_action_id,
         "confirmation_choices": result.confirmation_choices,
+        "trip_receipts": result.trip_receipts,
     }

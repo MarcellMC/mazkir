@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -31,9 +32,10 @@ from opentelemetry.trace import Status, StatusCode
 from src.services.fast_lane.places import PAUSE_KIND, add_pause_spot, learn_place, load_places, nearest
 from src.services.location.context import gather_context
 from src.services.location.decide import Decision, Option, decide
+from src.services.location.edits import _settle_legs, absorb_added, trip_of, window_end
 from src.services.location.guess import Guess, describe_trip, guess
 from src.services.location.history import load_confirmed, score_history
-from src.services.location.map_lookup import map_area, map_near
+from src.services.location.map_lookup import map_area, map_near, street_named
 from src.services.location.messages import arrival_receipt, question_receipt
 from src.services.location.model import TrackerEvent, Trip, safe_error
 from src.services.location.names import canonical, known_names, name_key, title_for
@@ -68,6 +70,8 @@ class TripDeps:
     log: Callable[[dict], None]
     derived_dir: Path | None = None
     map_index: Path | None = None      # the local map copy (map spec); None: no map, stops asked as before
+    raw_dir: Path | None = None        # data/locations/raw: the points an edit's stop centre comes from
+    calendar: Any = None               # CalendarService: an edit cancels the Google entry of a block it drops
 
 
 def _places(deps: TripDeps):
@@ -117,12 +121,6 @@ def _guess(subject: str, trip: Trip, stop, deps: TripDeps, places, *, trip_purpo
     return kept, dropped, history
 
 
-def _questions_today(deps: TripDeps) -> int:
-    now = deps.now()
-    day = (now - dt.timedelta(hours=deps.boundary_hour)).date()
-    return deps.records.questions_on(day, deps.tz, deps.boundary_hour)
-
-
 def _log(deps: TripDeps, event: str, rec: dict, stop_id: str | None = None, history=(), guesses=(),
          dropped=(), decision: Decision | None = None, extra: dict | None = None) -> None:
     line = {
@@ -153,15 +151,19 @@ def _on_stopped(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     sid = ev.stop_id
     if sid in rec["stops"]:
         return                                     # handled already: never ask twice
-    trip = Trip.from_dict(rec["trip"])
-    stop = trip.stop(sid)
+    # The place id is written on the tracker's own trip, never on the overlay:
+    # writing trip_of's result back would apply every edit twice.
+    base = Trip.from_dict(rec["trip"])
+    base_stop = base.stop(sid)
     info = _stop_info(rec, sid)
     # From places.json as it is now, not the tracker's start-up copy: a pause
     # spot or a place learned an hour ago counts at once.
-    known = nearest(stop.lat, stop.lng, [p for p in places if p.id != "home"]) if stop is not None else None
-    if known is not None and stop.place_id != known.id:
-        stop.place_id = known.id
-        rec["trip"] = trip.to_dict()
+    known = nearest(base_stop.lat, base_stop.lng, [p for p in places if p.id != "home"]) if base_stop else None
+    if known is not None and base_stop.place_id != known.id:
+        base_stop.place_id = known.id
+        rec["trip"] = base.to_dict()
+    trip = trip_of(rec)
+    stop = trip.stop(sid)
     if known is not None and known.kind == PAUSE_KIND:
         _log(deps, ev.kind, rec, sid, decision=Decision("quiet", reason="pause spot"))
         return
@@ -183,12 +185,17 @@ def _on_stopped(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     close = [m for m in places_only if m.distance_m <= MAP_CLOSE_M][:3] or places_only[:1]
     map_options = [Option(m.label, m.label, m.osm) for m in close]
     # A STOPPED handled long after it happened (the server was down, or the
-    # inbox is replaying) is about a stop you have likely left: never ask then.
+    # inbox is replaying) is about a stop you have likely left: never ask it
+    # live then. It waits for the arrival message as a ? line with the same
+    # options (spec §5): the same question, asked once, at home.
     fresh = (deps.now() - ev.ts) <= STALE_QUESTION
-    d = decide(guesses, history, known_place=known, may_ask=fresh, questions_today=_questions_today(deps),
+    d = decide(guesses, history, known_place=known, may_ask=True,
                at_stop=True, map_options=map_options)
     if d.action == "name":
         info.update(status="named", name=d.name, place=d.destination or (known.name if known else None))
+    elif d.action == "ask" and not fresh:
+        info.update(status="later", options=[o.to_dict() for o in d.options])
+        d = Decision("later", options=d.options, reason="handled late: asked at home")
     elif d.action == "ask":
         info.update(status="asked", options=[o.to_dict() for o in d.options], asked_at=deps.now().isoformat())
         receipt = question_receipt(rec, sid, list(d.options), deps.now(), deps.tz,
@@ -226,7 +233,15 @@ def _on_left_stop(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     # Unanswered, it stays unnamed and gets no block (the user's rule): no
     # second guess once you have left.
     deps.outbox.withdraw(question_key(rec["id"], sid))
+    _later_if_asked(rec, sid)
     _log(deps, ev.kind, rec, sid)
+
+
+def _later_if_asked(rec: dict, sid: str) -> None:
+    """An asked stop nobody answered waits for the arrival message as a ? line."""
+    info = (rec.get("stops") or {}).get(sid)
+    if info and info.get("status") == "asked" and not info.get("answered"):
+        info["status"] = "later"
 
 
 def _name_from_your_block(rec: dict, deps: TripDeps) -> None:
@@ -241,27 +256,32 @@ def _name_from_your_block(rec: dict, deps: TripDeps) -> None:
 
 
 def _on_back_home(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
+    close_trip(rec, deps, places, ev.kind)
+
+
+def close_trip(rec: dict, deps: TripDeps, places, event: str = "BACK_HOME") -> None:
+    """The trip is over (home, or an edit cut it): questions wait for the arrival message, and it asks why."""
     rec["closed"] = True
     for sid in rec.get("stops") or {}:
         deps.outbox.withdraw(question_key(rec["id"], sid))
+        _later_if_asked(rec, sid)
     _apply(rec, deps, places)
     _name_from_your_block(rec, deps)
     if (rec.get("purpose") or {}).get("name") or rec.get("trip_question"):
-        _log(deps, ev.kind, rec, decision=Decision("name", (rec.get("purpose") or {}).get("name"),
-                                                   reason="already named"))
+        _log(deps, event, rec, decision=Decision("name", (rec.get("purpose") or {}).get("name"),
+                                                 reason="already named"))
         return
-    trip = Trip.from_dict(rec["trip"])
+    trip = trip_of(rec)
     guesses, dropped, history = _guess("trip", trip, None, deps, places)
-    d = decide(guesses, history, known_place=None, may_ask=True, questions_today=_questions_today(deps))
-    if d.action == "name":
-        rec["purpose"] = {"name": d.name, "destination": d.destination, "source": "guess"}
-    elif d.action == "ask":
+    d = decide(guesses, history, known_place=None, may_ask=True)
+    if d.action == "ask":
         rec["trip_question"] = {"options": [o.to_dict() for o in d.options], "asked_at": deps.now().isoformat()}
-    _log(deps, ev.kind, rec, None, history, guesses, dropped, d)
+    _log(deps, event, rec, None, history, guesses, dropped, d)
 
 
 def _apply(rec: dict, deps: TripDeps, places) -> None:
-    apply_blocks(rec, plan_blocks(rec, places), run_tool=deps.run_tool, events=deps.events, tz=deps.tz)
+    apply_blocks(rec, plan_blocks(rec, places), run_tool=deps.run_tool, events=deps.events, tz=deps.tz,
+                 vault=deps.vault)
 
 
 def _refresh_arrival(rec: dict, deps: TripDeps) -> None:
@@ -294,8 +314,49 @@ def handle_event(ev: TrackerEvent, deps: TripDeps) -> None:
 
 
 def _handle(ev: TrackerEvent, deps: TripDeps) -> None:
-    places = _places(deps)
+    # The records a split made of this trip are locked in trip order, as
+    # `edits` takes them, so the two can never wait on each other.
+    with ExitStack() as held:
+        rec = _route(ev, deps, held)
+        if rec is not None and rec.get("joined_into"):
+            rec["trip"] = ev.trip.to_dict()
+            deps.records.save(rec)
+            _log(deps, ev.kind, rec, ev.stop_id, extra={"skipped": "joined into another trip"})
+            return
+        _handle_on(rec, ev, deps)
+
+
+def _route(ev: TrackerEvent, deps: TripDeps, held: ExitStack) -> dict | None:
+    """The record an event belongs to: a trip you split goes on in the record it was split into.
+
+    Follows `split_into` while the event is at or after a record's cut, and
+    gives every record of the chain the tracker's trip as it is now: each
+    one's window edit keeps it to its own part.
+    """
     rec = deps.records.get(ev.trip.id)
+    chain: list[dict] = []
+    while rec is not None and all(r["id"] != rec["id"] for r in chain):
+        chain.append(rec)
+        nxt = rec.get("split_into")
+        if not nxt:
+            break
+        held.enter_context(deps.records.lock_for(nxt))
+        rec = deps.records.get(nxt)
+    if not chain:
+        return None
+    target = next((r for r in chain
+                   if not (r.get("split_into") and (cut := window_end(r)) is not None and ev.ts >= cut)), chain[-1])
+    for r in chain:
+        if r is target or (r.get("last_event_ts") and ev.ts < dt.datetime.fromisoformat(r["last_event_ts"])):
+            continue
+        r["trip"] = ev.trip.to_dict()
+        r["last_event_ts"] = ev.ts.isoformat()
+        deps.records.save(r)
+    return target
+
+
+def _handle_on(rec: dict | None, ev: TrackerEvent, deps: TripDeps) -> None:
+    places = _places(deps)
     if rec is not None and rec.get("last_event_ts") and ev.ts < dt.datetime.fromisoformat(rec["last_event_ts"]):
         # An older event replayed after newer ones (a failed one, from the
         # inbox) would rewind the trip: reopen stops, drop later parts.
@@ -304,6 +365,8 @@ def _handle(ev: TrackerEvent, deps: TripDeps) -> None:
     rec = rec or new_record(ev.trip)
     rec["trip"] = ev.trip.to_dict()
     rec["last_event_ts"] = ev.ts.isoformat()
+    for absorbed in absorb_added(rec, deps):
+        _log(deps, "ABSORB", rec, absorbed["stop_ids"][1], extra=absorbed)
     if ev.kind == "STOPPED":
         _on_stopped(rec, ev, deps, places)
     elif ev.kind == "LEFT_STOP":
@@ -323,7 +386,7 @@ def defer_stop(trip_id: str, stop_id: str, deps: TripDeps) -> dict[str, Any]:
     """"Later": the stop's question waits for the arrival message. Raises KeyError for an unknown trip or stop."""
     with deps.records.lock_for(trip_id):
         rec = deps.records.get(trip_id)
-        if rec is None or Trip.from_dict(rec["trip"]).stop(stop_id) is None:
+        if rec is None or trip_of(rec).stop(stop_id) is None:
             raise KeyError(stop_id if rec else trip_id)
         info = _stop_info(rec, stop_id)
         if info["status"] in ("asked", "unnamed") and not info.get("answered"):
@@ -336,9 +399,31 @@ def defer_stop(trip_id: str, stop_id: str, deps: TripDeps) -> dict[str, Any]:
 
 def apply_answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str | None, deps: TripDeps,
                  *, pause: bool = False, osm: str | None = None) -> dict[str, Any]:
-    """Your answer to a question about a stop or the whole trip. Raises KeyError for an unknown trip or stop."""
+    """Your answer to a question about a stop or the whole trip. Raises KeyError for an unknown trip or stop.
+
+    An answer about a trip since joined into another goes to that one, its
+    stop by the id the join gave it.
+    """
+    trip_id, stop_id = joined_target(trip_id, stop_id, deps)
     with deps.records.lock_for(trip_id):
         return _answer(trip_id, stop_id, purpose, place, deps, pause, osm)
+
+
+def joined_target(trip_id: str, stop_id: str | None, deps: TripDeps) -> tuple[str, str | None]:
+    """The trip (and stop id) a trip joined into another now is: itself when never joined."""
+    seen = set()
+    rec = deps.records.get(trip_id)
+    while rec is not None and rec.get("joined_into") and trip_id not in seen:
+        seen.add(trip_id)
+        into = deps.records.get(rec["joined_into"])
+        if into is None:
+            break
+        join = next((e for e in reversed(into.get("edits") or [])
+                     if e.get("op") == "join" and e.get("other_id") == trip_id), None)
+        if stop_id is not None:
+            stop_id = f"{(join or {}).get('prefix') or 'j'}{stop_id}"
+        trip_id, rec = into["id"], into
+    return trip_id, stop_id
 
 
 def _map_osm(info: dict, *names: str | None) -> str | None:
@@ -352,8 +437,9 @@ def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str |
     rec = deps.records.get(trip_id)
     if rec is None:
         raise KeyError(trip_id)
-    trip = Trip.from_dict(rec["trip"])
+    trip = trip_of(rec)
     conflict = None
+    street = False
     if purpose:
         # Your words, unless they are a name you already use spelled another way.
         confirmed = load_confirmed(deps.labels_dir, deps.records, deps.events, deps.tz, deps.now())
@@ -369,7 +455,12 @@ def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str |
             info.update(status="unnamed", name=None, place=None)
         else:
             info.update(status="named", name=purpose, place=place)
-            if place:
+            info.pop("street", None)
+            if place and street_named(deps.map_index, place, stop.lat, stop.lng):
+                # A street or an address is where the stop was, never a place of yours (spec §7.5).
+                info["street"] = True
+                street = True
+            elif place:
                 _, clash = learn_place(deps.places_path, place, stop.lat, stop.lng, stop.spread_m,
                                        osm=osm or _map_osm(info, place, purpose))
                 conflict = place if clash else None
@@ -379,11 +470,18 @@ def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str |
         # naming a stop, or calling it a pause, does not.
         rec["confirmed"] = True
     places = _places(deps)
+    # A name can make a stop a leg break (a short named stop, a destination):
+    # a leg you approved follows the stop it joins, never left beside its
+    # replacement (spec §7.4).
+    _settle_legs(rec, deps, places)
     _apply(rec, deps, places)
     _refresh_arrival(rec, deps)
     deps.records.save(rec)
     _log(deps, "ANSWER", rec, stop_id, extra={"answer": purpose, "pause": pause, "place": place})
-    return {"record": rec, "conflict": conflict}
+    out = {"record": rec, "conflict": conflict}
+    if street:
+        out["street"] = True
+    return out
 
 
 def options_for(rec: dict, line: str) -> list[Option]:

@@ -15,6 +15,14 @@ _TEST_LOGS_DIR = tempfile.mkdtemp(prefix="mazkir-test-logs-")
 os.environ["LOGS_DIR"] = _TEST_LOGS_DIR
 atexit.register(shutil.rmtree, _TEST_LOGS_DIR, True)
 
+# The same for the data a photo or location message reads and writes
+# (places.json, the handle table): a test must never read the user's places
+# or write next to their location data.
+_TEST_DATA_DIR = tempfile.mkdtemp(prefix="mazkir-test-data-")
+os.environ["EVENTS_DATA_PATH"] = os.path.join(_TEST_DATA_DIR, "events")
+os.environ["LOCATION_DATA_PATH"] = os.path.join(_TEST_DATA_DIR, "locations")
+atexit.register(shutil.rmtree, _TEST_DATA_DIR, True)
+
 import pytest  # noqa: E402
 from pathlib import Path  # noqa: E402
 from unittest.mock import MagicMock  # noqa: E402

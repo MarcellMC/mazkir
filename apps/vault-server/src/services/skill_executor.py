@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 MAX_HOPS = 3
 
+_NEXT_SKILL_LINE_RE = re.compile(r"^[ \t]*next_skill:[ \t]*[a-z_-]+[ \t]*(?:\n|$)", re.MULTILINE)
+
 _tracer = _otel_trace.get_tracer("mazkir.skill_executor")
 
 
@@ -195,7 +197,7 @@ class SkillExecutor:
                 active = None
 
         return SkillExecutorResult(
-            response_text=response_text,
+            response_text=self._strip_next_skill(response_text),
             stop_reason=stop_reason,
             iterations=len(visited),
             visited=visited,
@@ -211,6 +213,12 @@ class SkillExecutor:
         """Prepend the skill's own system prompt to the base vault prompt."""
         base = self._build_base_system_prompt(context)
         return f"{skill.system_prompt}\n\n{base}"
+
+    @staticmethod
+    def _strip_next_skill(text: str) -> str:
+        """Drop 'next_skill: <name>' lines so the routing token never reaches the user."""
+        stripped = _NEXT_SKILL_LINE_RE.sub("", text)
+        return stripped.rstrip()
 
     @staticmethod
     def _extract_next_skill(response_text: str, allowed: list[str]) -> Optional[str]:

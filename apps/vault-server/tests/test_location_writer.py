@@ -76,7 +76,7 @@ def test_travel_trip_becomes_legs_and_stops():           # 7 Nov morning
     specs = plan_blocks(rec, [Place("gan-meir", "Gan Meir")])
     assert [s.name for s in specs] == ["Walk to Gan Meir", "Café at Gan Meir", "Walk home"]
     assert specs[1].place_id == "gan-meir"
-    assert [s.part for s in specs] == ["leg:1", "stop:s1", "leg:2"]
+    assert [s.part for s in specs] == ["leg:start-s1", "stop:s1", "leg:s1-home"]
 
 
 def test_unnamed_stops_never_split_a_leg():
@@ -210,7 +210,7 @@ def test_parts_no_longer_planned_are_removed(store):
     rec["purpose"] = {"name": "Coffee at Gan Meir", "destination": "Gan Meir"}
     rec["stops"]["s1"].update({"status": "named", "name": "Café at Gan Meir", "place": "Gan Meir"})
     rec = apply(rec, store)
-    assert sorted(rec["blocks"]) == ["leg:1", "leg:2", "stop:s1"]
+    assert sorted(rec["blocks"]) == ["leg:s1-home", "leg:start-s1", "stop:s1"]
     assert sorted(e["name"] for e in events.get_events("2026-11-07")) == ["Café at Gan Meir", "Walk home", "Walk to Gan Meir"]
 
 
@@ -321,3 +321,119 @@ def test_a_pinned_part_dropped_from_the_plan_is_kept(store):             # I-6e
     rec["stops"]["s1"]["status"] = "unnamed"
     apply(rec, store)
     assert "Espresso" in [e["name"] for e in events.get_events("2026-11-09")]
+
+
+# --- legs only while moving (spec §6) ------------------------------------------
+
+TRAVEL = {"name": "Coffee", "destination": "Gan Meir", "source": "guess"}
+
+
+def _three_stops(s2_end):
+    return [stop("s1", t(7, 8, 4), t(7, 8, 20), 900), stop("s2", t(7, 8, 30), s2_end, 1200),
+            stop("s3", t(7, 9, 20), t(7, 9, 40), 1700)]
+
+
+def test_long_unnamed_stop_ends_a_leg():
+    stops = _three_stops(t(7, 8, 50))
+    rec = record(t(7, 7, 54), t(7, 10, 0), stops, purpose=TRAVEL,
+                 named={"s1": ("Café", "Gan Meir"), "s3": ("Bakery", "Bakery")})
+    specs = {s.part: s for s in plan_blocks(rec, [])}
+    assert specs["leg:s1-s2"].end == stops[1].start
+    assert specs["leg:s2-s3"].start == stops[1].end
+    assert not any(s.start < stops[1].end and (s.end or s.start) > stops[1].start for s in specs.values())
+
+
+def test_short_unnamed_stop_stays_in_leg():
+    stops = _three_stops(t(7, 8, 35))
+    rec = record(t(7, 7, 54), t(7, 10, 0), stops, purpose=TRAVEL,
+                 named={"s1": ("Café", "Gan Meir"), "s3": ("Bakery", "Bakery")})
+    parts = [s.part for s in plan_blocks(rec, [])]
+    assert parts == ["leg:start-s1", "stop:s1", "leg:s1-s3", "stop:s3", "leg:s3-home"]
+
+
+def test_activity_trip_keeps_unnamed_stops_inside():
+    stops = _three_stops(t(7, 8, 50))
+    rec = record(t(7, 7, 54), t(7, 10, 0), stops, purpose=WALK)
+    assert [s.part for s in plan_blocks(rec, [])] == ["trip"]
+
+
+def test_old_leg_keys_are_rekeyed(store):
+    events, _ = store
+    stops = [stop("s1", t(7, 8, 4), t(7, 8, 20), 900), stop("s3", t(7, 9, 20), t(7, 9, 40), 1700)]
+    rec = record(t(7, 7, 54), t(7, 10, 0), stops, purpose=TRAVEL,
+                 named={"s1": ("Café", "Gan Meir"), "s3": ("Bakery", "Bakery")})
+    leg = events.create_event(date="2026-11-07", name="Walk to Bakery", start_time="2026-11-07T08:20:00",
+                              end_time="2026-11-07T09:20:00", fields={"proposed": True, "state": "approved"})
+    rec["blocks"] = {"leg:2": {"date": "2026-11-07", "event_id": leg["id"]}}
+    rec = apply(rec, store)
+    assert rec["blocks"]["leg:s1-s3"]["event_id"] == leg["id"]
+    assert "leg:2" not in rec["blocks"]
+    assert len([e for e in events.get_events("2026-11-07") if e["name"].startswith("Walk to Bakery")]) == 1
+
+
+def test_photos_survive_recreate(store):
+    events, _ = store
+    s1 = stop("s1", t(6, 20, 10), None, 2400)
+    rec = record(t(6, 19, 36), None, [s1], [Leg(t(6, 19, 36), t(6, 20, 10), 2400, "vehicle")],
+                 {"name": "Alex's birthday", "destination": "Alex's"}, named={"s1": ("Alex's birthday", "Alex's")})
+    rec = apply(rec, store)
+    eid = rec["blocks"]["stop:s1"]["event_id"]
+    events.attach_photo("2026-11-06", eid, "/m/a.jpg")
+    rec["trip"]["stops"][0]["end"] = t(7, 7, 54).isoformat()
+    rec = apply(rec, store)
+    first = [e for e in events.get_events("2026-11-06") if e["name"] == "Alex's birthday"][0]
+    assert [p["path"] for p in first.get("photos") or []] == ["/m/a.jpg"]
+
+
+def test_dismissing_a_proposal_moves_its_photos_to_the_note(tmp_path, monkeypatch):
+    import asyncio
+    import src.main as main
+    from src.api.routes import events as events_route
+    events = EventsService(events_path=tmp_path / "events")
+    e = events.create_event("2026-01-10", "Walk", "2026-01-10T08:00:00", "2026-01-10T08:20:00")
+    events.update_event(date="2026-01-10", event_id=e["id"], updates={"proposed": True})
+    events.attach_photo("2026-01-10", e["id"], "/media/2026-01-10/a.jpg")
+    vault = MagicMock()
+    monkeypatch.setattr(main, "get_events", lambda: events)
+    monkeypatch.setattr(main, "get_vault", lambda: vault)
+
+    async def no_sources(date):
+        return [], set()
+
+    monkeypatch.setattr(events_route, "_merge_from_sources", no_sources)
+    asyncio.run(events_route.set_event_state(dt.date(2026, 1, 10), e["id"],
+                                             events_route.SetStateBody(state="dismissed")))
+    kwargs = vault.append_to_daily_section.call_args
+    assert "![[a.jpg]]" in (kwargs.kwargs.get("content") or kwargs.args[1])
+    assert events.get_events("2026-01-10")[0]["photos"] == []
+
+
+def _leg_with_photo(store, rec, part, start, end):
+    events, _ = store
+    e = events.create_event(date="2026-11-07", name="Walk", start_time=start, end_time=end)
+    events.update_event(date="2026-11-07", event_id=e["id"], updates={"proposed": True})
+    events.attach_photo("2026-11-07", e["id"], "/m/a.jpg")
+    rec["blocks"] = {part: {"date": "2026-11-07", "event_id": e["id"]}}
+    return e
+
+
+def test_photo_of_a_dropped_leg_moves_to_its_replacement(store):
+    events, _ = store
+    stops = [stop("s1", t(7, 8, 4), t(7, 8, 20), 900), stop("s2", t(7, 8, 30), t(7, 8, 35), 1200),
+             stop("s3", t(7, 9, 20), t(7, 9, 40), 1700)]
+    rec = record(t(7, 7, 54), t(7, 10, 0), stops, purpose=TRAVEL,
+                 named={"s1": ("Café", "Gan Meir"), "s3": ("Bakery", "Bakery")})
+    _leg_with_photo(store, rec, "leg:s1-s2", "2026-11-07T08:20:00", "2026-11-07T08:30:00")
+    rec = apply(rec, store)
+    new = next(e for e in events.get_events("2026-11-07") if e["id"] == rec["blocks"]["leg:s1-s3"]["event_id"])
+    assert [p["path"] for p in new["photos"]] == ["/m/a.jpg"]
+
+
+def test_photo_with_no_replacement_goes_to_the_note(store):
+    events, _ = store
+    rec = record(t(7, 7, 54), t(7, 8, 10), purpose=WALK)
+    _leg_with_photo(store, rec, "stop:s9", "2026-11-07T15:00:00", "2026-11-07T15:20:00")
+    vault = MagicMock()
+    events_, run_tool = store
+    apply_blocks(rec, plan_blocks(rec, []), run_tool=run_tool, events=events_, tz=TZ, vault=vault)
+    assert "![[a.jpg]]" in vault.append_to_daily_section.call_args.kwargs["content"]

@@ -27,10 +27,13 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from src.services.fast_lane import places as places_mod
+from src.services.approval import resolve_state
+from src.services.location.edits import CHANGED_STOP, JOINED_TRIP, stop_changed, trip_of
 from src.services.location.home import find_home
-from src.services.location.messages import arrival_receipt, notice_receipt, question_receipt
-from src.services.location.model import TrackerEvent, Trip, safe_error
-from src.services.location.pipeline import TripDeps, apply_answer, defer_stop, handle_event, options_for
+from src.services.location.messages import arrival_receipt, notice_receipt, part_for_line, question_receipt
+from src.services.location.model import TrackerEvent, safe_error
+from src.services.location.pipeline import (TripDeps, apply_answer, defer_stop, handle_event, joined_target,
+                                             options_for)
 from src.services.location.raw import load_fixes, point_to_fix
 from src.services.location.writer import fragments
 from src.services.location.tracker import Params, Tracker
@@ -74,6 +77,9 @@ class LocationRuntime:
         self.synchronous = synchronous
         self._lock = threading.RLock()
         self._state_path = self.root / "state.json"
+        # Map places and photo/location anchors the agent names by handle (repair spec §7, §8).
+        from src.services.location.handles import Handles
+        self.handles = Handles(self.root / "handles.json")
         self._inbox_path = self.root / "inbox.json"
         state = _read(self._state_path, {})
         self.chat_id: int | None = state.get("chat_id")
@@ -202,6 +208,8 @@ class LocationRuntime:
     def answer(self, trip_id: str, stop_id: str | None, purpose: str, place: str | None) -> dict[str, Any]:
         out = apply_answer(trip_id, stop_id, purpose, place, self.deps)
         rec = out["record"]
+        if rec["id"] != trip_id:                  # joined into another trip since: answered there
+            trip_id, stop_id = joined_target(trip_id, stop_id, self.deps)
         return {"trip_id": trip_id, "stop_id": stop_id, "purpose": purpose, "conflict": out["conflict"],
                 "blocks": {part: ref.get("event_id") for part, ref in rec["blocks"].items()}}
 
@@ -232,11 +240,19 @@ class LocationRuntime:
             raise KeyError(trip_id)
         out: dict[str, Any] = {"receipt": None, "toast": None, "open_question": None, "approvals": [],
                                "syncs": [], "rerender": False}
+        if rec.get("joined_into"):
+            out["toast"] = JOINED_TRIP          # its blocks and questions are the trip it joined now
+            return out
         if action in ("ok", "no"):
             return self._approve(rec, line, action, out)
 
         stop_id = None if line == "trip" else line
-        if stop_id is not None and Trip.from_dict(rec["trip"]).stop(stop_id) is None:
+        if stop_id is not None and trip_of(rec).stop(stop_id) is None:
+            if stop_changed(rec, stop_id):
+                # Split, merged or removed since this message was drawn: its
+                # buttons address a stop that is no longer one.
+                out["toast"] = CHANGED_STOP
+                return out
             raise KeyError(stop_id)
         if action == "t":
             options = options_for(rec, line)
@@ -278,17 +294,22 @@ class LocationRuntime:
 
     def _approve(self, rec: dict, line: str, action: str, out: dict[str, Any]) -> dict[str, Any]:
         order = rec.get("arrival_lines") or []
+        part = part_for_line(rec, int(line)) if line.isdigit() else None
         if line == "all":
             parts = list(order)
-        elif line.isdigit() and 1 <= int(line) <= len(order):
-            parts = [order[int(line) - 1]]
+        elif part is not None:
+            parts = [part]
         else:
             out["toast"] = "That line is gone — refresh /day."
             return out
         state = "approved" if action == "ok" else "dismissed"
+        kept = 0
         for part in parts:
             ref = (rec.get("blocks") or {}).get(part)
             if ref and not ref.get("gone"):
+                if line == "all" and action == "no" and self._all_approved(ref):
+                    kept += 1               # ✕ Not right keeps what you ✓'d
+                    continue
                 # Every piece of a block split at midnight, not only the first.
                 for frag in fragments(ref):
                     out["approvals"].append((frag["date"], frag["event_id"], state))
@@ -304,7 +325,16 @@ class LocationRuntime:
         self.deps.records.save(rec)
         out["rerender"] = True
         out["toast"] = "✓ Confirmed" if action == "ok" else "Dismissed"
+        if kept:
+            out["toast"] = "Dismissed the rest — kept what you ✓'d."
         return out
+
+    def _all_approved(self, ref: dict) -> bool:
+        for frag in fragments(ref):
+            event = next((e for e in self.deps.events.get_events(frag["date"]) if e.get("id") == frag["event_id"]), None)
+            if event is None or resolve_state(event) != "approved":
+                return False
+        return True
 
     def _settle_merged(self, merged: dict, action: str) -> bool:
         """✓ keeps what location filled into your block; ✕ puts your block back as you left it.
@@ -345,6 +375,8 @@ def build_runtime(settings, *, agent, events, vault, claude, log) -> LocationRun
         boundary_hour=settings.fast_lane_day_boundary_hour, chat_id=lambda: None,
         now=lambda: dt.datetime.now(ZoneInfo(settings.vault_timezone)), log=log,
         derived_dir=Path(settings.location_data_path) / "derived",
+        raw_dir=Path(settings.location_data_path) / "raw",
+        calendar=getattr(agent, "calendar", None),
     )
     if settings.location_map == "on":
         from src.services.location.map_update import index_path

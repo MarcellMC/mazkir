@@ -8,7 +8,8 @@ import pytest
 from src.services.exif_service import extract_exif_metadata
 
 
-def _make_jpeg_with_gps(lat: float, lng: float, datetime_str: str = "2026:03:04 14:30:00") -> bytes:
+def _make_jpeg_with_gps(lat: float, lng: float, datetime_str: str = "2026:03:04 14:30:00",
+                        accuracy: tuple[int, int] | None = None) -> bytes:
     """Create a minimal JPEG with GPS EXIF data."""
     img = Image.new("RGB", (100, 100), "red")
 
@@ -24,6 +25,8 @@ def _make_jpeg_with_gps(lat: float, lng: float, datetime_str: str = "2026:03:04 
         piexif.GPSIFD.GPSLongitudeRef: b"E" if lng >= 0 else b"W",
         piexif.GPSIFD.GPSLongitude: _to_dms(lng),
     }
+    if accuracy is not None:
+        gps_ifd[piexif.GPSIFD.GPSHPositioningError] = accuracy
     exif_ifd = {
         piexif.ExifIFD.DateTimeOriginal: datetime_str.encode(),
     }
@@ -82,3 +85,11 @@ class TestExtractExifMetadata:
         result = extract_exif_metadata(data)
         assert result["location"]["lat"] < 0
         assert result["location"]["lng"] > 0
+
+    def test_gps_accuracy_from_positioning_error(self):
+        result = extract_exif_metadata(_make_jpeg_with_gps(32.0, 34.0, accuracy=(3125, 100)))
+        assert result["location"]["accuracy_m"] == pytest.approx(31.25)
+
+    def test_no_positioning_error_no_accuracy(self):
+        result = extract_exif_metadata(_make_jpeg_with_gps(32.0, 34.0))
+        assert "accuracy_m" not in result["location"]

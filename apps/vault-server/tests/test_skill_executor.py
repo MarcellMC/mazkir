@@ -246,3 +246,30 @@ def test_run_loop_may_return_legacy_two_tuple():
 
     assert result.awaiting_confirmation is False
     assert result.pending_action_id is None
+
+
+def test_strip_next_skill_removes_token_lines():
+    text = "Done, logged it.\nnext_skill: time-management\n"
+    assert SkillExecutor._strip_next_skill(text) == "Done, logged it."
+
+
+def test_unknown_next_skill_does_not_leak():
+    capture = _mk_skill("capture", [], next_skills=[])
+    registry = MagicMock()
+    registry.list.return_value = [capture]
+    registry.get.side_effect = lambda n: capture if n == "capture" else None
+
+    router = MagicMock()
+    router.pick.return_value = MagicMock(skill="capture", reason="")
+
+    fake_run_loop = MagicMock(return_value=("Sure.\nnext_skill: nonsense", "end_turn"))
+    executor = SkillExecutor(
+        skill_registry=registry,
+        router=router,
+        tools={},
+        run_loop=fake_run_loop,
+        build_base_system_prompt=lambda context: "base prompt",
+    )
+    result = executor.run(chat_id=1, user_msg="x", context_messages=[], messages=[])
+    assert "next_skill" not in result.response_text
+    assert result.response_text == "Sure."

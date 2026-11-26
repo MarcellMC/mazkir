@@ -68,7 +68,8 @@ def _conversation(conversations_dir: Path, chat_id: int, now: dt.datetime, zone:
 
 def _todos(vault, today: dt.date) -> list[tuple[str, str]]:
     body = vault.read_daily_note(today.isoformat()).get("content") or ""
-    return [("todo", t.text) for t in parse_all_todos(body) if t.state == "unchecked"]
+    from src.services.map_links import hide_map_queries
+    return [("todo", hide_map_queries(t.text)) for t in parse_all_todos(body) if t.state == "unchecked"]
 
 
 def _tasks(vault) -> list[tuple[str, str]]:

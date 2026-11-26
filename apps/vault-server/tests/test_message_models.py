@@ -131,3 +131,12 @@ def test_absent_selected_date_forwards_as_none():
     from src.api.routes.message import MessageRequest, _prepare_agent_kwargs
     kwargs = _prepare_agent_kwargs(MessageRequest(text="hello", chat_id=1))
     assert kwargs["selected_date"] is None
+
+
+def test_location_attachment_carries_the_message_id():
+    from src.api.routes.message import MessageRequest, _prepare_agent_kwargs
+    kwargs = _prepare_agent_kwargs(MessageRequest(
+        text="", chat_id=1, message_id=77,
+        attachments=[{"type": "location", "latitude": 32.0, "longitude": 34.0}, {"type": "photo", "data": "x"}]))
+    assert kwargs["attachments"][0]["message_id"] == 77
+    assert "message_id" not in kwargs["attachments"][1]

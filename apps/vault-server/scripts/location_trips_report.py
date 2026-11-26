@@ -40,22 +40,23 @@ def main() -> None:
     from src.config import settings
     from src.services.approval import resolve_state
     from src.services.events_service import EventsService
-    from src.services.location.model import Trip
+    from src.services.location.edits import trip_of
     from src.services.location.records import TripRecords
 
     zone = ZoneInfo(settings.vault_timezone)
     day = dt.date.fromisoformat(args.date) if args.date else dt.datetime.now(zone).date()
     events = EventsService(settings.events_data_path)
     log_path = settings.logs_dir / "location-trips.jsonl"
-    recs = sorted(TripRecords(settings.location_data_path).on_day(day, settings.vault_timezone),
-                  key=lambda r: r["trip"]["left_at"])
+    # A trip joined into another is shown as part of that one; a split one sorts where the split put it.
+    recs = sorted((r for r in TripRecords(settings.location_data_path).on_day(day, settings.vault_timezone)
+                   if not r.get("joined_into")), key=lambda r: trip_of(r).left_at)
     print(f"{day}: {len(recs)} trip(s)")
 
     def hm(ts):
         return ts.astimezone(zone).strftime("%H:%M") if ts else "…"
 
     for rec in recs:
-        trip = Trip.from_dict(rec["trip"])
+        trip = trip_of(rec)
         purpose = (rec.get("purpose") or {})
         print(f"\n{hm(trip.left_at)}{'?' if trip.start_precision == 'before' else ''}–{hm(trip.back_at)}  "
               f"trip {rec['id']}  from {trip.origin}, up to {trip.max_from_home_m:.0f} m, "

@@ -24,9 +24,11 @@ WINDOW_DAYS = 30
 
 
 def _trips(records, derived_dir: Path | None):
+    from src.services.location.edits import trip_of
+
     for rec in records.all():
-        if rec.get("trip"):
-            yield rec["trip"]
+        if rec.get("trip") and not rec.get("joined_into"):       # a joined trip's stops are the other's now
+            yield trip_of(rec).to_dict()           # with your edits: an added stop is a visit too
     if derived_dir is None or not Path(derived_dir).exists():
         return
     for path in sorted(Path(derived_dir).glob("*.json")):

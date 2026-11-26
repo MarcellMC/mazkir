@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from src.services.location.edits import trip_of
 from src.services.location.model import Stop, Trip
 
 logger = logging.getLogger(__name__)
@@ -114,9 +115,9 @@ def load_confirmed(labels_dir: Path, records, events, tz: str, now: dt.datetime,
     cache: dict[str, list[dict]] = {}
     for rec in records.all():
         purpose = rec.get("purpose")
-        if not purpose or not purpose.get("name"):
+        if rec.get("joined_into") or not purpose or not purpose.get("name"):
             continue
-        trip = Trip.from_dict(rec["trip"])
+        trip = trip_of(rec)
         if trip.left_at < since or not _is_confirmed(rec, events, cache):
             continue
         end = trip.back_at or trip.left_at

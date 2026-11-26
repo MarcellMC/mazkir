@@ -32,15 +32,14 @@ def loop_with_a_stop():
     return Track(t(13, 10, 0)).stay(10).walk_to(700).stay(6).walk_to(0).stay(5)
 
 
-def test_routine_loop_is_named_silently_and_gets_an_arrival_message(tmp_path):
+def test_routine_loop_asks_and_gets_an_arrival_message(tmp_path):
     model = FakeModel({"trip": [guess("x", history_id="h1")]})
     deps, clock = make_deps(tmp_path, model)
     seed_dog_walk_labels(deps.labels_dir)
     rec = run(deps, clock, events_for(loop_without_stops()))
-    assert rec["purpose"]["name"] == "Dog walk" and rec["closed"] is True
+    assert rec["purpose"] is None and rec["closed"] is True
+    assert rec["trip_question"]["options"][0]["name"] == "Dog walk"
     assert [i["kind"] for i in deps.outbox.serve()] == ["arrival"]
-    [e] = deps.events.get_events("2026-11-13")
-    assert e["name"] == "Dog walk" and e["proposed"] is True
 
 
 def test_unknown_stop_asks_once(tmp_path):
@@ -65,12 +64,63 @@ def test_a_stop_gets_no_history_purpose_without_a_destination(tmp_path):
 
 def test_stop_already_left_is_not_asked(tmp_path):
     deps, clock = make_deps(tmp_path)
-    for i in range(6):                            # the daily cap is reached
-        deps.records.save({"id": f"{i:08x}", "trip": {"left_at": t(13, 6, 0).isoformat()}, "closed": True,
-                           "stops": {"s1": {"status": "asked", "asked_at": t(13, 6, i).isoformat()}}})
-    rec = run(deps, clock, events_for(loop_with_a_stop()))
-    assert rec["stops"]["s1"]["status"] == "unnamed"
-    assert [i["kind"] for i in deps.outbox.serve()] == ["arrival"]
+    evs = events_for(loop_with_a_stop())
+    for ev in evs:
+        # handled long after it happened (an inbox replay): too late to ask
+        clock["now"] = ev.ts + (t(13, 12, 0) - t(13, 10, 0)) if ev.kind == "STOPPED" else ev.ts
+        handle_event(ev, deps)
+    rec = deps.records.get("1a2b3c4d")
+    # Never asked live, but not dropped either: the same question waits at home (spec §5).
+    assert rec["stops"]["s1"]["status"] == "later"
+    assert rec["stops"]["s1"]["asked_at"] is None
+    served = deps.outbox.serve()
+    assert [i["kind"] for i in served] == ["arrival"]
+    asks = [line for line in served[0]["receipt"]["lines"] if line["glyph"] == "?"
+            and any(":s1:" in json.dumps(b) for b in line["buttons"])]
+    assert len(asks) == 1
+
+
+def test_no_daily_cap(tmp_path):
+    deps, clock = make_deps(tmp_path)
+    asked = 0
+    for i in range(10):
+        tr = Tracker(HOME, [], new_id=lambda i=i: f"{i:08x}")
+        for ev in feed_all(tr, Track(t(13, 7 + i, 0)).stay(10).walk_to(700).stay(6).walk_to(0).stay(5).fixes):
+            clock["now"] = ev.ts
+            handle_event(ev, deps)
+            if ev.kind == "STOPPED":              # the question is live until the stop is left
+                asked += [x["kind"] for x in deps.outbox.serve()].count("question")
+    assert asked == 10
+    assert sum(1 for r in deps.records.all() if r["stops"]["s1"]["asked_at"]) == 10
+
+
+def test_unanswered_stop_becomes_later_on_leaving(tmp_path):
+    deps, clock = make_deps(tmp_path)
+    evs = events_for(loop_with_a_stop())
+    left = next(i for i, e in enumerate(evs) if e.kind == "LEFT_STOP")
+    run(deps, clock, evs[:left])
+    assert deps.records.get("1a2b3c4d")["stops"]["s1"]["status"] == "asked"
+    run(deps, clock, evs[left:])
+    rec = deps.records.get("1a2b3c4d")
+    assert rec["stops"]["s1"]["status"] == "later"
+    arrival = next(i for i in deps.outbox.serve() if i["kind"] == "arrival")
+    assert "?" in json.dumps(arrival["receipt"])
+
+
+def test_open_stop_at_back_home_becomes_later(tmp_path):
+    deps, clock = make_deps(tmp_path)
+    evs = [e for e in events_for(loop_with_a_stop()) if e.kind != "LEFT_STOP"]
+    rec = run(deps, clock, evs)
+    assert rec["stops"]["s1"]["status"] == "later"
+
+
+def test_trip_named_by_mid_trip_answer_is_not_asked_again(tmp_path):
+    deps, clock = make_deps(tmp_path)
+    evs = events_for(loop_without_stops())
+    run(deps, clock, evs[:1])
+    apply_answer("1a2b3c4d", None, "Dog walk", None, deps)
+    rec = run(deps, clock, evs[1:])
+    assert rec["purpose"]["name"] == "Dog walk" and not rec["trip_question"]
 
 
 def test_model_failure_means_ask(tmp_path):

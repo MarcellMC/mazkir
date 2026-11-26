@@ -66,5 +66,6 @@ def make_deps(tmp_path, model=None, now=None, logs=None):
                     places_path=places, labels_dir=tmp_path / "labels", run_tool=agent.run_tool, events=events,
                     vault=vault, claude=model or FakeModel(), conversations_dir=tmp_path / "conv", tz=TZ,
                     model="claude-haiku-4-5-20251001", timeout_s=8.0, boundary_hour=5,
-                    chat_id=lambda: 156175834, now=lambda: clock["now"], log=logs.append)
+                    chat_id=lambda: 156175834, now=lambda: clock["now"], log=logs.append,
+                    raw_dir=tmp_path / "loc" / "raw")
     return deps, clock

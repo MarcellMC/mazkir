@@ -1,5 +1,6 @@
 """Tests for AgentService — tool registry, confidence gate, loop control."""
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -279,7 +280,7 @@ class TestHandleMessageWithAttachments:
         # Content should be a list (multi-block) when photo is present
         assert isinstance(last_user_msg["content"], list)
 
-    def test_location_included_in_text(self, agent, mock_services):
+    def test_location_included_in_text(self, agent, mock_services, where_env):
         """Location coordinates appear in the text sent to Claude."""
         claude = mock_services[0]
 
@@ -306,12 +307,11 @@ class TestHandleMessageWithAttachments:
         messages = call_args.kwargs.get("messages", call_args[1].get("messages") if len(call_args) > 1 else None)
         last_user_msg = [m for m in messages if m["role"] == "user"][-1]
         content = last_user_msg["content"]
-        # Should contain location coordinates in text
-        if isinstance(content, list):
-            text_parts = [b["text"] for b in content if b.get("type") == "text"]
-            assert any("32.08" in t and "34.78" in t for t in text_parts)
-        else:
-            assert "32.08" in content and "34.78" in content
+        # The location in words, never its coordinates (repair spec §8).
+        text = content if isinstance(content, str) else " ".join(
+            b["text"] for b in content if b.get("type") == "text")
+        assert _re.search(r"\[Location \(location:[0-9a-f]{8}\): where:", text), text
+        assert "32.08" not in text and "34.78" not in text
 
     def test_reply_context_included(self, agent, mock_services):
         """Reply context appears in the text sent to Claude."""
@@ -356,7 +356,7 @@ class TestHandleMessageWithAttachments:
         assert result.response == "Hello!"
 
 
-    def test_photo_exif_extracted_and_surfaced(self, agent, mock_services, tmp_path):
+    def test_photo_exif_extracted_and_surfaced(self, agent, mock_services, tmp_path, where_env):
         """EXIF metadata is extracted and included in Claude context."""
         claude = mock_services[0]
 
@@ -391,8 +391,9 @@ class TestHandleMessageWithAttachments:
         content = last_user["content"]
         text_parts = [b["text"] for b in content if b.get("type") == "text"]
         combined = " ".join(text_parts)
-        assert "32.08" in combined  # GPS lat
-        assert "34.78" in combined  # GPS lng
+        # Words, never numbers (repair spec §8).
+        assert "where:" in combined and "EXIF GPS" not in combined
+        assert "32.08" not in combined and "34.78" not in combined
 
     def test_photo_metadata_json_written(self, agent, mock_services, tmp_path):
         """Sidecar metadata.json is written when photo is saved."""
@@ -595,47 +596,26 @@ class TestAttachToDaily:
         assert result["ok"] is True
         assert vault.append_to_daily_section.call_args.kwargs["date"] is None
 
-    def test_attach_to_daily_with_location(self, agent, mock_services):
+    def test_attach_to_daily_ignores_coordinates_from_the_model(self, agent, mock_services, where_env):
+        # The model never has coordinates (repair spec §8); any it sends are made up.
         vault = mock_services[1]
-
-        vault.append_to_daily_section.return_value = {
-            "path": "10-daily/2026-03-04.md",
-            "section": "Notes",
-        }
-
+        vault.append_to_daily_section.return_value = {"path": "10-daily/2026-03-04.md", "section": "Notes"}
         result = agent._tool_attach_to_daily({
             "vault_path": "data/media/2026-03-04/photo.jpg",
             "caption": "Street photo",
             "location": {"lat": 32.08, "lng": 34.78, "name": "Tel Aviv"},
             "section": "Notes",
         })
-
         assert result["ok"] is True
-        assert "path" in result["data"]
-        call_args = vault.append_to_daily_section.call_args
-        content = call_args.kwargs.get("content") or call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs["content"]
-        # Coordinates render as a map link, not raw numbers
-        assert "[Tel Aviv](https://www.google.com/maps?q=32.08,34.78)" in content
-        assert "\U0001f4cd" in content
+        content = vault.append_to_daily_section.call_args.kwargs["content"]
+        assert "google.com/maps" not in content and "32.08" not in content
 
-    def test_attach_to_daily_location_without_name_uses_map_label(self, agent, mock_services):
-        vault = mock_services[1]
-        vault.append_to_daily_section.return_value = {
-            "path": "10-daily/2026-03-04.md",
-            "section": "Notes",
-        }
-
-        result = agent._tool_attach_to_daily({
-            "vault_path": "data/media/2026-03-04/photo.jpg",
-            "caption": "Street photo",
-            "location": {"lat": 32.08, "lng": 34.78},
-            "section": "Notes",
-        })
-
-        assert result["ok"] is True
-        call_args = vault.append_to_daily_section.call_args
-        content = call_args.kwargs.get("content") or call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs["content"]
-        assert "[Map](https://www.google.com/maps?q=32.08,34.78)" in content
+    def test_attach_to_daily_schema_takes_no_coordinates(self, agent):
+        schema = agent.tools["attach_to_daily"]["schema"]
+        props = schema["input_schema"]["properties"]
+        assert set(props["location"]["properties"]) == {"name"}
+        assert "anchor" in props
+        assert "coordinates" not in schema["description"]
 
     def test_attach_to_daily_emits_wikilink_embed(self, mock_services):
         claude, vault, memory, calendar, events = mock_services
@@ -3582,16 +3562,44 @@ def test_set_trip_purpose_is_registered_as_write(agent):
     assert "[trip" in tool["schema"]["description"]
 
 
-def test_set_trip_purpose_answers_the_runtime(agent, monkeypatch):
+def _fake_rt():
     from unittest.mock import MagicMock
     rt = MagicMock()
-    rt.answer.return_value = {"trip_id": "1a2b3c4d", "stop_id": "s1", "purpose": "Sauna", "conflict": None,
-                              "blocks": {}}
-    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    rt.deps, rt.handles = MagicMock(), MagicMock()
+    rt.deps.outbox.find.return_value = None                        # every arrival already sent
+    rt.deps.records.get.side_effect = lambda tid: {"id": tid, "closed": True}
+    return rt
+
+
+def _edit_result(**more):
+    return {"record": {"id": "1a2b3c4d", "closed": True, "trip": {"lat": 32.0812345}}, "receipt": {"text": "arrival"},
+            "conflict": None, "cancelled": [], **more}
+
+
+def test_set_trip_purpose_is_an_alias_of_name_stop(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    monkeypatch.setattr("src.services.location.runtime._runtime", _fake_rt())
+    edit = MagicMock(return_value=_edit_result())
+    monkeypatch.setattr("src.services.location.edits.apply_edit", edit)
+    monkeypatch.setattr("src.services.location.view.get_trip", lambda *a, **k: {"trips": [{"id": "1a2b3c4d"}]})
     r = agent.run_tool("set_trip_purpose", {"trip_id": "1a2b3c4d", "stop_id": "s1", "purpose": "Sauna",
+                                            "place": "Sauna Club", "_confidence": 0.9})
+    assert r["ok"], r
+    assert edit.call_args.args[:2] == ("1a2b3c4d", "name_stop")
+    assert edit.call_args.args[2] == {"stop_id": "s1", "name": "Sauna", "place": "Sauna Club"}
+
+
+def test_set_trip_purpose_without_stop_is_name_trip(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    monkeypatch.setattr("src.services.location.runtime._runtime", _fake_rt())
+    edit = MagicMock(return_value=_edit_result())
+    monkeypatch.setattr("src.services.location.edits.apply_edit", edit)
+    monkeypatch.setattr("src.services.location.view.get_trip", lambda *a, **k: {"trips": [{"id": "1a2b3c4d"}]})
+    r = agent.run_tool("set_trip_purpose", {"trip_id": "1a2b3c4d", "purpose": "Run", "place": "Park",
                                             "_confidence": 0.9})
     assert r["ok"], r
-    assert rt.answer.call_args.args[:3] == ("1a2b3c4d", "s1", "Sauna")
+    assert edit.call_args.args[:2] == ("1a2b3c4d", "name_trip")
+    assert edit.call_args.args[2] == {"name": "Run", "destination": "Park"}
 
 
 def test_set_trip_purpose_when_off(agent, monkeypatch):
@@ -3601,9 +3609,636 @@ def test_set_trip_purpose_when_off(agent, monkeypatch):
 
 
 def test_set_trip_purpose_unknown_trip(agent, monkeypatch):
-    from unittest.mock import MagicMock
-    rt = MagicMock()
-    rt.answer.side_effect = KeyError("1a2b3c4d")
-    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    monkeypatch.setattr("src.services.location.runtime._runtime", _fake_rt())
+
+    def boom(*a, **k):
+        raise KeyError("1a2b3c4d")
+    monkeypatch.setattr("src.services.location.edits.apply_edit", boom)
     r = agent.run_tool("set_trip_purpose", {"trip_id": "1a2b3c4d", "purpose": "Run", "_confidence": 0.9})
     assert r["error"]["code"] == "PATH_NOT_FOUND"
+
+
+# --- Trip repair, Task 12: five tools -------------------------------------------
+
+_TRIP_TOOLS = {"get_trip": "safe", "find_place": "safe", "find_visit": "safe",
+               "edit_trip": "write", "edit_place": "write"}
+
+
+def test_trip_tools_are_registered_with_their_risks(agent):
+    for name, risk in _TRIP_TOOLS.items():
+        assert agent.tools[name]["risk"] == risk, name
+        assert agent.tools[name]["schema"]["name"] == name
+    ops = agent.tools["edit_trip"]["schema"]["input_schema"]["properties"]["op"]["enum"]
+    assert set(ops) == {"name_trip", "name_stop", "add_stop", "split_stop", "merge_stops", "set_stop_times",
+                        "remove_stop", "split_trip", "join_trips", "restore_block"}
+    assert agent.tools["edit_place"]["schema"]["input_schema"]["properties"]["op"]["enum"] == [
+        "forget", "move_to", "rename", "add_alias"]
+    assert "get_trip" in agent.tools["list_events"]["schema"]["description"]
+
+
+def test_get_trip_find_place_find_visit_call_the_view(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    rt = _fake_rt()
+    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    gt = MagicMock(return_value={"trips": []})
+    fp = MagicMock(return_value={"places": []})
+    fv = MagicMock(return_value={"visits": []})
+    monkeypatch.setattr("src.services.location.view.get_trip", gt)
+    monkeypatch.setattr("src.services.location.view.find_place", fp)
+    monkeypatch.setattr("src.services.location.view.find_visit", fv)
+    assert agent.run_tool("get_trip", {"date": "2026-11-20"})["ok"]
+    assert gt.call_args.kwargs == {"trip_id": None, "date": "2026-11-20"}
+    assert agent.run_tool("find_place", {"query": "cafe", "near": "m1"})["ok"]
+    assert fp.call_args.args[3:] == ("cafe", "m1")
+    assert agent.run_tool("find_visit", {"ref": "m2", "trip_id": "1a2b3c4d"})["ok"]
+    assert fv.call_args.args[3] == "m2" and fv.call_args.kwargs["trip_id"] == "1a2b3c4d"
+
+
+def test_trip_tools_when_off(agent, monkeypatch):
+    monkeypatch.setattr("src.services.location.runtime._runtime", None)
+    for name, args in [("get_trip", {}), ("find_place", {"query": "x"}), ("find_visit", {"ref": "m1"}),
+                       ("edit_trip", {"trip_id": "1a2b3c4d", "op": "remove_stop", "stop_id": "s1", "_confidence": 0.9}),
+                       ("edit_place", {"ref": "place:x", "op": "forget", "_confidence": 0.9})]:
+        r = agent.run_tool(name, args)
+        assert r["ok"] is False and r["error"]["code"] == "STATE_CONFLICT", name
+        assert "Location trips are off" in r["error"]["message"]
+
+
+def test_edit_trip_sends_the_receipt_to_the_turn_not_the_result(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    from src.services.location import turn_receipts
+    rt = _fake_rt()
+    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    edit = MagicMock(return_value=_edit_result(cancelled=["stop:s2"]))
+    monkeypatch.setattr("src.services.location.edits.apply_edit", edit)
+    monkeypatch.setattr("src.services.location.view.get_trip",
+                        lambda *a, **k: {"trips": [{"id": "1a2b3c4d", "stops": []}]})
+    agent._current_chat_id = 7
+    with turn_receipts.collecting() as got:
+        r = agent.run_tool("edit_trip", {"trip_id": "1a2b3c4d", "op": "remove_stop", "stop_id": "s2",
+                                         "_confidence": 0.9, "_reasoning": "x"})
+    assert r["ok"], r
+    assert got == [{"text": "arrival"}]
+    assert "receipt" not in json.dumps(r) and "arrival" not in json.dumps(r)
+    data = r["data"]
+    assert data["shown_to_user"] is True and data["trip"]["id"] == "1a2b3c4d"
+    assert data["cancelled"] == ["stop:s2"]
+    # the op args, without the gate's fields, and a resolver bound to the chat
+    assert edit.call_args.args[:3] == ("1a2b3c4d", "remove_stop", {"stop_id": "s2"})
+    edit.call_args.kwargs["resolve"]("m1")
+    rt.handles.resolve.assert_called_with(7, "m1")
+
+
+def test_edit_trip_split_returns_both_trips_and_receipts(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    from src.services.location import turn_receipts
+    monkeypatch.setattr("src.services.location.runtime._runtime", _fake_rt())
+    monkeypatch.setattr("src.services.location.edits.apply_edit", MagicMock(return_value=_edit_result(
+        split_into="55667788", other_receipt={"text": "second"})))
+    monkeypatch.setattr("src.services.location.view.get_trip",
+                        lambda deps, h, c, trip_id=None, date=None: {"trips": [{"id": trip_id}]})
+    with turn_receipts.collecting() as got:
+        r = agent.run_tool("edit_trip", {"trip_id": "1a2b3c4d", "op": "split_trip", "at": "s2",
+                                         "_confidence": 0.9})
+    assert [t["id"] for t in r["data"]["trips"]] == ["1a2b3c4d", "55667788"]
+    assert got == [{"text": "arrival"}, {"text": "second"}]
+
+
+def test_edit_trip_street_note_and_errors(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    monkeypatch.setattr("src.services.location.runtime._runtime", _fake_rt())
+    monkeypatch.setattr("src.services.location.view.get_trip", lambda *a, **k: {"trips": [{"id": "x"}]})
+    monkeypatch.setattr("src.services.location.edits.apply_edit",
+                        MagicMock(return_value=_edit_result(street=True)))
+    args = {"trip_id": "1a2b3c4d", "op": "name_stop", "stop_id": "s1", "name": "Yesod", "_confidence": 0.9}
+    r = agent.run_tool("edit_trip", args)
+    assert "saved as the street, not as a place of yours" in json.dumps(r["data"])
+    for exc, code, text in [(KeyError("search again"), "PATH_NOT_FOUND", "search again"),
+                            (KeyError("1a2b3c4d"), "PATH_NOT_FOUND", None),
+                            (ValueError("stop s1 is still going on"), "STATE_CONFLICT", "still going on")]:
+        monkeypatch.setattr("src.services.location.edits.apply_edit", MagicMock(side_effect=exc))
+        r = agent.run_tool("edit_trip", args)
+        assert r["error"]["code"] == code
+        if text:
+            assert text in r["error"]["message"]
+
+
+def _real_trip_rt(tmp_path, monkeypatch):
+    """A closed trip from the location tests, behind a real runtime: apply_edit and get_trip unmocked."""
+    from types import SimpleNamespace
+    from src.config import settings
+    from src.services.location.handles import Handles
+    from tests.test_location_edits import closed_trip
+    monkeypatch.setenv("MAZKIR_AUDIT_LOG_PATH", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setattr(settings, "location_data_path", tmp_path / "locdata")
+    deps, clock = closed_trip(tmp_path)
+    rt = SimpleNamespace(deps=deps, handles=Handles(tmp_path / "handles.json"))
+    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    return rt, clock
+
+
+def _send_arrival(deps):
+    for item in deps.outbox.serve():
+        deps.outbox.ack(item["id"])
+
+
+def test_edit_trip_street_note_without_mocks(agent, tmp_path, monkeypatch):     # final review 1, spec §7.5
+    import re
+    from pathlib import Path
+    from src.services.location.map_index import build_index
+    from tests.test_location_edits import TRIP
+    rt, _ = _real_trip_rt(tmp_path, monkeypatch)
+    build_index(Path(__file__).parent / "fixtures" / "map_small.osm", tmp_path / "index.sqlite")
+    rt.deps.map_index = tmp_path / "index.sqlite"
+    rec = rt.deps.records.get(TRIP)
+    for s in rec["trip"]["stops"]:
+        if s["id"] == "s1":
+            s["lat"], s["lng"] = 32.03, 34.80                  # on Ha'Yarkon in the fixture
+    rt.deps.records.save(rec)
+    r = agent.run_tool("edit_trip", {"trip_id": TRIP, "op": "name_stop", "stop_id": "s1", "name": "Walk",
+                                     "place": "Ha'Yarkon", "_confidence": 0.9})
+    assert r["ok"], r
+    assert "saved as the street, not as a place of yours" in r["data"]["note"]
+    assert not (tmp_path / "places.json").exists() or "Yarkon" not in (tmp_path / "places.json").read_text()
+    assert not re.search(r"\d+\.\d{4,}", json.dumps(r))
+
+
+def test_edit_trip_receipt_only_once_the_arrival_was_sent(agent, tmp_path, monkeypatch):   # final review 7
+    from src.services.location import turn_receipts
+    from tests.test_location_edits import TRIP
+    rt, _ = _real_trip_rt(tmp_path, monkeypatch)
+    args = {"trip_id": TRIP, "op": "name_stop", "stop_id": "s1", "name": "Market", "_confidence": 0.9}
+    with turn_receipts.collecting() as got:
+        r = agent.run_tool("edit_trip", args)                  # the arrival is still queued
+    assert r["ok"], r
+    assert got == [] and r["data"]["shown_to_user"] is False
+    assert "arrival message" in r["data"]["note"] and r["data"]["trip"]["id"] == TRIP
+    [queued] = [i for i in rt.deps.outbox.serve() if i["kind"] == "arrival"]
+    assert "Market" in json.dumps(queued["receipt"])           # the queued one goes out updated
+    rt.deps.outbox.ack(queued["id"])
+    with turn_receipts.collecting() as got:
+        r = agent.run_tool("edit_trip", {**args, "name": "Shuk"})
+    assert len(got) == 1 and r["data"]["shown_to_user"] is True and "note" not in r["data"]
+
+
+def test_edit_trip_on_an_open_trip_draws_nothing(agent, tmp_path, monkeypatch):    # final review 7
+    from src.services.location import turn_receipts
+    from tests.test_location_edits import TRIP
+    rt, _ = _real_trip_rt(tmp_path, monkeypatch)
+    _send_arrival(rt.deps)
+    rec = rt.deps.records.get(TRIP)
+    rec["closed"] = False
+    rt.deps.records.save(rec)
+    with turn_receipts.collecting() as got:
+        r = agent.run_tool("edit_trip", {"trip_id": TRIP, "op": "name_stop", "stop_id": "s1", "name": "Market",
+                                         "_confidence": 0.9})
+    assert r["ok"], r
+    assert got == [] and r["data"]["shown_to_user"] is False
+    assert "still going on" in r["data"]["note"]
+
+
+def test_edit_trip_reread_failure_is_not_a_failed_edit(agent, tmp_path, monkeypatch):    # final review 5
+    from src.services.location import turn_receipts
+    from tests.test_location_edits import TRIP
+    rt, _ = _real_trip_rt(tmp_path, monkeypatch)
+    _send_arrival(rt.deps)
+
+    def boom(*a, **k):
+        raise RuntimeError("disk at 32.0812345")
+    monkeypatch.setattr("src.services.location.view.get_trip", boom)
+    with turn_receipts.collecting() as got:
+        r = agent.run_tool("edit_trip", {"trip_id": TRIP, "op": "name_stop", "stop_id": "s1", "name": "Market",
+                                         "_confidence": 0.9})
+    assert r["ok"] is True, r
+    assert len(got) == 1 and r["data"]["shown_to_user"] is True
+    assert "get_trip" in r["data"]["note"] and "32.08" not in json.dumps(r)
+    assert rt.deps.records.get(TRIP)["stops"]["s1"]["name"] == "Market"
+
+
+def test_edit_place_calls_places_edit(agent, monkeypatch):
+    from unittest.mock import MagicMock
+    rt = _fake_rt()
+    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    ep = MagicMock(return_value={"ref": "place:x", "op": "rename", "label": "New"})
+    monkeypatch.setattr("src.services.location.places_edit.edit_place", ep)
+    agent._current_chat_id = 7
+    r = agent.run_tool("edit_place", {"ref": "place:x", "op": "rename", "value": "New", "_confidence": 0.9})
+    assert r["ok"], r
+    assert ep.call_args.args[2:] == (7, "place:x", "rename", "New")
+    ep.side_effect = KeyError("search again")
+    assert agent.run_tool("edit_place", {"ref": "place:x", "op": "forget", "_confidence": 0.9})[
+        "error"]["code"] == "PATH_NOT_FOUND"
+    ep.side_effect = ValueError("rename needs a value")
+    assert agent.run_tool("edit_place", {"ref": "place:x", "op": "rename", "_confidence": 0.9})[
+        "error"]["code"] == "STATE_CONFLICT"
+
+
+def test_trip_tool_results_hold_no_coordinates(agent, monkeypatch):
+    import re
+    from unittest.mock import MagicMock
+    monkeypatch.setattr("src.services.location.runtime._runtime", _fake_rt())
+    # the view and edits hand back clean data; the record (with positions) must never be echoed
+    monkeypatch.setattr("src.services.location.view.get_trip", lambda *a, **k: {"trips": [{"id": "x", "stops": []}]})
+    monkeypatch.setattr("src.services.location.view.find_place", lambda *a, **k: {"places": [{"ref": "m1"}]})
+    monkeypatch.setattr("src.services.location.view.find_visit", lambda *a, **k: {"visits": []})
+    monkeypatch.setattr("src.services.location.edits.apply_edit", MagicMock(return_value=_edit_result()))
+    monkeypatch.setattr("src.services.location.places_edit.edit_place",
+                        MagicMock(return_value={"ref": "place:x", "op": "forget", "label": "X"}))
+    calls = [("get_trip", {}), ("find_place", {"query": "x"}), ("find_visit", {"ref": "m1"}),
+             ("edit_trip", {"trip_id": "1a2b3c4d", "op": "remove_stop", "stop_id": "s1", "_confidence": 0.9}),
+             ("edit_place", {"ref": "place:x", "op": "forget", "_confidence": 0.9})]
+    for name, args in calls:
+        text = json.dumps(agent.run_tool(name, args))
+        assert not re.search(r"\d+\.\d{4,}", text), name
+        for key in ('"lat"', '"lng"', '"osm"'):
+            assert key not in text, (name, key)
+
+
+def test_handle_message_collects_trip_receipts(agent):
+    from unittest.mock import patch
+    from src.services.location import turn_receipts
+
+    def inner(*a, **k):
+        turn_receipts.add({"text": "r1"})
+        return AgentResponse(response="ok")
+    with patch.object(agent, "_handle_message_inner", side_effect=inner):
+        res = agent.handle_message(text="hi", chat_id=1)
+    assert res.trip_receipts == [{"text": "r1"}]
+    turn_receipts.add({"text": "outside"})        # outside a turn: does nothing, raises nothing
+
+
+# --- Photos and locations in words (repair spec §8) ---------------------------
+
+import re as _re
+
+_COORD = _re.compile(r"\d+\.\d{4,}")
+
+
+@pytest.fixture
+def where_env(tmp_path, monkeypatch):
+    """No location runtime; places and handles under tmp_path, never data/."""
+    from src.config import settings
+    monkeypatch.setattr(settings, "events_data_path", tmp_path / "data" / "events")
+    monkeypatch.setattr(settings, "location_data_path", tmp_path / "data" / "locations")
+    monkeypatch.setattr("src.services.location.runtime._runtime", None)
+
+    async def _no_sources(day):
+        return [], set()
+    # A photo's moment is looked up on the reconciled day too; no real sources in a unit test.
+    monkeypatch.setattr("src.services.day_assembly.merge_from_sources", _no_sources)
+    return tmp_path / "data"
+
+
+def _text_of(content) -> str:
+    if isinstance(content, str):
+        return content
+    return " ".join(b["text"] for b in content if b.get("type") == "text")
+
+
+def _write_places(data_dir, places):
+    import json
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "places.json").write_text(json.dumps({"places": places}))
+    return data_dir / "places.json"
+
+
+def test_photo_gps_is_described_never_sent_as_numbers(agent, where_env):
+    import base64
+    from tests.test_exif_service import _make_jpeg_with_gps
+    data = base64.b64encode(_make_jpeg_with_gps(32.0853, 34.7818, accuracy=(1500, 100))).decode()
+    agent._current_chat_id = 7
+    text = _text_of(agent._build_user_content(
+        "look", [{"type": "photo", "data": data, "mime_type": "image/jpeg", "filename": "photo_test.jpg"}]))
+    assert "where:" in text and "EXIF GPS:" not in text
+    assert "GPS ±15 m" in text
+    assert not _COORD.search(text), text
+    from src.services.location.handles import Handles
+    anchor = Handles(where_env / "locations" / "handles.json").resolve(7, "photo:photo_test.jpg")
+    assert anchor["kind"] == "anchor" and anchor["accuracy_m"] == 15.0
+
+
+def test_photo_and_location_lines_name_their_anchor_keys(agent, where_env):     # final review 2, spec §8
+    import base64
+    from src.services.location.handles import Handles
+    from tests.test_exif_service import _make_jpeg_with_gps
+    agent._current_chat_id = 7
+    data = base64.b64encode(_make_jpeg_with_gps(32.0853, 34.7818)).decode()
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "photo", "data": data, "filename": "food.jpg"},
+             {"type": "location", "latitude": 32.0853, "longitude": 34.7818}]))
+    photo_line = next(line for line in text.splitlines() if line.startswith("[Photo saved to:"))
+    m = _re.search(r"\| anchor (photo:[^ \]|]+)", photo_line)
+    assert m, photo_line
+    loc = _re.search(r"\[Location \((location:[0-9a-f]{8})\): where:", text)
+    assert loc, text
+    handles = Handles(where_env / "locations" / "handles.json")
+    # the very keys the model reads are the ones the server can resolve
+    assert handles.resolve(7, m.group(1))["kind"] == "anchor"
+    assert handles.resolve(7, loc.group(1))["kind"] == "anchor"
+    assert not _COORD.search(text)
+
+
+def test_a_failed_lookup_names_no_anchor(agent, where_env, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("no")
+    monkeypatch.setattr("src.services.location.where.describe_where", boom)
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "message_id": 4}]))
+    assert "[Location: where: unknown (the lookup failed)]" in text
+
+
+def test_photo_at_a_place_of_yours(agent, where_env):
+    import base64
+    from tests.test_exif_service import _make_jpeg_with_gps
+    _write_places(where_env, [{"id": "home", "name": "Home", "kind": "home",
+                               "lat": 32.0853, "lng": 34.7818, "radius_m": 40}])
+    data = base64.b64encode(_make_jpeg_with_gps(32.0853, 34.7818)).decode()
+    text = _text_of(agent._build_user_content("x", [{"type": "photo", "data": data, "filename": "h.jpg"}]))
+    assert "| at home" in text and not _COORD.search(text)
+
+
+def test_location_is_described_never_sent_as_numbers(agent, where_env):
+    _write_places(where_env, [{"id": "gym", "name": "The gym", "kind": "sport",
+                               "lat": 32.0853, "lng": 34.7818, "radius_m": 60}])
+    agent._current_chat_id = 7
+    text = _text_of(agent._build_user_content(
+        "here", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "message_id": 42}]))
+    assert "[Location (location:42): where: place:gym The gym (yours, 0 m)" in text
+    assert not _COORD.search(text) and "34.78" not in text
+    from src.services.location.handles import Handles
+    assert Handles(where_env / "locations" / "handles.json").resolve(7, "location:42")["kind"] == "anchor"
+
+
+def test_venue_keeps_its_title(agent, where_env):
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "title": "Café Noir",
+              "message_id": 9}]))
+    assert '[Location (location:9) — "Café Noir": where: no map here]' in text
+    assert not _COORD.search(text)
+
+
+def test_forwarded_location_is_described_but_not_learned(agent, where_env):
+    path = _write_places(where_env, [{"id": "gym", "name": "The gym", "kind": "sport",
+                                      "lat": 31.0, "lng": 35.0, "radius_m": 60}])
+    before = path.read_bytes()
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "title": "Dana's", "message_id": 3}],
+        forwarded_from={"from_name": "Dana", "text": ""}))
+    assert '[Location (location:3) — "Dana\'s": where:' in text and not _COORD.search(text)
+    assert path.read_bytes() == before
+
+
+def test_location_uses_the_runtime_map_and_handles(agent, where_env, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from src.services.location.handles import Handles
+    from src.services.location.map_index import build_index
+    from src.services.location.records import TripRecords
+    from tests.test_location_where import OSM, P, _north
+    src = tmp_path / "w.osm"
+    src.write_text(OSM.format(cafe=_north(10), rest=_north(-25), bakery=_north(55), addr=_north(-8),
+                              area=_north(300)), encoding="utf-8")
+    build_index(src, tmp_path / "w.sqlite")
+    rt = SimpleNamespace(handles=Handles(tmp_path / "rt-handles.json"),
+                         deps=SimpleNamespace(map_index=tmp_path / "w.sqlite", records=TripRecords(tmp_path / "loc"),
+                                              places_path=tmp_path / "none.json"))
+    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    agent._current_chat_id = 7
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": P[0], "longitude": P[1], "message_id": 5}]))
+    assert "[Location (location:5): where: m1 Café X (café, 10 m)" in text and "on Herzl, by number 12" in text
+    assert not _COORD.search(text)
+    assert rt.handles.resolve(7, "m1")["label"] == "Café X"
+
+
+def test_conversation_log_text_has_no_coordinates():
+    from src.services.conversation_text import conversation_log_text
+    out = conversation_log_text("hi", [{"type": "location", "latitude": 32.0853123, "longitude": 34.7818456},
+                                       {"type": "location", "latitude": 32.0853123, "longitude": 34.7818456,
+                                        "title": "Café Noir"}], None)
+    assert not _COORD.search(out) and "32.08" not in out
+    assert "location" in out and "Café Noir" in out
+
+
+def test_photo_attaches_to_covering_block_when_shadow(tmp_path, monkeypatch, where_env):
+    from src.config import settings
+    from src.services.events_service import EventsService
+    monkeypatch.setattr(settings, "fast_lane_mode", "shadow")
+    events = EventsService(tmp_path / "ev")
+    prop = events.create_event("2026-11-20", "Walk to the park", "2026-11-20T13:00:00", "2026-11-20T13:40:00")
+    stored = events.get_events("2026-11-20")
+    for e in stored:
+        if e["id"] == prop["id"]:
+            e.update(proposed=True, trip={"id": "abcd1234", "part": "trip"})
+    events.save_events("2026-11-20", stored)
+    agent = AgentService(claude=MagicMock(), vault=MagicMock(), memory=MagicMock(), events=events,
+                         media_path=tmp_path / "media")
+    out = agent._place_photo({"exif_timestamp": "2026-11-20T13:10:00", "path": "m/p.jpg"})
+    assert "Walk to the park" in out[0]
+    assert next(e for e in events.get_events("2026-11-20") if e["id"] == prop["id"])["photos"]
+
+
+def test_photo_tries_the_reconciled_day_before_saying_nothing_covers(tmp_path, monkeypatch, where_env):
+    from src.config import settings
+    monkeypatch.setattr(settings, "fast_lane_mode", "off")
+    events = MagicMock()
+    events.get_events.return_value = []
+    events.attach_photo.return_value = {"attached": True, "event_id": "c1", "date": "2026-11-20"}
+    agent = AgentService(claude=MagicMock(), vault=MagicMock(), memory=MagicMock(), events=events,
+                         media_path=tmp_path / "media")
+    seen = []
+    monkeypatch.setattr(agent, "_reconciled_events", lambda d: (seen.append(d) or [
+        {"id": "c1", "name": "Lunch", "start_time": "2026-11-20T12:30:00", "end_time": "2026-11-20T13:30:00",
+         "date": d}], False))
+    out = agent._place_photo({"exif_timestamp": "2026-11-20T13:10:00", "path": "m/p.jpg"})
+    assert seen == ["2026-11-20"]
+    events.attach_photo.assert_called_once_with("2026-11-20", "c1", "m/p.jpg")
+    assert "Lunch" in out[0]
+
+    monkeypatch.setattr(agent, "_reconciled_events", lambda d: ([], False))
+    assert agent._place_photo({"exif_timestamp": "2026-11-20T13:10:00", "path": "m/p.jpg"}) == [
+        "no block covers that moment"]
+
+
+def test_a_reconciled_block_not_yet_stored_is_stored_then_attached(tmp_path, monkeypatch, where_env):
+    from src.config import settings
+    import src.services.day_assembly as day_assembly
+    monkeypatch.setattr(settings, "fast_lane_mode", "off")
+    events = MagicMock()
+    events.get_events.return_value = []
+    events.attach_photo.side_effect = [{"error": "Event c1 not found"},
+                                       {"attached": True, "event_id": "p9", "date": "2026-11-20"}]
+    events.refresh_events.return_value = [{"id": "p9", "source_ids": {"calendar_id": "g1"}}]
+
+    async def _merge(day):
+        return [], {"calendar"}
+    monkeypatch.setattr(day_assembly, "merge_from_sources", _merge)
+    agent = AgentService(claude=MagicMock(), vault=MagicMock(), memory=MagicMock(), events=events,
+                         media_path=tmp_path / "media")
+    monkeypatch.setattr(agent, "_reconciled_events", lambda d: ([
+        {"id": "c1", "name": "Lunch", "start_time": "2026-11-20T12:30:00", "end_time": "2026-11-20T13:30:00",
+         "source_ids": {"calendar_id": "g1"}, "date": d}], False))
+    out = agent._place_photo({"exif_timestamp": "2026-11-20T13:10:00", "path": "m/p.jpg"})
+    assert events.attach_photo.call_args.args == ("2026-11-20", "p9", "m/p.jpg")
+    assert "Lunch" in out[0]
+
+
+def test_attach_to_daily_links_a_photo_from_its_own_exif(agent, mock_services, where_env):
+    import base64
+    from tests.test_exif_service import _make_jpeg_with_gps
+    info = agent._save_photo({"type": "photo", "filename": "street.jpg",
+                              "data": base64.b64encode(_make_jpeg_with_gps(32.0853, 34.7818)).decode()})
+    vault = mock_services[1]
+    vault.append_to_daily_section.return_value = {"path": "10-daily/x.md", "section": "Notes"}
+    result = agent._tool_attach_to_daily({"vault_path": info["path"], "caption": "Street",
+                                          "location": {"name": "Herzl corner", "lat": 1.0, "lng": 2.0}})
+    assert result["ok"] is True
+    content = vault.append_to_daily_section.call_args.kwargs["content"]
+    lat, lng = info["exif_location"]["lat"], info["exif_location"]["lng"]
+    assert f"\U0001f4cd [Herzl corner](https://www.google.com/maps?q={lat},{lng})" in content
+    assert "q=1.0,2.0" not in content
+    assert not _COORD.search(json.dumps(result["data"]))
+
+
+def test_attach_to_daily_links_an_anchor(agent, mock_services, where_env):
+    from src.services.location.handles import Handles
+    Handles(where_env / "locations" / "handles.json").anchor(7, "location:42", 32.0853, 34.7818)
+    agent._current_chat_id = 7
+    vault = mock_services[1]
+    vault.append_to_daily_section.return_value = {"path": "10-daily/x.md", "section": "Notes"}
+    agent._tool_attach_to_daily({"vault_path": "note.md", "caption": "Here", "anchor": "location:42"})
+    content = vault.append_to_daily_section.call_args.kwargs["content"]
+    assert "[Map](https://www.google.com/maps?q=32.0853,34.7818)" in content
+
+
+def test_attach_to_daily_without_a_position_writes_no_link(agent, mock_services, where_env):
+    vault = mock_services[1]
+    vault.append_to_daily_section.return_value = {"path": "10-daily/x.md", "section": "Notes"}
+    result = agent._tool_attach_to_daily({"vault_path": "nowhere.jpg", "caption": "x", "anchor": "location:999"})
+    assert result["ok"] is True
+    assert "google.com/maps" not in vault.append_to_daily_section.call_args.kwargs["content"]
+
+
+def test_attach_to_daily_links_a_geotagged_photo_only_when_asked(agent, mock_services, where_env):   # final review 3a
+    import base64
+    from tests.test_exif_service import _make_jpeg_with_gps
+    info = agent._save_photo({"type": "photo", "filename": "food.jpg",
+                              "data": base64.b64encode(_make_jpeg_with_gps(32.0853, 34.7818)).decode()})
+    vault = mock_services[1]
+    vault.append_to_daily_section.return_value = {"path": "10-daily/x.md", "section": "Notes"}
+    result = agent._tool_attach_to_daily({"vault_path": info["path"], "caption": "Lunch"})
+    assert "google.com/maps" not in vault.append_to_daily_section.call_args.kwargs["content"]
+    assert result["data"]["map_link"] is False
+
+
+_NOTE_WITH_LINKS = (
+    "\n![[a.jpg]]\n*13:05 — Lunch*\n\U0001f4cd [Café X](https://www.google.com/maps?q=32.0853123,34.7818456)\n"
+    "\n- walked on\n\U0001f4cd [Map](https://www.google.com/maps?q=32.0901234,34.7712345)\n"
+)
+
+
+def test_read_paths_hide_map_link_coordinates(agent, mock_services):                       # final review 3b
+    vault = mock_services[1]
+    vault.read_daily_section.return_value = _NOTE_WITH_LINKS
+    vault.read_daily_note.return_value = {"metadata": {}, "content": "## Notes" + _NOTE_WITH_LINKS,
+                                          "path": "10-daily/x.md"}
+    for result in (agent._tool_read_daily_section({"section": "Notes"}), agent._tool_get_daily({})):
+        text = json.dumps(result)
+        assert not _COORD.search(text), text
+        assert text.count("maps?q=(hidden)") == 2 and "[Caf\\u00e9 X]" in text
+
+
+def test_location_context_todos_hide_map_link_coordinates():
+    from unittest.mock import MagicMock
+    import datetime as dt
+    from src.services.location.context import _todos
+    vault = MagicMock()
+    vault.read_daily_note.return_value = {"content": "## Tasks\n- [ ] meet at [here](https://maps.google.com/?q=32.0853123,34.7818456)\n"}
+    [(kind, text)] = _todos(vault, dt.date(2026, 11, 20))
+    assert kind == "todo" and "q=(hidden)" in text and not _COORD.search(text)
+
+
+def test_edit_daily_section_restores_hidden_map_links(agent, mock_services):                # final review 3c
+    from src.services.map_links import hide_map_queries
+    vault = mock_services[1]
+    vault.read_daily_section.return_value = _NOTE_WITH_LINKS
+    vault.replace_daily_section.return_value = {"path": "10-daily/x.md", "section": "Notes"}
+    seen = hide_map_queries(_NOTE_WITH_LINKS)
+    edited = seen.replace("Lunch", "Lunch with Dana")
+    result = agent._tool_edit_daily_section({"section": "Notes", "content": edited})
+    assert result["ok"] is True
+    written = vault.replace_daily_section.call_args.kwargs["new_content"]
+    assert written == _NOTE_WITH_LINKS.replace("Lunch", "Lunch with Dana")
+    assert "(hidden)" not in written
+
+
+def test_edit_daily_section_refuses_a_changed_map_link_count(agent, mock_services):
+    from src.services.map_links import hide_map_queries
+    vault = mock_services[1]
+    vault.read_daily_section.return_value = _NOTE_WITH_LINKS
+    seen = hide_map_queries(_NOTE_WITH_LINKS)
+    dropped = seen.split("\n- walked on")[0]
+    for content in (dropped, seen + "\n\U0001f4cd [Map](https://www.google.com/maps?q=(hidden))"):
+        result = agent._tool_edit_daily_section({"section": "Notes", "content": content})
+        assert result["ok"] is False and result["error"]["code"] == "STATE_CONFLICT"
+        assert "keep map links as they are" in result["error"]["message"]
+    vault.replace_daily_section.assert_not_called()
+
+
+def test_map_link_queries_round_trip():
+    from src.services.map_links import hide_map_queries, restore_map_queries
+    text = "a https://www.google.com/maps?q=32.0853123,34.7818456&z=17 b [x](https://maps.google.com/?q=1.5,2.5)"
+    hidden = hide_map_queries(text)
+    assert hidden == "a https://www.google.com/maps?q=(hidden)&z=17 b [x](https://maps.google.com/?q=(hidden))"
+    assert restore_map_queries(hidden, text) == text
+    assert restore_map_queries("no links", "no links either") == "no links"
+    assert restore_map_queries("no links", text) is None
+
+
+def _runtime_with_open_stop(tmp_path, centre):
+    import datetime as dt
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+    from src.services.location.handles import Handles
+    from src.services.location.model import Stop, Trip
+    from src.services.location.records import TripRecords, new_record
+    now = dt.datetime.now(ZoneInfo("Asia/Jerusalem"))
+    records = TripRecords(tmp_path / "loc")
+    stop = Stop("s3", now - dt.timedelta(minutes=10), None, centre[0], centre[1], 10.0, 900.0)
+    records.save(new_record(Trip("abcd1234", "home", now - dt.timedelta(minutes=30), "location", [stop])))
+    return SimpleNamespace(handles=Handles(tmp_path / "rt-handles.json"),
+                           deps=SimpleNamespace(map_index=None, records=records, places_path=tmp_path / "none.json"))
+
+
+def test_own_location_at_the_open_stop_is_that_stop(agent, where_env, tmp_path, monkeypatch):
+    monkeypatch.setattr("src.services.location.runtime._runtime", _runtime_with_open_stop(tmp_path, (32.1, 34.9)))
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": 32.1 + 20 / 111195, "longitude": 34.9, "message_id": 8}]))
+    assert "[Location (location:8): at stop s3 of trip abcd1234 (unnamed)" in text
+
+
+def test_own_location_far_from_the_open_stop_is_looked_up(agent, where_env, tmp_path, monkeypatch):
+    monkeypatch.setattr("src.services.location.runtime._runtime", _runtime_with_open_stop(tmp_path, (32.1, 34.9)))
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": 32.1 + 500 / 111195, "longitude": 34.9, "title": "Bar",
+              "message_id": 8}]))
+    assert '[Location (location:8) — "Bar": where:' in text and "at stop" not in text
+
+
+def test_forwarded_location_during_an_open_stop_is_not_your_stop(agent, where_env, tmp_path, monkeypatch):
+    monkeypatch.setattr("src.services.location.runtime._runtime", _runtime_with_open_stop(tmp_path, (32.1, 34.9)))
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": 32.1, "longitude": 34.9, "title": "Dana's", "message_id": 8}],
+        forwarded_from={"from_name": "Dana", "text": ""}))
+    assert '[Location (location:8) — "Dana\'s": where:' in text and "at stop" not in text
+
+
+def test_attach_to_daily_reads_no_sidecar_outside_the_media_folder(agent, mock_services, where_env, tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "metadata.json").write_text(json.dumps(
+        [{"filename": "x.jpg", "path": "x.jpg", "exif_location": {"lat": 1.5, "lng": 2.5}}]))
+    vault = mock_services[1]
+    vault.append_to_daily_section.return_value = {"path": "10-daily/x.md", "section": "Notes"}
+    rel = str((outside / "x.jpg").relative_to(agent.media_path.parent.parent))
+    agent._tool_attach_to_daily({"vault_path": rel, "caption": "x"})
+    assert "google.com/maps" not in vault.append_to_daily_section.call_args.kwargs["content"]

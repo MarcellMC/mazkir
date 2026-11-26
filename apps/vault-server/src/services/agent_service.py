@@ -4,7 +4,7 @@ import base64
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -32,6 +32,7 @@ from src.services.tool_handlers.coding_handoff import (
     propose_coding_session as _propose_coding_session,
 )
 from src.services.conversation_text import conversation_log_text
+from src.services.location import turn_receipts
 from src.services.tool_response import ErrorCode, err, ok
 from src.services.vault_service import VaultService
 
@@ -236,6 +237,8 @@ class AgentResponse:
     # Options this confirmation offers, as [{"value", "label"}]. None means
     # a plain free-text yes/no gate -- the client falls back to that.
     confirmation_choices: list[dict] | None = None
+    # Trip messages an edit redrew this turn; the bot sends each under the reply.
+    trip_receipts: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -368,7 +371,10 @@ class AgentService:
             "edit_daily_section": {
                 "schema": {
                     "name": "edit_daily_section",
-                    "description": "Replace the content of a daily note section. Use read_daily_section first to see current content.",
+                    "description": (
+                        "Replace the content of a daily note section. Use read_daily_section first to see "
+                        "current content. Map links show as q=(hidden): keep each one unchanged."
+                    ),
                     "input_schema": {
                         "type": "object",
                         "properties": {
@@ -489,6 +495,145 @@ class AgentService:
                     },
                 },
                 "handler": self._tool_set_trip_purpose,
+                "risk": "write",
+                "pre_hooks": ["validate_schema"],
+            },
+            "get_trip": {
+                "schema": {
+                    "name": "get_trip",
+                    "description": (
+                        "Read a location trip: its stops and legs with times, names, kinds and "
+                        "distances, which blocks they became, and whether it is still open. Call it "
+                        "before answering anything about a trip, and never ask the user for a time "
+                        "the trip has. With neither argument, the latest trip. Places are short "
+                        "handles (m1, place:x) for find_visit / edit_trip."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "trip_id": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
+                            "date": {"type": "string", "description": "YYYY-MM-DD: every trip of that day"},
+                        },
+                        "required": [],
+                    },
+                },
+                "handler": self._tool_get_trip,
+                "risk": "safe",
+                "pre_hooks": ["validate_schema"],
+            },
+            "find_place": {
+                "schema": {
+                    "name": "find_place",
+                    "description": (
+                        "Search the local map and the user's own places by name, within 3 km of `near` "
+                        "(a handle, a place:<id>, a photo or location anchor; default home). Returns at "
+                        "most 8 places with a handle each, kind and distance."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "near": {"type": "string", "description": "A handle or anchor from an earlier result"},
+                        },
+                        "required": ["query"],
+                    },
+                },
+                "handler": self._tool_find_place,
+                "risk": "safe",
+                "pre_hooks": ["validate_schema"],
+            },
+            "find_visit": {
+                "schema": {
+                    "name": "find_visit",
+                    "description": (
+                        "When the user was at a place: the stretches of location points near `ref` (a "
+                        "find_place handle or a place:<id>) of at least 3 minutes. Use it to get times "
+                        "for add_stop or set_stop_times instead of asking."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "ref": {"type": "string"},
+                            "trip_id": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
+                            "date": {"type": "string", "description": "YYYY-MM-DD"},
+                        },
+                        "required": ["ref"],
+                    },
+                },
+                "handler": self._tool_find_visit,
+                "risk": "safe",
+                "pre_hooks": ["validate_schema"],
+            },
+            "edit_trip": {
+                "schema": {
+                    "name": "edit_trip",
+                    "description": (
+                        "Fix a location trip. With `shown_to_user: true` the redrawn trip message is shown "
+                        "under your reply: do not repeat it, say in a sentence what changed (otherwise "
+                        "`note` says why not; still say what changed). "
+                        "Ops: name_trip(name, destination?) · name_stop(stop_id, name, ref? | place?) · "
+                        "add_stop(start, end, ref?, name?) a stop the tracker missed, inside the trip's "
+                        "time · split_stop(stop_id, at) · merge_stops(stop_ids) adjacent stops · "
+                        "set_stop_times(stop_id, start?, end?) a time the user stated · "
+                        "remove_stop(stop_id) · split_trip(at: a stop id, its start or end, or a time; "
+                        "stop_side?, purpose_to?: first|second) · join_trips(other_trip_id) two adjacent "
+                        "closed trips · restore_block(part) a dismissed block back as a proposal. "
+                        "Times are ISO with offset, or HH:MM on the trip's own day. An approved block is updated in "
+                        "place. A result `cancelled` lists approved blocks the edit removed: tell the "
+                        "user. Read get_trip first."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "trip_id": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
+                            "op": {"type": "string", "enum": [
+                                "name_trip", "name_stop", "add_stop", "split_stop", "merge_stops",
+                                "set_stop_times", "remove_stop", "split_trip", "join_trips", "restore_block"]},
+                            "name": {"type": "string"},
+                            "destination": {"type": "string", "description": "name_trip: where the trip went"},
+                            "stop_id": {"type": "string"},
+                            "stop_ids": {"type": "array", "items": {"type": "string"}},
+                            "ref": {"type": "string", "description": "A find_place handle"},
+                            "place": {"type": "string", "description": "name_stop: a place name to learn here"},
+                            "start": {"type": "string"},
+                            "end": {"type": "string"},
+                            "at": {"type": "string"},
+                            "stop_side": {"type": "string", "enum": ["first", "second"]},
+                            "purpose_to": {"type": "string", "enum": ["first", "second"]},
+                            "other_trip_id": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
+                            "part": {"type": "string", "description": "restore_block: stop:s2, leg:s1-s2, trip"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["trip_id", "op"],
+                    },
+                },
+                "handler": self._tool_edit_trip,
+                "risk": "write",
+                "pre_hooks": ["validate_schema"],
+            },
+            "edit_place": {
+                "schema": {
+                    "name": "edit_place",
+                    "description": (
+                        "Fix one of the user's own places (`place:<id>` from find_place or get_trip): "
+                        "forget it, rename it, add_alias (value: another name), or move_to (value: "
+                        "`<trip_id>:<stop_id>`, re-learn its position from that stop). Use move_to when "
+                        "naming a stop reports a `conflict` and it is the same place after all."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "ref": {"type": "string"},
+                            "op": {"type": "string", "enum": ["forget", "move_to", "rename", "add_alias"]},
+                            "value": {"type": "string"},
+                            "_confidence": {"type": "number"},
+                            "_reasoning": {"type": "string"},
+                        },
+                        "required": ["ref", "op"],
+                    },
+                },
+                "handler": self._tool_edit_place,
                 "risk": "write",
                 "pre_hooks": ["validate_schema"],
             },
@@ -823,7 +968,9 @@ class AgentService:
                         "Attach a saved photo or file to a daily note (today's by default). "
                         "Pass 'date' to target a different day's note. "
                         "Use after a photo has been saved to disk. "
-                        "Can include wikilinks (e.g. [[City Watch]]) and location coordinates."
+                        "Can include wikilinks (e.g. [[City Watch]]). A map link is added by the server "
+                        "from where the photo was taken, or from `anchor` (a sent location); you never "
+                        "give a position yourself."
                     ),
                     "input_schema": {
                         "type": "object",
@@ -844,11 +991,20 @@ class AgentService:
                             "location": {
                                 "type": "object",
                                 "properties": {
-                                    "lat": {"type": "number"},
-                                    "lng": {"type": "number"},
                                     "name": {"type": "string"},
                                 },
-                                "description": "Location coordinates — rendered as a map link in the daily note (name used as the link label)",
+                                "description": (
+                                    "Add a map link, labelled with this name (e.g. the place's; default "
+                                    "'Map'). Without location or anchor the note gets no map link."
+                                ),
+                            },
+                            "anchor": {
+                                "type": "string",
+                                "description": (
+                                    "Add a map link to a sent location or photo, by the key its line "
+                                    "names ('location:<message_id>' or 'photo:<file>'). For a geotagged "
+                                    "photo, `location` alone links its own position."
+                                ),
                             },
                             "section": {
                                 "type": "string",
@@ -989,7 +1145,8 @@ class AgentService:
                         "List a day's events exactly as /day shows them — calendar, "
                         "timeline, timed checkboxes and scheduled habits, merged. "
                         "Each row carries `complete`: false means the block is missing "
-                        "a start or an end time. Reaches the calendar, so it is not free."
+                        "a start or an end time. Reaches the calendar, so it is not free. "
+                        "For a trip's stops and times, call get_trip."
                     ),
                     "input_schema": {
                         "type": "object",
@@ -1373,13 +1530,14 @@ class AgentService:
                         "attachment_count": len(attachments or []),
                     },
                 ) as span:
-                    with with_span_status(span):
+                    with with_span_status(span), turn_receipts.collecting() as trip_receipts:
                         if len(text or "") > 2000:
                             span.set_attribute("truncated", True)
                         result = self._handle_message_inner(
                             text, chat_id, attachments, reply_to, forwarded_from,
                             skill=skill, prior_actions=prior_actions, text_handled=text_handled,
                         )
+                        result.trip_receipts = list(trip_receipts)
                     _output_text = result.response[:2000]
                     span.set_attribute(SpanAttributes.OUTPUT_VALUE, _output_text)
                     if len(result.response) > 2000:
@@ -1533,7 +1691,9 @@ class AgentService:
             ) as span:
                 if len(user_response) > 2000:
                     span.set_attribute("truncated", True)
-                result = self._handle_confirmation_inner(chat_id, action_id, user_response)
+                with turn_receipts.collecting() as trip_receipts:
+                    result = self._handle_confirmation_inner(chat_id, action_id, user_response)
+                    result.trip_receipts = list(trip_receipts)
                 _conf_output = result.response[:2000]
                 span.set_attribute(SpanAttributes.OUTPUT_VALUE, _conf_output)
                 if len(result.response) > 2000:
@@ -2061,25 +2221,27 @@ class AgentService:
         }
 
     def _place_photo(self, photo_info: dict) -> list[str]:
-        """Fast lane on: attach the photo to the block covering its moment, and say so (spec §5.6).
+        """Attach the photo to the block covering its moment, and say so (spec §5.6, repair spec §9).
 
-        Looks in the persisted events store only (see `covering_block`); the
-        fast lane's writes for this message are already saved by the time the
-        agent builds its content, and "no block covers" is told to the agent.
+        In every fast-lane mode. The persisted store first (the fast lane's
+        and the trip writer's blocks, proposals included, are already saved);
+        on a miss, the day as `/day` shows it, so a calendar block nobody has
+        opened is found too. Only then is the agent told nothing covers it.
         """
-        from src.config import settings as _settings
-        if _settings.fast_lane_mode != "on" or not self.events or not photo_info.get("exif_timestamp"):
+        if not self.events or not photo_info.get("exif_timestamp"):
             return []
-        import datetime as dt
-        from zoneinfo import ZoneInfo
         from src.services.fast_lane.photos import covering_block
         try:
-            moment = dt.datetime.fromisoformat(photo_info["exif_timestamp"]).replace(
-                tzinfo=ZoneInfo(_settings.vault_timezone))
+            moment = self._local_moment(photo_info["exif_timestamp"])
+            if moment is None:
+                return []
             block = covering_block(self.events, moment)
+            attached = block is not None and "error" not in self.events.attach_photo(
+                block["date"], block["id"], photo_info["path"])
+            if not attached:
+                block = self._attach_on_reconciled_day(moment, photo_info["path"])
             if block is None:
                 return ["no block covers that moment"]
-            self.events.attach_photo(block["date"], block["id"], photo_info["path"])
             def _hm(v):
                 v = v or ""
                 return v[11:16] if len(v) >= 16 else v
@@ -2088,6 +2250,93 @@ class AgentService:
         except Exception:
             logger.warning("placing a photo failed", exc_info=True)
             return []
+
+    def _attach_on_reconciled_day(self, moment, photo_path: str) -> dict | None:
+        """The reconciled day's covering block, with the photo attached; None when nothing covers.
+
+        A block only the merge knows (a calendar entry never opened) has no row
+        to hold the photo, so the day is stored first, as an edit does
+        (`_resolve_reference`), and the block found again by its `source_ids`.
+        """
+        import datetime as dt
+        from src.services.fast_lane.photos import covering_in
+        day = moment.date().isoformat()
+        events, _degraded = self._reconciled_events(day)
+        block = covering_in(events, moment)
+        if block is None:
+            return None
+        result = self.events.attach_photo(day, block["id"], photo_path)
+        if "error" not in result:
+            return block
+        source_ids = block.get("source_ids") or {}
+        if not source_ids:
+            return None
+        from src.services.async_bridge import maybe_await
+        import src.services.day_assembly as day_assembly
+        fresh, available = maybe_await(day_assembly.merge_from_sources(dt.date.fromisoformat(day)))
+        persisted = self.events.refresh_events(day, fresh, available)
+        stored = next((e for e in persisted if (e.get("source_ids") or {}) == source_ids), None)
+        if stored is None or "error" in self.events.attach_photo(day, stored["id"], photo_path):
+            return None
+        return {**block, "id": stored["id"]}
+
+    @staticmethod
+    def _handles():
+        """The per-chat handle table: the location runtime's, or one at the same path when it is off."""
+        from src.config import settings as _settings
+        from src.services.location import runtime as location_runtime
+        from src.services.location.handles import Handles
+        rt = location_runtime.get_runtime()
+        return rt.handles if rt is not None else Handles(Path(_settings.location_data_path) / "handles.json")
+
+    @staticmethod
+    def _local_moment(timestamp: str | None):
+        """A saved photo's local wall-clock time as an aware datetime in the vault's zone, or None."""
+        if not timestamp:
+            return None
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        from src.config import settings as _settings
+        try:
+            return dt.datetime.fromisoformat(timestamp).replace(tzinfo=ZoneInfo(_settings.vault_timezone))
+        except ValueError:
+            return None
+
+    def _where(self, lat: float, lng: float, *, accuracy_m: float | None, at, anchor_key: str,
+               stop_near_only: bool = False) -> str:
+        """A position in words for the model (repair spec §8); the numbers stay on the server.
+
+        With the location runtime on: its handle table, map copy, trip records
+        and places. Off: the places file the fast lane uses and a handle table
+        at the same path the runtime would use; no map, no trips.
+        """
+        from src.config import settings as _settings
+        from src.services.fast_lane.places import load_places
+        from src.services.location import runtime as location_runtime
+        from src.services.location.where import describe_where
+        try:
+            rt = location_runtime.get_runtime()
+            handles = self._handles()
+            if rt is not None:
+                deps = rt.deps
+                places_path, map_index, records = deps.places_path, getattr(deps, "map_index", None), deps.records
+            else:
+                places_path = Path(_settings.events_data_path).parent / "places.json"
+                map_index, records = None, None
+            try:
+                places = load_places(places_path)
+            except (OSError, ValueError):
+                places = []
+            return describe_where(lat, lng, accuracy_m=accuracy_m, at=at, chat_id=self._current_chat_id or 0,
+                                  places=places, map_index=map_index, handles=handles, records=records,
+                                  anchor_key=anchor_key, stop_near_only=stop_near_only)
+        except Exception as exc:
+            from src.services.location.model import safe_error
+            # Type and frame only: a message could quote the position.
+            logger.warning("describing a position failed: %s", safe_error(exc))
+            return self._WHERE_FAILED
+
+    _WHERE_FAILED = "where: unknown (the lookup failed)"
 
     def _build_user_content(
         self,
@@ -2121,11 +2370,20 @@ class AgentService:
                         loc = photo_info.get("exif_location")
                         ts = photo_info.get("exif_timestamp")
                         cam = photo_info.get("exif_camera")
-                        if loc:
-                            parts.append(f"EXIF GPS: {loc['lat']}, {loc['lng']}")
                         if ts:
                             parts.append(f"taken {ts}" + (" (from the send time, approximate)"
                                                           if photo_info.get("exif_precision") == "approx" else ""))
+                        if loc:
+                            # Words, never the numbers (repair spec §8). The anchor key is
+                            # named so find_place(near=…) and attach_to_daily(anchor=…) can use it.
+                            anchor_key = f"photo:{Path(photo_info['path']).name}"
+                            where = self._where(
+                                loc["lat"], loc["lng"], accuracy_m=loc.get("accuracy_m"),
+                                at=self._local_moment(ts), anchor_key=anchor_key)
+                            parts.append(where)
+                            if where != self._WHERE_FAILED:
+                                parts.append(f"anchor {anchor_key}")
+                        if ts:
                             parts += self._place_photo(photo_info)
                         if cam:
                             parts.append(f"Camera: {cam}")
@@ -2134,12 +2392,27 @@ class AgentService:
                         text_parts.append("[Photo attachment failed to save]")
 
                 elif att["type"] == "location":
-                    lat = att.get("latitude", 0)
-                    lng = att.get("longitude", 0)
-                    loc_str = f"[Location: {lat}, {lng}]"
+                    key = None
+                    if att.get("latitude") is None or att.get("longitude") is None:
+                        where = "where: unknown"
+                    else:
+                        # Words, never the numbers (repair spec §8). A forwarded location is
+                        # somebody else's place: described, never your stop, never learned.
+                        import datetime as _dt
+                        from zoneinfo import ZoneInfo as _Zone
+                        from src.config import settings as _settings
+                        key = f"location:{att.get('message_id') or uuid4().hex[:8]}"
+                        at = None if forwarded_from else _dt.datetime.now(_Zone(_settings.vault_timezone))
+                        where = self._where(att["latitude"], att["longitude"], accuracy_m=att.get("accuracy_m"),
+                                            at=at, anchor_key=key, stop_near_only=True)
+                        if where == self._WHERE_FAILED:
+                            key = None
+                    # The anchor key is named, so the model can pass it as near / anchor (spec §8).
+                    label = f"Location ({key})" if key else "Location"
                     if att.get("title"):
-                        loc_str = f"[Location: {lat}, {lng} — {att['title']}]"
-                    text_parts.append(loc_str)
+                        text_parts.append(f'[{label} — "{att["title"]}": {where}]')
+                    else:
+                        text_parts.append(f"[{label}: {where}]")
 
         if reply_to:
             from_role = reply_to.get("from", "user")
@@ -2651,9 +2924,11 @@ class AgentService:
 
     def _tool_get_daily(self, params: dict) -> dict:
         try:
+            from src.services.map_links import hide_map_queries
             daily = self.vault.read_daily_note()
+            # A map link's coordinates are for the user's tap, never the model (repair spec §2).
             return ok(
-                {"daily": daily["metadata"], "content": daily["content"]},
+                {"daily": daily["metadata"], "content": hide_map_queries(daily["content"])},
                 items=[daily["path"]],
             )
         except Exception:
@@ -2958,9 +3233,15 @@ class AgentService:
         if wikilinks:
             meta_parts.append(" | ".join(f"[[{link}]]" for link in wikilinks))
         lines.append(" | ".join(meta_parts))
-        if location:
-            lat, lng = location["lat"], location["lng"]
-            label = location.get("name") or "Map"
+        # A map link only when the agent asks for one, with `location` or `anchor`, as
+        # before the repair. Its position comes from the server, never from the model
+        # (repair spec §8): the photo's own EXIF, else the anchor named. No position, no link.
+        position = None
+        if location or params.get("anchor"):
+            position = self._photo_position(vault_path) or self._anchor_position(params.get("anchor"))
+        if position is not None:
+            lat, lng = position
+            label = (location or {}).get("name") or "Map"
             map_url = f"https://www.google.com/maps?q={lat},{lng}"
             lines.append(f"\U0001f4cd [{label}]({map_url})")
 
@@ -2974,9 +3255,45 @@ class AgentService:
                 "path": daily_path,
                 "section": section,
                 "attachment": vault_path,
+                "map_link": position is not None,
             },
             items=[daily_path],
         )
+
+    def _photo_position(self, vault_path: str) -> tuple[float, float] | None:
+        """Where a saved photo was taken, from its sidecar `metadata.json` (durable, local)."""
+        name = Path(vault_path).name
+        candidates = []
+        # The path is the model's words: read a sidecar only from inside the media folder.
+        direct = ((self.media_path.parent.parent / vault_path).parent / "metadata.json").resolve()
+        if direct.is_relative_to(self.media_path.resolve()):
+            candidates.append(direct)
+        if self.media_path.exists():
+            candidates += sorted(self.media_path.glob("*/metadata.json"), reverse=True)
+        for meta in candidates:
+            try:
+                entries = json.loads(meta.read_text()) if meta.is_file() else []
+            except (OSError, ValueError):
+                continue
+            for entry in reversed(entries if isinstance(entries, list) else []):
+                if entry.get("path") == vault_path or entry.get("filename") == name:
+                    loc = entry.get("exif_location") or {}
+                    if loc.get("lat") is not None and loc.get("lng") is not None:
+                        return float(loc["lat"]), float(loc["lng"])
+                    return None
+        return None
+
+    def _anchor_position(self, anchor: str | None) -> tuple[float, float] | None:
+        """A `photo:<file>` / `location:<message_id>` anchor of this chat, resolved server-side."""
+        if not anchor:
+            return None
+        try:
+            found = self._handles().resolve(self._current_chat_id or 0, anchor)
+        except Exception:
+            return None
+        if not found or found.get("kind") != "anchor":
+            return None
+        return float(found["lat"]), float(found["lng"])
 
     def _tool_delete_task(self, params: dict) -> dict:
         from src.services.resolver import resolve_item
@@ -3047,13 +3364,24 @@ class AgentService:
     def _tool_read_daily_section(self, params: dict) -> dict:
         date = self._parse_date(params.get("date"))
         content = self.vault.read_daily_section(params["section"], date)
-        return ok({"section": params["section"], "content": content})
+        from src.services.map_links import hide_map_queries
+        # A map link's coordinates are for the user's tap, never the model (repair spec §2).
+        return ok({"section": params["section"], "content": hide_map_queries(content)})
 
     def _tool_edit_daily_section(self, params: dict) -> dict:
+        from src.services.map_links import restore_map_queries
         date = self._parse_date(params.get("date"))
+        # The model saw each map link as `q=(hidden)` (read_daily_section): the real
+        # queries come back from the section on disk, in order. A different count means
+        # links were added or dropped, and no position can be guessed for them.
+        current = self.vault.read_daily_section(params["section"], date)
+        content = restore_map_queries(params["content"], current)
+        if content is None:
+            return err(ErrorCode.STATE_CONFLICT,
+                       "keep map links as they are: copy each map link, with its q=(hidden), unchanged")
         result = self.vault.replace_daily_section(
             section=params["section"],
-            new_content=params["content"],
+            new_content=content,
             date=date,
         )
         return ok(
@@ -3249,19 +3577,159 @@ class AgentService:
 
         return ok({"event_id": event_id, "date": target_date})
 
+    _TRIPS_OFF = "Location trips are off (LOCATION_AWARENESS is not on)"
+
     def _tool_set_trip_purpose(self, params: dict) -> dict:
-        """The user's answer about a location trip (trips spec §6.2, §6.4)."""
-        from src.services.location import runtime as location_runtime
+        """The user's answer about a location trip: name_trip, or name_stop with a stop (spec §7.4)."""
+        args: dict = {"name": params["purpose"]}
+        if params.get("stop_id"):
+            args["stop_id"] = params["stop_id"]
+            if params.get("place"):
+                args["place"] = params["place"]
+            op = "name_stop"
+        else:
+            if params.get("place"):
+                args["destination"] = params["place"]
+            op = "name_trip"
+        return self._tool_edit_trip({"trip_id": params["trip_id"], "op": op, **args})
+
+    def _tool_get_trip(self, params: dict) -> dict:
+        from src.services.location import runtime as location_runtime, view
 
         rt = location_runtime.get_runtime()
         if rt is None:
-            return err(ErrorCode.STATE_CONFLICT, "Location trips are off (LOCATION_AWARENESS is not on)")
+            return err(ErrorCode.STATE_CONFLICT, self._TRIPS_OFF)
         try:
-            result = rt.answer(params["trip_id"], params.get("stop_id"), params["purpose"], params.get("place"))
+            return ok(view.get_trip(rt.deps, rt.handles, self._current_chat_id or 0,
+                                    trip_id=params.get("trip_id"), date=params.get("date")))
         except KeyError:
-            return err(ErrorCode.PATH_NOT_FOUND, "No such trip or stop",
-                       details={"trip_id": params.get("trip_id"), "stop_id": params.get("stop_id")})
-        return ok(result)
+            return err(ErrorCode.PATH_NOT_FOUND, "No such trip", details={"trip_id": params.get("trip_id")})
+        except ValueError as exc:
+            return err(ErrorCode.STATE_CONFLICT, str(exc))
+
+    def _tool_find_place(self, params: dict) -> dict:
+        from src.services.location import runtime as location_runtime, view
+
+        rt = location_runtime.get_runtime()
+        if rt is None:
+            return err(ErrorCode.STATE_CONFLICT, self._TRIPS_OFF)
+        try:
+            return ok(view.find_place(rt.deps, rt.handles, self._current_chat_id or 0,
+                                      params["query"], params.get("near")))
+        except KeyError:
+            return err(ErrorCode.PATH_NOT_FOUND, "search again")
+        except ValueError as exc:
+            return err(ErrorCode.STATE_CONFLICT, str(exc))
+
+    def _tool_find_visit(self, params: dict) -> dict:
+        from src.services.location import runtime as location_runtime, view
+
+        rt = location_runtime.get_runtime()
+        if rt is None:
+            return err(ErrorCode.STATE_CONFLICT, self._TRIPS_OFF)
+        try:
+            return ok(view.find_visit(rt.deps, rt.handles, self._current_chat_id or 0, params["ref"],
+                                      trip_id=params.get("trip_id"), date=params.get("date")))
+        except KeyError:
+            return err(ErrorCode.PATH_NOT_FOUND, "search again")
+        except ValueError as exc:
+            return err(ErrorCode.STATE_CONFLICT, str(exc))
+
+    def _tool_edit_trip(self, params: dict) -> dict:
+        """One trip edit (spec §7.4). The redrawn message goes to the turn, not to the model."""
+        from src.services.location import edits, runtime as location_runtime, view
+
+        rt = location_runtime.get_runtime()
+        if rt is None:
+            return err(ErrorCode.STATE_CONFLICT, self._TRIPS_OFF)
+        chat_id = self._current_chat_id or 0
+        trip_id, op = params["trip_id"], params["op"]
+        args = {k: v for k, v in params.items()
+                if k not in ("trip_id", "op", "_confidence", "_reasoning", "_fast") and v is not None}
+        try:
+            result = edits.apply_edit(trip_id, op, args, rt.deps,
+                                      resolve=lambda h: rt.handles.resolve(chat_id, h))
+        except KeyError as exc:
+            msg = "search again" if exc.args and exc.args[0] == "search again" else "No such trip or stop"
+            return err(ErrorCode.PATH_NOT_FOUND, msg, details={"trip_id": trip_id, "stop_id": args.get("stop_id")})
+        except ValueError as exc:
+            return err(ErrorCode.STATE_CONFLICT, str(exc))
+
+        # The edit is saved from here on: nothing below may report it as failed.
+        kept = result.get("trip_id") or trip_id
+        ids = [kept] + ([result["split_into"]] if result.get("split_into") else [])
+        receipts = [result.get("receipt")] + ([result.get("other_receipt")] if result.get("split_into") else [])
+        shown = False
+        notes: list[str] = []
+        for i, (tid, receipt) in enumerate(zip(ids, receipts)):
+            rec = result.get("record") if i == 0 else None
+            why = self._why_no_trip_receipt(rt.deps, tid, rec)
+            if why is None and receipt:
+                turn_receipts.add(receipt)
+                shown = True
+            elif why:
+                notes.append(why)
+        data: dict = {"shown_to_user": shown}
+        try:
+            trips = [t for i in ids for t in view.get_trip(rt.deps, rt.handles, chat_id, trip_id=i)["trips"][:1]]
+        except Exception as exc:
+            # By type only: a message could quote a position.
+            logger.warning("edit_trip: saved, but the trip could not be re-read (%s)", type(exc).__name__)
+            trips = None
+            notes.append("saved; the trip could not be read back, call get_trip to see it")
+        if trips is not None:
+            if len(trips) == 1:
+                data["trip"] = trips[0]
+            else:
+                data["trips"] = trips
+        if result.get("conflict"):
+            data["conflict"] = result["conflict"]
+        if result.get("cancelled"):
+            data["cancelled"] = list(result["cancelled"])
+        if result.get("calendar_failed"):
+            data["calendar_failed"] = list(result["calendar_failed"])
+        if result.get("street"):
+            notes.append("saved as the street, not as a place of yours")
+        if notes:
+            data["note"] = "; ".join(dict.fromkeys(notes))
+        return ok(data)
+
+    @staticmethod
+    def _why_no_trip_receipt(deps, trip_id: str, rec: dict | None) -> str | None:
+        """Why the redrawn trip is not drawn under the reply, or None when it is.
+
+        A trip still going on sends nothing new mid-trip (spec §2 anti-goals);
+        a closed trip whose arrival message is still waiting to be sent has it
+        updated instead, so drawing it twice would only repeat it. A record
+        that cannot be read is not drawn either: nothing is better than a guess.
+        """
+        try:
+            if rec is None:
+                rec = deps.records.get(trip_id)
+            if not isinstance(rec, dict):
+                return ""
+            if not rec.get("closed"):
+                return "the trip is still going on: nothing is shown until you are home"
+            if deps.outbox.find(rec.get("id") or trip_id, "arrival") is not None:
+                return "the trip's arrival message, not yet sent, shows this now"
+        except Exception as exc:
+            logger.warning("edit_trip: could not tell whether to draw the trip (%s)", type(exc).__name__)
+            return ""
+        return None
+
+    def _tool_edit_place(self, params: dict) -> dict:
+        from src.services.location import places_edit, runtime as location_runtime
+
+        rt = location_runtime.get_runtime()
+        if rt is None:
+            return err(ErrorCode.STATE_CONFLICT, self._TRIPS_OFF)
+        try:
+            return ok(places_edit.edit_place(rt.deps, rt.handles, self._current_chat_id or 0,
+                                             params["ref"], params["op"], params.get("value")))
+        except KeyError:
+            return err(ErrorCode.PATH_NOT_FOUND, "search again")
+        except ValueError as exc:
+            return err(ErrorCode.STATE_CONFLICT, str(exc))
 
     def _tool_create_event(self, params: dict) -> dict:
         import datetime as dt

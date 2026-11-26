@@ -76,4 +76,14 @@ describe("sendFinal", () => {
     } as any, false);
     expect(c.replyWithRichMessage.mock.calls[0][1]).toHaveProperty("reply_markup");
   });
+
+  it("sends trip receipts after the reply and arms their question last", async () => {
+    const c = ctx();
+    const tripReceipt = { ...receipt, turn_id: "trip1", open_question: "Which one?", text: "trip 1" };
+    await sendFinal(c, 1, { response: "Added the café stop.", trip_receipts: [tripReceipt] } as any, false);
+    expect(c.replyWithRichMessage).toHaveBeenCalledTimes(2);
+    expect(c.replyWithRichMessage.mock.calls[0][0]).toEqual({ markdown: "Added the café stop." });
+    expect(c.replyWithRichMessage.mock.calls[1][0].html).toContain("<table>");
+    expect(takeOpenQuestion(1)).toBe("Which one?");
+  });
 });

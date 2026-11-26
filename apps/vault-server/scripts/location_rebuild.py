@@ -2,7 +2,7 @@
 
     python scripts/location_rebuild.py --from 2026-11-05 --to 2026-11-12
 
-Writes data/locations/derived/{date}.json — the trips that started that day —
+Writes data/locations/derived/{date}.json (or {--out DIR}/{date}.json) — the trips that started that day —
 and nothing else: no blocks, no messages, no model calls. Home is found from
 the whole range first, as the live runtime would have learned it.
 """
@@ -54,11 +54,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--from", dest="start", required=True)
     ap.add_argument("--to", dest="end", required=True)
+    ap.add_argument("--out", help="write the day files here instead of <location root>/derived")
     args = ap.parse_args()
     first, last = dt.date.fromisoformat(args.start), dt.date.fromisoformat(args.end)
     root = settings.location_data_path
     by_day = rebuild(root, settings.events_data_path.parent / "places.json", first, last, settings.vault_timezone)
-    out = root / "derived"
+    out = Path(args.out) if args.out else root / "derived"
     out.mkdir(parents=True, exist_ok=True)
     zone = ZoneInfo(settings.vault_timezone)
     day = first
