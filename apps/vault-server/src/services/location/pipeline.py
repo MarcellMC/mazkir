@@ -32,7 +32,7 @@ from opentelemetry.trace import Status, StatusCode
 from src.services.fast_lane.places import PAUSE_KIND, add_pause_spot, learn_place, load_places, nearest
 from src.services.location.context import gather_context
 from src.services.location.decide import Decision, Option, decide
-from src.services.location.edits import absorb_added, trip_of, window_end
+from src.services.location.edits import _settle_legs, absorb_added, trip_of, window_end
 from src.services.location.guess import Guess, describe_trip, guess
 from src.services.location.history import load_confirmed, score_history
 from src.services.location.map_lookup import map_area, map_near, street_named
@@ -185,12 +185,17 @@ def _on_stopped(rec: dict, ev: TrackerEvent, deps: TripDeps, places) -> None:
     close = [m for m in places_only if m.distance_m <= MAP_CLOSE_M][:3] or places_only[:1]
     map_options = [Option(m.label, m.label, m.osm) for m in close]
     # A STOPPED handled long after it happened (the server was down, or the
-    # inbox is replaying) is about a stop you have likely left: never ask then.
+    # inbox is replaying) is about a stop you have likely left: never ask it
+    # live then. It waits for the arrival message as a ? line with the same
+    # options (spec §5): the same question, asked once, at home.
     fresh = (deps.now() - ev.ts) <= STALE_QUESTION
-    d = decide(guesses, history, known_place=known, may_ask=fresh,
+    d = decide(guesses, history, known_place=known, may_ask=True,
                at_stop=True, map_options=map_options)
     if d.action == "name":
         info.update(status="named", name=d.name, place=d.destination or (known.name if known else None))
+    elif d.action == "ask" and not fresh:
+        info.update(status="later", options=[o.to_dict() for o in d.options])
+        d = Decision("later", options=d.options, reason="handled late: asked at home")
     elif d.action == "ask":
         info.update(status="asked", options=[o.to_dict() for o in d.options], asked_at=deps.now().isoformat())
         receipt = question_receipt(rec, sid, list(d.options), deps.now(), deps.tz,
@@ -465,6 +470,10 @@ def _answer(trip_id: str, stop_id: str | None, purpose: str | None, place: str |
         # naming a stop, or calling it a pause, does not.
         rec["confirmed"] = True
     places = _places(deps)
+    # A name can make a stop a leg break (a short named stop, a destination):
+    # a leg you approved follows the stop it joins, never left beside its
+    # replacement (spec §7.4).
+    _settle_legs(rec, deps, places)
     _apply(rec, deps, places)
     _refresh_arrival(rec, deps)
     deps.records.save(rec)

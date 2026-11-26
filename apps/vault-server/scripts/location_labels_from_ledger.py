@@ -51,6 +51,7 @@ def main() -> None:
 
     from src.config import settings
     from src.services.events_service import EventsService
+    from src.services.location.edits import trip_of
     from src.services.location.history import _is_confirmed
     from src.services.location.records import TripRecords
 
@@ -62,9 +63,10 @@ def main() -> None:
     cache: dict = {}
     added = 0
     for rec in TripRecords(settings.location_data_path).all():
-        if not rec.get("closed") or not (rec.get("purpose") or {}).get("name"):
+        # A trip joined into another is that one's now; a split one starts where the split put it.
+        if rec.get("joined_into") or not rec.get("closed") or not (rec.get("purpose") or {}).get("name"):
             continue
-        left = dt.datetime.fromisoformat(rec["trip"]["left_at"])
+        left = trip_of(rec).left_at
         day = left.astimezone(zone).date()
         if not first <= day <= last or not _is_confirmed(rec, events, cache):
             continue

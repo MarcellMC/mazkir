@@ -70,8 +70,14 @@ def test_stop_already_left_is_not_asked(tmp_path):
         clock["now"] = ev.ts + (t(13, 12, 0) - t(13, 10, 0)) if ev.kind == "STOPPED" else ev.ts
         handle_event(ev, deps)
     rec = deps.records.get("1a2b3c4d")
-    assert rec["stops"]["s1"]["status"] == "unnamed"
-    assert [i["kind"] for i in deps.outbox.serve()] == ["arrival"]
+    # Never asked live, but not dropped either: the same question waits at home (spec §5).
+    assert rec["stops"]["s1"]["status"] == "later"
+    assert rec["stops"]["s1"]["asked_at"] is None
+    served = deps.outbox.serve()
+    assert [i["kind"] for i in served] == ["arrival"]
+    asks = [line for line in served[0]["receipt"]["lines"] if line["glyph"] == "?"
+            and any(":s1:" in json.dumps(b) for b in line["buttons"])]
+    assert len(asks) == 1
 
 
 def test_no_daily_cap(tmp_path):

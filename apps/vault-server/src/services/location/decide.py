@@ -33,7 +33,7 @@ class Option:
 
 @dataclass(frozen=True)
 class Decision:
-    action: str                       # "name" | "ask" | "quiet"
+    action: str                       # "name" | "ask" | "quiet" (the pipeline logs "later" too)
     name: str | None = None
     destination: str | None = None
     options: tuple[Option, ...] = ()

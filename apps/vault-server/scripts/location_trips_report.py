@@ -47,8 +47,9 @@ def main() -> None:
     day = dt.date.fromisoformat(args.date) if args.date else dt.datetime.now(zone).date()
     events = EventsService(settings.events_data_path)
     log_path = settings.logs_dir / "location-trips.jsonl"
-    recs = sorted(TripRecords(settings.location_data_path).on_day(day, settings.vault_timezone),
-                  key=lambda r: r["trip"]["left_at"])
+    # A trip joined into another is shown as part of that one; a split one sorts where the split put it.
+    recs = sorted((r for r in TripRecords(settings.location_data_path).on_day(day, settings.vault_timezone)
+                   if not r.get("joined_into")), key=lambda r: trip_of(r).left_at)
     print(f"{day}: {len(recs)} trip(s)")
 
     def hm(ts):

@@ -1053,3 +1053,36 @@ def test_a_photo_follows_onto_the_approved_leg_a_split_or_join_settles(tmp_path)
     _settle_legs(rec, deps, _places(deps))
     assert rec["blocks"]["leg:s1-s2"]["event_id"] == leg
     assert [p["path"] for p in block(deps, rec, "leg:s1-s2").get("photos") or []] == ["IMG_1.jpg"]
+
+
+# --- final review ---------------------------------------------------------------
+
+def short_then_long():
+    """s1 6 min at 700 m (no leg break), s2 15 min at 1400 m, home."""
+    return Track(t(13, 10, 0)).stay(10).walk_to(700).stay(6).walk_to(1400).stay(15).walk_to(0).stay(5)
+
+
+def test_naming_a_short_stop_keeps_the_approved_leg(tmp_path):          # final review 6, spec §7.4
+    deps, clock = make_deps(tmp_path)
+    run(deps, clock, events_of(short_then_long()))
+    clock["now"] = t(13, 12, 0)
+    deps.calendar = FakeCalendar()
+    apply_answer(TRIP, None, "Walk", "Gan Meir", deps)
+    apply_answer(TRIP, "s2", "Bakery", None, deps)
+    rec = deps.records.get(TRIP)
+    legs = {p: approve(deps, rec, p) for p in rec["blocks"] if p.startswith("leg:")}     # ✓ All at home
+    assert sorted(legs) == ["leg:s2-home", "leg:start-s2"]
+    out = apply_answer(TRIP, "s1", "Kiosk", None, deps)
+    rec = out["record"]
+    from src.services.location.messages import arrival_receipt
+
+    assert_legs_sound(deps, {"record": rec, "receipt": arrival_receipt(rec, deps.events, deps.tz)})
+    # the approved leg into s2 is the leg s1→s2 now: the same event, still approved, times updated
+    assert "leg:start-s2" not in rec["blocks"]
+    assert rec["blocks"]["leg:s1-s2"]["event_id"] == legs["leg:start-s2"]
+    assert state_of(deps, rec, "leg:s1-s2") == "approved"
+    assert state_of(deps, rec, "leg:start-s1") == "pending"
+    walks = [e for e in deps.events.get_events("2026-11-13")
+             if (e.get("trip") or {}).get("part", "").startswith("leg:") and resolve_state(e) != "dismissed"]
+    spans = sorted((e["start_time"], e["end_time"]) for e in walks)
+    assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:])), spans      # no two legs overlap

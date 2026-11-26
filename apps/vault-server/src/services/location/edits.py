@@ -277,8 +277,9 @@ def stop_changed(rec: dict[str, Any], stop_id: str) -> bool:
 def apply_edit(trip_id: str, op: str, args: dict[str, Any], deps, *, resolve: Resolve | None = None) -> dict[str, Any]:
     """One edit, made under the trip's lock: validate, record, re-plan, redraw.
 
-    Returns `{"record", "receipt", "conflict", "cancelled", "calendar_failed"}`;
-    only `record` holds positions. `cancelled` names the parts (`stop:s2`) of
+    Returns `{"record", "receipt", "conflict", "cancelled", "calendar_failed"}`,
+    plus `street: True` when a stop's place was a street or an address, kept
+    as text and never learned (spec §7.5); only `record` holds positions. `cancelled` names the parts (`stop:s2`) of
     blocks you had approved or corrected whose stop the edit merged away or
     removed: they are stored dismissed, and their Google entry cancelled
     (restorable there); `calendar_failed` the ones Google did not cancel.
@@ -313,6 +314,7 @@ def apply_edit(trip_id: str, op: str, args: dict[str, Any], deps, *, resolve: Re
             out = pipeline.apply_answer(trip_id, None, _required(args, "name"),
                                         args.get("destination") or args.get("place"), deps)
             rec, conflict, touched = out["record"], out["conflict"], []
+            _street(out, extra)
         elif op == "name_stop":
             sid = _stop(trip, args, rec)
             place, osm = args.get("place"), None
@@ -320,11 +322,12 @@ def apply_edit(trip_id: str, op: str, args: dict[str, Any], deps, *, resolve: Re
                 place, osm = _place_of(_resolve(args["ref"], deps, resolve), place)
             out = pipeline.apply_answer(trip_id, sid, _required(args, "name"), place, deps, osm=osm)
             rec, conflict, touched = out["record"], out["conflict"], [sid]
+            _street(out, extra)
         elif op == "restore_block":
             touched = _restore(rec, args, deps)
             _replan(rec, deps)
         else:
-            rec, conflict, touched = _overlay_edit(rec, trip, op, args, deps, resolve, cancelled)
+            rec, conflict, touched = _overlay_edit(rec, trip, op, args, deps, resolve, cancelled, extra)
         pipeline._log(deps, "EDIT", rec, extra={"op": op, "stop_ids": touched,
                                                 **{k: v for k, v in extra.items() if k == "split_into"}})
         from src.services.location.messages import arrival_receipt
@@ -332,6 +335,12 @@ def apply_edit(trip_id: str, op: str, args: dict[str, Any], deps, *, resolve: Re
         receipt = arrival_receipt(rec, deps.events, deps.tz)    # records the line order a tap refers to
         deps.records.save(rec)
         return {"record": rec, "receipt": receipt, "conflict": conflict, **cancelled, **extra}
+
+
+def _street(answer: dict, extra: dict) -> None:
+    """An answer whose place is a street or an address says so to the agent (spec §7.5)."""
+    if answer.get("street"):
+        extra["street"] = True
 
 
 def _replan(rec: dict, deps) -> None:
@@ -343,7 +352,7 @@ def _replan(rec: dict, deps) -> None:
 
 
 def _overlay_edit(rec: dict, trip: Trip, op: str, args: dict, deps, resolve,
-                  cancelled: dict[str, list[str]]) -> tuple[dict, str | None, list[str]]:
+                  cancelled: dict[str, list[str]], extra: dict[str, Any]) -> tuple[dict, str | None, list[str]]:
     from src.services.location import pipeline
 
     zone = ZoneInfo(deps.tz)
@@ -452,6 +461,7 @@ def _overlay_edit(rec: dict, trip: Trip, op: str, args: dict, deps, resolve,
     deps.records.save(rec)
     if name:
         out = pipeline.apply_answer(rec["id"], edit["id"], name, place, deps, osm=osm)
+        _street(out, extra)
         return out["record"], out["conflict"], touched
     _replan(rec, deps)
     return rec, None, touched
