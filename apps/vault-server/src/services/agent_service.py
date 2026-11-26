@@ -371,7 +371,10 @@ class AgentService:
             "edit_daily_section": {
                 "schema": {
                     "name": "edit_daily_section",
-                    "description": "Replace the content of a daily note section. Use read_daily_section first to see current content.",
+                    "description": (
+                        "Replace the content of a daily note section. Use read_daily_section first to see "
+                        "current content. Map links show as q=(hidden): keep each one unchanged."
+                    ),
                     "input_schema": {
                         "type": "object",
                         "properties": {
@@ -990,14 +993,17 @@ class AgentService:
                                 "properties": {
                                     "name": {"type": "string"},
                                 },
-                                "description": "The map link's label, e.g. the place's name (default 'Map')",
+                                "description": (
+                                    "Add a map link, labelled with this name (e.g. the place's; default "
+                                    "'Map'). Without location or anchor the note gets no map link."
+                                ),
                             },
                             "anchor": {
                                 "type": "string",
                                 "description": (
-                                    "For a note that is not a photo: the sent location to link, "
-                                    "'location:<message_id>' or 'photo:<file>'. A photo's own position "
-                                    "is used without it."
+                                    "Add a map link to a sent location or photo, by the key its line "
+                                    "names ('location:<message_id>' or 'photo:<file>'). For a geotagged "
+                                    "photo, `location` alone links its own position."
                                 ),
                             },
                             "section": {
@@ -2328,7 +2334,9 @@ class AgentService:
             from src.services.location.model import safe_error
             # Type and frame only: a message could quote the position.
             logger.warning("describing a position failed: %s", safe_error(exc))
-            return "where: unknown (the lookup failed)"
+            return self._WHERE_FAILED
+
+    _WHERE_FAILED = "where: unknown (the lookup failed)"
 
     def _build_user_content(
         self,
@@ -2366,10 +2374,15 @@ class AgentService:
                             parts.append(f"taken {ts}" + (" (from the send time, approximate)"
                                                           if photo_info.get("exif_precision") == "approx" else ""))
                         if loc:
-                            # Words, never the numbers (repair spec §8).
-                            parts.append(self._where(
+                            # Words, never the numbers (repair spec §8). The anchor key is
+                            # named so find_place(near=…) and attach_to_daily(anchor=…) can use it.
+                            anchor_key = f"photo:{Path(photo_info['path']).name}"
+                            where = self._where(
                                 loc["lat"], loc["lng"], accuracy_m=loc.get("accuracy_m"),
-                                at=self._local_moment(ts), anchor_key=f"photo:{Path(photo_info['path']).name}"))
+                                at=self._local_moment(ts), anchor_key=anchor_key)
+                            parts.append(where)
+                            if where != self._WHERE_FAILED:
+                                parts.append(f"anchor {anchor_key}")
                         if ts:
                             parts += self._place_photo(photo_info)
                         if cam:
@@ -2379,6 +2392,7 @@ class AgentService:
                         text_parts.append("[Photo attachment failed to save]")
 
                 elif att["type"] == "location":
+                    key = None
                     if att.get("latitude") is None or att.get("longitude") is None:
                         where = "where: unknown"
                     else:
@@ -2387,14 +2401,18 @@ class AgentService:
                         import datetime as _dt
                         from zoneinfo import ZoneInfo as _Zone
                         from src.config import settings as _settings
-                        key = f"location:{att.get('message_id') or uuid4().hex}"
+                        key = f"location:{att.get('message_id') or uuid4().hex[:8]}"
                         at = None if forwarded_from else _dt.datetime.now(_Zone(_settings.vault_timezone))
                         where = self._where(att["latitude"], att["longitude"], accuracy_m=att.get("accuracy_m"),
                                             at=at, anchor_key=key, stop_near_only=True)
+                        if where == self._WHERE_FAILED:
+                            key = None
+                    # The anchor key is named, so the model can pass it as near / anchor (spec §8).
+                    label = f"Location ({key})" if key else "Location"
                     if att.get("title"):
-                        text_parts.append(f'[Location — "{att["title"]}": {where}]')
+                        text_parts.append(f'[{label} — "{att["title"]}": {where}]')
                     else:
-                        text_parts.append(f"[Location: {where}]")
+                        text_parts.append(f"[{label}: {where}]")
 
         if reply_to:
             from_role = reply_to.get("from", "user")
@@ -2906,9 +2924,11 @@ class AgentService:
 
     def _tool_get_daily(self, params: dict) -> dict:
         try:
+            from src.services.map_links import hide_map_queries
             daily = self.vault.read_daily_note()
+            # A map link's coordinates are for the user's tap, never the model (repair spec §2).
             return ok(
-                {"daily": daily["metadata"], "content": daily["content"]},
+                {"daily": daily["metadata"], "content": hide_map_queries(daily["content"])},
                 items=[daily["path"]],
             )
         except Exception:
@@ -3213,9 +3233,12 @@ class AgentService:
         if wikilinks:
             meta_parts.append(" | ".join(f"[[{link}]]" for link in wikilinks))
         lines.append(" | ".join(meta_parts))
-        # The link's position comes from the server, never from the model (repair spec §8):
-        # the photo's own EXIF, else the anchor the agent names. No position, no link.
-        position = self._photo_position(vault_path) or self._anchor_position(params.get("anchor"))
+        # A map link only when the agent asks for one, with `location` or `anchor`, as
+        # before the repair. Its position comes from the server, never from the model
+        # (repair spec §8): the photo's own EXIF, else the anchor named. No position, no link.
+        position = None
+        if location or params.get("anchor"):
+            position = self._photo_position(vault_path) or self._anchor_position(params.get("anchor"))
         if position is not None:
             lat, lng = position
             label = (location or {}).get("name") or "Map"
@@ -3341,13 +3364,24 @@ class AgentService:
     def _tool_read_daily_section(self, params: dict) -> dict:
         date = self._parse_date(params.get("date"))
         content = self.vault.read_daily_section(params["section"], date)
-        return ok({"section": params["section"], "content": content})
+        from src.services.map_links import hide_map_queries
+        # A map link's coordinates are for the user's tap, never the model (repair spec §2).
+        return ok({"section": params["section"], "content": hide_map_queries(content)})
 
     def _tool_edit_daily_section(self, params: dict) -> dict:
+        from src.services.map_links import restore_map_queries
         date = self._parse_date(params.get("date"))
+        # The model saw each map link as `q=(hidden)` (read_daily_section): the real
+        # queries come back from the section on disk, in order. A different count means
+        # links were added or dropped, and no position can be guessed for them.
+        current = self.vault.read_daily_section(params["section"], date)
+        content = restore_map_queries(params["content"], current)
+        if content is None:
+            return err(ErrorCode.STATE_CONFLICT,
+                       "keep map links as they are: copy each map link, with its q=(hidden), unchanged")
         result = self.vault.replace_daily_section(
             section=params["section"],
-            new_content=params["content"],
+            new_content=content,
             date=date,
         )
         return ok(

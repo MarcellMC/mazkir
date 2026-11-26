@@ -310,7 +310,7 @@ class TestHandleMessageWithAttachments:
         # The location in words, never its coordinates (repair spec §8).
         text = content if isinstance(content, str) else " ".join(
             b["text"] for b in content if b.get("type") == "text")
-        assert "[Location: where:" in text
+        assert _re.search(r"\[Location \(location:[0-9a-f]{8}\): where:", text), text
         assert "32.08" not in text and "34.78" not in text
 
     def test_reply_context_included(self, agent, mock_services):
@@ -3917,6 +3917,36 @@ def test_photo_gps_is_described_never_sent_as_numbers(agent, where_env):
     assert anchor["kind"] == "anchor" and anchor["accuracy_m"] == 15.0
 
 
+def test_photo_and_location_lines_name_their_anchor_keys(agent, where_env):     # final review 2, spec §8
+    import base64
+    from src.services.location.handles import Handles
+    from tests.test_exif_service import _make_jpeg_with_gps
+    agent._current_chat_id = 7
+    data = base64.b64encode(_make_jpeg_with_gps(32.0853, 34.7818)).decode()
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "photo", "data": data, "filename": "food.jpg"},
+             {"type": "location", "latitude": 32.0853, "longitude": 34.7818}]))
+    photo_line = next(line for line in text.splitlines() if line.startswith("[Photo saved to:"))
+    m = _re.search(r"\| anchor (photo:[^ \]|]+)", photo_line)
+    assert m, photo_line
+    loc = _re.search(r"\[Location \((location:[0-9a-f]{8})\): where:", text)
+    assert loc, text
+    handles = Handles(where_env / "locations" / "handles.json")
+    # the very keys the model reads are the ones the server can resolve
+    assert handles.resolve(7, m.group(1))["kind"] == "anchor"
+    assert handles.resolve(7, loc.group(1))["kind"] == "anchor"
+    assert not _COORD.search(text)
+
+
+def test_a_failed_lookup_names_no_anchor(agent, where_env, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("no")
+    monkeypatch.setattr("src.services.location.where.describe_where", boom)
+    text = _text_of(agent._build_user_content(
+        "", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "message_id": 4}]))
+    assert "[Location: where: unknown (the lookup failed)]" in text
+
+
 def test_photo_at_a_place_of_yours(agent, where_env):
     import base64
     from tests.test_exif_service import _make_jpeg_with_gps
@@ -3933,7 +3963,7 @@ def test_location_is_described_never_sent_as_numbers(agent, where_env):
     agent._current_chat_id = 7
     text = _text_of(agent._build_user_content(
         "here", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "message_id": 42}]))
-    assert "[Location: where: place:gym The gym (yours, 0 m)" in text
+    assert "[Location (location:42): where: place:gym The gym (yours, 0 m)" in text
     assert not _COORD.search(text) and "34.78" not in text
     from src.services.location.handles import Handles
     assert Handles(where_env / "locations" / "handles.json").resolve(7, "location:42")["kind"] == "anchor"
@@ -3941,8 +3971,9 @@ def test_location_is_described_never_sent_as_numbers(agent, where_env):
 
 def test_venue_keeps_its_title(agent, where_env):
     text = _text_of(agent._build_user_content(
-        "", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "title": "Café Noir"}]))
-    assert '[Location — "Café Noir": where: no map here]' in text
+        "", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "title": "Café Noir",
+              "message_id": 9}]))
+    assert '[Location (location:9) — "Café Noir": where: no map here]' in text
     assert not _COORD.search(text)
 
 
@@ -3951,9 +3982,9 @@ def test_forwarded_location_is_described_but_not_learned(agent, where_env):
                                       "lat": 31.0, "lng": 35.0, "radius_m": 60}])
     before = path.read_bytes()
     text = _text_of(agent._build_user_content(
-        "", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "title": "Dana's"}],
+        "", [{"type": "location", "latitude": 32.0853, "longitude": 34.7818, "title": "Dana's", "message_id": 3}],
         forwarded_from={"from_name": "Dana", "text": ""}))
-    assert '[Location — "Dana\'s": where:' in text and not _COORD.search(text)
+    assert '[Location (location:3) — "Dana\'s": where:' in text and not _COORD.search(text)
     assert path.read_bytes() == before
 
 
@@ -3974,7 +4005,7 @@ def test_location_uses_the_runtime_map_and_handles(agent, where_env, tmp_path, m
     agent._current_chat_id = 7
     text = _text_of(agent._build_user_content(
         "", [{"type": "location", "latitude": P[0], "longitude": P[1], "message_id": 5}]))
-    assert "[Location: where: m1 Café X (café, 10 m)" in text and "on Herzl, by number 12" in text
+    assert "[Location (location:5): where: m1 Café X (café, 10 m)" in text and "on Herzl, by number 12" in text
     assert not _COORD.search(text)
     assert rt.handles.resolve(7, "m1")["label"] == "Café X"
 
@@ -4087,6 +4118,82 @@ def test_attach_to_daily_without_a_position_writes_no_link(agent, mock_services,
     assert "google.com/maps" not in vault.append_to_daily_section.call_args.kwargs["content"]
 
 
+def test_attach_to_daily_links_a_geotagged_photo_only_when_asked(agent, mock_services, where_env):   # final review 3a
+    import base64
+    from tests.test_exif_service import _make_jpeg_with_gps
+    info = agent._save_photo({"type": "photo", "filename": "food.jpg",
+                              "data": base64.b64encode(_make_jpeg_with_gps(32.0853, 34.7818)).decode()})
+    vault = mock_services[1]
+    vault.append_to_daily_section.return_value = {"path": "10-daily/x.md", "section": "Notes"}
+    result = agent._tool_attach_to_daily({"vault_path": info["path"], "caption": "Lunch"})
+    assert "google.com/maps" not in vault.append_to_daily_section.call_args.kwargs["content"]
+    assert result["data"]["map_link"] is False
+
+
+_NOTE_WITH_LINKS = (
+    "\n![[a.jpg]]\n*13:05 — Lunch*\n\U0001f4cd [Café X](https://www.google.com/maps?q=32.0853123,34.7818456)\n"
+    "\n- walked on\n\U0001f4cd [Map](https://www.google.com/maps?q=32.0901234,34.7712345)\n"
+)
+
+
+def test_read_paths_hide_map_link_coordinates(agent, mock_services):                       # final review 3b
+    vault = mock_services[1]
+    vault.read_daily_section.return_value = _NOTE_WITH_LINKS
+    vault.read_daily_note.return_value = {"metadata": {}, "content": "## Notes" + _NOTE_WITH_LINKS,
+                                          "path": "10-daily/x.md"}
+    for result in (agent._tool_read_daily_section({"section": "Notes"}), agent._tool_get_daily({})):
+        text = json.dumps(result)
+        assert not _COORD.search(text), text
+        assert text.count("maps?q=(hidden)") == 2 and "[Caf\\u00e9 X]" in text
+
+
+def test_location_context_todos_hide_map_link_coordinates():
+    from unittest.mock import MagicMock
+    import datetime as dt
+    from src.services.location.context import _todos
+    vault = MagicMock()
+    vault.read_daily_note.return_value = {"content": "## Tasks\n- [ ] meet at [here](https://maps.google.com/?q=32.0853123,34.7818456)\n"}
+    [(kind, text)] = _todos(vault, dt.date(2026, 11, 20))
+    assert kind == "todo" and "q=(hidden)" in text and not _COORD.search(text)
+
+
+def test_edit_daily_section_restores_hidden_map_links(agent, mock_services):                # final review 3c
+    from src.services.map_links import hide_map_queries
+    vault = mock_services[1]
+    vault.read_daily_section.return_value = _NOTE_WITH_LINKS
+    vault.replace_daily_section.return_value = {"path": "10-daily/x.md", "section": "Notes"}
+    seen = hide_map_queries(_NOTE_WITH_LINKS)
+    edited = seen.replace("Lunch", "Lunch with Dana")
+    result = agent._tool_edit_daily_section({"section": "Notes", "content": edited})
+    assert result["ok"] is True
+    written = vault.replace_daily_section.call_args.kwargs["new_content"]
+    assert written == _NOTE_WITH_LINKS.replace("Lunch", "Lunch with Dana")
+    assert "(hidden)" not in written
+
+
+def test_edit_daily_section_refuses_a_changed_map_link_count(agent, mock_services):
+    from src.services.map_links import hide_map_queries
+    vault = mock_services[1]
+    vault.read_daily_section.return_value = _NOTE_WITH_LINKS
+    seen = hide_map_queries(_NOTE_WITH_LINKS)
+    dropped = seen.split("\n- walked on")[0]
+    for content in (dropped, seen + "\n\U0001f4cd [Map](https://www.google.com/maps?q=(hidden))"):
+        result = agent._tool_edit_daily_section({"section": "Notes", "content": content})
+        assert result["ok"] is False and result["error"]["code"] == "STATE_CONFLICT"
+        assert "keep map links as they are" in result["error"]["message"]
+    vault.replace_daily_section.assert_not_called()
+
+
+def test_map_link_queries_round_trip():
+    from src.services.map_links import hide_map_queries, restore_map_queries
+    text = "a https://www.google.com/maps?q=32.0853123,34.7818456&z=17 b [x](https://maps.google.com/?q=1.5,2.5)"
+    hidden = hide_map_queries(text)
+    assert hidden == "a https://www.google.com/maps?q=(hidden)&z=17 b [x](https://maps.google.com/?q=(hidden))"
+    assert restore_map_queries(hidden, text) == text
+    assert restore_map_queries("no links", "no links either") == "no links"
+    assert restore_map_queries("no links", text) is None
+
+
 def _runtime_with_open_stop(tmp_path, centre):
     import datetime as dt
     from types import SimpleNamespace
@@ -4105,23 +4212,24 @@ def _runtime_with_open_stop(tmp_path, centre):
 def test_own_location_at_the_open_stop_is_that_stop(agent, where_env, tmp_path, monkeypatch):
     monkeypatch.setattr("src.services.location.runtime._runtime", _runtime_with_open_stop(tmp_path, (32.1, 34.9)))
     text = _text_of(agent._build_user_content(
-        "", [{"type": "location", "latitude": 32.1 + 20 / 111195, "longitude": 34.9}]))
-    assert "[Location: at stop s3 of trip abcd1234 (unnamed)" in text
+        "", [{"type": "location", "latitude": 32.1 + 20 / 111195, "longitude": 34.9, "message_id": 8}]))
+    assert "[Location (location:8): at stop s3 of trip abcd1234 (unnamed)" in text
 
 
 def test_own_location_far_from_the_open_stop_is_looked_up(agent, where_env, tmp_path, monkeypatch):
     monkeypatch.setattr("src.services.location.runtime._runtime", _runtime_with_open_stop(tmp_path, (32.1, 34.9)))
     text = _text_of(agent._build_user_content(
-        "", [{"type": "location", "latitude": 32.1 + 500 / 111195, "longitude": 34.9, "title": "Bar"}]))
-    assert '[Location — "Bar": where:' in text and "at stop" not in text
+        "", [{"type": "location", "latitude": 32.1 + 500 / 111195, "longitude": 34.9, "title": "Bar",
+              "message_id": 8}]))
+    assert '[Location (location:8) — "Bar": where:' in text and "at stop" not in text
 
 
 def test_forwarded_location_during_an_open_stop_is_not_your_stop(agent, where_env, tmp_path, monkeypatch):
     monkeypatch.setattr("src.services.location.runtime._runtime", _runtime_with_open_stop(tmp_path, (32.1, 34.9)))
     text = _text_of(agent._build_user_content(
-        "", [{"type": "location", "latitude": 32.1, "longitude": 34.9, "title": "Dana's"}],
+        "", [{"type": "location", "latitude": 32.1, "longitude": 34.9, "title": "Dana's", "message_id": 8}],
         forwarded_from={"from_name": "Dana", "text": ""}))
-    assert '[Location — "Dana\'s": where:' in text and "at stop" not in text
+    assert '[Location (location:8) — "Dana\'s": where:' in text and "at stop" not in text
 
 
 def test_attach_to_daily_reads_no_sidecar_outside_the_media_folder(agent, mock_services, where_env, tmp_path):
