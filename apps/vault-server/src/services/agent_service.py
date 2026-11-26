@@ -565,8 +565,9 @@ class AgentService:
                 "schema": {
                     "name": "edit_trip",
                     "description": (
-                        "Fix a location trip. The redrawn trip message is shown to the user under your "
-                        "reply (`shown_to_user`): do not repeat it, say in a sentence what changed. "
+                        "Fix a location trip. With `shown_to_user: true` the redrawn trip message is shown "
+                        "under your reply: do not repeat it, say in a sentence what changed (otherwise "
+                        "`note` says why not; still say what changed). "
                         "Ops: name_trip(name, destination?) · name_stop(stop_id, name, ref? | place?) · "
                         "add_stop(start, end, ref?, name?) a stop the tracker missed, inside the trip's "
                         "time · split_stop(stop_id, at) · merge_stops(stop_ids) adjacent stops · "
@@ -574,7 +575,7 @@ class AgentService:
                         "remove_stop(stop_id) · split_trip(at: a stop id, its start or end, or a time; "
                         "stop_side?, purpose_to?: first|second) · join_trips(other_trip_id) two adjacent "
                         "closed trips · restore_block(part) a dismissed block back as a proposal. "
-                        "Times are ISO with offset or HH:MM today. An approved block is updated in "
+                        "Times are ISO with offset, or HH:MM on the trip's own day. An approved block is updated in "
                         "place. A result `cancelled` lists approved blocks the edit removed: tell the "
                         "user. Read get_trip first."
                     ),
@@ -3614,21 +3615,39 @@ class AgentService:
         try:
             result = edits.apply_edit(trip_id, op, args, rt.deps,
                                       resolve=lambda h: rt.handles.resolve(chat_id, h))
-            kept = result.get("trip_id") or trip_id
-            ids = [kept] + ([result["split_into"]] if result.get("split_into") else [])
-            trips = [t for i in ids for t in view.get_trip(rt.deps, rt.handles, chat_id, trip_id=i)["trips"][:1]]
         except KeyError as exc:
             msg = "search again" if exc.args and exc.args[0] == "search again" else "No such trip or stop"
             return err(ErrorCode.PATH_NOT_FOUND, msg, details={"trip_id": trip_id, "stop_id": args.get("stop_id")})
         except ValueError as exc:
             return err(ErrorCode.STATE_CONFLICT, str(exc))
-        for receipt in (result.get("receipt"), result.get("other_receipt")):
-            turn_receipts.add(receipt)
-        data: dict = {"shown_to_user": True}
-        if len(trips) == 1:
-            data["trip"] = trips[0]
-        else:
-            data["trips"] = trips
+
+        # The edit is saved from here on: nothing below may report it as failed.
+        kept = result.get("trip_id") or trip_id
+        ids = [kept] + ([result["split_into"]] if result.get("split_into") else [])
+        receipts = [result.get("receipt")] + ([result.get("other_receipt")] if result.get("split_into") else [])
+        shown = False
+        notes: list[str] = []
+        for i, (tid, receipt) in enumerate(zip(ids, receipts)):
+            rec = result.get("record") if i == 0 else None
+            why = self._why_no_trip_receipt(rt.deps, tid, rec)
+            if why is None and receipt:
+                turn_receipts.add(receipt)
+                shown = True
+            elif why:
+                notes.append(why)
+        data: dict = {"shown_to_user": shown}
+        try:
+            trips = [t for i in ids for t in view.get_trip(rt.deps, rt.handles, chat_id, trip_id=i)["trips"][:1]]
+        except Exception as exc:
+            # By type only: a message could quote a position.
+            logger.warning("edit_trip: saved, but the trip could not be re-read (%s)", type(exc).__name__)
+            trips = None
+            notes.append("saved; the trip could not be read back, call get_trip to see it")
+        if trips is not None:
+            if len(trips) == 1:
+                data["trip"] = trips[0]
+            else:
+                data["trips"] = trips
         if result.get("conflict"):
             data["conflict"] = result["conflict"]
         if result.get("cancelled"):
@@ -3636,8 +3655,33 @@ class AgentService:
         if result.get("calendar_failed"):
             data["calendar_failed"] = list(result["calendar_failed"])
         if result.get("street"):
-            data["note"] = "saved as the street, not as a place of yours"
+            notes.append("saved as the street, not as a place of yours")
+        if notes:
+            data["note"] = "; ".join(dict.fromkeys(notes))
         return ok(data)
+
+    @staticmethod
+    def _why_no_trip_receipt(deps, trip_id: str, rec: dict | None) -> str | None:
+        """Why the redrawn trip is not drawn under the reply, or None when it is.
+
+        A trip still going on sends nothing new mid-trip (spec §2 anti-goals);
+        a closed trip whose arrival message is still waiting to be sent has it
+        updated instead, so drawing it twice would only repeat it. A record
+        that cannot be read is not drawn either: nothing is better than a guess.
+        """
+        try:
+            if rec is None:
+                rec = deps.records.get(trip_id)
+            if not isinstance(rec, dict):
+                return ""
+            if not rec.get("closed"):
+                return "the trip is still going on: nothing is shown until you are home"
+            if deps.outbox.find(rec.get("id") or trip_id, "arrival") is not None:
+                return "the trip's arrival message, not yet sent, shows this now"
+        except Exception as exc:
+            logger.warning("edit_trip: could not tell whether to draw the trip (%s)", type(exc).__name__)
+            return ""
+        return None
 
     def _tool_edit_place(self, params: dict) -> dict:
         from src.services.location import places_edit, runtime as location_runtime

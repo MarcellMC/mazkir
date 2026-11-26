@@ -3566,11 +3566,13 @@ def _fake_rt():
     from unittest.mock import MagicMock
     rt = MagicMock()
     rt.deps, rt.handles = MagicMock(), MagicMock()
+    rt.deps.outbox.find.return_value = None                        # every arrival already sent
+    rt.deps.records.get.side_effect = lambda tid: {"id": tid, "closed": True}
     return rt
 
 
 def _edit_result(**more):
-    return {"record": {"id": "1a2b3c4d", "trip": {"lat": 32.0812345}}, "receipt": {"text": "arrival"},
+    return {"record": {"id": "1a2b3c4d", "closed": True, "trip": {"lat": 32.0812345}}, "receipt": {"text": "arrival"},
             "conflict": None, "cancelled": [], **more}
 
 
@@ -3719,6 +3721,98 @@ def test_edit_trip_street_note_and_errors(agent, monkeypatch):
         assert r["error"]["code"] == code
         if text:
             assert text in r["error"]["message"]
+
+
+def _real_trip_rt(tmp_path, monkeypatch):
+    """A closed trip from the location tests, behind a real runtime: apply_edit and get_trip unmocked."""
+    from types import SimpleNamespace
+    from src.config import settings
+    from src.services.location.handles import Handles
+    from tests.test_location_edits import closed_trip
+    monkeypatch.setenv("MAZKIR_AUDIT_LOG_PATH", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setattr(settings, "location_data_path", tmp_path / "locdata")
+    deps, clock = closed_trip(tmp_path)
+    rt = SimpleNamespace(deps=deps, handles=Handles(tmp_path / "handles.json"))
+    monkeypatch.setattr("src.services.location.runtime._runtime", rt)
+    return rt, clock
+
+
+def _send_arrival(deps):
+    for item in deps.outbox.serve():
+        deps.outbox.ack(item["id"])
+
+
+def test_edit_trip_street_note_without_mocks(agent, tmp_path, monkeypatch):     # final review 1, spec §7.5
+    import re
+    from pathlib import Path
+    from src.services.location.map_index import build_index
+    from tests.test_location_edits import TRIP
+    rt, _ = _real_trip_rt(tmp_path, monkeypatch)
+    build_index(Path(__file__).parent / "fixtures" / "map_small.osm", tmp_path / "index.sqlite")
+    rt.deps.map_index = tmp_path / "index.sqlite"
+    rec = rt.deps.records.get(TRIP)
+    for s in rec["trip"]["stops"]:
+        if s["id"] == "s1":
+            s["lat"], s["lng"] = 32.03, 34.80                  # on Ha'Yarkon in the fixture
+    rt.deps.records.save(rec)
+    r = agent.run_tool("edit_trip", {"trip_id": TRIP, "op": "name_stop", "stop_id": "s1", "name": "Walk",
+                                     "place": "Ha'Yarkon", "_confidence": 0.9})
+    assert r["ok"], r
+    assert "saved as the street, not as a place of yours" in r["data"]["note"]
+    assert not (tmp_path / "places.json").exists() or "Yarkon" not in (tmp_path / "places.json").read_text()
+    assert not re.search(r"\d+\.\d{4,}", json.dumps(r))
+
+
+def test_edit_trip_receipt_only_once_the_arrival_was_sent(agent, tmp_path, monkeypatch):   # final review 7
+    from src.services.location import turn_receipts
+    from tests.test_location_edits import TRIP
+    rt, _ = _real_trip_rt(tmp_path, monkeypatch)
+    args = {"trip_id": TRIP, "op": "name_stop", "stop_id": "s1", "name": "Market", "_confidence": 0.9}
+    with turn_receipts.collecting() as got:
+        r = agent.run_tool("edit_trip", args)                  # the arrival is still queued
+    assert r["ok"], r
+    assert got == [] and r["data"]["shown_to_user"] is False
+    assert "arrival message" in r["data"]["note"] and r["data"]["trip"]["id"] == TRIP
+    [queued] = [i for i in rt.deps.outbox.serve() if i["kind"] == "arrival"]
+    assert "Market" in json.dumps(queued["receipt"])           # the queued one goes out updated
+    rt.deps.outbox.ack(queued["id"])
+    with turn_receipts.collecting() as got:
+        r = agent.run_tool("edit_trip", {**args, "name": "Shuk"})
+    assert len(got) == 1 and r["data"]["shown_to_user"] is True and "note" not in r["data"]
+
+
+def test_edit_trip_on_an_open_trip_draws_nothing(agent, tmp_path, monkeypatch):    # final review 7
+    from src.services.location import turn_receipts
+    from tests.test_location_edits import TRIP
+    rt, _ = _real_trip_rt(tmp_path, monkeypatch)
+    _send_arrival(rt.deps)
+    rec = rt.deps.records.get(TRIP)
+    rec["closed"] = False
+    rt.deps.records.save(rec)
+    with turn_receipts.collecting() as got:
+        r = agent.run_tool("edit_trip", {"trip_id": TRIP, "op": "name_stop", "stop_id": "s1", "name": "Market",
+                                         "_confidence": 0.9})
+    assert r["ok"], r
+    assert got == [] and r["data"]["shown_to_user"] is False
+    assert "still going on" in r["data"]["note"]
+
+
+def test_edit_trip_reread_failure_is_not_a_failed_edit(agent, tmp_path, monkeypatch):    # final review 5
+    from src.services.location import turn_receipts
+    from tests.test_location_edits import TRIP
+    rt, _ = _real_trip_rt(tmp_path, monkeypatch)
+    _send_arrival(rt.deps)
+
+    def boom(*a, **k):
+        raise RuntimeError("disk at 32.0812345")
+    monkeypatch.setattr("src.services.location.view.get_trip", boom)
+    with turn_receipts.collecting() as got:
+        r = agent.run_tool("edit_trip", {"trip_id": TRIP, "op": "name_stop", "stop_id": "s1", "name": "Market",
+                                         "_confidence": 0.9})
+    assert r["ok"] is True, r
+    assert len(got) == 1 and r["data"]["shown_to_user"] is True
+    assert "get_trip" in r["data"]["note"] and "32.08" not in json.dumps(r)
+    assert rt.deps.records.get(TRIP)["stops"]["s1"]["name"] == "Market"
 
 
 def test_edit_place_calls_places_edit(agent, monkeypatch):
