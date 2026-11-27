@@ -245,12 +245,12 @@ An unnamed place you keep returning to — by default 3 visits within 30 days, w
 A **place requirement** on a todo or task, one of:
 
 - `{kind: "category", category: "pharmacy"}` — any place of that kind. Categories are a **fixed list** mapped to OSM tags in code: pharmacy, supermarket, convenience, bakery, hardware, post office, bank / ATM, pet shop, and a handful more. Not free text, so there is nothing for the model to invent.
-- `{kind: "place", place_id: "danas-place"}` — one of your places.
+- `{kind: "place", place_id: "robins-place"}` — one of your places.
 - None — most todos.
 
 ### 7.2 Classifying at capture
 
-When a todo or task is created (fast lane `add_todo`, `daily_add_task`, `create_task`), one Haiku call with structured output (the category enum, plus `place` and `none`) decides the requirement. It runs after the write and never blocks it, and it is best-effort: a failure means no requirement, logged. "Buy ibuprofen" → pharmacy; "buy milk" → supermarket or convenience; "return the drill to Dana" → the place `danas-place`, if it exists. The receipt line can show it (`📍 pharmacy`) with a tap to remove or change it.
+When a todo or task is created (fast lane `add_todo`, `daily_add_task`, `create_task`), one Haiku call with structured output (the category enum, plus `place` and `none`) decides the requirement. It runs after the write and never blocks it, and it is best-effort: a failure means no requirement, logged. "Buy ibuprofen" → pharmacy; "buy milk" → supermarket or convenience; "return the drill to Robin" → the place `robins-place`, if it exists. The receipt line can show it (`📍 pharmacy`) with a tap to remove or change it.
 
 ### 7.3 Where the requirement lives
 
@@ -274,7 +274,7 @@ On each ingested point, if there are open todos with a requirement:
 
 That last point avoids a new channel: the bot is pull-only today, and it is already POSTing every point.
 
-The message: "💊 Superpharm, 120 m — buy ibuprofen", with buttons **✓ Done** (checks the todo), **Snooze 2 h**, **Not here** (never this place for this todo) and **Stop reminding** (removes the requirement). Several todos for the same place go in one message.
+The message: "💊 CityPharm, 120 m — buy ibuprofen", with buttons **✓ Done** (checks the todo), **Snooze 2 h**, **Not here** (never this place for this todo) and **Stop reminding** (removes the requirement). Several todos for the same place go in one message.
 
 ### 7.5 Noise control
 

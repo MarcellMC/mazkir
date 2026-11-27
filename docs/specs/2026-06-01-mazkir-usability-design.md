@@ -128,7 +128,7 @@ Markdown `## History` section, **append-only**, maintained by mutators:
 ## History
 - 2026-05-21 14:00 — Created (due_date: 2026-05-30)
 - 2026-05-23 09:12 — Postponed scheduled_at: 2026-05-22 → 2026-05-25
-- 2026-05-25 14:00 — Note appended: "Migdal sent missing-docs message"
+- 2026-05-25 14:00 — Note appended: "Northwind sent missing-docs message"
 ```
 
 Format: `- YYYY-MM-DD HH:MM — <change summary>`. Every mutator change appends one line. Migration script can leave existing files alone (empty History section = "no recorded history").
@@ -159,7 +159,7 @@ Format: `- YYYY-MM-DD HH:MM — <change summary>`. Every mutator change appends 
 ## Tasks
 - [ ] 14:00 — Visit dentist (60m)
   - bring insurance card
-  - test if the new tooth still hurts
+  - ask about the next cleaning
 - [x] Walk dog
 - [ ] ~~Order phone~~ — moved to [[2026-06-02#Tasks]]
 - [ ] [[buy-groceries]]  ← promoted, now a file
@@ -247,7 +247,7 @@ Risk levels unchanged: **safe** (read), **write**, **destructive**. Auto-execute
 ### Known bugs (confirmed via May 21 traces)
 - **A1.** `agent_service._tool_complete_task` does `name, tokens, archive_path = self.vault.complete_task(...)` against a dict return. Iterates **keys**, not values. Returns literal strings `"task_name"`, `"tokens_earned"`, `"archive_path"`. Fix: `result = self.vault.complete_task(...); name = result["task_name"]; ...`
 - **A2.** `update_item` accepts `updates` as raw param then calls `vault.update_file(path, updates)`. If LLM passes a JSON-encoded string, `dict.update(str)` errors with `"dictionary update sequence element #0 has length 1; 2 is required"`. Resolved by removing `update_item` entirely.
-- **A3.** Migdal-text flow (112-s trace `752c3a402f3ddea6efcf936b7659e16d`) had no clean tool path. Resolved by `update_task(name, {append_note: ...})`.
+- **A3.** Northwind-text flow (112-s trace `752c3a402f3ddea6efcf936b7659e16d`) had no clean tool path. Resolved by `update_task(name, {append_note: ...})`.
 
 ---
 
@@ -390,9 +390,9 @@ Example preview output for `delete_task`:
 
 ```
 Would delete:
-  • Submit missing documents to Migdal Insurance
+  • Submit missing documents to Northwind Insurance
   • Priority 2, no due date
-  • Has 1 note (Hebrew text from Migdal Insurance)
+  • Has 1 note (Hebrew text from Northwind Insurance)
   • Created 2026-04-15
 
 Yes / No
@@ -567,7 +567,7 @@ Multi-turn conversations get the cache hit, dropping effective billed input furt
 ## F — Latency
 
 Most latency wins from May 21 are already addressed:
-- 112 s Migdal turn → A1–A3 (no retry loops)
+- 112 s Northwind turn → A1–A3 (no retry loops)
 - 30 s `messages.create` → B1+B2+B4 (smaller prompts + cache hits)
 - 27-tool surface per call → D3 (skill-scoped toolboxes)
 
@@ -629,7 +629,7 @@ Claude already does this most of the time; the explicit reminder helps consisten
 | --- | --- | --- |
 | Single capture ("Save this quote") | 5–8 s | 2–4 s (Haiku + cache) |
 | Bulk complete (11 tasks) | 13.7 s | 1–3 s (parallel exec) |
-| Migdal-text attach | 112 s | 5–8 s (no retries + typed mutator + Haiku) |
+| Northwind-text attach | 112 s | 5–8 s (no retries + typed mutator + Haiku) |
 | Daily review with multiple updates | 20–40 s | 5–10 s (smaller prompt + parallel tools + Sonnet) |
 
 Perceived latency further reduced by F2 streaming.
@@ -775,7 +775,7 @@ class Resolver:
         return {"ok": True, "data": {"path": top.path, "name": top.name, "score": top.score}}
 ```
 
-**Behavior on ambiguity:** return error with candidates. The agent re-prompts the user ("did you mean Migdal Insurance or Migdal Bank?") rather than silently mutating the wrong item.
+**Behavior on ambiguity:** return error with candidates. The agent re-prompts the user ("did you mean Northwind Insurance or Northwind Bank?") rather than silently mutating the wrong item.
 
 ### A4.2 — Normalized tool response shape
 
@@ -840,7 +840,7 @@ def validate_schema(params: dict, ctx) -> Optional[dict]:
 ```
 
 What this catches that Claude SDK doesn't:
-- `additionalProperties: false` enforcement (the Migdal "JSON string for `updates`" case)
+- `additionalProperties: false` enforcement (the Northwind "JSON string for `updates`" case)
 - Cross-field constraints (e.g. `scheduled_at` requires `duration_minutes`)
 - Enum mismatches on `state`-style fields
 

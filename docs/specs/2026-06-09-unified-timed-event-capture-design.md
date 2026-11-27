@@ -11,11 +11,11 @@ being recorded in the daily note and synced to Google Calendar.
 
 **Observed failure** (Phoenix trace `9db5b78097c6567c7b48d8e24365435f`, 2026-06-07 19:59):
 
-> User: *"I've attended a pub meeting with former colleagues from Momentick today
-> between 20:00 to 22:30 at Shnitt brewery"*
+> User: *"I've attended a pub meeting with former colleagues from Acme today
+> between 20:00 to 22:30 at Hopworks brewery"*
 
 Flow: router → `skill.capture` → `save_knowledge` → wrote
-`60-knowledge/notes/pub-meeting-with-momentick-colleagues.md`. No daily-note record,
+`60-knowledge/notes/pub-meeting-with-acme-colleagues.md`. No daily-note record,
 no calendar event.
 
 ### Root causes
@@ -50,7 +50,7 @@ reachable from the path the message took.
   `## Tasks` and `## Food`.
 - **Line format:** `- {start}–{end} {title} @ {location} {wikilinks}` — `end`,
   `@ {location}`, and trailing wikilinks all optional. Example:
-  `- 20:00–22:30 Pub meeting @ Shnitt brewery [[Momentick]]`
+  `- 20:00–22:30 Pub meeting @ Hopworks brewery [[Acme]]`
 - **Parser/renderer:** a small service mirroring the existing `DailyTasksService`
   pattern (`services/daily_tasks.py`) — read existing lines, append idempotently,
   render back. Either extend `daily_tasks.py` or add a sibling `daily_schedule.py`
@@ -82,7 +82,7 @@ reachable from the path the message took.
 ## Data Flow (fixed)
 
 ```
-"attended pub meeting 20:00–22:30 at Shnitt brewery"
+"attended pub meeting 20:00–22:30 at Hopworks brewery"
   → router → capture
   → create_event{name, start_time, end_time, location, date=today}
       ├─ events store  (data/events/2026-06-07.json)
@@ -111,7 +111,7 @@ reachable from the path the message took.
 
 ## Out of Scope
 
-- Backfilling / migrating the existing `pub-meeting-with-momentick-colleagues.md`
+- Backfilling / migrating the existing `pub-meeting-with-acme-colleagues.md`
   knowledge note (can be handled manually or in a follow-up).
 - Changing the `manager` skill (it already has `create_event` and will inherit the
   unified daily-note behavior for free).

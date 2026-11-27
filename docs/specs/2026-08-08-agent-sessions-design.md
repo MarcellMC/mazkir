@@ -286,7 +286,7 @@ All verified against the running system.
    Unexpected EOF"), and every autonomous session exited within ~14s having done
    nothing. *Already fixed and verified on `worktree-coding-handoff-v1`.*
 2. **Clones inherit a local path as `origin`.** A clone's origin is
-   `/home/marcellmc/dev/mazkir`, not `git@github.com:MarcellMC/mazkir.git`. So
+   `/home/<user>/dev/mazkir`, not `git@github.com:MarcellMC/mazkir.git`. So
    `git push` writes into the user's local checkout, the `GIT_CONFIG` insteadOf
    rewrite never fires (it only matches `git@github.com:` URLs), and `gh pr create`
    has no GitHub remote. **This blocks the push+PR definition of done, and would let

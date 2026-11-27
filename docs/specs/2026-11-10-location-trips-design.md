@@ -101,17 +101,17 @@ Run with `python scripts/location_spike_report.py --from 2026-11-05 --to 2026-11
 
 ### 2.1 The labelled days
 
-From your description, Mazkir writes the labels itself into `data/eval/location/{date}.json`; you don't label anything by hand. Your description: the unlabelled trips are mostly dog walks, some of them long, plus commutes home, such as the walk from Alex's birthday at his home with a stop at the café in Gan Meir. The labels, together with your later answers:
+From your description, Mazkir writes the labels itself into `data/eval/location/{date}.json`; you don't label anything by hand. Your description: the unlabelled trips are mostly dog walks, some of them long, plus commutes home, such as the walk from Sam's birthday at their place with a stop at the café in Elm Park. The labels, together with your later answers:
 
 | Day | Trip (from the points) | Label | Evidence |
 |---|---|---|---|
 | 5 Nov | ~20:01–20:21, 1 point at 131 m | Dog walk | you said so |
 | 6 Nov | 10:24–10:38, up to 340 m | Dog walk | logged 10:24–10:38 |
-| 6 Nov | 11:25 → stay 11:28–17:34 at 205 m → home 17:37 | Walk to band practice · Band practice · Walk home | logged 11:20–17:50 |
-| 6 Nov | 17:37–19:13, 10 m from home | Dinner at Leyman's (at or next to home) | logged, ends 19:13 |
+| 6 Nov | 11:25 → stay 11:28–17:34 at 205 m → home 17:37 | Walk to pottery class · Pottery class · Walk home | logged 11:20–17:50 |
+| 6 Nov | 17:37–19:13, 10 m from home | Dinner at Jo's (at or next to home) | logged, ends 19:13 |
 | 6 Nov | 19:20–19:28, up to 268 m | Dog walk | logged 19:17 |
-| 6 Nov | 19:36 → 20:10 to 2.4 km, stay until 7 Nov 07:54 | Bus to Alex's · Alex's birthday | logged 19:40–20:00 and from 20:00 |
-| 7 Nov | 07:54 → café 08:04–09:14 at 1.75 km → home 09:50 | Walk to Gan Meir · Café at Gan Meir · Walk home | logged café until 09:13; you described it |
+| 6 Nov | 19:36 → 20:10 to 2.4 km, stay until 7 Nov 07:54 | Bus to Sam's · Sam's birthday | logged 19:40–20:00 and from 20:00 |
+| 7 Nov | 07:54 → café 08:04–09:14 at 1.75 km → home 09:50 | Walk to Elm Park · Café at Elm Park · Walk home | logged café until 09:13; you described it |
 | 7 Nov | 10:07–10:46, up to 727 m, stop 10:20–10:28 | Dog walk | logged 10:02 |
 | 7 Nov | 21:00–21:20, up to 163 m | Dog walk | pattern |
 | 8 Nov | 07:20–10:10, up to 1.7 km, three stops | Dog walk (long) | you said so |
@@ -119,9 +119,9 @@ From your description, Mazkir writes the labels itself into `data/eval/location/
 | 9 Nov | 08:29–08:49, up to 201 m | Dog walk | logged 08:37 |
 | 9 Nov | 20:00–20:13, up to 272 m | Dog walk | pattern |
 | 9 Nov | 20:29–20:32, ~48 m | Convenience store | assumed; you don't remember it |
-| 9 Nov | 23:08 → bar at up to 920 m → home 04:31 | Walk to the bar · Bar · Walk home | you said so |
+| 9 Nov | 21:08 → board-game café at up to 920 m → home 00:31 | Walk to board-game night · Board-game night · Walk home | you said so |
 | 10 Nov | 09:17–09:41, up to 245 m | Dog walk | pattern |
-| 10 Nov | from 10:16, to ~700 m | Walk to café · Coffee, then sauna | you said so |
+| 10 Nov | from 10:16, to ~700 m | Walk to café · Coffee, then the library | you said so |
 
 The 10 Nov late morning is the case §5 exists for. The morning walk had just happened, nothing was on the schedule, and the place was new, so Mazkir has no good guess and asks once you've sat down.
 
@@ -208,7 +208,7 @@ New server code lives in `src/services/location/` (`tracker`, `candidates`, `gue
 - **Leaving:** at least **3 points in a row**, each with accuracy ≤ 30 m, farther from the stay's centre than the threshold, for at least 1 minute. At home the threshold is the 40 m radius itself, because home's spread is measured over weeks and the spike tested exactly that rule. Elsewhere it is `max(radius, 3 × spread + accuracy)`, since a new stay's spread is still a guess. On your data this finds every real trip, the 48 m shop trip included, and no drift.
 - **Home wins.** 3 good points back inside home's radius end whatever stop you were at, and the trip with it. Without this, a stop 48 m from home, with its 75 m radius, would swallow the walk back.
 - **Departure time** is the last point inside the stay, so blocks start when you actually left.
-- **Only leaving ends a stay.** A gap in points (up to §4.4's limits) or a point the rules above don't count never ends one. This fixes the band-practice split at a 1-minute gap. Two stays close together are not merged when a real departure separated them, since the shop is 48 m from home.
+- **Only leaving ends a stay.** A gap in points (up to §4.4's limits) or a point the rules above don't count never ends one. This fixes the pottery-class split at a 1-minute gap. Two stays close together are not merged when a real departure separated them, since the shop is 48 m from home.
 - **Midnight splits nothing.** Stays and trips span days. Blocks are split at 00:00 only when written, as `create_event` already does.
 
 ### 4.2 Trips, stops and home
@@ -230,8 +230,8 @@ What the trip's own block looks like depends on what the moving was for (§4.3).
 
 | What the moving was for | Blocks |
 |---|---|
-| **The moving is the activity:** a dog walk, a bike ride around the city, a walk with a friend, a run | One block for the whole trip, from leaving to getting back. Each named stop is its own block inside it, overlapping it ("Coffee at Gan Meir 08:10–08:25" within "Walk with Dana 07:50–09:00"); coverage counts the overlap once. |
-| **The moving gets you somewhere:** the café, the bar, Alex's, the shop | A travel block per leg ("Walk to Gan Meir", "Bus to Alex's"), a block per named stop, and an open block at the destination ("Alex's birthday"), closed when you leave. Unnamed stops stay inside the leg around them, so a leg is not split by a pause. A leg under 2 minutes (the 48 m to the shop) folds into the block it leads to. *My call.* |
+| **The moving is the activity:** a dog walk, a bike ride around the city, a walk with a friend, a run | One block for the whole trip, from leaving to getting back. Each named stop is its own block inside it, overlapping it ("Coffee at Elm Park 08:10–08:25" within "Walk with Robin 07:50–09:00"); coverage counts the overlap once. |
+| **The moving gets you somewhere:** the café, the cinema, Sam's, the shop | A travel block per leg ("Walk to Elm Park", "Bus to Sam's"), a block per named stop, and an open block at the destination ("Sam's birthday"), closed when you leave. Unnamed stops stay inside the leg around them, so a leg is not split by a pause. A leg under 2 minutes (the 48 m to the shop) folds into the block it leads to. *My call.* |
 | Unknown, never answered | "Trip ‹distance›", one block like the first row |
 
 The guess (§5.3) says which row applies: a purpose with a destination place is the second row, one without is the first. Code reads that field; there is no list of activities.
@@ -285,10 +285,10 @@ Plus the trip so far, as numbers and names: distances, durations, mode, the know
 
 Haiku, with structured output. It returns up to 3 purposes, each with:
 - `likelihood`: `strong`, `plausible` or `unlikely`;
-- either a `history` candidate id, or a new purpose with `cites`, the ids of the context lines it comes from ("going to Alex's tonight", said yesterday at 21:40);
+- either a `history` candidate id, or a new purpose with `cites`, the ids of the context lines it comes from ("going to Sam's tonight", said yesterday at 21:40);
 - optionally a destination place name.
 
-Code drops any new purpose that cites nothing or cites an id that does not exist. So the model can find "Dana's for dinner" in a message without being able to make one up. About $0.007 a call. That is a few calls per trip, at 5–8 trips a day, so roughly $1–3 a month.
+Code drops any new purpose that cites nothing or cites an id that does not exist. So the model can find "Robin's for dinner" in a message without being able to make one up. About $0.007 a call. That is a few calls per trip, at 5–8 trips a day, so roughly $1–3 a month.
 
 A failed or timed-out call means no good guess, and Mazkir asks. Asking is the safe direction.
 
@@ -319,7 +319,7 @@ The ingest response gains `notify: [...]`, and the bot sends what it lists.
 ### 6.2 The question at a stop
 
 > 📍 You've been here since 10:24 — 700 m from home, a new place. What's this?
-> [Café] [Sauna] [Just a pause] [✎ Something else]
+> [Café] [Library] [Just a pause] [✎ Something else]
 
 - **A button** names the stop. A place-like answer also names the place (§7).
 - **Just a pause,** or no answer at all, leaves the stop unnamed and without a block (§4.2). Only the button makes it a pause spot; silence teaches nothing.
@@ -334,8 +334,8 @@ There is one message per trip, shaped like a fast-lane receipt, with one line pe
 
 or
 
-> 🚶 Walk to Gan Meir 07:54–08:04  [✓] [✎]
-> ☕ Café at Gan Meir 08:04–09:14  [✓] [✎]
+> 🚶 Walk to Elm Park 07:54–08:04  [✓] [✎]
+> ☕ Café at Elm Park 08:04–09:14  [✓] [✎]
 > 🚶 Walk home 09:14–09:50  [✓] [✎]
 > [✓ All] [✕ Not right]
 
@@ -374,7 +374,7 @@ The location-filled fields of your block are still a proposal until ✓, shown a
 - **Stored** in `data/places.json`, which exists today with `{id, name, aliases, kind}`. Entries gain optional `lat`, `lng` and `radius_m`:
 
   ```json
-  {"id": "alexs", "name": "Alex's", "aliases": ["Alex"], "lat": …, "lng": …, "radius_m": 60}
+  {"id": "sams", "name": "Sam's", "aliases": ["Sam"], "lat": …, "lng": …, "radius_m": 60}
   ```
 
   The file is gitignored and stays on this machine. Coordinates never go into the vault, which is pushed to GitHub.
@@ -382,8 +382,8 @@ The location-filled fields of your block are still a proposal until ✓, shown a
 - **What usually happens at a place** (gym → Workout) is never stored. §5.2 works it out from history each time, so it keeps up when habits change.
 - **Home** is found as in §4.2 and written as id `home`. The bot says once that it found home.
 - **Pause spots:** "Just a pause" stores the stop as a place with `kind: "pause"` and no name the vault ever sees. A stop inside one is unnamed with no question.
-- **Learning:** an answer naming a place ("Alex's", "the café on Dizengoff") gives the stop's centre to that place, creating the place if it is new.
-  - If a place by that name already has coordinates farther away than its radius, Mazkir asks "Is this a different Alex's?"
+- **Learning:** an answer naming a place ("Sam's", "the café on Main Street") gives the stop's centre to that place, creating the place if it is new.
+  - If a place by that name already has coordinates farther away than its radius, Mazkir asks "Is this a different Sam's?"
   - A place's radius grows to cover the spread actually seen there, capped at 150 m.
 - **A stop at an unknown place** is "Somewhere 700 m from home" until you answer.
 
@@ -455,7 +455,7 @@ The labels grow by themselves: an approved or corrected trip block is a label. `
 
 ## Addendum 2026-11-14: stops after the first live walk
 
-The first live dog walk (15:56–16:46) named its stops at the local dog park and at Café Barzilay
+The first live dog walk (15:56–16:46) named its stops at the local dog park and at Café Lumen
 "Dog walking" and "Dog walk", gave each its own block and asked nothing. The guess came from the
 user's own "Dog walking" message and the habit being due, which bypassed the history-only
 destination filter, and the prompt's "a pause gets no guess" was not followed. Agreed fixes:
@@ -474,4 +474,4 @@ destination filter, and the prompt's "a pause gets no guess" was not followed. A
    `trip`, and the time-management skill calls `set_trip_purpose` for it without asking.
 
 Next: map data (OpenStreetMap places stored locally) to name places such as the dog park and
-Barzilay on their first visit.
+Lumen on their first visit.

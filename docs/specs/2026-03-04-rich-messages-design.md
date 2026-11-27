@@ -5,7 +5,7 @@
 
 ## Problem
 
-The Telegram bot only handles `message:text` events. Photos, locations, reply context, and forwarded messages are silently ignored. This prevents workflows like: send a photo during a dog walk → save to daily note with location and `[[City Watch]]` wikilink.
+The Telegram bot only handles `message:text` events. Photos, locations, reply context, and forwarded messages are silently ignored. This prevents workflows like: send a photo during a dog walk → save to daily note with location and `[[Street Art]]` wikilink.
 
 ## Goals
 
@@ -136,7 +136,7 @@ content.append({"type": "text", "text": "\n".join(text_parts)})
     "params": {
         "vault_path": "path to the saved attachment relative to project root",
         "caption": "description to show alongside the attachment",
-        "wikilinks": ["list of wikilink targets"],  # e.g. ["City Watch"]
+        "wikilinks": ["list of wikilink targets"],  # e.g. ["Street Art"]
         "location": {"lat": float, "lng": float, "name": str},  # optional
         "section": "which daily note section to add under (default: Notes)"
     },
@@ -150,7 +150,7 @@ Appends to daily note using standard markdown image syntax with relative path:
 ## Notes
 
 ![Dog walk stop](../../data/media/2026-03-04/photo_2026-03-04_14-30.jpg)
-*14:30 — Dog walk stop* | [[City Watch]]
+*14:30 — Dog walk stop* | [[Street Art]]
 📍 32.0853, 34.7818
 ```
 
@@ -164,7 +164,7 @@ Reply and attachment metadata persisted in conversation file:
 Also mark the dog walk done
 
 ### 14:31 [user] (photo: photo_2026-03-04_14-30.jpg, location: 32.08, 34.78)
-Save this to daily note, link to [[City Watch]]
+Save this to daily note, link to [[Street Art]]
 ```
 
 ## Error Handling

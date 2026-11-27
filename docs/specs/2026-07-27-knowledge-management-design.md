@@ -10,7 +10,7 @@ Before Mazkir, the user maintained an Obsidian vault with its own conventions �
 
 - **`Org. Tags vs Links.md`**: tags are status/action-type markers (`idea`, `org`, `status/active`); links connect ideas/topics. Nested status tags don't work well for tracking — "status changing only works with tasks as separate notes" (the reasoning that predates, and matches, Mazkir's existing two-tier task system).
 - **`Task Levels.md` / `Rigidity Levels.md`**: an old three-stage model — checkbox → task note → Kanban — with "don't move checkboxes through periodic notes, promote to task notes instead" and an explicitly unresolved "when to promote to Kanban?" question.
-- **`00-system/mocs/000 Workbench MOC.md`**: a prior hand-maintained command-center note, whose own title says "Concepts **Outdated**." Its category list (work, buy, org, dev, music, eat, cook, clean, explore, idea, city watch) closely mirrors the hand-drawn Time Management Matrix from the parent roadmap's Block A — same categorization instinct, different era. The lesson taken: a static, manually-maintained index didn't survive; it needs to be a live/generated view instead.
+- **`00-system/mocs/000 Workbench MOC.md`**: a prior hand-maintained command-center note, whose own title says "Concepts **Outdated**." Its category list (work, buy, org, dev, music, eat, cook, clean, explore, idea, street art) closely mirrors the hand-drawn Time Management Matrix from the parent roadmap's Block A — same categorization instinct, different era. The lesson taken: a static, manually-maintained index didn't survive; it needs to be a live/generated view instead.
 
 ## 2. Tags vs Links convention
 

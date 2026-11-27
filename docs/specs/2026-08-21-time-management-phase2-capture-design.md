@@ -124,7 +124,7 @@ Note the ship boundary: **Ship 5 delivers approval without any classification qu
 ```
 [ approve all ]  → "Approved 7. One needs an activity:"
                      [ shopping ][ slack ][ eat ][ other… ][ skip ]
-                  → "Noted — Dizengoff Center → shopping."
+                  → "Noted — Riverside Mall → shopping."
 ```
 
 - Candidates come from the matrix, ranked by the classifier's best guesses.

@@ -5,15 +5,15 @@
 
 ## 1. Why
 
-The first live walk (2026-11-14) had two stops: the local dog park and Café Barzilay.
+The first live walk (2026-11-14) had two stops: the local dog park and Café Lumen.
 Mazkir knew neither. It has no map, so all it can do is ask "what's this?", or guess
 from context, and that guess named both stops after the walk. The user wants Mazkir
 to know what is at a spot the first time they stop there.
 
 OpenStreetMap already knows. Checked on 2026-11-14:
-- **Café Barzilay** is a café named "קפה ברזילי", 10 m from the stop.
+- **Café Lumen** is a café named "קפה לומן", 10 m from the stop.
 - **The dog park** is mapped as a dog park (`leisure=dog_park`) 1 m from the stop. It
-  has no name: "Electra" is the user's own name for it.
+  has no name: "Bramble" is the user's own name for it.
 
 So map data answers "what kind of place is this", often "what is it called", and the
 user's own answer fills in the rest.
@@ -22,7 +22,7 @@ user's own answer fills in the rest.
 
 **Goals**
 - **Map places as buttons.** A stop question offers the places that are actually there
-  ("Café Barzilay", "Dog park"), so a first visit takes one tap.
+  ("Café Lumen", "Dog park"), so a first visit takes one tap.
 - **A local copy, kept current.** The map is stored on this machine and refreshed
   automatically, monthly.
 - **The full download is kept**, so later features (bus rides, addresses,
@@ -56,7 +56,7 @@ A new spot with map data:
 
 ```
 📍 You've been here since 16:23 — 690 m from home, a new place. What's this?
-[Café Barzilay] [Just a pause] [✎ Something else] [Later]
+[Café Lumen] [Just a pause] [✎ Something else] [Later]
 ```
 
 The usual dog park, before the user has named it:
@@ -66,14 +66,14 @@ The usual dog park, before the user has named it:
 [Dog park] [Just a pause] [✎ Something else] [Later]
 ```
 
-Tapping **[Café Barzilay]** names the stop "Café Barzilay" and saves it as the user's
+Tapping **[Café Lumen]** names the stop "Café Lumen" and saves it as the user's
 place, linked to the map entry. Every later visit is then named without a question. To
-call the dog park "Dog park Electra", the user taps ✎ and types it; this is what they did
+call the dog park "Dog park Bramble", the user taps ✎ and types it; this is what they did
 on 2026-11-14.
 
 Between buttons, the model chooses (§5.3). "On a dog walk" points to the dog park, not
 the kiosk next to it. It can also phrase a button as an activity at that place: "Coffee
-at Café Barzilay".
+at Café Lumen".
 
 ## 4. The map copy
 
@@ -177,10 +177,10 @@ bus stop is asked about as today, until part 2 (§9) knows what waiting for a bu
 ### 5.2 The question text
 
 - **A map place contains or is within 15 m of the stop** (the top result): the question
-  says what is there, e.g. "📍 Here since 16:23 — 690 m from home, by Café Barzilay.
+  says what is there, e.g. "📍 Here since 16:23 — 690 m from home, by Café Lumen.
   What's this?"
 - **Otherwise:** the question reads as today.
-- **The area name** is added when known: "690 m from home, in Neve Sha'anan".
+- **The area name** is added when known: "690 m from home, in Old Town".
 
 ### 5.3 The guess
 
@@ -189,7 +189,7 @@ of each place in `map_near`, and nothing else. The guess schema gains `map_id` (
 handled like `history_id`:
 - A guess citing a map line keeps that place as its destination. Code checks that the id
   exists.
-- A guess may name an activity at that place ("Coffee at Café Barzilay") or the place
+- A guess may name an activity at that place ("Coffee at Café Lumen") or the place
   itself.
 
 The 2026-11-14 stop rules stand: a stop guess needs a destination and must not repeat the
@@ -233,7 +233,7 @@ downloaded, whatever `LOCATION_MAP` says. The script works either way.
 - **No position leaves the machine.** Lookups are local file reads; the only network
   call is the country download.
 - **The model** sees labels, kinds, distances and area names. It never sees coordinates,
-  OSM ids or addresses' house numbers. An address shows as street only ("on Ha'Yarkon").
+  OSM ids or addresses' house numbers. An address shows as street only ("on Harbour Street").
 - **The decision log** (`location-trips.jsonl`) gains `map: [{id, osm, kind, label,
   distance_m}]` per stop decision. It has no coordinates.
 - **Spans:** `location.map.update` carries duration and counts; `location.map.lookup`
@@ -256,10 +256,10 @@ downloaded, whatever `LOCATION_MAP` says. The script works either way.
    - an index version bump rebuilding without a download;
    - the age check.
 3. **Replay on real stops** (`scripts/location_replay.py --map`, offline):
-   - **Barzilay** (14 Nov): "Café Barzilay" offered.
+   - **Lumen** (14 Nov): "Café Lumen" offered.
    - **Dog park** (14 Nov): "Dog park" offered.
    - **The convenience store** (9 Nov 20:29): a shop offered.
-   - **The Gan Meir coffee stop** (7 Nov): a café offered.
+   - **The Elm Park coffee stop** (7 Nov): a café offered.
 
    Pass: the right place is among the buttons for at least 3 of the 4.
 4. **Live:** the next walk with a new stop.
@@ -269,13 +269,13 @@ downloaded, whatever `LOCATION_MAP` says. The script works either way.
 - **Transit rides.**
   - A stop at a transit stop is "waiting", not a place to ask about.
   - A ride leg between two stops gives candidate lines from the route relations in the
-    kept pbf ("Bus 375, Savidor → Kiryat Gat"), named silently when only one line fits.
+    kept pbf ("Bus 42, Central Station → Lakeside"), named silently when only one line fits.
   - Needs real bus rides in the location data to design against.
   - OpenStreetMap's Israeli bus data may lag; the Ministry of Transport's GTFS feed is the
     fallback source to measure against.
 - **Location reminders:** "you're passing a pharmacy, and 'buy X' is on your list", from
   `map_near` along a leg and open todos.
-- **Addresses for people's homes:** "Alex's" linked to its address, so a stop there is
+- **Addresses for people's homes:** "Sam's" linked to its address, so a stop there is
   named silently.
 
 ## 10. Left to the builder

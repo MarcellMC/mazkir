@@ -154,12 +154,12 @@ name: Dentist location
 created: 2026-03-02
 updated: 2026-03-02
 tags: [health, locations]
-links: ["[[dr-garcia]]"]
+links: ["[[dr-rivera]]"]
 source: conversation
 source_ref: "00-system/conversations/2026-03-02/123456789.md"
 ---
 
-Dentist is on Av. Roma 1234, Dr. Garcia. Appointments usually Thursdays.
+Dentist is at 12 Elm Street, Dr. Rivera. Appointments usually Thursdays.
 ```
 
 **Preference schema:**

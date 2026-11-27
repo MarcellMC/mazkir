@@ -89,22 +89,22 @@ A vertical timeline view of a day showing every event/stop with:
 ├──────────────────────────────────────┤
 │  06:30  🌅 Wake up                   │
 │                                      │
-│  07:00  🐕 Dog walk — Yarkon Park    │
+│  07:00  🐕 Dog walk — Elm Park       │
 │         [route sketch: 0.8km walk]   │
 │         [small contextual image]     │
 │                                      │
-│  08:30  ☕ Café Xoho, Dizengoff      │
+│  08:30  ☕ Café Lumen, Main St       │
 │         [icon: coffee, styled]       │
 │                                      │
 │  10:00  💻 Home — Deep work          │
 │         ╌╌╌ 6 hours ╌╌╌             │
 │                                      │
-│  16:00  💪 Gym — Holmes Place        │
+│  16:00  💪 Gym — City Gym            │
 │         [route: bus 🚌 12min]        │
 │         ✅ Habit complete +10 🪙     │
 │         [keyframe scene card]        │
 │                                      │
-│  18:30  🛒 Carmel Market             │
+│  18:30  🛒 Farmers' Market           │
 │         [route: walking 8min]        │
 │                                      │
 │  20:00  🏠 Home                      │
@@ -255,7 +255,7 @@ interface GenerationRequest {
 
 interface StyleConfig {
   // Can be a named city style or custom
-  preset?: string;              // 'tel-aviv' | 'jerusalem' | 'default' | ...
+  preset?: string;              // 'coastal' | 'old-town' | 'default' | ...
   palette?: string[];           // override colors
   lineStyle?: 'loose_ink' | 'clean_vector' | 'crosshatch' | 'watercolor_edge';
   texture?: 'linen_paper' | 'rough_paper' | 'clean' | 'aged_parchment';
@@ -349,9 +349,9 @@ These are bot-side commands that launch the WebApp or trigger generation. The We
 
 ## PKM Vault Context
 
-The app integrates with Marc's Obsidian-based PKM vault. Key details:
+The app integrates with the user's Obsidian-based PKM vault. Key details:
 
-- **Vault path:** `/home/marcellmc/pkm`
+- **Vault path:** `~/pkm`
 - **Daily notes:** `10-daily/YYYY-MM-DD.md`
 - **Habits:** `20-habits/[habit-name].md` — has streak, last_completed, tokens_per_completion
 - **Token ledger:** `00-system/motivation-tokens.md`
